@@ -1,7 +1,7 @@
 # Third-party program binaries
 
 Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Solana devnet (program data account,
-45-byte header removed) on 2026-10-22/23 (the mpl-account-compression pair on 2026-10-28; `coral_multisig.so` from mainnet on 2026-10-29; the Jito programs from mainnet on 2026-10-31; `marginfi_v2.so` from mainnet on 2026-11-01); `scripts/fetch-programs.sh [cluster]` downloads them again.
+45-byte header removed) on 2026-10-22/23 (the mpl-account-compression pair on 2026-10-28; `coral_multisig.so` from mainnet on 2026-10-29; the Jito programs from mainnet on 2026-10-31; `marginfi_v2.so` from mainnet on 2026-11-01; Solend's and Kamino's from mainnet on 2026-11-02); `scripts/fetch-programs.sh [cluster]` downloads them again.
 
 | File | Program id | Upstream | License | In the repository | sha256 (as dumped) |
 | --- | --- | --- | --- | --- | --- |
@@ -15,15 +15,19 @@ Used by the tests (LiteSVM) and `scripts/localnet.sh`. Dumped read-only from Sol
 | `jito_tip_distribution.so` | `4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7` | jito-foundation/jito-programs (mev-programs/programs/tip-distribution; deployed in slot 403585576, ce1dfb6), dumped from **mainnet** on 2026-10-31, cut at the ELF's end | Apache-2.0 | yes | `006e729446735a07ff98a2cbd694d42c55fe2077f94bbfa261aaa90798c2759f` |
 | `jito_priority_fee_distribution.so` | `Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3` | jito-foundation/jito-programs (mev-programs/programs/priority-fee-distribution; deployed in slot 406218562, ce1dfb6), dumped from **mainnet** on 2026-10-31, cut at the ELF's end | Apache-2.0 | yes | `e3ca488b516ded8973d1a2bebd3e8eed0bb465f8a3a947efc89bbeaa83331734` |
 | `marginfi_v2.so` | `MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA` | mrgnlabs/marginfi-v2 (programs/marginfi 0.1.12, c5d440f6; deployed in slot 456093551), dumped from **mainnet** on 2026-11-01, cut at the ELF's end | Apache-2.0 | yes | `6f8184ac9c0d8bf5b48caa13111e307a8fd8d09fa51f08f7cda9c5ce766ba702` |
+| `solend.so` | `So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo` | solendprotocol/solana-program-library (token-lending, `mainnet` branch; deployed in slot 350614570), dumped from **mainnet** on 2026-11-02, cut at the ELF's end | Apache-2.0 | yes | `99713cadb9d6ea38622a00f5e5ba3e9d20535b8166ac460f3bc7257a68838db1` |
 | `mpl_token_metadata.so` | `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s` | metaplex-foundation/mpl-token-metadata | Metaplex(TM) NFT Open Source License 1.0 | no (fetch) | `31f0a627dba051a938de650464e55cc5397a4be0fd496929c1f9cf02fe5e9011` |
 | `mpl_core.so` | `CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d` | metaplex-foundation/mpl-core | Metaplex(TM) NFT Open Source License 1.0 | no (fetch) | `7e033fd24ce189d9e7dc2600152c6c88ce80d662deeeb7ecc64f0c8437867cf7` |
 | `mpl_account_compression.so` | `mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW` | metaplex-foundation/mpl-account-compression (Bubblegum V2 trees) | Apache-2.0 | no (fetch) | `3586e2852ea61311611e3941bb3af037aaf495b2f38503049b40b89065226fd4` |
 | `mpl_noop.so` | `mnoopTCrg4p8ry25e4bcWA9XZjbNjMTfgYVGGEdRsf3` | metaplex-foundation/mpl-account-compression (noop) | Apache-2.0 | no (fetch) | `10d275edf5a3181eb4ac187c07d37efd0279c7a6fe0cb222b1ac97804bc14b8b` |
 | `mpl_bubblegum.so` | `BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY` | metaplex-foundation/mpl-bubblegum | Metaplex(TM) NFT Open Source License 1.0 | no (fetch) | `e054423179cc57281d5c2fc9fdb7e3cfcf2ef70cdbb0c4d36ab52696e51157b1` |
+| `kamino_lending.so` | `KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD` | Kamino-Finance/klend (deployed in slot 461744249), dumped from **mainnet** on 2026-11-02, cut at the ELF's end | Business Source License 1.1 | no (fetch) | `2bc227a7354f1182165ce2f0976fc7ebd20ac535a2dd946fa450054f35075a46` |
+| `kamino_farms.so` | `FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr` | Kamino-Finance/kfarms (deployed in slot 444035168), dumped from **mainnet** on 2026-11-02, cut at the ELF's end | Business Source License 1.1 | no (fetch) | `766533347d1e477537185192a8018962150898d457a0e4e98c0c5a2ba9133afd` |
 
 Other third-party data in `test/fixtures/` (not binaries):
 
 - `showcase/test/fixtures/marginfi/`: Marginfi v2's on-chain IDL (`marginfi.idl.json`, from MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA, version 0.1.12) and three of its mainnet accounts (`mainnet/`: the main group, a USDC bank, the fee state), read from mainnet on 2026-11-01. mrgnlabs/marginfi-v2 is Apache-2.0. `i80f48-vectors.json` was written by `i80f48-oracle/` with the `fixed` crate (MIT or Apache-2.0).
+- `showcase/test/fixtures/kamino/`: the IDLs of Kamino's lending program (`kamino_lending.idl.json`, 1.25.0) and farms program (`kamino_farms.idl.json`), as mrgnlabs/marginfi-v2 keeps them in `idls-complete/` at c5d440f6 (Apache-2.0 repository). The venue tests encode klend's and kfarms' instructions with them and take a reserve's config offsets from them; the mainnet klend accepts that layout.
 - `showcase/test/fixtures/clmm/`: Raydium CLMM's on-chain IDL and the mainnet USDC/CC pool's accounts (raydium-io/raydium-clmm, Apache-2.0).
 
 The Apache-2.0 licence text is in `LICENSE-Apache-2.0.txt`; the repository's `NOTICE` lists this material.

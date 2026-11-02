@@ -1924,7 +1924,7 @@ function analyzeInstruction(
       if (c.seeds)
         c.seeds = { ...c.seeds, names: c.seeds.names.map(at), bump: c.seeds.bump && at(c.seeds.bump), program: c.seeds.program && at(c.seeds.program) };
       if (c.closeTo) c.closeTo = sibling(c.closeTo);
-      if (c.ata) c.ata = { owner: sibling(c.ata.owner), mint: sibling(c.ata.mint) };
+      if (c.ata) c.ata = { owner: c.ata.owner.startsWith("@") ? at(c.ata.owner) : sibling(c.ata.owner), mint: sibling(c.ata.mint) };
     }
     return all;
   }
@@ -2041,8 +2041,10 @@ function analyzeInstruction(
       if (c.ata) {
         if (a.kind.kind !== "token" && a.kind.kind !== "info")
           reporter.fail(a.node, "Ata<…> applies to a TokenAccount (or an AccountInfo about to be created)");
-        for (const n of [c.ata.owner, c.ata.mint])
-          if (!accounts.some((o) => o.name === n)) reporter.fail(a.node, `Ata<…>: add an account parameter named "${n}"`);
+        // The owner may be a Pubkey field of a struct account parameter, "@acct.field" (Anchor's
+        // `associated_token::authority = acct.load()?.field`).
+        const owner = c.ata.owner.startsWith("@") ? c.ata.owner.slice(1).split(".")[0]! : c.ata.owner;
+        for (const n of [owner, c.ata.mint]) if (!accounts.some((o) => o.name === n)) reporter.fail(a.node, `Ata<…>: add an account parameter named "${n}"`);
       }
       if (c.closeTo) {
         if (a.kind.kind !== "account" || !a.kind.mut) reporter.fail(a.node, "CloseTo needs a Mut<Struct> account");
@@ -2062,7 +2064,11 @@ function analyzeInstruction(
       ...(c.seeds?.bump?.startsWith("@") ? [c.seeds.bump.slice(1).split(".")[0]!] : []),
       ...(c.closeTo ? [c.closeTo] : []),
       ...(c.ata
-        ? [c.ata.owner, c.ata.mint, ...(a.kind.kind === "token" ? [] : accounts.filter((o) => o.kind.kind === "tokenProgram").map((o) => o.name))]
+        ? [
+            c.ata.owner.startsWith("@") ? c.ata.owner.slice(1).split(".")[0]! : c.ata.owner,
+            c.ata.mint,
+            ...(a.kind.kind === "token" ? [] : accounts.filter((o) => o.kind.kind === "tokenProgram").map((o) => o.name)),
+          ]
         : []),
     ];
     for (const r of refs) {

@@ -18,6 +18,8 @@ test/anchor-twins/target/
 # Core and Bubblegum are under the Metaplex NFT Open Source License; the mpl-account-compression pair is Apache-2.0 but
 # fetched alongside them.
 test/programs/mpl_*.so
+# Kamino's lending and farms programs (Business Source License 1.1), fetched the same way.
+test/programs/kamino_*.so
 # local validator ledgers and fixtures (scripts/localnet.sh), npm pack output, coverage, CLI keypairs
 .localnet*/
 *.tgz

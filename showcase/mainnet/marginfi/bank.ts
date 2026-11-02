@@ -208,6 +208,53 @@ export function setStakedConfig(bank: Mut<Bank>, init: i128, maint: i128, deposi
   config.oracle_max_confidence = 0n;
 }
 
+/**
+ * KaminoConfigCompact / SolendConfigCompact::to_bank_config: the venue bank's settings, its feed and reserve as the
+ * first two oracle keys, a placeholder borrow side and interest curve (venue banks are never borrowed).
+ */
+export function setVenueConfig(
+  bank: Mut<Bank>,
+  oracle: Pubkey,
+  reserve: Pubkey,
+  init: i128,
+  maint: i128,
+  depositLimit: u64,
+  setup: OracleSetup,
+  state: BankOperationalState,
+  riskTier: RiskTier,
+  tag: u8,
+  configFlags: u8,
+  valueLimit: u64,
+  maxAge: u16,
+  maxConfidence: u32,
+  fixedPrice: i128,
+): void {
+  const config = bank.config;
+  config.asset_weight_init.value = init;
+  config.asset_weight_maint.value = maint;
+  config.liability_weight_init.value = 422212465065984n; // 1.5
+  config.liability_weight_maint.value = 351843720888320n; // 1.25
+  config.deposit_limit = depositLimit;
+  const ir = config.interest_rate_config;
+  ir.insurance_ir_fee.value = 28147497671066n; // 0.1
+  ir.hundred_util_rate = 1234567n;
+  ir.points.get(0n).util = 12345n;
+  ir.points.get(0n).rate = 123456n;
+  ir.curve_type = 1n;
+  config.operational_state = state;
+  config.oracle_setup = setup;
+  config.oracle_keys.set(0n, oracle);
+  config.oracle_keys.set(1n, reserve);
+  config.borrow_limit = 0n;
+  config.risk_tier = riskTier;
+  config.asset_tag = tag;
+  config.config_flags = configFlags;
+  config.total_asset_value_init_limit = valueLimit;
+  config.oracle_max_age = maxAge;
+  config.oracle_max_confidence = maxConfidence;
+  config.fixed_price.value = fixedPrice;
+}
+
 /** BankConfig::validate: the weights, the interest curve, isolated banks' zero asset weights, the oracle age. */
 export function validateBankConfig(config: BankConfig): void {
   const assetInit = config.asset_weight_init.value;
@@ -777,6 +824,7 @@ export function checkUtilizationRatio(bank: Mut<Bank>): void {
 export function recordWithdrawalOutflow(
   groupLimited: boolean,
   amount: u64,
+  balanceAmount: u64,
   price: i128,
   bank: Mut<Bank>,
   group: Account<MarginfiGroup>,
@@ -825,7 +873,7 @@ export function recordWithdrawalOutflow(
   if (!groupLimited) return;
   require(price > I80F48_ZERO, MarginfiError.InvalidRateLimitPrice);
   require(bank.mint_decimals < 24n, MarginfiError.InternalLogicError);
-  const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(amount), price), exp10Fx(toU64(bank.mint_decimals))));
+  const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(balanceAmount), price), exp10Fx(toU64(bank.mint_decimals))));
   if (group.rate_limiter.hourly.max_outflow > 0n)
     require(value <= windowEffectiveCapacity(group.rate_limiter.hourly, timestamp), MarginfiError.GroupHourlyRateLimitExceeded);
   if (group.rate_limiter.daily.max_outflow > 0n)
@@ -1072,16 +1120,18 @@ export function cbPriceGateErr(bank: Account<Bank>, price: i128, conf: i128): u3
 }
 
 /**
- * update_cache_price: the price an instruction priced the bank at (unbiased, its confidence, now), unless a receivership
- * locked the cache, then the circuit breaker's observation of it (the price multiplier is 1 for the setups ported).
+ * update_cache_price: the price an instruction priced the bank at (unbiased, its confidence, now) and the venue's
+ * exchange rate it is multiplied by (1 for the other banks), unless a receivership locked the cache, then the circuit
+ * breaker's observation of the multiplied price.
  */
-export function updateCachePrice(bank: Mut<Bank>, price: i128, conf: i128, sourceTime: i64, timestamp: i64, slot: u64): void {
+export function updateCachePrice(bank: Mut<Bank>, price: i128, conf: i128, mult: i128, sourceTime: i64, timestamp: i64, slot: u64): void {
   if ((bank.cache.liq_cache_flags & LIQ_CACHE_LOCKED_FLAG) !== 0n) return;
   bank.cache.last_oracle_price.value = price;
   bank.cache.last_oracle_price_confidence.value = conf;
-  bank.cache.price_multiplier.value = I80F48_ONE;
+  bank.cache.price_multiplier.value = mult;
   bank.cache.last_oracle_price_timestamp = timestamp;
-  updateCircuitBreaker(bank, timestamp, slot, price, conf, sourceTime);
+  if (mult === I80F48_ONE) updateCircuitBreaker(bank, timestamp, slot, price, conf, sourceTime);
+  else updateCircuitBreaker(bank, timestamp, slot, fxMul(price, mult), fxMul(conf, mult), sourceTime);
 }
 
 /**

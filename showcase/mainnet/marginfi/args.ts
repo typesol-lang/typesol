@@ -2,7 +2,7 @@
 // (test/fixtures/marginfi/marginfi.idl.json) describes them: Borsh on the wire, as Anchor decodes them.
 import { type FixedArray, type Option, type Pubkey, type u16, type u32, type u64, type u8 } from "typesol";
 import { type InterestRateConfigOpt } from "./events";
-import { type BankOperationalState, type RatePoint, type RiskTier, type WrappedI80F48 } from "./state";
+import { type BankOperationalState, type OracleSetup, type RatePoint, type RiskTier, type WrappedI80F48 } from "./state";
 
 /**
  * InterestRateConfigCompact
@@ -114,4 +114,40 @@ export interface StakedSettingsConfig {
   total_asset_value_init_limit: u64;
   oracle_max_age: u16;
   risk_tier: RiskTier;
+}
+
+/**
+ * SolendConfigCompact: a Solend bank's settings (it never lends or earns interest, so no rate curve). The deposit limit
+ * is in the reserve's collateral tokens.
+ */
+export interface SolendConfigCompact {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  /** SolendPythPull or SolendSwitchboardPull */
+  oracle_setup: OracleSetup;
+  operational_state: BankOperationalState;
+  risk_tier: RiskTier;
+  config_flags: u8;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  /** 0 for the default (10%) */
+  oracle_max_confidence: u32;
+}
+
+/** KaminoConfigCompact: a Kamino bank's settings, as SolendConfigCompact's (the deposit limit in Kamino collateral). */
+export interface KaminoConfigCompact {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  /** KaminoPythPush or KaminoSwitchboardPull */
+  oracle_setup: OracleSetup;
+  operational_state: BankOperationalState;
+  risk_tier: RiskTier;
+  config_flags: u8;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  oracle_max_confidence: u32;
 }

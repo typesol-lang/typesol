@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download the third-party program binaries the tests and scripts/localnet.sh use into test/programs/.
-# The Metaplex programs (Token Metadata, Core, Bubblegum) are under the Metaplex NFT Open Source License and are
-# not redistributed with TypeSOL; the SPL / Program Metadata / coral multisig / Raydium / Jito ones are Apache-2.0 and are kept in the repository.
+# The Metaplex programs (Token Metadata, Core, Bubblegum) are under the Metaplex NFT Open Source License and Kamino's
+# under the Business Source License 1.1: they are not redistributed with TypeSOL; the SPL / Program Metadata / coral multisig / Raydium / Jito ones are Apache-2.0 and are kept in the repository.
 # Uses the Solana CLI with the cluster you pass (default: devnet's public RPC). See test/programs/SOURCES.md.
 set -euo pipefail
 cd "$(dirname "$0")/../test/programs"
@@ -31,6 +31,11 @@ trimmed T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt jito_tip_payment.so
 trimmed 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7 jito_tip_distribution.so
 trimmed Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3 jito_priority_fee_distribution.so
 trimmed MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA marginfi_v2.so
+# The lending venues Marginfi's integration banks deposit into (showcase/test/marginfi-venues.test.ts). Solend is
+# Apache-2.0 and kept; Kamino's lending and farms programs are under the Business Source License 1.1, fetched only.
+trimmed So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo solend.so
+trimmed KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD kamino_lending.so
+trimmed FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr kamino_farms.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded.
 for f in *.so; do

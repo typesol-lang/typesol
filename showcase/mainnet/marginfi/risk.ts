@@ -23,6 +23,7 @@ import {
   loadAccount,
   loadAccountMut,
   programId,
+  pubkey,
   readData,
   require,
   u64 as toU64,
@@ -61,6 +62,10 @@ import {
   feedFamily,
   fixedFeed,
   loadFeed,
+  isSolendSetup,
+  solendFeed,
+  isKaminoSetup,
+  kaminoFeed,
   oracleCount,
   priceAndConfidence,
   priceOfType,
@@ -131,6 +136,8 @@ export function feedAt(bank: Account<Bank>, rest: RemainingAccounts, first: u64,
   const c = oracleCount(bank, n);
   if (c !== 0n) return feedErr(c);
   if (n === 0n) return fixedFeed(bank);
+  if (isSolendSetup(bank.config.oracle_setup)) return solendFeed(bank, rest, first, t);
+  if (isKaminoSetup(bank.config.oracle_setup)) return kaminoFeed(bank, rest, first, t);
   return loadFeed(bank, rest.get(first), t);
 }
 
@@ -405,6 +412,14 @@ export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, s
   if (f.err !== 0n) {
     if (req === REQ_INITIAL) return { err: 0n, value: 0n, price: 0n, premium: 0n, code: f.err === ERR_BORSH ? 0n : f.err };
     return { err: f.err === ERR_BORSH ? 6000n : f.err, value: 0n, price: 0n, premium: 0n, code: 0n };
+  }
+  // has_borrow_power: collateral a Kamino emergency stops backing borrows is worth nothing for Initial margin (the
+  // premium scratch still prices it, as for a paused bank).
+  if (f.no_borrow_power !== 0n && req === REQ_INITIAL) {
+    if (!needPremium) return { err: 0n, value: 0n, price: 0n, premium: 0n, code: 0n };
+    const p = priceOfType(f, realTime, BIAS_LOW, U32_MAX_CONFIDENCE);
+    if (p.err !== 0n) return { err: p.err, value: 0n, price: 0n, premium: 0n, code: 0n };
+    return { err: 0n, value: 0n, price: 0n, premium: p.v, code: 0n };
   }
   let w = assetWeight(bank, req, r);
   const lower = record ? biased(f, realTime, bank.config.oracle_max_confidence, false) : priceOfType(f, realTime, BIAS_LOW, bank.config.oracle_max_confidence);
@@ -1011,10 +1026,20 @@ export function lowPrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAc
 /** fetch_unbiased_price_for_bank_cache: the spot price and its confidence, for the bank's price cache. */
 export function cachePrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAccounts, start: u64, t: i64): PriceConf {
   const o = oraclesOf(bank, bankKey, rest, start);
-  if (o.err !== 0n) return { err: o.err, price: 0n, conf: 0n, source_time: 0n };
-  const f = feedAt(bank, rest, o.first, o.count, t);
-  if (f.err !== 0n) return { err: f.err, price: 0n, conf: 0n, source_time: 0n };
-  return priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+  if (o.err !== 0n) return { err: o.err, price: 0n, conf: 0n, source_time: 0n, mult: I80F48_ONE };
+  return cacheOfFeed(bank, feedAt(bank, rest, o.first, o.count, t));
+}
+
+/**
+ * get_price_and_confidence_for_cache over a loaded feed: the spot price and its confidence; a venue feed's are the ones
+ * read while it loaded (before its exchange rate applies), with the rate as the cache's multiplier.
+ */
+export function cacheOfFeed(bank: Account<Bank>, f: Feed): PriceConf {
+  if (f.has_raw !== 0n && f.raw_err !== 0n) return { err: f.raw_err, price: 0n, conf: 0n, source_time: 0n, mult: I80F48_ONE };
+  if (f.err !== 0n) return { err: f.err, price: 0n, conf: 0n, source_time: 0n, mult: I80F48_ONE };
+  const adjusted = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+  if (adjusted.err !== 0n || f.has_raw === 0n) return adjusted;
+  return { err: 0n, price: f.raw_price, conf: f.raw_conf, source_time: f.source_time, mult: f.mult };
 }
 
 /**
@@ -1022,11 +1047,29 @@ export function cachePrice(bank: Account<Bank>, bankKey: Pubkey, rest: Remaining
  * must price (spot) within its first tier and its long window of the breaker's references.
  */
 export function cbPriceGate(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, end: u64, t: i64): u32 {
+  return cbPriceGateHolding(acc, rest, start, end, t, NO_BANK);
+}
+
+/** No bank: what cbPriceGateHolding is given when the instruction holds none. */
+const NO_BANK = pubkey("11111111111111111111111111111111");
+/**
+ * ProgramError::AccountBorrowFailed in the original (AccountLoader::try_from cannot borrow a bank the instruction holds
+ * mutably); a custom code of that number here.
+ */
+export const ACCOUNT_BORROW_FAILED: u32 = 12n;
+
+/**
+ * run_cb_price_gate while the instruction holds `held` (a bank) mutably, as solend_withdraw does: reaching it among the
+ * accounts fails as borrowing it again does. Each bank is priced as its cache is (a venue's feed before its rate, times
+ * the rate).
+ */
+export function cbPriceGateHolding(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, end: u64, t: i64, held: Pubkey): u32 {
   let at = 0n;
   for (let i = 0n; i < 16n; i++) {
     const b = acc.lending_account.balances.get(i);
     if (b.active === 0n) continue;
     if (at >= end - start) return INVALID_BANK_ACCOUNT;
+    if (rest.get(start + at).key === held) return ACCOUNT_BORROW_FAILED;
     const loadErr = loaderErr(rest.get(start + at));
     if (loadErr !== 0n) return loadErr;
     const bank = loadAccount<Bank>(rest.get(start + at));
@@ -1037,11 +1080,18 @@ export function cbPriceGate(acc: Account<MarginfiAccount>, rest: RemainingAccoun
     if (per.err !== 0n) return per.err;
     if (on) {
       if (end - start < at + per.n) return WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
-      const f = feedAt(bank, rest, start + at + 1n, per.n - 1n, t);
-      if (f.err !== 0n) return f.err;
-      const p = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+      const p = cacheOfFeed(bank, feedAt(bank, rest, start + at + 1n, per.n - 1n, t));
       if (p.err !== 0n) return p.err;
-      const g = cbPriceGateErr(bank, p.price, p.conf);
+      let price = p.price;
+      let conf = p.conf;
+      if (p.mult !== I80F48_ONE) {
+        const mp = fxTryMul(price, p.mult);
+        const mc = fxTryMul(conf, p.mult);
+        if (mp.err !== 0n || mc.err !== 0n) return 6062n;
+        price = mp.v;
+        conf = mc.v;
+      }
+      const g = cbPriceGateErr(bank, price, conf);
       if (g !== 0n) return g;
     }
     at += per.n;

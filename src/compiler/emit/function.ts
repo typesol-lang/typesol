@@ -480,7 +480,10 @@ export class FunctionEmitter extends StatementEmitter {
     const end = ix.returns
       ? [`  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${ix.name} ended without returning a value");`]
       : [...this.epilogue().map((l) => `  ${l}`), `  return SUCCESS;`];
-    return [...head, ...this.hoisted, ...this.lines, ...end, `}`].join("\n");
+    // The Clock cache is declared first: a constraint (in the head) may read the Clock before the body does.
+    const clock = this.hoisted.filter((l) => l.includes("ts_clk_ok"));
+    const hoisted = this.hoisted.filter((l) => !clock.includes(l));
+    return [head[0]!, ...clock, ...head.slice(1), ...hoisted, ...this.lines, ...end, `}`].join("\n");
   }
 
   /**
@@ -582,7 +585,11 @@ export class FunctionEmitter extends StatementEmitter {
         const c = this.expect(this.expr(cond, BOOL), BOOL, cond);
         const err = error ? this.errorRef(error) : { code: 2003, name: "ConstraintRaw", msg: "ConstraintRaw" };
         this.line(`if (!${c.c}) TS_FAIL(${err.code}, ${cString(`Error ${err.code} ${err.name}: ${err.msg} (${this.location(call)})`)});`);
-        const emitted = [...this.hoisted.splice(hoistMark), ...this.lines.splice(mark)];
+        // The instruction's Clock cache stays declared at its top: the body may read the Clock too.
+        const hoisted = this.hoisted.splice(hoistMark);
+        const clock = hoisted.filter((l) => l.includes("ts_clk_ok"));
+        this.hoisted.push(...clock);
+        const emitted = [...hoisted.filter((l) => !clock.includes(l)), ...this.lines.splice(mark)];
         lines.set(a.name, [...(lines.get(a.name) ?? []), ...emitted]);
       });
     }
@@ -669,13 +676,27 @@ export class FunctionEmitter extends StatementEmitter {
     const c = a.constraints;
     const k = a.kind.kind;
     const ata = c.ata!;
+    // The owner: an account parameter's key, or "@acct.field", a Pubkey field of a struct account parameter (its data
+    // was checked in the head). Anchor's IDL cannot see through `acct.load()?.field` and records the account, as here.
+    let ownerKey = `&a_${ata.owner}->key`;
+    let ownerName = ata.owner;
+    if (ata.owner.startsWith("@")) {
+      const [acct, field, ...rest] = ata.owner.slice(1).split(".");
+      const o = ix.accounts.find((x) => x.name === acct);
+      if (!o || o.kind.kind !== "account" || !field || rest.length)
+        this.reporter.fail(a.node, `Ata<…>: "${ata.owner}" must name a Pubkey field of a struct account parameter ("@config.wallet")`);
+      const f = o.kind.struct.fields.find((x) => x.name === field);
+      if (!f || f.type.kind !== "pubkey") this.reporter.fail(a.node, `Ata<…>: ${o.kind.struct.name} has no Pubkey field "${field}"`);
+      ownerKey = `&d_${acct}->${field}`;
+      ownerName = acct!;
+    }
     // With two token programs the address depends on which the mint uses: no IDL derivation, and an Ata<AccountInfo>
     // (derived here) is refused.
     const tps = ix.accounts.filter((o) => o.kind.kind === "tokenProgram");
     const tp = tps.length === 1 ? tps[0] : undefined;
     if (tp && !ix.pdas.has(a.name)) {
       ix.pdas.set(a.name, [
-        { kind: "account", path: snakeCase(ata.owner) },
+        { kind: "account", path: snakeCase(ownerName) },
         { kind: "account", path: snakeCase(tp.name) },
         { kind: "account", path: snakeCase(ata.mint) },
       ]);
@@ -686,9 +707,7 @@ export class FunctionEmitter extends StatementEmitter {
     if (k === "token" && a.kind.init) return out;
     // The address alone is not enough: legacy SPL Token lets an ATA's owner be reassigned.
     if (k === "token")
-      out.push(
-        `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${ata.owner}");`,
-      );
+      out.push(`  if (!ts_key_eq(ts_token_owner(a_${a.name}), ${ownerKey})) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${ata.owner}");`);
     // The token program is the account's owner; an AccountInfo not created yet takes the instruction's token program.
     let program = `&a_${a.name}->owner`;
     if (k !== "token") {
@@ -702,7 +721,7 @@ export class FunctionEmitter extends StatementEmitter {
       program = `&a_${tp.name}->key`;
     }
     out.push(`  { SolPubkey ata_${a.name};`);
-    out.push(`    TS_TRY(ts_ata_address(&a_${ata.owner}->key, &a_${ata.mint}->key, ${program}, &ata_${a.name}));`);
+    out.push(`    TS_TRY(ts_ata_address(${ownerKey}, &a_${ata.mint}->key, ${program}, &ata_${a.name}));`);
     out.push(
       `    if (!ts_key_eq(&ata_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${a.name} is not the associated token account of ${ata.owner} and ${ata.mint}"); }`,
     );

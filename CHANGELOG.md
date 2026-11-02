@@ -6,6 +6,17 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's Solend and Kamino banks (`lending_pool_add_bank_solend`, `solend_init_obligation`,
+  `solend_deposit`, `solend_withdraw`, `lending_pool_add_bank_kamino`, `kamino_init_obligation`, `kamino_deposit`,
+  `kamino_withdraw`, `propagate_kamino_market_emergency`, `kamino_harvest_reward`) over Solend's, klend's and kfarms'
+  mainnet programs, and their pricing: the Pyth or Switchboard feed times the reserve's exchange rate in the risk
+  engine, the price cache keeping the rate as its multiplier, the circuit breaker watching the multiplied price, a
+  Kamino emergency taking the collateral's Initial value. Against the binary on mainnet: 1,601 transactions, the
+  same IDL for all 114 ported instructions.
+- New: `Ata<TokenAccount, "@acct.field", "mint">`, the associated token account of a Pubkey stored in a struct
+  account; the IDL names the account, as Anchor's does for `acct.load()?.field`.
+- Fixed: an instruction that reads the Clock (`now()`, `currentSlot()`, `currentEpoch()`) in a `constraint(…)` and
+  again in its body failed to compile (the Clock cache was declared twice, or after the constraint that used it).
 - Examples: Marginfi's staked SOL (`init_staked_settings`, `edit_staked_settings`, `propagate_staked_settings`,
   `disable_staked_oracles`, `enable_staked_oracle_onramp`, `lending_pool_add_bank_permissionless`,
   `lending_pool_backfill_staked_bank_validator_vote_account`) and `lending_pool_configure_bank_oracle_scope`. Against
