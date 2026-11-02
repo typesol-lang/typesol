@@ -78,6 +78,15 @@ import {
   driftFeed,
   isJuplendSetup,
   juplendFeed,
+  isFixedVenueSetup,
+  fixedVenueFeed,
+  stakedFeed,
+  isLstSetup,
+  lstFeed,
+  isScopeSetup,
+  scopeFeed,
+  isPtSetup,
+  ptFeed,
   oracleCount,
   priceAndConfidence,
   priceOfType,
@@ -143,8 +152,16 @@ export function accountsPerBank(bank: Account<Bank>): Count {
   return { err: 6047n, n: 0n };
 }
 
-/** OraclePriceFeedAdapter::try_from_bank over the bank's oracle accounts (`n` of them from `first`), as a value. */
-export function feedAt(bank: Account<Bank>, rest: RemainingAccounts, first: u64, n: u64, t: i64): Feed {
+/** prices_through_pt_emergency: an account in deleverage or a risk admin's liquidation prices PT banks through an Exponent emergency. */
+export function pricesThroughPtEmergency(acc: Account<MarginfiAccount>): boolean {
+  return (acc.account_flags & 544n) !== 0n; // ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_RISK_ADMIN_LIQUIDATION
+}
+
+/**
+ * OraclePriceFeedAdapter::try_from_bank over the bank's oracle accounts (`n` of them from `first`), as a value;
+ * `ignorePt` prices an Exponent PT bank through its vault's emergency mode (deleverage and risk-admin paths).
+ */
+export function feedAt(bank: Account<Bank>, rest: RemainingAccounts, first: u64, n: u64, t: i64, ignorePt: boolean): Feed {
   const c = oracleCount(bank, n);
   if (c !== 0n) return feedErr(c);
   if (n === 0n) return fixedFeed(bank);
@@ -152,6 +169,11 @@ export function feedAt(bank: Account<Bank>, rest: RemainingAccounts, first: u64,
   if (isKaminoSetup(bank.config.oracle_setup)) return kaminoFeed(bank, rest, first, t);
   if (isDriftSetup(bank.config.oracle_setup)) return driftFeed(bank, rest, first, t);
   if (isJuplendSetup(bank.config.oracle_setup)) return juplendFeed(bank, rest, first, t);
+  if (isFixedVenueSetup(bank.config.oracle_setup)) return fixedVenueFeed(bank, rest, first, t);
+  if (bank.config.oracle_setup === OracleSetup.StakedWithPythPush) return stakedFeed(bank, rest, first, t);
+  if (isLstSetup(bank.config.oracle_setup)) return lstFeed(bank, rest, first, t);
+  if (isScopeSetup(bank.config.oracle_setup)) return scopeFeed(bank, rest, first, t);
+  if (isPtSetup(bank.config.oracle_setup)) return ptFeed(bank, rest, first, t, ignorePt);
   return loadFeed(bank, rest.get(first), t);
 }
 
@@ -609,7 +631,7 @@ export function healthComponents(
       h.err = WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
       return h;
     }
-    const f = feedAt(bank, rest, start + at + 1n, per.n - 1n, t);
+    const f = feedAt(bank, rest, start + at + 1n, per.n - 1n, t, pricesThroughPtEmergency(acc));
     // Balance::get_side asserts the balance is not both.
     const assets = b.asset_shares.value;
     const liabs = b.liability_shares.value;
@@ -1029,10 +1051,10 @@ export function oraclesOf(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingA
 }
 
 /** fetch_asset_price_for_bank_low_bias: the spot price less its confidence interval. */
-export function lowPrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAccounts, start: u64, t: i64): Fx {
+export function lowPrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAccounts, start: u64, t: i64, ignorePt: boolean): Fx {
   const o = oraclesOf(bank, bankKey, rest, start);
   if (o.err !== 0n) return { err: o.err, v: 0n };
-  const f = feedAt(bank, rest, o.first, o.count, t);
+  const f = feedAt(bank, rest, o.first, o.count, t, ignorePt);
   if (f.err !== 0n) return { err: f.err, v: 0n };
   return priceOfType(f, true, BIAS_LOW, bank.config.oracle_max_confidence);
 }
@@ -1041,7 +1063,7 @@ export function lowPrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAc
 export function cachePrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAccounts, start: u64, t: i64): PriceConf {
   const o = oraclesOf(bank, bankKey, rest, start);
   if (o.err !== 0n) return { err: o.err, price: 0n, conf: 0n, source_time: 0n, mult: I80F48_ONE };
-  return cacheOfFeed(bank, feedAt(bank, rest, o.first, o.count, t));
+  return cacheOfFeed(bank, feedAt(bank, rest, o.first, o.count, t, false));
 }
 
 /**
@@ -1094,7 +1116,7 @@ export function cbPriceGateHolding(acc: Account<MarginfiAccount>, rest: Remainin
     if (per.err !== 0n) return per.err;
     if (on) {
       if (end - start < at + per.n) return WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
-      const p = cacheOfFeed(bank, feedAt(bank, rest, start + at + 1n, per.n - 1n, t));
+      const p = cacheOfFeed(bank, feedAt(bank, rest, start + at + 1n, per.n - 1n, t, pricesThroughPtEmergency(acc)));
       if (p.err !== 0n) return p.err;
       let price = p.price;
       let conf = p.conf;
@@ -1370,7 +1392,7 @@ export function lockLiquidationPrices(acc: Account<MarginfiAccount>, rest: Remai
     let twap = I80F48_ZERO;
     let twapConf = I80F48_ZERO;
     if (priced) {
-      const f = feedAt(bank, rest, at + 1n, per.n - 1n, t);
+      const f = feedAt(bank, rest, at + 1n, per.n - 1n, t, pricesThroughPtEmergency(acc));
       const live = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
       const ema = priceAndConfidence(f, false, bank.config.oracle_max_confidence);
       rt = live.price;
@@ -1491,7 +1513,7 @@ export function taggedHealth(acc: Account<MarginfiAccount>, group: Account<Margi
       out.err = WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
       return out;
     }
-    const f = feedAt(bank, rest, at + 1n, per.n - 1n, t);
+    const f = feedAt(bank, rest, at + 1n, per.n - 1n, t, false);
     const assets = b.asset_shares.value;
     const liabs = b.liability_shares.value;
     require(assets < EMPTY_BALANCE_THRESHOLD || liabs < EMPTY_BALANCE_THRESHOLD, MarginfiError.InternalLogicError);

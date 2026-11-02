@@ -1,8 +1,8 @@
-// Marginfi's price adapter (programs/marginfi/src/state/price.rs @ c5d440f6) for the setups a bank of the default, SOL
-// or staked kind prices with: a Pyth push feed (PriceUpdateV2, Borsh), a Switchboard pull feed (PullFeedAccountData,
-// fixed offsets), a fixed price, and Solend's two setups (the feed times the reserve's exchange rate). Setups that need
-// another program's state for a multiplier (Kamino, Drift, JupLend, mSOL, LST, Exponent PT, Scope, staked SOL pricing)
-// are not ported: the port aborts where it would read them.
+// Marginfi's price adapter (programs/marginfi/src/state/price.rs and lst_stake_price.rs @ c5d440f6), every oracle setup:
+// a Pyth push feed (PriceUpdateV2, Borsh), a Switchboard pull feed (PullFeedAccountData, fixed offsets), a fixed price,
+// a Scope entry; times a rate another program's account holds where the setup takes one — a Solend, Kamino, Drift or
+// JupLend venue's exchange rate, a single pool's stake per LST (staked SOL), Marinade's mSOL rate, an SPL stake pool's
+// LST rate, an Exponent PT's linear accretion to par. The deprecated PythLegacy and SwitchboardV2 panic, as there.
 //
 // Errors are values here (`err`, 0 when there is none), as the original's are `Result`s its risk engine sometimes keeps
 // instead of returning; the instructions fail with them (`require(r.err === 0n, r.err)`). Panics abort.
@@ -11,7 +11,12 @@ import {
   type RemainingAccount,
   type RemainingAccounts,
   type u128,
+  type u16,
   currentSlot,
+  currentEpoch,
+  findProgramAddress,
+  rentExempt,
+  type Pubkey,
   u128 as toU128,
   u256 as toU256,
   i128 as toI128,
@@ -237,6 +242,13 @@ export function validateOracleCount(bank: Account<Bank>, n: u64): u32 {
   if (s === OracleSetup.Scope && tag !== ASSET_TAG_DEFAULT && tag !== ASSET_TAG_SOL) return INVALID_ORACLE_SETUP;
   if (s !== OracleSetup.Scope && tag !== venueTag(s)) return INVALID_ORACLE_SETUP;
   if (isReserveSetup(s)) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (isFixedVenueSetup(s)) return n === 1n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.PythMSOL || s === OracleSetup.PythLST) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (isLstSetup(s)) return n === 3n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.PTPyth) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.PTFixed) return n === 1n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.Scope) return n === 1n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (isScopeSetup(s)) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
   require(false, "TypeSOL port: this oracle setup's validation is not ported");
   return 0n;
 }
@@ -261,6 +273,432 @@ export function isJuplendSetup(s: OracleSetup): boolean {
   return s === OracleSetup.JuplendPythPull || s === OracleSetup.JuplendSwitchboardPull;
 }
 
+// ---- staked SOL (lst_stake_price.rs: a validator's SPL single pool) ----------------------------------------------------
+
+const SPL_TOKEN_ID = pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const SINGLE_POOL_ID = pubkey("SVSPxpvHdN29nkVg9rPapPNDddN5DipNLRUFhyjFThE");
+const STAKE_POOL_VALIDATION_FAILED: u32 = 6048n;
+const STAKE_ORACLES_DISABLED: u32 = 6053n;
+const ZERO_SUPPLY_IN_STAKE_POOL: u32 = 6092n;
+/** Bank.flags: STAKED_ORACLE_DISABLED, STAKED_ORACLE_PRICE_USES_ONRAMP (on_ramp_transition) */
+const BANK_STAKED_ORACLE_DISABLED: u64 = 512n;
+const BANK_STAKED_ORACLE_USES_ONRAMP: u64 = 1024n;
+/** SVSP_PHANTOM_TOKEN_AMOUNT: the single pool prices against its supply plus 1 SOL of tokens never minted. */
+const SVSP_PHANTOM_TOKEN_AMOUNT: u64 = 1000000000n;
+const ZERO_PUBKEY = pubkey("11111111111111111111111111111111");
+
+/** The pool's SOL (the stake account's, and its on-ramp's, lamports above rent exemption) or, before the on-ramp, the legacy delegated value. */
+export interface PoolValue {
+  err: u32;
+  nav: u64;
+  supply: u64;
+}
+
+/**
+ * A staked bank's feed (StakedWithPythPush): the SOL feed times the pool's SOL per LST. Accounts: the SOL feed, the LST
+ * mint, the pool's stake account, its on-ramp. The cache keeps the SOL price and the rate as its multiplier.
+ */
+export function stakedFeed(bank: Account<Bank>, rest: RemainingAccounts, first: u64, t: i64): Feed {
+  const oracle = rest.get(first);
+  const mint = rest.get(first + 1n);
+  const stake = rest.get(first + 2n);
+  const onramp = rest.get(first + 3n);
+  if (mint.key !== bank.config.oracle_keys.get(1n) || stake.key !== bank.config.oracle_keys.get(2n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
+  // Account::<Mint>::try_from(..).unwrap(): a token program's initialized mint, or a panic.
+  require(mint.owner === SPL_TOKEN_ID && mint.dataLen >= 82n && readData<u8>(mint, 45n) !== 0n, MarginfiError.InternalLogicError);
+  const supply = readData<u64>(mint, 36n);
+  if (supply === 0n) return feedErr(ZERO_SUPPLY_IN_STAKE_POOL);
+  const v = poolValue(bank, stake, onramp, supply);
+  if (v.err !== 0n) return feedErr(v.err);
+  if (oracle.key !== bank.config.oracle_keys.get(0n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
+  const f = pythFeed(oracle, toI64(bank.config.oracle_max_age), t);
+  if (f.err !== 0n) return f;
+  const mult = fxTryDiv(fxFromU64(v.nav), fxFromU64(v.supply));
+  if (mult.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+  const raw = priceAndConfidence(f, true, 4294967295n);
+  // price × nav / supply in i128 (toward zero), back into an i64; the confidences by mul_div_u64.
+  const price: i128 = (toI128(f.price) * toI128(v.nav)) / toI128(v.supply);
+  const ema: i128 = (toI128(f.ema_price) * toI128(v.nav)) / toI128(v.supply);
+  const conf: i128 = mulDivU128(toU128(f.conf), toU128(v.nav), toU128(v.supply));
+  const emaConf: i128 = mulDivU128(toU128(f.ema_conf), toU128(v.nav), toU128(v.supply));
+  const i64Min: i128 = -9223372036854775808n;
+  const i64Max: i128 = 9223372036854775807n;
+  const u64Max: i128 = 18446744073709551615n;
+  if (price < i64Min || price > i64Max || ema < i64Min || ema > i64Max) return feedErr(VENUE_MATH_ERROR);
+  if (conf < 0n || conf > u64Max || emaConf < 0n || emaConf > u64Max) return feedErr(VENUE_MATH_ERROR);
+  const out = f;
+  out.has_raw = 1n;
+  out.raw_err = raw.err;
+  out.raw_price = raw.price;
+  out.raw_conf = raw.conf;
+  out.mult = mult.v;
+  out.price = toI64(price);
+  out.ema_price = toI64(ema);
+  out.conf = toU64(conf);
+  out.ema_conf = toU64(emaConf);
+  return out;
+}
+
+/** on_ramp_transition: the pool's net asset value with the on-ramp, the legacy delegated value before it, or disabled. */
+function poolValue(bank: Account<Bank>, stake: RemainingAccount, onramp: RemainingAccount, supply: u64): PoolValue {
+  if ((bank.flags & BANK_STAKED_ORACLE_USES_ONRAMP) !== 0n) {
+    // expected_staked_onramp: the bank's key, else the on-ramp of the validator's pool.
+    let expected = bank.config.oracle_keys.get(3n);
+    if (expected === ZERO_PUBKEY) {
+      if (bank.integration_acc_1 === ZERO_PUBKEY) return { err: STAKE_POOL_VALIDATION_FAILED, nav: 0n, supply: 0n };
+      expected = findProgramAddress(["onramp", findProgramAddress(["pool", bank.integration_acc_1], SINGLE_POOL_ID)], SINGLE_POOL_ID);
+    }
+    if (onramp.key !== expected) return { err: WRONG_ORACLE_ACCOUNT_KEYS, nav: 0n, supply: 0n };
+    const main = saturatingSubU64(stake.lamports, rentExempt(stake.dataLen));
+    const ramp = saturatingSubU64(onramp.lamports, rentExempt(onramp.dataLen));
+    const nav = main > 18446744073709551615n - ramp ? 18446744073709551615n : main + ramp;
+    const eff = supply > 18446744073709551615n - SVSP_PHANTOM_TOKEN_AMOUNT ? 18446744073709551615n : supply + SVSP_PHANTOM_TOKEN_AMOUNT;
+    return { err: 0n, nav, supply: eff };
+  }
+  if ((bank.flags & BANK_STAKED_ORACLE_DISABLED) !== 0n) return { err: STAKE_ORACLES_DISABLED, nav: 0n, supply: 0n };
+  // StakeStateV2 (Borsh): a u32 tag, then Stake(Meta 120 bytes, Stake: delegation.voter 32, delegation.stake u64, …).
+  // Bytes that do not decode fail with ProgramError::BorshIoError in the original (not a custom code).
+  require(stake.dataLen >= 4n, "TypeSOL port: the pool's stake account does not decode (BorshIoError)");
+  const tag = readData<u32>(stake, 0n);
+  require(tag <= 3n, "TypeSOL port: the pool's stake account does not decode (BorshIoError)");
+  if (tag !== 2n) {
+    require(tag !== 1n || stake.dataLen >= 124n, "TypeSOL port: the pool's stake account does not decode (BorshIoError)");
+    return { err: STAKE_POOL_VALIDATION_FAILED, nav: 0n, supply: 0n };
+  }
+  require(stake.dataLen >= 197n, "TypeSOL port: the pool's stake account does not decode (BorshIoError)");
+  const delegated = readData<u64>(stake, 156n);
+  if (delegated < 1000000000n) return { err: VENUE_MATH_ERROR, nav: 0n, supply: 0n };
+  return { err: 0n, nav: delegated - 1000000000n, supply };
+}
+
+function saturatingSubU64(a: u64, b: u64): u64 {
+  return a > b ? a - b : 0n;
+}
+
+// ---- Scope (price.rs ScopePriceFeed: an entry of Scope's OraclePrices) -------------------------------------------
+
+const SCOPE_PROGRAM_ID = pubkey("HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ");
+/** Scope's OraclePrices: an 8-byte discriminator, the oracle mappings key, then 512 dated prices of 56 bytes. */
+const SCOPE_PRICES_DISCRIMINATOR: u64 = 10571153419667931225n;
+
+/** ScopePriceFeed::check_ais: a Scope OraclePrices account of its exact size, the entry refreshed, its exponent sane. */
+export function scopeEntryErr(a: RemainingAccount, entry: u16): u32 {
+  if (a.owner !== SCOPE_PROGRAM_ID) return 6800n;
+  if (a.dataLen < 8n || readData<u64>(a, 0n) !== SCOPE_PRICES_DISCRIMINATOR) return 6800n;
+  if (a.dataLen !== 8n + 32n + 512n * 56n) return 6800n;
+  if (toU64(entry) >= 512n) return 6801n;
+  const at = 8n + 32n + toU64(entry) * 56n;
+  if (readData<u64>(a, at) === 0n || readData<u64>(a, at + 24n) === 0n) return 6801n;
+  if (readData<u64>(a, at + 8n) >= 24n) return 6801n;
+  return 0n;
+}
+
+/** Whether the setup prices from a Scope entry (Scope, ScopeKamino, ScopeJuplend). */
+export function isScopeSetup(s: OracleSetup): boolean {
+  return s === OracleSetup.Scope || s === OracleSetup.ScopeKamino || s === OracleSetup.ScopeJuplend;
+}
+
+/**
+ * A Scope bank's feed: the entry's price (value / 10^exp, no confidence), dated, not newer than now nor older than the
+ * bank's maximum age; inside a Kamino or JupLend bank, times the venue's rate (the cache's multiplier, the entry's
+ * price its price).
+ */
+export function scopeFeed(bank: Account<Bank>, rest: RemainingAccounts, first: u64, t: i64): Feed {
+  const s = bank.config.oracle_setup;
+  const feed = rest.get(first);
+  if (feed.key !== bank.config.oracle_keys.get(0n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
+  let rate: i128 = I80F48_ONE;
+  let noBorrowPower: u8 = 0n;
+  if (s === OracleSetup.ScopeKamino) {
+    const reserve = rest.get(first + 1n);
+    if (reserve.key !== bank.config.oracle_keys.get(1n)) return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
+    if (reserve.owner !== KAMINO_ID || reserve.dataLen < 8n || readData<u64>(reserve, 0n) !== KAMINO_RESERVE_DISC)
+      return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
+    require(reserve.dataLen >= 8624n, MarginfiError.InternalLogicError);
+    if (readData<u64>(reserve, 16n) < currentSlot()) return feedErr(KAMINO_RESERVE_STALE);
+    const sup = kaminoSupplies(reserve);
+    if (sup.err !== 0n) return feedErr(sup.err);
+    if (sup.b <= 0n) return feedErr(VENUE_MATH_ERROR);
+    rate = fxWrappingDiv(sup.a, sup.b);
+    if (readData<u8>(reserve, 4864n) !== 0n || (bank.flags & KAMINO_MARKET_EMERGENCY) !== 0n) noBorrowPower = 1n;
+  } else if (s === OracleSetup.ScopeJuplend) {
+    const lending = rest.get(first + 1n);
+    if (lending.key !== bank.config.oracle_keys.get(1n)) return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+    if (lending.owner !== JUPLEND_ID || lending.dataLen < 8n || readData<u64>(lending, 0n) !== JUPLEND_LENDING_DISC)
+      return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+    require(lending.dataLen >= 196n, MarginfiError.InternalLogicError);
+    if (toI64Wrap(readData<u64>(lending, 123n)) < t) return feedErr(JUPLEND_LENDING_STALE);
+    const m = fxTryDiv(fxFromU64(readData<u64>(lending, 115n)), fxFromU128(EXCHANGE_PRICES_PRECISION));
+    if (m.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+    rate = m.v;
+  }
+  const e = scopeEntryErr(feed, bank.config.scope_entry_index);
+  if (e !== 0n) return feedErr(e);
+  const at = 8n + 32n + toU64(bank.config.scope_entry_index) * 56n;
+  const p = fxTryDiv(fxFromU64(readData<u64>(feed, at)), exp10Fx(readData<u64>(feed, at + 8n)));
+  if (p.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+  const updated = readData<u64>(feed, at + 24n);
+  // i64::try_from, then not in the future, then the age.
+  if (updated > 9223372036854775807n) return feedErr(6801n);
+  const last = toI64(updated);
+  if (last > t) return feedErr(6801n);
+  if (saturatingSubI64(t, last) > toI64(bank.config.oracle_max_age)) return feedErr(6802n);
+  // Priced as a fixed price is (no confidence, no bias), dated by the entry.
+  const out = feedErr(0n);
+  out.kind = 8n;
+  out.value = p.v;
+  out.source_time = last;
+  out.no_borrow_power = noBorrowPower;
+  if (s === OracleSetup.Scope) return out;
+  const adjusted = fxTryMul(p.v, rate);
+  if (adjusted.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+  out.value = adjusted.v;
+  out.mult = rate;
+  out.has_raw = 1n;
+  out.raw_err = 0n;
+  out.raw_price = p.v;
+  out.raw_conf = 0n;
+  return out;
+}
+
+// ---- Exponent PT (lst_stake_price.rs pt_linear_multiplier: an Exponent vault) -------------------------------------
+
+const EXPONENT_ID = pubkey("ExponentnaRg3CQbW6dqQNZKXp7gtZ9DGMp1cwC4HAS7");
+/** The Exponent Vault discriminator, as a little-endian u64. */
+const EXPONENT_VAULT_DISC: u64 = 8607953397882554579n;
+const EXPONENT_VAULT_VALIDATION_FAILED: u32 = 6137n;
+/** PT_MAX_MATURITY_HORIZON: about 5 years. */
+const PT_MAX_MATURITY_HORIZON: i64 = 157680000n;
+
+export function isPtSetup(s: OracleSetup): boolean {
+  return s === OracleSetup.PTPyth || s === OracleSetup.PTFixed;
+}
+
+/** load_exponent_vault / validate_exponent_vault_account: the vault at oracle_keys[idx] (key, owner, discriminator), with `mint` its PT mint. */
+function ptVaultErr(bank: Account<Bank>, a: RemainingAccount, idx: u64, checkMint: boolean): u32 {
+  if (a.key !== bank.config.oracle_keys.get(idx)) return EXPONENT_VAULT_VALIDATION_FAILED;
+  if (a.owner !== EXPONENT_ID || a.dataLen < 8n || readData<u64>(a, 0n) !== EXPONENT_VAULT_DISC) return EXPONENT_VAULT_VALIDATION_FAILED;
+  require(a.dataLen >= 457n, MarginfiError.InternalLogicError);
+  if (checkMint && readData<Pubkey>(a, 104n) !== bank.mint) return EXPONENT_VAULT_VALIDATION_FAILED;
+  return 0n;
+}
+
+/**
+ * pt_linear_multiplier: from the bank's start price (its fixed price) at the vault's start to par at maturity, linearly
+ * (InterestRateCalc::lerp), capped by what a PT redeems for (SY per PT times asset per SY). A vault in emergency mode
+ * (its SY rate under its all-time high) does not price unless `ignorePt`.
+ */
+function ptRate(bank: Account<Bank>, v: RemainingAccount, t: i64, ignorePt: boolean): Fx {
+  if (!ignorePt) {
+    // is_in_emergency_mode: the all-time-high SY rate above the last seen one (u256, most significant word first).
+    let emergency = false;
+    for (let i: u64 = 4n; i > 0n; i--) {
+      const ath = readData<u64>(v, 369n + 8n * (i - 1n));
+      const last = readData<u64>(v, 337n + 8n * (i - 1n));
+      if (ath !== last) {
+        emergency = ath > last;
+        break;
+      }
+    }
+    if (emergency) return { err: EXPONENT_VAULT_VALIDATION_FAILED, v: 0n };
+  }
+  const start = toI64(readData<u32>(v, 264n));
+  const maturity = start + toI64(readData<u32>(v, 268n));
+  if (!(maturity > start && maturity <= t + PT_MAX_MATURITY_HORIZON)) return { err: EXPONENT_VAULT_VALIDATION_FAILED, v: 0n };
+  // lerp(start, start price, maturity, 1, now)
+  const startY = bank.config.fixed_price.value;
+  const startX = fxFromI64(start);
+  const endX = fxFromI64(maturity);
+  const target = fxFromI64(t);
+  let expected: i128 = startY;
+  if (!(endX <= startX || target <= startX)) {
+    if (target >= endX) expected = I80F48_ONE;
+    else {
+      if (I80F48_ONE < startY) return { err: VENUE_MATH_ERROR, v: 0n };
+      const proportion = fxWrappingDiv(target - startX, endX - startX);
+      const scaled = fxTryMul(I80F48_ONE - startY, proportion);
+      if (scaled.err !== 0n) return { err: VENUE_MATH_ERROR, v: 0n };
+      expected = startY + scaled.v;
+    }
+  }
+  // pt_redemption_multiplier
+  const supply = readData<u64>(v, 449n);
+  if (supply === 0n) return { err: EXPONENT_VAULT_VALIDATION_FAILED, v: 0n };
+  if (readData<u64>(v, 345n) !== 0n || readData<u64>(v, 353n) !== 0n || readData<u64>(v, 361n) !== 0n) return { err: EXPONENT_VAULT_VALIDATION_FAILED, v: 0n };
+  const syRate = readData<u64>(v, 337n);
+  if (syRate === 0n) return { err: EXPONENT_VAULT_VALIDATION_FAILED, v: 0n };
+  const syPerPt = fxTryDiv(fxFromU64(readData<u64>(v, 441n)), fxFromU64(supply));
+  if (syPerPt.err !== 0n) return { err: VENUE_MATH_ERROR, v: 0n };
+  const assetPerSy = fxTryDiv(fxFromU64(syRate), fxFromU128(EXCHANGE_PRICES_PRECISION));
+  if (assetPerSy.err !== 0n) return { err: VENUE_MATH_ERROR, v: 0n };
+  const redemption = fxTryMul(syPerPt.v, assetPerSy.v);
+  if (redemption.err !== 0n) return { err: VENUE_MATH_ERROR, v: 0n };
+  return { err: 0n, v: expected < redemption.v ? expected : redemption.v };
+}
+
+/**
+ * A PT bank's feed: PTPyth, the feed times the PT rate (the cache keeping that price); PTFixed, the PT rate as a fixed
+ * USD price (the vault its only account).
+ */
+export function ptFeed(bank: Account<Bank>, rest: RemainingAccounts, first: u64, t: i64, ignorePt: boolean): Feed {
+  if (bank.config.oracle_setup === OracleSetup.PTFixed) {
+    const v = rest.get(first);
+    const e = ptVaultErr(bank, v, 0n, false);
+    if (e !== 0n) return feedErr(e);
+    const r = ptRate(bank, v, t, ignorePt);
+    if (r.err !== 0n) return feedErr(r.err);
+    const out = feedErr(0n);
+    out.kind = 8n;
+    out.value = r.v;
+    return out;
+  }
+  const oracle = rest.get(first);
+  if (oracle.key !== bank.config.oracle_keys.get(0n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
+  const v = rest.get(first + 1n);
+  const e = ptVaultErr(bank, v, 1n, false);
+  if (e !== 0n) return feedErr(e);
+  const r = ptRate(bank, v, t, ignorePt);
+  if (r.err !== 0n) return feedErr(r.err);
+  const f = pythFeed(oracle, toI64(bank.config.oracle_max_age), t);
+  if (f.err !== 0n) return f;
+  // The PT rate baked in; the cache keeps that price, with no multiplier.
+  const g = withRate(f, r.v, true, 4294967295n);
+  if (g.err !== 0n) return g;
+  return withRate(g, I80F48_ONE, true, 4294967295n);
+}
+
+// ---- mSOL and LSTs (lst_stake_price.rs: Marinade's state, an SPL stake pool) --------------------------------------
+
+const MARINADE_ID = pubkey("MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD");
+/** The Marinade State discriminator, as a little-endian u64. */
+const MARINADE_STATE_DISC: u64 = 12805505502107374296n;
+const MARINADE_STATE_VALIDATION_FAILED: u32 = 6136n;
+const SPL_STAKE_POOL_ID = pubkey("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy");
+const SANCTUM_SPL_STAKE_POOL_ID = pubkey("SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY");
+const SANCTUM_SPL_MULTI_STAKE_POOL_ID = pubkey("SPMBzsVUuoHA4Jm6KunbsotaahvVikZs1JyTW6iJvbn");
+const STAKE_POOL_STALE: u32 = 6139n;
+/** MAX_LST_SOL_RATE: an LST's or mSOL's SOL rate must be in (0, 3). */
+const MAX_LST_SOL_RATE_FX: i128 = 844424930131968n;
+
+/** Whether the setup prices mSOL (Marinade) or an LST (an SPL stake pool), on its own or inside a Kamino or JupLend bank. */
+export function isLstSetup(s: OracleSetup): boolean {
+  return (
+    s === OracleSetup.PythMSOL ||
+    s === OracleSetup.KaminoMSOL ||
+    s === OracleSetup.JuplendMSOL ||
+    s === OracleSetup.PythLST ||
+    s === OracleSetup.KaminoLST ||
+    s === OracleSetup.JuplendLST
+  );
+}
+
+/** marinade_price_multiplier over the state at oracle_keys[idx]: (active + cooling down + reserve − tickets) / mSOL supply. */
+function marinadeRate(bank: Account<Bank>, a: RemainingAccount, idx: u64): Fx {
+  if (a.key !== bank.config.oracle_keys.get(idx)) return { err: MARINADE_STATE_VALIDATION_FAILED, v: 0n };
+  if (a.owner !== MARINADE_ID || a.dataLen < 8n || readData<u64>(a, 0n) !== MARINADE_STATE_DISC) return { err: MARINADE_STATE_VALIDATION_FAILED, v: 0n };
+  require(a.dataLen >= 576n, MarginfiError.InternalLogicError);
+  const supply = readData<u64>(a, 504n);
+  if (supply === 0n) return { err: MARINADE_STATE_VALIDATION_FAILED, v: 0n };
+  const parts: u128 = toU128(readData<u64>(a, 376n)) + toU128(readData<u64>(a, 226n)) + toU128(readData<u64>(a, 568n)) + toU128(readData<u64>(a, 496n));
+  // Each checked_add of the u64s: past u64, MathError.
+  if (toU128(readData<u64>(a, 376n)) + toU128(readData<u64>(a, 226n)) > 18446744073709551615n) return { err: VENUE_MATH_ERROR, v: 0n };
+  if (toU128(readData<u64>(a, 376n)) + toU128(readData<u64>(a, 226n)) + toU128(readData<u64>(a, 568n)) > 18446744073709551615n) return { err: VENUE_MATH_ERROR, v: 0n };
+  if (parts > 18446744073709551615n) return { err: VENUE_MATH_ERROR, v: 0n };
+  const tickets = readData<u64>(a, 528n);
+  const staked = toU64(parts) > tickets ? toU64(parts) - tickets : 0n;
+  const r = fxTryDiv(fxFromU64(staked), fxFromU64(supply));
+  if (r.err !== 0n) return { err: VENUE_MATH_ERROR, v: 0n };
+  if (r.v <= 0n || r.v >= MAX_LST_SOL_RATE_FX) return { err: MARINADE_STATE_VALIDATION_FAILED, v: 0n };
+  return r;
+}
+
+/** stake_pool_price_multiplier over the SPL stake pool at oracle_keys[idx]: total lamports / pool tokens, updated this epoch or the last. */
+function stakePoolRate(bank: Account<Bank>, a: RemainingAccount, idx: u64): Fx {
+  if (a.key !== bank.config.oracle_keys.get(idx)) return { err: STAKE_POOL_VALIDATION_FAILED, v: 0n };
+  if (a.owner !== SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_MULTI_STAKE_POOL_ID)
+    return { err: STAKE_POOL_VALIDATION_FAILED, v: 0n };
+  // The Borsh prefix up to last_update_epoch (282 bytes; trailing bytes ignored), account_type 1 (StakePool).
+  if (a.dataLen < 282n || readData<u8>(a, 0n) !== 1n) return { err: STAKE_POOL_VALIDATION_FAILED, v: 0n };
+  const supply = readData<u64>(a, 266n);
+  if (supply === 0n) return { err: ZERO_SUPPLY_IN_STAKE_POOL, v: 0n };
+  const last = readData<u64>(a, 274n);
+  const epoch = currentEpoch();
+  if (epoch > last && epoch - last > 1n) return { err: STAKE_POOL_STALE, v: 0n };
+  const r = fxTryDiv(fxFromU64(readData<u64>(a, 258n)), fxFromU64(supply));
+  if (r.err !== 0n) return { err: VENUE_MATH_ERROR, v: 0n };
+  if (r.v <= 0n || r.v >= MAX_LST_SOL_RATE_FX) return { err: STAKE_POOL_VALIDATION_FAILED, v: 0n };
+  return r;
+}
+
+/** validate_marinade_state_account / validate_stake_pool_account: the account at oracle_keys[idx], its mint the bank's. */
+function lstAccountErr(bank: Account<Bank>, a: RemainingAccount, idx: u64): u32 {
+  const s = bank.config.oracle_setup;
+  if (s === OracleSetup.PythMSOL || s === OracleSetup.KaminoMSOL || s === OracleSetup.JuplendMSOL) {
+    if (a.key !== bank.config.oracle_keys.get(idx)) return MARINADE_STATE_VALIDATION_FAILED;
+    if (a.owner !== MARINADE_ID || a.dataLen < 8n || readData<u64>(a, 0n) !== MARINADE_STATE_DISC) return MARINADE_STATE_VALIDATION_FAILED;
+    require(a.dataLen >= 576n, MarginfiError.InternalLogicError);
+    return readData<Pubkey>(a, 8n) === bank.mint ? 0n : MARINADE_STATE_VALIDATION_FAILED;
+  }
+  if (a.key !== bank.config.oracle_keys.get(idx)) return STAKE_POOL_VALIDATION_FAILED;
+  if (a.owner !== SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_MULTI_STAKE_POOL_ID) return STAKE_POOL_VALIDATION_FAILED;
+  if (a.dataLen < 282n || readData<u8>(a, 0n) !== 1n) return STAKE_POOL_VALIDATION_FAILED;
+  return readData<Pubkey>(a, 162n) === bank.mint ? 0n : STAKE_POOL_VALIDATION_FAILED;
+}
+
+/**
+ * An mSOL or LST bank's feed (PythMSOL, PythLST and their Kamino and JupLend kinds): the SOL feed times the mSOL or LST
+ * rate, whose price the cache keeps; inside a Kamino or JupLend bank, then times the venue's rate, the cache's
+ * multiplier. Accounts: the SOL feed, then the venue's (if any), then Marinade's state or the stake pool.
+ */
+export function lstFeed(bank: Account<Bank>, rest: RemainingAccounts, first: u64, t: i64): Feed {
+  const s = bank.config.oracle_setup;
+  const msol = s === OracleSetup.PythMSOL || s === OracleSetup.KaminoMSOL || s === OracleSetup.JuplendMSOL;
+  const kamino = s === OracleSetup.KaminoMSOL || s === OracleSetup.KaminoLST;
+  const juplend = s === OracleSetup.JuplendMSOL || s === OracleSetup.JuplendLST;
+  const oracle = rest.get(first);
+  if (oracle.key !== bank.config.oracle_keys.get(0n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
+  let venueRate: i128 = I80F48_ONE;
+  let noBorrowPower: u8 = 0n;
+  if (kamino) {
+    const reserve = rest.get(first + 1n);
+    if (reserve.key !== bank.config.oracle_keys.get(1n)) return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
+    if (reserve.owner !== KAMINO_ID || reserve.dataLen < 8n || readData<u64>(reserve, 0n) !== KAMINO_RESERVE_DISC)
+      return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
+    require(reserve.dataLen >= 8624n, MarginfiError.InternalLogicError);
+    if (readData<u64>(reserve, 16n) < currentSlot()) return feedErr(KAMINO_RESERVE_STALE);
+    const sup = kaminoSupplies(reserve);
+    if (sup.err !== 0n) return feedErr(sup.err);
+    if (sup.b <= 0n) return feedErr(VENUE_MATH_ERROR);
+    venueRate = fxWrappingDiv(sup.a, sup.b);
+    if (readData<u8>(reserve, 4864n) !== 0n || (bank.flags & KAMINO_MARKET_EMERGENCY) !== 0n) noBorrowPower = 1n;
+  } else if (juplend) {
+    const lending = rest.get(first + 1n);
+    if (lending.key !== bank.config.oracle_keys.get(1n)) return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+    if (lending.owner !== JUPLEND_ID || lending.dataLen < 8n || readData<u64>(lending, 0n) !== JUPLEND_LENDING_DISC)
+      return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+    require(lending.dataLen >= 196n, MarginfiError.InternalLogicError);
+    if (toI64Wrap(readData<u64>(lending, 123n)) < t) return feedErr(JUPLEND_LENDING_STALE);
+    const m = fxTryDiv(fxFromU64(readData<u64>(lending, 115n)), fxFromU128(EXCHANGE_PRICES_PRECISION));
+    if (m.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+    venueRate = m.v;
+  }
+  const idx: u64 = kamino || juplend ? 2n : 1n;
+  const rate = msol ? marinadeRate(bank, rest.get(first + idx), idx) : stakePoolRate(bank, rest.get(first + idx), idx);
+  if (rate.err !== 0n) return feedErr(rate.err);
+  const f = pythFeed(oracle, toI64(bank.config.oracle_max_age), t);
+  if (f.err !== 0n) return f;
+  f.no_borrow_power = noBorrowPower;
+  // The mSOL / LST rate baked into the feed; the cache keeps that price, and the venue's rate as its multiplier.
+  const g = withRate(f, rate.v, true, 4294967295n);
+  if (g.err !== 0n) return g;
+  return withRate(g, venueRate, true, 4294967295n);
+}
+
+/** A venue bank's fixed price (FixedKamino, FixedDrift, FixedJuplend): no feed, the reserve / spot market / Lending only. */
+export function isFixedVenueSetup(s: OracleSetup): boolean {
+  return s === OracleSetup.FixedKamino || s === OracleSetup.FixedDrift || s === OracleSetup.FixedJuplend;
+}
+
 /** The venue setups ported: a Pyth or Switchboard feed and a reserve whose exchange rate multiplies it. */
 export function isReserveSetup(s: OracleSetup): boolean {
   return isSolendSetup(s) || isKaminoSetup(s) || isDriftSetup(s) || isJuplendSetup(s);
@@ -268,7 +706,7 @@ export function isReserveSetup(s: OracleSetup): boolean {
 
 /** Whether validation goes on to read the feed account (after validateOracleCount passed). */
 export function validatesFeedAccount(bank: Account<Bank>): boolean {
-  return readsOneFeed(bank.config.oracle_setup) || isReserveSetup(bank.config.oracle_setup);
+  return readsOneFeed(bank.config.oracle_setup) || isReserveSetup(bank.config.oracle_setup) || isLstSetup(bank.config.oracle_setup) || bank.config.oracle_setup === OracleSetup.PTPyth;
 }
 
 /** The feed account's checks: its key, then a Pyth update's discriminator and Borsh form or a Switchboard feed's. */
@@ -289,6 +727,22 @@ export function validateFeedAccount(bank: Account<Bank>, a: RemainingAccount): u
 /** After the feed, a venue setup's second account: the reserve's key (Solend/KaminoReserveValidationFailed). */
 export function validateVenueAccount(bank: Account<Bank>, rest: RemainingAccounts): u32 {
   const s = bank.config.oracle_setup;
+  // A fixed venue price's one account is the venue's.
+  if (isFixedVenueSetup(s)) {
+    if (rest.get(0n).key === bank.config.oracle_keys.get(1n)) return 0n;
+    if (s === OracleSetup.FixedDrift) return DRIFT_SPOT_MARKET_VALIDATION_FAILED;
+    return s === OracleSetup.FixedJuplend ? JUPLEND_LENDING_VALIDATION_FAILED : KAMINO_RESERVE_VALIDATION_FAILED;
+  }
+  // An Exponent PT vault (PTPyth: after the feed; PTFixed: the only account), its PT mint the bank's.
+  if (s === OracleSetup.PTPyth) return ptVaultErr(bank, rest.get(1n), 1n, true);
+  if (s === OracleSetup.PTFixed) return ptVaultErr(bank, rest.get(0n), 0n, true);
+  // An mSOL / LST setup inside a Kamino or JupLend bank: the venue's account, then Marinade's state or the stake pool.
+  if (isLstSetup(s)) {
+    const venue = s === OracleSetup.KaminoMSOL || s === OracleSetup.KaminoLST || s === OracleSetup.JuplendMSOL || s === OracleSetup.JuplendLST;
+    if (venue && rest.get(1n).key !== bank.config.oracle_keys.get(1n))
+      return s === OracleSetup.KaminoMSOL || s === OracleSetup.KaminoLST ? KAMINO_RESERVE_VALIDATION_FAILED : JUPLEND_LENDING_VALIDATION_FAILED;
+    return lstAccountErr(bank, rest.get(venue ? 2n : 1n), venue ? 2n : 1n);
+  }
   if (!isReserveSetup(s)) return 0n;
   if (rest.get(1n).key === bank.config.oracle_keys.get(1n)) return 0n;
   if (isDriftSetup(s)) return DRIFT_SPOT_MARKET_VALIDATION_FAILED;
@@ -366,6 +820,14 @@ export function oracleCount(bank: Account<Bank>, n: u64): u32 {
   if (s === OracleSetup.PythPushOracle || s === OracleSetup.SwitchboardPull) return n === 1n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
   if (s === OracleSetup.Fixed) return n === 0n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
   if (isReserveSetup(s)) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (isFixedVenueSetup(s)) return n === 1n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.StakedWithPythPush) return n === 4n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.PythMSOL || s === OracleSetup.PythLST) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (isLstSetup(s)) return n === 3n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.Scope) return n === 1n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (isScopeSetup(s)) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.PTPyth) return n === 2n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
+  if (s === OracleSetup.PTFixed) return n === 1n ? 0n : WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
   require(false, "TypeSOL port: this oracle setup's pricing is not ported");
   return 0n;
 }
@@ -800,6 +1262,74 @@ export function juplendFeed(bank: Account<Bank>, rest: RemainingAccounts, first:
   const mult = fxTryDiv(fxFromU64(readData<u64>(lending, 115n)), fxFromU128(EXCHANGE_PRICES_PRECISION));
   if (mult.err !== 0n) return feedErr(VENUE_MATH_ERROR);
   return rateFeed(bank, oracle, pyth, numerator, EXCHANGE_PRICES_PRECISION, mult.v, t);
+}
+
+/**
+ * A venue bank's fixed price (FixedKamino, FixedDrift, FixedJuplend): the venue's account (its key, the account, updated
+ * now), then the fixed price (never negative) times the venue's rate, which the cache keeps as its multiplier with the
+ * fixed price as its price (no confidence). A Kamino reserve with no collateral keeps the price as it is.
+ */
+export function fixedVenueFeed(bank: Account<Bank>, rest: RemainingAccounts, first: u64, t: i64): Feed {
+  const s = bank.config.oracle_setup;
+  const a = rest.get(first);
+  const base = bank.config.fixed_price.value;
+  let price: i128 = 0n;
+  let mult: i128 = I80F48_ONE;
+  let noBorrowPower: u8 = 0n;
+  if (s === OracleSetup.FixedDrift) {
+    if (a.key !== bank.config.oracle_keys.get(1n)) return feedErr(DRIFT_SPOT_MARKET_VALIDATION_FAILED);
+    if (a.owner !== DRIFT_ID || a.dataLen < 8n || readData<u64>(a, 0n) !== DRIFT_SPOT_MARKET_DISC) return feedErr(DRIFT_SPOT_MARKET_VALIDATION_FAILED);
+    require(a.dataLen >= 776n, MarginfiError.InternalLogicError);
+    if (toI64Wrap(readData<u64>(a, 568n)) < t) return feedErr(DRIFT_SPOT_MARKET_STALE);
+    if (base < 0n) return feedErr(6100n);
+    const ratio = fxTryDiv(fxFromU128(readData<u128>(a, 464n)), fxFromU64(toU64(SPOT_INTEREST_PRECISION)));
+    if (ratio.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+    const p = fxTryMul(base, ratio.v);
+    if (p.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+    price = p.v;
+    mult = ratio.v;
+  } else if (s === OracleSetup.FixedKamino) {
+    if (a.key !== bank.config.oracle_keys.get(1n)) return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
+    if (a.owner !== KAMINO_ID || a.dataLen < 8n || readData<u64>(a, 0n) !== KAMINO_RESERVE_DISC) return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
+    require(a.dataLen >= 8624n, MarginfiError.InternalLogicError);
+    if (readData<u64>(a, 16n) < currentSlot()) return feedErr(KAMINO_RESERVE_STALE);
+    if (base < 0n) return feedErr(6100n);
+    const supplies = kaminoSupplies(a);
+    if (supplies.err !== 0n) return feedErr(supplies.err);
+    price = base;
+    if (supplies.b > 0n) {
+      mult = fxWrappingDiv(supplies.a, supplies.b);
+      const p = fxTryMul(base, mult);
+      if (p.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+      price = p.v;
+    }
+    // kamino_borrow_power: the reserve's emergency mode, or the market's as propagated to the bank.
+    if (readData<u8>(a, 4864n) !== 0n || (bank.flags & KAMINO_MARKET_EMERGENCY) !== 0n) noBorrowPower = 1n;
+  } else {
+    if (a.key !== bank.config.oracle_keys.get(1n)) return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+    if (a.owner !== JUPLEND_ID || a.dataLen < 8n || readData<u64>(a, 0n) !== JUPLEND_LENDING_DISC) return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+    require(a.dataLen >= 196n, MarginfiError.InternalLogicError);
+    if (toI64Wrap(readData<u64>(a, 123n)) < t) return feedErr(JUPLEND_LENDING_STALE);
+    if (base < 0n) return feedErr(6100n);
+    // base × token_exchange_price, then / 10^12 (not × the multiplier: a different rounding).
+    const p = fxTryMul(base, fxFromU64(readData<u64>(a, 115n)));
+    if (p.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+    const q = fxTryDiv(p.v, fxFromU128(EXCHANGE_PRICES_PRECISION));
+    if (q.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+    price = q.v;
+    const m = fxTryDiv(fxFromU64(readData<u64>(a, 115n)), fxFromU128(EXCHANGE_PRICES_PRECISION));
+    if (m.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+    mult = m.v;
+  }
+  const out = fixedFeed(bank);
+  out.value = price;
+  out.mult = mult;
+  out.has_raw = 1n;
+  out.raw_err = 0n;
+  out.raw_price = base;
+  out.raw_conf = 0n;
+  out.no_borrow_power = noBorrowPower;
+  return out;
 }
 
 /**

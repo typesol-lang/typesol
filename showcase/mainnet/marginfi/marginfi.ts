@@ -265,6 +265,7 @@ import {
   HEALTH_HEALTHY,
   premiumRefreshUnavailable,
   lowPrice,
+  pricesThroughPtEmergency,
   riskTiersErr,
   updatePremiumSnapshots,
   writeHealthCache,
@@ -361,6 +362,7 @@ import {
   pythAccountErr,
   validateOracleCount,
   validateVenueAccount,
+  scopeEntryErr,
   validatesFeedAccount,
 } from "./oracle";
 import { PROGRAM_FEES_ENABLED, basisToU32, u32ToBasis, u32ToCenti, validateInterestRateConfig } from "./interest_rate";
@@ -925,8 +927,11 @@ export function lendingPoolSetOraclePrice(
     bank.config.oracle_keys.set(0n, SYSTEM_PROGRAM_ID);
   }
   bank.config.fixed_price.value = p;
-  require(validatesFeedAccount(bank) === false, MarginfiError.InternalLogicError);
-  const err = validateOracleCount(bank, rem.length);
+  let err = validateOracleCount(bank, rem.length);
+  // PTPyth's feed (the key, then a Pyth update), then the vault.
+  if (err === 0n && validatesFeedAccount(bank)) err = validateFeedAccount(bank, rem.get(0n));
+  // A fixed venue price's account: the venue's the bank was created with.
+  if (err === 0n) err = validateVenueAccount(bank, rem);
   require(err === 0n, err);
   emit<LendingPoolBankSetOraclePriceEvent>({ header: { signer: governance_admin.key, marginfi_group: group.key }, bank: bank.key, price: { value: p } });
 }
@@ -943,7 +948,7 @@ export function lendingPoolPulseBankPriceCache(group: Account<MarginfiGroup>, ba
     updateBankCache(bank, group, t);
   }
   const rem = remainingAccounts();
-  const p = cacheOfFeed(bank, feedAt(bank, rem, 0n, rem.length, t));
+  const p = cacheOfFeed(bank, feedAt(bank, rem, 0n, rem.length, t, false));
   require(p.err === 0n, p.err);
   updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
 }
@@ -1191,7 +1196,7 @@ export function lendingAccountWithdraw(
   const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
   let price = I80F48_ZERO;
   if (deferred || groupLimited) {
-    const p = lowPrice(bank, bank.key, remainingAccounts(), start, t);
+    const p = lowPrice(bank, bank.key, remainingAccounts(), start, t, pricesThroughPtEmergency(marginfi_account));
     require(p.err === 0n, p.err);
     if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
     price = p.v;
@@ -1885,14 +1890,14 @@ export function lendingAccountLiquidate(
   const amount = fxFromU64(asset_amount);
   const assetPer = accountsPerBank(asset_bank);
   require(assetPer.err === 0n, assetPer.err);
-  const assetPrice = lowPrice(asset_bank, asset_bank.key, remainingAccounts(), start, t);
+  const assetPrice = lowPrice(asset_bank, asset_bank.key, remainingAccounts(), start, t, authority.key === group.risk_admin);
   require(assetPrice.err === 0n, assetPrice.err);
   require(assetPrice.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
   const liabPer = accountsPerBank(liab_bank);
   require(liabPer.err === 0n, liabPer.err);
   const liabFirst = start + assetPer.n - 1n;
   require(liabFirst + liabPer.n - 1n <= len, MarginfiError.InternalLogicError);
-  const feed = feedAt(liab_bank, remainingAccounts(), liabFirst, liabPer.n - 1n, t);
+  const feed = feedAt(liab_bank, remainingAccounts(), liabFirst, liabPer.n - 1n, t, authority.key === group.risk_admin);
   require(feed.err === 0n, feed.err);
   const liabPrice = priceOfType(feed, true, BIAS_HIGH, liab_bank.config.oracle_max_confidence);
   require(liabPrice.err === 0n, liabPrice.err);
@@ -5514,22 +5519,6 @@ export function lendingPoolBackfillStakedBankValidatorVoteAccount(bank: Mut<Bank
 
 // ---- Scope oracles ------------------------------------------------------------------------------------------------
 
-const SCOPE_PROGRAM_ID = pubkey("HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ");
-/** Scope's OraclePrices: an 8-byte discriminator, the oracle mappings key, then 512 dated prices of 56 bytes. */
-const SCOPE_PRICES_DISCRIMINATOR: u64 = 10571153419667931225n;
-
-/** ScopePriceFeed::check_ais: a Scope OraclePrices account of its exact size, the entry refreshed, its exponent sane. */
-function scopeEntryErr(a: RemainingAccount, entry: u16): u32 {
-  if (a.owner !== SCOPE_PROGRAM_ID) return 6800n;
-  if (a.dataLen < 8n || readData<u64>(a, 0n) !== SCOPE_PRICES_DISCRIMINATOR) return 6800n;
-  if (a.dataLen !== 8n + 32n + 512n * 56n) return 6800n;
-  if (u64(entry) >= 512n) return 6801n;
-  const at = 8n + 32n + u64(entry) * 56n;
-  if (readData<u64>(a, at) === 0n || readData<u64>(a, at + 24n) === 0n) return 6801n;
-  if (readData<u64>(a, at + 8n) >= 24n) return 6801n;
-  return 0n;
-}
-
 /**
  * Price a bank by a Scope feed entry (governance admin; not a frozen bank, which panics, nor one in same-asset
  * e-mode): Scope for a regular or SOL bank, ScopeKamino / ScopeJuplend for a Kamino / JupLend one (its venue account
@@ -5911,7 +5900,7 @@ export function solendWithdraw(
   const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
   let price = I80F48_ZERO;
   if (receivership || groupLimited) {
-    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t);
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
     require(p.err === 0n, p.err);
     if (receivership) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
     price = p.v;
@@ -6489,7 +6478,7 @@ export function kaminoWithdraw(
   const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
   let price = I80F48_ZERO;
   if (deferred || groupLimited) {
-    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t);
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
     require(p.err === 0n, p.err);
     if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
     price = p.v;
@@ -7131,7 +7120,7 @@ export function driftWithdraw(
   const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
   let price = I80F48_ZERO;
   if (deferred || groupLimited) {
-    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t);
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
     require(p.err === 0n, p.err);
     if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
     price = p.v;
@@ -8346,7 +8335,7 @@ export function juplendWithdraw(
   const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
   let price = I80F48_ZERO;
   if (deferred || groupLimited) {
-    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t);
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
     require(p.err === 0n, p.err);
     if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
     price = p.v;

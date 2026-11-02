@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report, sha } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
-import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
+import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
 
 const DRIFT = address("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
 const RENT = address("SysvarRent111111111111111111111111111111111");
@@ -390,6 +390,35 @@ describe.skipIf(!existsSync(program("drift.so")))("Marginfi v2 port against the 
     );
     await run("drift withdraw at the new interest", user, [withdraw(b, account, user, tokens, 500_000n, null, rest)], watch(b, account, tokens));
     await run("drift deposit at the new interest", user, [deposit(b, account, user, tokens, 3_000_000n)], watch(b, account, tokens));
+    // A fixed price (FixedDrift): $1.10 times the market's cumulative interest, priced from the spot market alone.
+    const fixedRest = ordered([b.address, m.market], [other.bank.address, other.oracle]);
+    await run(
+      "fixed price: not the bank's market",
+      admin,
+      [h.setOraclePrice(group.address, admin, b.address, (11n * ONE) / 10n, 8, [other.oracle])],
+      [b.address],
+      true,
+    );
+    await run("fixed price", admin, [h.setOraclePrice(group.address, admin, b.address, (11n * ONE) / 10n, 8, [m.market])], [b.address]);
+    await run("pulse fixed drift bank", user, [h.pulse(group.address, b.address, [m.market])], [b.address]);
+    await run(
+      "borrow against fixed drift",
+      user,
+      [h.borrow(group.address, account, user, other.bank, to, 300_000n, { rest: fixedRest })],
+      [account, other.bank.address, to],
+    );
+    tick();
+    other.feed();
+    await run(
+      "borrow: fixed drift, market stale",
+      user,
+      [h.borrow(group.address, account, user, other.bank, to, 1_000n, { rest: fixedRest })],
+      [account],
+      true,
+    );
+    fresh(m);
+    await run("back to the feed", admin, [h.configureOracle(group.address, admin, b.address, 9, m.oracle, [m.oracle, m.market])], [b.address]);
+    refreshFeeds();
     // Enough to repay the debt and its interest, then everything out.
     h.tokenAccountAt(to, other.mint, user.address, data(to).readBigUInt64LE(64) + 1_000_000n);
     await run(

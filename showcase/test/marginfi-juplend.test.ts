@@ -3,7 +3,7 @@
 // ledgers (test/programs/juplend_*.so, fetched: Business Source License). The liquidity layer, its token reserves and
 // the Lendings are made with JupLend's own instructions (fixtures/juplend IDLs); Pyth and Switchboard feeds, and the
 // Lending's token exchange price in the risk engine.
-import { type Address, type Instruction, type KeyPairSigner, AccountRole, address } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, lamports } from "@solana/kit";
 import { BN, type Idl, type Program, web3 } from "@anchor-lang/core";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, program, report } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
-import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
+import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
 import { kitIx, programOn } from "./anchor-svm.js";
 
 const LENDING = address("jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9");
@@ -580,6 +580,159 @@ describe.skipIf(!existsSync(program("juplend_earn.so")))("Marginfi v2 port again
     );
     await run("juplend withdraw at the new price", user, [withdraw(b, account, user, tokens, 333_333n, null, rest)], watch(b, account, tokens));
     await run("juplend deposit at the new price", user, [deposit(b, account, user, tokens, 777_777n)], watch(b, account, tokens));
+    // A fixed price (FixedJuplend): $1.10 times the Lending's token exchange price, priced from the Lending alone.
+    const fixedRest = ordered([b.address, p.lending], [usdc.bank.address, usdc.oracle]);
+    await run(
+      "fixed price: not the bank's lending",
+      admin,
+      [h.setOraclePrice(group.address, admin, b.address, (11n * ONE) / 10n, 8, [usdc.oracle])],
+      [b.address],
+      true,
+    );
+    await run("fixed price", admin, [h.setOraclePrice(group.address, admin, b.address, (11n * ONE) / 10n, 8, [p.lending])], [b.address]);
+    await run("pulse fixed juplend bank", user, [await updateRate(p), h.pulse(group.address, b.address, [p.lending])], [b.address]);
+    await run(
+      "borrow against fixed juplend",
+      user,
+      [await updateRate(p), h.borrow(group.address, account, user, usdc.bank, usdcTo, 500_000n, { rest: fixedRest })],
+      [account, usdc.bank.address, usdcTo],
+    );
+    tick();
+    usdc.feed();
+    await run(
+      "borrow: fixed juplend, lending not updated",
+      user,
+      [h.borrow(group.address, account, user, usdc.bank, usdcTo, 1_000n, { rest: fixedRest })],
+      [account],
+      true,
+    );
+    await run("back to the feed", admin, [h.configureOracle(group.address, admin, b.address, 15, p.oracle, [p.oracle, p.lending])], [b.address]);
+    // mSOL and LST rates inside the venue bank (an mSOL or LST mint's reserve): Marginfi reads Marinade's state or an
+    // SPL stake pool (written in), whose mint must be the bank's.
+    const setEpochTo = (epoch: bigint) => {
+      for (const vm of s.vms()) {
+        const c = vm.getClock();
+        c.epoch = epoch;
+        vm.setClock(c);
+      }
+    };
+    setEpochTo(700n);
+    const putAcct = (at: Address, d: Buffer, owner: Address) => {
+      for (const vm of s.vms())
+        vm.setAccount({
+          address: at,
+          data: new Uint8Array(d),
+          executable: false,
+          lamports: lamports(vm.minimumBalanceForRentExemption(BigInt(d.length))),
+          programAddress: owner,
+          space: BigInt(d.length),
+        });
+    };
+    const marinade = (await s.key()).address;
+    {
+      const d = Buffer.alloc(576);
+      Buffer.from([216, 146, 107, 94, 104, 75, 182, 177]).copy(d, 0);
+      Buffer.from(pk(p.mint).toBytes()).copy(d, 8);
+      d.writeBigUInt64LE(1_200_000_000_000_000n, 376);
+      d.writeBigUInt64LE(1_000_000_000_000_000n, 504);
+      putAcct(marinade, d, address("MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD"));
+    }
+    const stakePool = (await s.key()).address;
+    {
+      const d = Buffer.alloc(300);
+      d[0] = 1;
+      Buffer.from(pk(p.mint).toBytes()).copy(d, 162);
+      d.writeBigUInt64LE(1_150_000_000_000_000n, 258);
+      d.writeBigUInt64LE(1_000_000_000_000_000n, 266);
+      d.writeBigUInt64LE(700n, 274);
+      putAcct(stakePool, d, address("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"));
+    }
+    for (const [name, setup, acct] of [
+      ["msol", 21, marinade],
+      ["lst", 24, stakePool],
+    ] as const) {
+      await run(
+        `juplend ${name} oracle: not the lending`,
+        admin,
+        [h.configureOracle(group.address, admin, b.address, setup, p.oracle, [p.oracle, p.oracle, acct])],
+        [b.address],
+        true,
+      );
+      await run(
+        `juplend ${name} oracle`,
+        admin,
+        [h.configureOracle(group.address, admin, b.address, setup, p.oracle, [p.oracle, p.lending, acct])],
+        [b.address],
+      );
+      refreshFeeds();
+      await run(`pulse juplend ${name} bank`, user, [await updateRate(p), h.pulse(group.address, b.address, [p.oracle, p.lending, acct])], [b.address]);
+      await run(
+        `borrow against juplend ${name}`,
+        user,
+        [
+          await updateRate(p),
+          h.borrow(group.address, account, user, usdc.bank, usdcTo, 100_000n, {
+            rest: ordered([b.address, p.oracle, p.lending, acct], [usdc.bank.address, usdc.oracle]),
+          }),
+        ],
+        [account, usdc.bank.address, usdcTo],
+      );
+    }
+    await run("back to the feed again", admin, [h.configureOracle(group.address, admin, b.address, 15, p.oracle, [p.oracle, p.lending])], [b.address]);
+    // Scope's OraclePrices (its discriminator, the mappings key, 512 dated prices of 56 bytes), written into both.
+    const scopeAccount = (entry: number, value: bigint, exp: bigint, ts: bigint, at?: Address) => {
+      const d = Buffer.alloc(8 + 32 + 512 * 56);
+      Buffer.from([89, 128, 118, 221, 6, 72, 180, 146]).copy(d, 0);
+      const o = 8 + 32 + entry * 56;
+      d.writeBigUInt64LE(value, o);
+      d.writeBigUInt64LE(exp, o + 8);
+      d.writeBigUInt64LE(ts, o + 24);
+      for (const vm of s.vms())
+        vm.setAccount({
+          address: at!,
+          data: new Uint8Array(d),
+          executable: false,
+          lamports: lamports(vm.minimumBalanceForRentExemption(BigInt(d.length))),
+          programAddress: address("HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ"),
+          space: BigInt(d.length),
+        });
+      return at!;
+    };
+    const configureScope = (label: string, bank: Address, oracle: Address, entry: number, rest: Address[], failing = false) =>
+      run(
+        label,
+        admin,
+        [
+          {
+            ...s.ix("lending_pool_configure_bank_oracle_scope", { oracle: pk(oracle), entry_index: entry }, [
+              { address: group.address },
+              { address: admin.address, signer: admin },
+              { address: bank, writable: true },
+              { address: INSTRUCTIONS },
+            ] as never),
+          },
+        ].map((i) => ({ ...i, accounts: [...i.accounts!, ...rest.map((address) => ({ address, role: 0 }) as never)] })),
+        [bank],
+        failing,
+      );
+    const scopeFeedAt = (await s.key()).address;
+    scopeAccount(3, 110_000_000n, 8n, t, scopeFeedAt);
+    await configureScope("juplend scope oracle: not the lending", b.address, scopeFeedAt, 3, [scopeFeedAt, usdc.oracle], true);
+    await configureScope("juplend scope oracle", b.address, scopeFeedAt, 3, [scopeFeedAt, p.lending]);
+    await run("pulse juplend scope bank", user, [await updateRate(p), h.pulse(group.address, b.address, [scopeFeedAt, p.lending])], [b.address]);
+    await run(
+      "borrow against juplend scope",
+      user,
+      [
+        await updateRate(p),
+        h.borrow(group.address, account, user, usdc.bank, usdcTo, 100_000n, {
+          rest: ordered([b.address, scopeFeedAt, p.lending], [usdc.bank.address, usdc.oracle]),
+        }),
+      ],
+      [account, usdc.bank.address, usdcTo],
+    );
+    await run("back to the feed once more", admin, [h.configureOracle(group.address, admin, b.address, 15, p.oracle, [p.oracle, p.lending])], [b.address]);
+    refreshFeeds();
     // Enough to repay the debt and its interest.
     h.tokenAccountAt(usdcTo, usdc.mint, user.address, data(usdcTo).readBigUInt64LE(64) + 1_000_000n);
     await run(

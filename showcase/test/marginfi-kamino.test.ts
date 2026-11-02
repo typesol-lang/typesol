@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
-import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
+import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
 
 const KLEND = address("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 const FARMS = address("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr");
@@ -507,6 +507,158 @@ describe.skipIf(!existsSync(program("kamino_lending.so")))("Marginfi v2 port aga
       [account, usdc.bank.address, usdcTo],
     );
     await run("kamino withdraw at the new rate", user, [...both(r, b), withdraw(b, account, user, tokens, 500_000n, null, rest)], watch(b, account, tokens));
+    // A fixed price (FixedKamino): $1.10 times the reserve's rate, priced from the reserve alone.
+    const fixedRest = ordered([b.address, r.reserve], [usdc.bank.address, usdc.oracle]);
+    await run(
+      "fixed price: not the bank's reserve",
+      admin,
+      [h.setOraclePrice(group.address, admin, b.address, (11n * ONE) / 10n, 8, [usdc.oracle])],
+      [b.address],
+      true,
+    );
+    await run("fixed price", admin, [h.setOraclePrice(group.address, admin, b.address, (11n * ONE) / 10n, 8, [r.reserve])], [b.address]);
+    await run("pulse fixed kamino bank", user, [refresh(r), h.pulse(group.address, b.address, [r.reserve])], [b.address]);
+    await run(
+      "borrow against fixed kamino",
+      user,
+      [refresh(r), h.borrow(group.address, account, user, usdc.bank, usdcTo, 300_000n, { rest: fixedRest })],
+      [account, usdc.bank.address, usdcTo],
+    );
+    tick();
+    usdc.feed();
+    await run(
+      "borrow: fixed kamino, reserve stale",
+      user,
+      [h.borrow(group.address, account, user, usdc.bank, usdcTo, 1_000n, { rest: fixedRest })],
+      [account],
+      true,
+    );
+    await run("back to the feed", admin, [h.configureOracle(group.address, admin, b.address, 6, r.oracle, [r.oracle, r.reserve])], [b.address]);
+    // mSOL and LST rates inside the venue bank (an mSOL or LST mint's reserve): Marginfi reads Marinade's state or an
+    // SPL stake pool (written in), whose mint must be the bank's.
+    const setEpochTo = (epoch: bigint) => {
+      for (const vm of s.vms()) {
+        const c = vm.getClock();
+        c.epoch = epoch;
+        vm.setClock(c);
+      }
+    };
+    setEpochTo(700n);
+    const putAcct = (at: Address, d: Buffer, owner: Address) => {
+      for (const vm of s.vms())
+        vm.setAccount({
+          address: at,
+          data: new Uint8Array(d),
+          executable: false,
+          lamports: lamports(vm.minimumBalanceForRentExemption(BigInt(d.length))),
+          programAddress: owner,
+          space: BigInt(d.length),
+        });
+    };
+    const marinade = (await s.key()).address;
+    {
+      const d = Buffer.alloc(576);
+      Buffer.from([216, 146, 107, 94, 104, 75, 182, 177]).copy(d, 0);
+      Buffer.from(pk(r.mint).toBytes()).copy(d, 8);
+      d.writeBigUInt64LE(1_200_000_000_000_000n, 376);
+      d.writeBigUInt64LE(1_000_000_000_000_000n, 504);
+      putAcct(marinade, d, address("MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD"));
+    }
+    const stakePool = (await s.key()).address;
+    {
+      const d = Buffer.alloc(300);
+      d[0] = 1;
+      Buffer.from(pk(r.mint).toBytes()).copy(d, 162);
+      d.writeBigUInt64LE(1_150_000_000_000_000n, 258);
+      d.writeBigUInt64LE(1_000_000_000_000_000n, 266);
+      d.writeBigUInt64LE(700n, 274);
+      putAcct(stakePool, d, address("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy"));
+    }
+    for (const [name, setup, acct] of [
+      ["msol", 20, marinade],
+      ["lst", 23, stakePool],
+    ] as const) {
+      await run(
+        `kamino ${name} oracle: not the reserve`,
+        admin,
+        [h.configureOracle(group.address, admin, b.address, setup, r.oracle, [r.oracle, r.oracle, acct])],
+        [b.address],
+        true,
+      );
+      await run(
+        `kamino ${name} oracle`,
+        admin,
+        [h.configureOracle(group.address, admin, b.address, setup, r.oracle, [r.oracle, r.reserve, acct])],
+        [b.address],
+      );
+      await run(`pulse kamino ${name} bank`, user, [refresh(r), h.pulse(group.address, b.address, [r.oracle, r.reserve, acct])], [b.address]);
+      await run(
+        `borrow against kamino ${name}`,
+        user,
+        [
+          refresh(r),
+          h.borrow(group.address, account, user, usdc.bank, usdcTo, 100_000n, {
+            rest: ordered([b.address, r.oracle, r.reserve, acct], [usdc.bank.address, usdc.oracle]),
+          }),
+        ],
+        [account, usdc.bank.address, usdcTo],
+      );
+    }
+    await run("back to the feed again", admin, [h.configureOracle(group.address, admin, b.address, 6, r.oracle, [r.oracle, r.reserve])], [b.address]);
+    // Scope's OraclePrices (its discriminator, the mappings key, 512 dated prices of 56 bytes), written into both.
+    const scopeAccount = (entry: number, value: bigint, exp: bigint, ts: bigint, at?: Address) => {
+      const d = Buffer.alloc(8 + 32 + 512 * 56);
+      Buffer.from([89, 128, 118, 221, 6, 72, 180, 146]).copy(d, 0);
+      const o = 8 + 32 + entry * 56;
+      d.writeBigUInt64LE(value, o);
+      d.writeBigUInt64LE(exp, o + 8);
+      d.writeBigUInt64LE(ts, o + 24);
+      for (const vm of s.vms())
+        vm.setAccount({
+          address: at!,
+          data: new Uint8Array(d),
+          executable: false,
+          lamports: lamports(vm.minimumBalanceForRentExemption(BigInt(d.length))),
+          programAddress: address("HFn8GnPADiny6XqUoWE8uRPPxb29ikn4yTuPa9MF2fWJ"),
+          space: BigInt(d.length),
+        });
+      return at!;
+    };
+    const configureScope = (label: string, bank: Address, oracle: Address, entry: number, rest: Address[], failing = false) =>
+      run(
+        label,
+        admin,
+        [
+          {
+            ...s.ix("lending_pool_configure_bank_oracle_scope", { oracle: pk(oracle), entry_index: entry }, [
+              { address: group.address },
+              { address: admin.address, signer: admin },
+              { address: bank, writable: true },
+              { address: INSTRUCTIONS },
+            ] as never),
+          },
+        ].map((i) => ({ ...i, accounts: [...i.accounts!, ...rest.map((address) => ({ address, role: 0 }) as never)] })),
+        [bank],
+        failing,
+      );
+    const scopeFeedAt = (await s.key()).address;
+    scopeAccount(3, 110_000_000n, 8n, t, scopeFeedAt);
+    await configureScope("kamino scope oracle: not the reserve", b.address, scopeFeedAt, 3, [scopeFeedAt, usdc.oracle], true);
+    await configureScope("kamino scope oracle", b.address, scopeFeedAt, 3, [scopeFeedAt, r.reserve]);
+    await run("pulse kamino scope bank", user, [refresh(r), h.pulse(group.address, b.address, [scopeFeedAt, r.reserve])], [b.address]);
+    await run(
+      "borrow against kamino scope",
+      user,
+      [
+        refresh(r),
+        h.borrow(group.address, account, user, usdc.bank, usdcTo, 100_000n, {
+          rest: ordered([b.address, scopeFeedAt, r.reserve], [usdc.bank.address, usdc.oracle]),
+        }),
+      ],
+      [account, usdc.bank.address, usdcTo],
+    );
+    await run("back to the feed once more", admin, [h.configureOracle(group.address, admin, b.address, 6, r.oracle, [r.oracle, r.reserve])], [b.address]);
+    refreshFeeds();
     // Emergency mode: the collateral backs no new borrows (Initial), but stays for Maintenance.
     poke(r.reserve, kOffset("Reserve", "config.emergency_mode"), Buffer.from([1]));
     await run(

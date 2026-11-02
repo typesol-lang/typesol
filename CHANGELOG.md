@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's pricing, every oracle setup: staked SOL (a single pool's stake per LST, before and after its
+  on-ramp), mSOL (Marinade's rate) and LSTs (an SPL or Sanctum stake pool's), Scope entries, Exponent PTs (linear to
+  par, capped by redemption, emergency mode honoured except where the original prices through it), and fixed venue
+  prices, each also inside Kamino and JupLend banks where the original has that kind. Setting a fixed venue price
+  checks the venue's account. Against the binary on mainnet: 1,936 transactions.
 - Examples: Marginfi's Drift and JupLend banks (`lending_pool_add_bank_drift`, `drift_init_user`, `drift_deposit`,
   `drift_withdraw`, `drift_harvest_reward`, `drift_claim_bad_debt`, `lending_pool_add_bank_juplend`,
   `juplend_init_position`, `juplend_deposit`, `juplend_withdraw`) over Drift v2, Drift's bad-debt Merkle distributor

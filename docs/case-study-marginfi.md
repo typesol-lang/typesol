@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration, Solend, Kamino, Drift and JupLend banks done (all 124 instructions present); pricing staked, Scope, mSOL, LST, PT and fixed venue banks, and venue rebalances, to come |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration, Solend, Kamino, Drift and JupLend banks, and every oracle setup's pricing done (all 124 instructions); venue rebalance legs to come |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -348,9 +348,25 @@ They are priced by `DriftPythPull`, `DriftSwitchboardPull`, `JuplendPythPull` an
 times the spot market's cumulative deposit interest (over 10^10) or the Lending's token exchange price (over 10^12),
 the market or Lending updated this second, the cache keeping the rate as its multiplier, as for Solend and Kamino.
 
-Banks whose price needs other state (Kamino's fixed, Scope, mSOL and LST setups and their JupLend and Drift
-counterparts, mSOL and LST multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it
-would read that state. Rebalances still refuse venue banks.
+**Part 5, every oracle setup.** The setups that price from another program's account
+(`programs/marginfi/src/state/lst_stake_price.rs`) are priced as the original prices them, the accounts written into
+both ledgers (Marginfi only reads them):
+
+- `StakedWithPythPush`: the SOL feed times the validator single pool's SOL per LST — before the pool's on-ramp, its
+  stake account's delegated stake less the 1 SOL bootstrap over the LST supply; after it, the stake account's and the
+  on-ramp's lamports above rent exemption over the supply plus 1 SOL of phantom tokens; nothing while staked oracles
+  are switched off;
+- `PythMSOL`, `PythLST` and their `KaminoMSOL`, `KaminoLST`, `JuplendMSOL`, `JuplendLST` kinds: the SOL feed times
+  Marinade's mSOL rate (its staked, cooling down and reserve SOL less tickets, over the mSOL supply) or an SPL or
+  Sanctum stake pool's LST rate (updated this epoch or the last), each in (0, 3), then the venue's rate;
+- `Scope`, `ScopeKamino`, `ScopeJuplend`: an entry of Scope's `OraclePrices` (value over 10^exp, no confidence),
+  dated, not in the future nor older than the bank's maximum age, then the venue's rate;
+- `PTPyth`, `PTFixed`: an Exponent PT accreting linearly from the bank's start price to par at maturity, capped by
+  what a PT redeems for, and not priced while the vault is in emergency mode, except for an account in deleverage or a
+  risk admin's liquidation (the original's `ignore_pt_emergency`);
+- `FixedKamino`, `FixedDrift`, `FixedJuplend`: a venue bank's fixed price times the venue's rate.
+
+Rebalances still refuse venue banks.
 
 The venue tests (Solend, Kamino, Drift, JupLend) hold a refused transaction to the original's error, code included,
 not only to failing: one difference turned up that way and was fixed (a claim given one token account for two, which
@@ -603,15 +619,13 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
 - **Health accounts.** A remaining account that is not a bank of the program fails the original's `AccountLoader`
   with the same codes as the port's (3007, 3001, 3002); one owned by the program, with a bank's discriminator but
   too short, panics in the original and fails with 3003 in the port.
-- **Oracles not ported.** Setting a bank of the matching asset tag to a fixed, Scope, mSOL, LST or PT venue setup (or
-  the plain mSOL, LST and PT ones), and pricing one, stops in the port where the original goes on to read the
-  venue's state.
 - **Drift withdrawals' reward accounts.** `drift_withdraw` takes three optional accounts per reward market (oracle,
   spot market, mint) and passes on whichever are given; the port passes each reward as its spot market and mint, with
   or without its oracle, and refuses other combinations ("TypeSOL port: …").
-- **Fixed prices and rebalances of venue banks.** `lending_pool_set_oracle_price` sets a venue bank to `FixedKamino`,
-  `FixedDrift` or `FixedJuplend` as the original does, but pricing such a bank, and rebalance legs in venue banks, stop
-  in the port ("not ported" / RebalanceVenueUnsupported) where the original goes on.
+- **Rebalances of venue banks.** Rebalance legs in Kamino, Drift or JupLend banks stop in the port
+  (RebalanceVenueUnsupported) where the original goes on with the venues' supply rates.
+- **Undecodable stake accounts.** Where the original fails with `BorshIoError` on a staked pool's stake account that
+  does not decode (a runtime error without a custom code), the port fails with its own error; both fail.
 - **Token-2022 in a bad-debt claim.** `drift_claim_bad_debt`'s claim mint and distributor vault are SPL Token accounts
   in the original (3007 for Token-2022 ones); the port takes either token program there.
 - **One account for two unchecked ones.** Anchor does not refuse an `UncheckedAccount` passed twice as writable; TypeSOL

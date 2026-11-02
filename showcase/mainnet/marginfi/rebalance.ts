@@ -92,7 +92,7 @@ export function accrueNative(rest: RemainingAccounts, at: u64, group: Account<Ma
  */
 export function venueMultiplier(bank: Account<Bank>, rest: RemainingAccounts, first: u64, count: u64, t: i64): i128 {
   require(!isVenueBank(bank.config.asset_tag), MarginfiError.RebalanceVenueUnsupported);
-  const f = feedAt(bank, rest, first, count, t);
+  const f = feedAt(bank, rest, first, count, t, false);
   require(f.err === 0n, f.err);
   const pc = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
   require(pc.err === 0n, pc.err);
