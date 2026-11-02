@@ -230,6 +230,8 @@ import {
   toNative,
   underlying,
   venueMultiplier,
+  rateAt,
+  yieldIndex,
   whole,
 } from "./rebalance";
 import {
@@ -1862,6 +1864,12 @@ export function lendingAccountLiquidate(
   const halted = anyBankHalted(liquidatee_marginfi_account, remainingAccounts(), liqe, len, t);
   require(halted.err === 0n, halted.err);
   const cbAdmin = halted.n !== 0n;
+  // Like deleverage, only the risk admin liquidates through an Exponent PT emergency: both accounts carry the flag
+  // (cleared at the end) so every price read here prices PTs through it.
+  if (authority.key === group.risk_admin) {
+    liquidatee_marginfi_account.account_flags |= ACCOUNT_IN_RISK_ADMIN_LIQUIDATION;
+    liquidator_marginfi_account.account_flags |= ACCOUNT_IN_RISK_ADMIN_LIQUIDATION;
+  }
   // A halted bank leaves liquidation to the admins; otherwise the breaker's gate first, as for a borrow.
   if (cbAdmin) require(authority.key === group.risk_admin || authority.key === group.admin, MarginfiError.CircuitBreakerAdminOnly);
   else {
@@ -4905,7 +4913,7 @@ export function marginfiAccountStartRebalance(
   }
   require(n >= 2n && n <= 8n && referenced <= n, MarginfiError.RebalanceBankNotAllowed);
   const minImprovement = rebalance_order.min_improvement.value;
-  const p = parseBanks(rest, group.key, n, true);
+  const p = parseBanks(rest, group.key, n, true, true);
   require(p.end === rest.length, MarginfiError.WrongNumberOfOracleAccounts);
   for (let i = 0n; i < n; i++) accrueNative(rest, p.at.get(i), group, t);
   // Each bank: in the allowlist, of the order's mint, not Solend; its rate now, its room, the account's amount there.
@@ -4913,6 +4921,8 @@ export function marginfiAccountStartRebalance(
   const room = fixedArray<i128, 8>(0n);
   const pre = fixedArray<i128, 8>(0n);
   const tags = fixedArray<u64, 8>(0n);
+  /** 1 for a venue bank (its rate need not fall as deposits grow), 0 for a native one */
+  const venue = fixedArray<u8, 8>(0n);
   let decimals: u8 = 0n;
   for (let i = 0n; i < n; i++) {
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
@@ -4922,10 +4932,11 @@ export function marginfiAccountStartRebalance(
     require(bank.mint === rebalance_order.mint, MarginfiError.RebalanceMintMismatch);
     require(bank.config.asset_tag !== 5n, MarginfiError.RebalanceVenueUnsupported);
     if (!isVenueBank(bank.config.asset_tag)) checkRateModel(bank);
-    rates.set(i, supplyRate(bank, 0n));
-    venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
-    pre.set(i, underlying(marginfi_account, bank.key, bank));
-    room.set(i, depositRoom(bank));
+    else venue.set(i, 1n);
+    rates.set(i, rateAt(bank, rest, p, i, 0n, t));
+    const multiplier = venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
+    pre.set(i, underlying(marginfi_account, bank.key, bank, multiplier));
+    room.set(i, depositRoom(bank, multiplier, rest, p, i, t));
     tags.set(i, tagIn(marginfi_account, bank.key));
     if (i === 0n) decimals = bank.mint_decimals;
   }
@@ -4957,7 +4968,7 @@ export function marginfiAccountStartRebalance(
   const landed = fixedArray<i128, 8>(0n);
   for (let i = 0n; i < n; i++) {
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
-    landed.set(i, inflowNative.get(i) === 0n ? rates.get(i) : supplyRate(bank, inflowNative.get(i)));
+    landed.set(i, inflowNative.get(i) === 0n ? rates.get(i) : rateAt(bank, rest, p, i, inflowNative.get(i), t));
   }
   for (let k = 0n; k < m; k++) {
     const mv = moves.get(k);
@@ -4968,9 +4979,10 @@ export function marginfiAccountStartRebalance(
     const amount = tagged ? inflow.get(d) : mv.amount.value;
     const amountNative = tagged ? inflowNative.get(d) : toNative(decimals, mv.amount.value);
     for (let i = 0n; i < n; i++) {
-      // Full banks, banks already at or under the destination's landed rate (more only lowers a native rate), tagged
-      // ones and banks these tokens may not enter are not candidates.
-      if (i === d || inflow.get(i) >= room.get(i) || landed.get(i) <= landed.get(d) || tags.get(i) !== 0n || taggedDst.get(i) !== 0n) continue;
+      // Full banks, native banks already at or under the destination's landed rate (more only lowers a native rate),
+      // tagged ones and banks these tokens may not enter are not candidates.
+      if (i === d || inflow.get(i) >= room.get(i) || (venue.get(i) === 0n && landed.get(i) <= landed.get(d)) || tags.get(i) !== 0n || taggedDst.get(i) !== 0n)
+        continue;
       if (tagged && (inflow.get(i) > I80F48_ZERO || amount > room.get(i) || holds(marginfi_account, rest.get(p.at.get(i)).key))) continue;
       let extra: u64 = 0n;
       if (fxAdd(inflow.get(i), amount) <= room.get(i)) {
@@ -4979,7 +4991,7 @@ export function marginfiAccountStartRebalance(
       } else extra = toNative(decimals, room.get(i));
       if (extra === inflowNative.get(i)) continue;
       const candidate = loadAccount<Bank>(rest.get(p.at.get(i)));
-      require(supplyRate(candidate, extra) <= landed.get(d), MarginfiError.RebalanceNotBestVenue);
+      require(rateAt(candidate, rest, p, i, extra, t) <= landed.get(d), MarginfiError.RebalanceNotBestVenue);
     }
   }
   // RebalanceRecord::initialize.
@@ -5063,27 +5075,35 @@ export function marginfiAccountEndRebalance(
   const cooldown = rebalance_order.cooldown_seconds;
   const settleDelay = cooldown < SETTLE_DELAY_MIN ? SETTLE_DELAY_MIN : cooldown > SETTLE_DELAY_MAX ? SETTLE_DELAY_MAX : cooldown;
   const minImprovement = rebalance_order.min_improvement.value;
-  const p = parseBanks(rest, group.key, n, true);
+  const p = parseBanks(rest, group.key, n, true, false);
   for (let i = 0n; i < n; i++) require(rest.get(p.at.get(i)).key === rebalance_record.ref_banks.get(i).bank, MarginfiError.InvalidBankAccount);
   const post = fixedArray<i128, 8>(0n);
   const yields = fixedArray<i128, 8>(0n);
   let decimals: u8 = 0n;
+  let maxMultiplier: i128 = I80F48_ONE;
   for (let i = 0n; i < n; i++) {
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
     if (i === 0n) decimals = bank.mint_decimals;
     const multiplier = venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
-    post.set(i, underlying(marginfi_account, bank.key, bank));
-    yields.set(i, fxMul(bank.asset_share_value.value, multiplier));
+    // Venues settle in whole accounting tokens: the widest multiplier is the largest rounding unit any leg makes.
+    if (multiplier > maxMultiplier) maxMultiplier = multiplier;
+    post.set(i, underlying(marginfi_account, bank.key, bank, multiplier));
+    yields.set(i, yieldIndex(bank, multiplier));
   }
   // Each move's destination, priced after its own deposit, still beats the source's rate before it.
   for (let k = 0n; k < m; k++) {
     const mv = rebalance_record.moves.get(k);
     const bank = loadAccount<Bank>(rest.get(p.at.get(u64(mv.dst_index))));
-    const postRate = supplyRate(bank, 0n);
+    const postRate = rateAt(bank, rest, p, u64(mv.dst_index), 0n, t);
     require(postRate > fxAdd(rebalance_record.pre_rate.get(u64(mv.src_index)).value, minImprovement), MarginfiError.RebalanceOvershoot);
   }
   // RebalanceRecord::reconcile: each bank's change is its declared net flow within the dust.
-  const dust = fxDiv(fxMul(fxMul(DUST_ATOMS, fxFromU64(m)), I80F48_ONE), exp10Fx(u64(decimals)));
+  // conservation_dust: 3 atoms per move, times the widest multiplier.
+  const dustAtoms = fxTryMul(DUST_ATOMS, fxFromU64(m));
+  require(dustAtoms.err === 0n, MarginfiError.MathError);
+  const dustScaled = fxTryMul(dustAtoms.v, maxMultiplier);
+  require(dustScaled.err === 0n, MarginfiError.MathError);
+  const dust = fxDiv(dustScaled.v, exp10Fx(u64(decimals)));
   let moved = I80F48_ZERO;
   let refPre = I80F48_ZERO;
   let actualTotal = I80F48_ZERO;
@@ -5226,13 +5246,13 @@ export function marginfiAccountSettleRebalanceTip(
   const pending = rebalance_record.pending_tip;
   require(rebalance_record.settle_delay <= 18446744073709551615n - rebalance_record.move_timestamp, MarginfiError.MathError);
   require(u64(t) >= rebalance_record.move_timestamp + rebalance_record.settle_delay, MarginfiError.RebalanceSettleTooEarly);
-  const p = parseBanks(rest, group.key, n, false);
+  const p = parseBanks(rest, group.key, n, false, false);
   for (let i = 0n; i < n; i++) require(rest.get(p.at.get(i)).key === rebalance_record.ref_banks.get(i).bank, MarginfiError.InvalidBankAccount);
   const current = fixedArray<i128, 8>(0n);
   for (let i = 0n; i < n; i++) {
     accrueNative(rest, p.at.get(i), group, t);
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
-    current.set(i, fxMul(bank.asset_share_value.value, venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t)));
+    current.set(i, yieldIndex(bank, venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t)));
   }
   // Realized: each destination's index grew more than its source's (cross-multiplied).
   let realized = true;

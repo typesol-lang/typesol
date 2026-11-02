@@ -1,7 +1,7 @@
 // Marginfi's rebalance execution helpers (programs/marginfi/src/instructions/marginfi_account/rebalance.rs,
 // state/rate.rs and state/rebalance.rs @ c5d440f6): the referenced banks read from the remaining accounts, their
-// supply rates, deposit room and token amounts, and the record's checks. Native banks only: a bank in a venue
-// (Kamino, Drift, Solend, JupLend) prices from the venue's own state, which the port does not read yet.
+// supply rates (a native bank's curve, or a Kamino, Drift or JupLend venue's: venue_rates.ts), venue multipliers,
+// deposit room and token amounts, and the record's checks. Solend banks take no part (a rebalance refuses them).
 import {
   type Account,
   type FixedArray,
@@ -11,18 +11,21 @@ import {
   type i128,
   type i64,
   type u8,
+  findProgramAddress,
   fixedArray,
   loadAccount,
+  pubkey,
   loadAccountMut,
   require,
   u64,
 } from "typesol";
-import { accrueInterest, updateBankCache } from "./bank";
+import { accrueInterest, balanceDecimals, depositLimitFx, updateBankCache } from "./bank";
 import { MarginfiError } from "./errors";
-import { I80F48_ONE, I80F48_ZERO, exp10Fx, fxAdd, fxDiv, fxFromU64, fxMul, fxSub } from "./i80f48";
+import { I80F48_ONE, I80F48_ZERO, exp10Fx, fxAdd, fxDiv, fxFromU64, fxMul, fxSub, fxTryMul } from "./i80f48";
 import { multipointCurve } from "./interest_rate";
-import { WRONG_NUMBER_OF_ORACLE_ACCOUNTS, priceAndConfidence } from "./oracle";
-import { accountsPerBank, feedAt, loaderErr } from "./risk";
+import { WRONG_NUMBER_OF_ORACLE_ACCOUNTS } from "./oracle";
+import { accountsPerBank, cacheOfFeed, calcValue, feedAt, loaderErr } from "./risk";
+import { driftRemaining, driftSupplyApr, juplendSupplyApr, kaminoRemaining, kaminoSupplyApr } from "./venue_rates";
 import { type Bank, type MarginfiAccount, type MarginfiGroup } from "./state";
 
 const REB_U64_MAX: u64 = 18446744073709551615n;
@@ -37,6 +40,10 @@ export function isVenueBank(tag: u8): boolean {
 /** The referenced banks as parse_rebalance_banks finds them: each bank's account index, its oracles, and the end. */
 export interface ParsedBanks {
   at: FixedArray<u64, 8>;
+  /** Where the bank's venue accounts start (JupLend's token reserve, then the rewards accounts) */
+  extra: FixedArray<u64, 8>;
+  /** Whether JupLend's rate model was taken (and checked) */
+  rateModel: boolean;
   first: FixedArray<u64, 8>;
   count: FixedArray<u64, 8>;
   end: u64;
@@ -46,8 +53,15 @@ export interface ParsedBanks {
  * parse_rebalance_banks: `n` blocks of [bank, (JupLend's token reserve), (the venue's reward accounts), oracles], each
  * bank once (SameAssetAndLiabilityBanks), a bank of this program (InvalidBankAccount) in the group.
  */
-export function parseBanks(rest: RemainingAccounts, group: Pubkey, n: u64, withRewards: boolean): ParsedBanks {
-  const p: ParsedBanks = { at: fixedArray<u64, 8>(0n), first: fixedArray<u64, 8>(0n), count: fixedArray<u64, 8>(0n), end: 0n };
+export function parseBanks(rest: RemainingAccounts, group: Pubkey, n: u64, withRewards: boolean, withRateModel: boolean): ParsedBanks {
+  const p: ParsedBanks = {
+    at: fixedArray<u64, 8>(0n),
+    extra: fixedArray<u64, 8>(0n),
+    rateModel: withRewards && withRateModel,
+    first: fixedArray<u64, 8>(0n),
+    count: fixedArray<u64, 8>(0n),
+    end: 0n,
+  };
   let cursor = 0n;
   for (let i = 0n; i < n; i++) {
     require(rest.length > cursor, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
@@ -62,11 +76,15 @@ export function parseBanks(rest: RemainingAccounts, group: Pubkey, n: u64, withR
     require(per.err === 0n, per.err);
     const oracles = per.n > 0n ? per.n - 1n : 0n;
     const tag = bank.config.asset_tag;
+    p.extra.set(i, cursor);
     let extra = tag === 6n ? 1n : 0n;
     if (withRewards && tag === 3n) extra += 1n;
     if (withRewards && tag === 6n) extra += 3n;
     for (let k = 0n; k < extra; k++) {
       require(rest.length > cursor, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
+      // JupLend's rate model (the last of its rewards accounts): the mint's, when it is read.
+      if (withRewards && withRateModel && tag === 6n && k === 3n)
+        require(rest.get(cursor).key === findProgramAddress(["rate_model", bank.mint], REB_JUPLEND_LIQUIDITY), 6501n);
       cursor += 1n;
     }
     require(rest.length >= cursor + oracles, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
@@ -87,16 +105,46 @@ export function accrueNative(rest: RemainingAccounts, at: u64, group: Account<Ma
 }
 
 /**
- * venue_multiplier: 1 for a native bank, after its spot price reads (stale and wide prices refuse here too); venue
- * banks are not ported (RebalanceVenueUnsupported).
+ * venue_multiplier: the bank's exchange-rate multiplier from its oracle accounts (a venue's rate; 1 for a native bank),
+ * read as the price cache reads it, so stale and wide prices refuse here too.
  */
 export function venueMultiplier(bank: Account<Bank>, rest: RemainingAccounts, first: u64, count: u64, t: i64): i128 {
-  require(!isVenueBank(bank.config.asset_tag), MarginfiError.RebalanceVenueUnsupported);
-  const f = feedAt(bank, rest, first, count, t, false);
-  require(f.err === 0n, f.err);
-  const pc = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+  const pc = cacheOfFeed(bank, feedAt(bank, rest, first, count, t, false));
   require(pc.err === 0n, pc.err);
-  return I80F48_ONE;
+  return pc.mult;
+}
+
+const REB_JUPLEND_LIQUIDITY = pubkey("jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC");
+
+/**
+ * rate_at: the bank's supply rate after `extra` more native tokens — a native bank's curve, or its venue's (the venue
+ * account its last oracle account; Kamino's lending market and JupLend's token reserve and rewards accounts from the
+ * venue accounts).
+ */
+export function rateAt(bank: Account<Bank>, rest: RemainingAccounts, p: ParsedBanks, i: u64, extra: u64, t: i64): i128 {
+  const tag = bank.config.asset_tag;
+  if (!isVenueBank(tag)) return supplyRate(bank, extra);
+  require(p.count.get(i) > 0n, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
+  const venue = rest.get(p.first.get(i) + p.count.get(i) - 1n);
+  const x = p.extra.get(i);
+  if (tag === 3n) {
+    // Kamino's lending market is a rewards account: with none taken, WrongNumberOfOracleAccounts.
+    require(p.first.get(i) > x, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
+    const r = kaminoSupplyApr(bank, venue, rest.get(x), extra, t);
+    require(r.err === 0n, r.err);
+    return r.v;
+  }
+  if (tag === 4n) {
+    const r = driftSupplyApr(bank, venue, extra, t);
+    require(r.err === 0n, r.err);
+    return r.v;
+  }
+  require(tag === 6n, MarginfiError.InvalidOracleSetup);
+  require(p.first.get(i) > x + 1n, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
+  // JupLend's rate model, when taken (start); in its place the token reserve, unread.
+  const r = juplendSupplyApr(bank, venue, rest.get(x), rest.get(x + 1n), rest.get(x + 2n), p.rateModel, rest.get(p.rateModel ? x + 3n : x), extra, t);
+  require(r.err === 0n, r.err);
+  return r.v;
 }
 
 /**
@@ -135,11 +183,18 @@ export function toNative(decimals: u8, amount: i128): u64 {
   return u64(n);
 }
 
+/** underlying_of: native (bank accounting) units × the venue multiplier, in whole tokens (calc_value). */
+export function underlyingOf(amount: i128, bank: Account<Bank>, multiplier: i128): i128 {
+  const v = calcValue(amount, multiplier, balanceDecimals(bank), I80F48_ZERO, false);
+  require(v.err === 0n, v.err);
+  return v.v;
+}
+
 /** bank_underlying: the account's deposit in the bank, in whole tokens (0 without a balance there). */
-export function underlying(account: Account<MarginfiAccount>, key: Pubkey, bank: Account<Bank>): i128 {
+export function underlying(account: Account<MarginfiAccount>, key: Pubkey, bank: Account<Bank>, multiplier: i128): i128 {
   for (let i = 0n; i < 16n; i++) {
     const b = account.lending_account.balances.get(i);
-    if (b.active !== 0n && b.bank_pk === key) return whole(fxMul(b.asset_shares.value, bank.asset_share_value.value), bank.mint_decimals);
+    if (b.active !== 0n && b.bank_pk === key) return underlyingOf(fxMul(b.asset_shares.value, bank.asset_share_value.value), bank, multiplier);
   }
   return I80F48_ZERO;
 }
@@ -163,17 +218,52 @@ export function holds(account: Account<MarginfiAccount>, key: Pubkey): boolean {
 }
 
 /**
- * deposit_capacity_of: what a rebalance may still deliver into the bank, in whole tokens (the deposit limit's room;
- * unlimited when there is none).
+ * deposit_capacity_of: what a rebalance may still deliver into the bank, in whole tokens — the tighter of the deposit
+ * limit's room (in the bank's units, through the multiplier) and the venue's (in the mint's).
  */
-export function depositRoom(bank: Account<Bank>): i128 {
-  if (bank.config.deposit_limit === REB_U64_MAX) return FX_MAX;
-  const current = fxMul(bank.total_asset_shares.value, bank.asset_share_value.value);
-  const limit = fxFromU64(bank.config.deposit_limit);
-  if (current >= limit) return I80F48_ZERO;
-  // (limit - current - 1).floor() as u64: MathError when it is negative.
-  const room = fxSub(fxSub(limit, current), I80F48_ONE);
-  const floor = room - (room & 281474976710655n);
-  require(floor >= I80F48_ZERO, MarginfiError.MathError);
-  return whole(floor, bank.mint_decimals);
+export function depositRoom(bank: Account<Bank>, multiplier: i128, rest: RemainingAccounts, p: ParsedBanks, i: u64, t: i64): i128 {
+  let own: i128 = FX_MAX;
+  if (bank.config.deposit_limit !== REB_U64_MAX) {
+    // get_remaining_deposit_capacity
+    const current = fxMul(bank.total_asset_shares.value, bank.asset_share_value.value);
+    const limit = depositLimitFx(bank);
+    let native: u64 = 0n;
+    if (current < limit) {
+      // (limit − current − 1).floor() as u64: MathError when negative or past u64.
+      const room = fxSub(fxSub(limit, current), I80F48_ONE);
+      const floor = room >> 48n;
+      require(floor >= 0n && floor <= 18446744073709551615n, MarginfiError.MathError);
+      native = u64(floor);
+    }
+    if (native !== REB_U64_MAX) own = underlyingOf(fxFromU64(native), bank, multiplier);
+  }
+  const tag = bank.config.asset_tag;
+  let venue: i128 = FX_MAX;
+  if (isVenueBank(tag)) {
+    require(p.count.get(i) > 0n, WRONG_NUMBER_OF_ORACLE_ACCOUNTS);
+    const a = rest.get(p.first.get(i) + p.count.get(i) - 1n);
+    let cap: i128 = -1n;
+    if (tag === 3n) {
+      const r = kaminoRemaining(bank, a);
+      require(r.err === 0n, r.err);
+      cap = r.v;
+    } else if (tag === 4n) {
+      const r = driftRemaining(bank, a, t);
+      require(r.err === 0n, r.err);
+      cap = r.v;
+    } else require(tag === 6n, MarginfiError.InvalidOracleSetup);
+    if (cap >= 0n && cap !== 18446744073709551615n) {
+      const v = calcValue(fxFromU64(u64(cap)), I80F48_ONE, bank.mint_decimals, I80F48_ZERO, false);
+      require(v.err === 0n, v.err);
+      venue = v.v;
+    }
+  }
+  return own < venue ? own : venue;
+}
+
+/** yield_index_of: the bank's asset share value times its venue multiplier (MathError past I80F48). */
+export function yieldIndex(bank: Account<Bank>, multiplier: i128): i128 {
+  const v = fxTryMul(bank.asset_share_value.value, multiplier);
+  require(v.err === 0n, MarginfiError.MathError);
+  return v.v;
 }

@@ -156,16 +156,18 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "currentSlot":
       case "currentEpoch":
+      case "epochStartTimestamp":
       case "now": {
         if (args.length !== 0) this.fail(node, `${builtin}() takes no arguments`);
         // Clock { slot, epoch_start_timestamp, epoch, leader_schedule_epoch, unix_timestamp }
-        const field = builtin === "currentSlot" ? 0 : builtin === "currentEpoch" ? 2 : 4;
+        const field = builtin === "currentSlot" ? 0 : builtin === "currentEpoch" ? 2 : builtin === "epochStartTimestamp" ? 1 : 4;
         const t = this.tmp();
         if (this.ix) {
           // The Clock does not change within a transaction: an instruction reads it once, on first use.
           if (!this.hoisted.some((l) => l.includes("ts_clk_ok"))) this.hoisted.push(`  uint64_t ts_clk[5]; bool ts_clk_ok = false;`);
           this.line(`if (!ts_clk_ok) { TS_TRY(ts_read_clock(ts_clk)); ts_clk_ok = true; }`);
           if (builtin === "now") return { c: `((int64_t)ts_clk[4])`, type: I64 };
+          if (builtin === "epochStartTimestamp") return { c: `((int64_t)ts_clk[1])`, type: I64 };
           this.line(`uint64_t ${t} = ts_clk[${field}];`);
           return { c: t, type: U64 };
         }
@@ -176,6 +178,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         this.line(`uint64_t ${t};`);
         this.line(`TS_TRY(ts_clock_u64(${field}, &${t}));`);
+        if (builtin === "epochStartTimestamp") return { c: `((int64_t)${t})`, type: I64 };
         return { c: t, type: U64 };
       }
       case "pubkey": {

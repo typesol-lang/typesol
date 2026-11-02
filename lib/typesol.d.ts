@@ -1524,6 +1524,8 @@ export interface CompressedLeaf {
 /** The current slot and epoch (Clock sysvar). */
 export declare function currentSlot(): u64;
 export declare function currentEpoch(): u64;
+/** The Unix time the current epoch started at (Clock.epoch_start_timestamp). */
+export declare function epochStartTimestamp(): i64;
 /** The EpochSchedule sysvar: slots per epoch (after warmup), whether epochs warm up, and where normal epochs start. */
 export declare function slotsPerEpoch(): u64;
 export declare function epochWarmup(): boolean;

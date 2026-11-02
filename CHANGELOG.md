@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's rebalances across Kamino, Drift and JupLend banks, each leg priced at the venue's supply rate
+  (klend's curve and reward emissions at the chain's measured slot pace, Drift's curve less its insurance factor,
+  JupLend's liquidity-layer rate and Lending rewards), amounts through the venues' exchange rates, deposit room capped
+  by the venue's own. Against the binary on mainnet: 2,017 transactions.
+- Fixed (examples): a classic liquidation by Marginfi's risk admin flags both accounts as the original does, so their
+  Exponent PT banks are priced through a vault emergency there too.
+- New: `epochStartTimestamp()`, when the current epoch began (the Clock's `epoch_start_timestamp`).
 - Examples: Marginfi's pricing, every oracle setup: staked SOL (a single pool's stake per LST, before and after its
   on-ramp), mSOL (Marinade's rate) and LSTs (an SPL or Sanctum stake pool's), Scope entries, Exponent PTs (linear to
   par, capped by redemption, emergency mode honoured except where the original prices through it), and fixed venue

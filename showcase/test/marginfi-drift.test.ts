@@ -638,6 +638,208 @@ describe.skipIf(!existsSync(program("drift.so")))("Marginfi v2 port against the 
     await run("drift deposit: spot market not Drift's", user, [wrong], watch(b, account, tokens), true);
   });
 
+  it("rebalances out of a Drift bank into a native bank that pays more, as the original does", async () => {
+    tick();
+    if (markets.length === 0) await newMarket(0, usdcMint, 1_000_000n);
+    const m = await newMarket(markets.length, await h.mint(TOKEN_PROGRAM, 6), 1_000_000n);
+    const b = await driftBank(m, 0n);
+    // A native bank of the same mint, priced by the market's feed, lent to and borrowed from (so it pays a rate).
+    const [nIx, nBank] = await h.addBank(group.address, admin, m.mint, TOKEN_PROGRAM, bankConfig(), { seed: 7n });
+    await run("add a native bank of the mint", admin, [nIx], [nBank.address]);
+    await run("its oracle", admin, [h.configureOracle(group.address, admin, nBank.address, 3, m.oracle, [m.oracle])], [nBank.address]);
+    const other = await otherBank();
+    const lender = await newUser();
+    const lenderTokens = await h.tokenAccount(m.mint, lender.user.address, 10_000_000_000n);
+    await run(
+      "lend into the native bank",
+      lender.user,
+      [h.deposit(group.address, lender.account, lender.user, nBank.address, lenderTokens, nBank.v.liquidity, 5_000_000_000n)],
+      [nBank.address],
+    );
+    const borrower = await newUser();
+    const collateral = await h.tokenAccount(other.mint, borrower.user.address, 100_000_000_000n);
+    await run(
+      "collateral",
+      borrower.user,
+      [h.deposit(group.address, borrower.account, borrower.user, other.bank.address, collateral, other.bank.v.liquidity, 50_000_000_000n)],
+      [borrower.account],
+    );
+    const borrowTo = await h.tokenAccount(m.mint, borrower.user.address, 0n);
+    tick();
+    refreshFeeds();
+    other.feed();
+    fresh(m);
+    await run(
+      "borrow from the native bank",
+      borrower.user,
+      [
+        h.borrow(group.address, borrower.account, borrower.user, nBank, borrowTo, 3_000_000_000n, {
+          rest: ordered([nBank.address, m.oracle], [other.bank.address, other.oracle]),
+        }),
+      ],
+      [borrower.account, nBank.address],
+    );
+    // The account to rebalance: its tokens in the Drift bank (which pays nothing: no borrows in the market).
+    const { user, account } = await newUser();
+    const tokens = await h.tokenAccount(m.mint, user.address, 1_000_000_000n);
+    await run("drift deposit", user, [deposit(b, account, user, tokens, 1_000_000_000n)], watch(b, account, tokens));
+    const executor = await s.funded();
+    const exWallet = await h.tokenAccount(m.mint, executor.address, 0n);
+    const [order] = await pda(PROGRAM, ["rebalance_order", account, m.mint]);
+    const [pool] = await pda(PROGRAM, ["rebalance_fee_pool", account]);
+    await run(
+      "place a rebalance order",
+      user,
+      [
+        s.ix(
+          "marginfi_account_place_rebalance_order",
+          {
+            allowed_banks: [b.address, nBank.address].map(pk),
+            min_improvement: fx(ONE / 1000n),
+            cooldown_seconds: new BN(60),
+            amount: null,
+            keeper_tip: new BN(1_000_000),
+          },
+          [
+            { address: group.address },
+            { address: account, writable: true },
+            { address: user.address, signer: user },
+            { address: m.mint },
+            { address: order, writable: true },
+            { address: user.address, signer: user, writable: true },
+            { address: SYSTEM },
+          ] as never,
+        ),
+      ],
+      [account, order],
+    );
+    await run(
+      "fund the fee pool",
+      user,
+      [
+        s.ix("marginfi_account_top_up_rebalance_fee_pool", { amount: new BN(5_000_000) }, [
+          { address: account },
+          { address: pool, writable: true },
+          { address: user.address, signer: user, writable: true },
+          { address: SYSTEM },
+        ] as never),
+      ],
+      [pool],
+    );
+    // Each referenced bank's block: the bank (accrued in place: writable), then its oracle accounts.
+    const blocks: [Address, Address[]][] = [
+      [b.address, [m.oracle, m.market]],
+      [nBank.address, [m.oracle]],
+    ];
+    const blockMetas = blocks.flatMap(([bank, oracles]) => [
+      { address: bank, role: AccountRole.WRITABLE },
+      ...oracles.map((address) => ({ address, role: AccountRole.READONLY })),
+    ]);
+    const seqAt = 0;
+    void seqAt;
+    let seq = 0n;
+    type Move = [number, number, bigint];
+    const moveArg = (list: Move[]) => list.map(([src, dst, amount]) => ({ src_index: src, dst_index: dst, _pad0: [0, 0, 0, 0, 0, 0], amount: fx(amount) }));
+    const recordAt = async (q: bigint) => (await pda(PROGRAM, ["rebalance_record", account, new Uint8Array(le(q, 8))]))[0];
+    const rebalance = async (label: string, list: Move[], legs: Instruction[], healthAfter: Address[][], failing = false) => {
+      tick();
+      refreshFeeds();
+      other.feed();
+      fresh(m);
+      const record = await recordAt(seq);
+      const start = s.ix("marginfi_account_start_rebalance", { moves: moveArg(list), execution_seq: new BN(seq.toString()) }, [
+        { address: group.address },
+        { address: account, writable: true },
+        { address: order },
+        { address: executor.address },
+        { address: record, writable: true },
+        { address: executor.address, signer: executor, writable: true },
+        { address: INSTRUCTIONS },
+        { address: SYSTEM },
+      ] as never);
+      const end = s.ix("marginfi_account_end_rebalance", {}, [
+        { address: group.address },
+        { address: account, writable: true },
+        { address: order, writable: true },
+        { address: record, writable: true },
+        { address: executor.address, signer: executor, writable: true },
+        { address: pool, writable: true },
+        { address: SYSTEM },
+      ] as never);
+      const o = await run(
+        `rebalance: ${label}`,
+        executor,
+        [
+          { ...start, accounts: [...start.accounts!, ...blockMetas] } as Instruction,
+          ...legs,
+          {
+            ...end,
+            accounts: [...end.accounts!, ...blockMetas, ...ordered(...healthAfter).map((address) => ({ address, role: AccountRole.READONLY }))],
+          } as Instruction,
+        ],
+        [account, order, record, pool, b.address, nBank.address, b.user, nBank.v.liquidity, exWallet, executor.address],
+        failing,
+      );
+      if (o === "ok") seq += 1n;
+      return o;
+    };
+    const fromDrift = (amount: bigint) => [
+      withdraw(b, account, executor, exWallet, amount * 1_000_000n, null, ordered([b.address, m.oracle, m.market])),
+      h.deposit(group.address, account, executor, nBank.address, exWallet, nBank.v.liquidity, amount * 1_000_000n),
+    ];
+    const healthBoth = [
+      [b.address, m.oracle, m.market],
+      [nBank.address, m.oracle],
+    ];
+    tick(120n);
+    await rebalance("into the Drift bank that pays nothing", [[1, 0, 100n * ONE]], [], healthBoth, true);
+    await rebalance(
+      "less deposited than declared",
+      [[0, 1, 400n * ONE]],
+      [fromDrift(400n)[0]!, h.deposit(group.address, account, executor, nBank.address, exWallet, nBank.v.liquidity, 300_000_000n)],
+      healthBoth,
+      true,
+    );
+    await rebalance("400 tokens out of Drift", [[0, 1, 400n * ONE]], fromDrift(400n), healthBoth);
+    expect(data(nBank.address).length).toBeGreaterThan(0);
+    // Settlement: the native bank's index grew (its borrowers pay), the Drift bank's did not.
+    tick(4_000n);
+    refreshFeeds();
+    other.feed();
+    fresh(m);
+    const record = await recordAt(0n);
+    const settle = s.ix("marginfi_account_settle_rebalance_tip", {}, [
+      { address: group.address },
+      { address: account },
+      { address: record, writable: true },
+      { address: executor.address, writable: true },
+      { address: pool, writable: true },
+      { address: executor.address, signer: executor, writable: true },
+    ] as never);
+    await run(
+      "settle the rebalance tip",
+      executor,
+      [{ ...settle, accounts: [...settle.accounts!, ...blockMetas] } as Instruction],
+      [record, pool, executor.address],
+    );
+    // The market is lent out twice over (written in): Drift now pays more, so tokens move back into it; its rate is priced
+    // with them in.
+    const deposits = data(m.market).readBigUInt64LE(432) + (data(m.market).readBigUInt64LE(440) << 64n);
+    poke(m.market, 448, le(deposits * 2n, 16));
+    poke(m.market, 480, le(10_000_000_000n, 16));
+    tick(120n);
+    const intoDrift = (amount: bigint) => [
+      h.withdraw(group.address, account, executor, nBank, exWallet, amount * 1_000_000n, {
+        rest: ordered([b.address, m.oracle, m.market], [nBank.address, m.oracle]),
+      }),
+      deposit(b, account, executor, exWallet, amount * 1_000_000n),
+    ];
+    await rebalance("200 tokens back into Drift, lent out", [[1, 0, 200n * ONE]], intoDrift(200n), healthBoth);
+    // Past the market's deposit cap, nothing more goes in.
+    poke(m.market, 536, le(1n, 8));
+    await rebalance("into Drift past its deposit cap", [[1, 0, 50n * ONE]], intoDrift(50n), healthBoth, true);
+  });
+
   it("matches the original through random deposits, withdrawals, borrows and interest", async () => {
     // FUZZ_SEED=<seed> reproduces a run, FUZZ_STEPS=<n> lengthens it, FUZZ_VERBOSE=1 prints the failures' codes.
     // Every transaction must match the original's outcome, error code, account bytes and events, whichever it is.

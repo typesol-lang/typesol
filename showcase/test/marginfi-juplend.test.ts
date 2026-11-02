@@ -775,6 +775,206 @@ describe.skipIf(!existsSync(program("juplend_earn.so")))("Marginfi v2 port again
     );
   });
 
+  it("rebalances between a JupLend bank and a native bank by their supply rates, as the original does", async () => {
+    tick();
+    const p = await newPool(1_000_000n);
+    const b = await juplendBank(p, 0n);
+    // A native bank of the pool's mint, priced by its feed, lent to and lightly borrowed from.
+    const [nIx, nBank] = await h.addBank(group.address, admin, p.mint, TOKEN_PROGRAM, bankConfig(), { seed: 7n });
+    await run("add a native bank of the mint", admin, [nIx], [nBank.address]);
+    await run("its oracle", admin, [h.configureOracle(group.address, admin, nBank.address, 3, p.oracle, [p.oracle])], [nBank.address]);
+    const usdc = await usdcBank();
+    const lender = await newUser();
+    const lenderTokens = await h.tokenAccount(p.mint, lender.user.address, 10_000_000_000n);
+    await run(
+      "lend into the native bank",
+      lender.user,
+      [h.deposit(group.address, lender.account, lender.user, nBank.address, lenderTokens, nBank.v.liquidity, 5_000_000_000n)],
+      [nBank.address],
+    );
+    const borrower = await newUser();
+    const collateral = await h.tokenAccount(usdc.mint, borrower.user.address, 100_000_000_000n);
+    await run(
+      "collateral",
+      borrower.user,
+      [h.deposit(group.address, borrower.account, borrower.user, usdc.bank.address, collateral, usdc.bank.v.liquidity, 50_000_000_000n)],
+      [borrower.account],
+    );
+    const borrowTo = await h.tokenAccount(p.mint, borrower.user.address, 0n);
+    tick();
+    refreshFeeds();
+    usdc.feed();
+    await run(
+      "borrow from the native bank",
+      borrower.user,
+      [
+        h.borrow(group.address, borrower.account, borrower.user, nBank, borrowTo, 500_000_000n, {
+          rest: ordered([nBank.address, p.oracle], [usdc.bank.address, usdc.oracle]),
+        }),
+      ],
+      [borrower.account, nBank.address],
+    );
+    // The account to rebalance: its tokens in the JupLend bank (no borrowers, no rewards: it pays nothing).
+    const { user, account } = await newUser();
+    const tokens = await h.tokenAccount(p.mint, user.address, 1_000_000_000n);
+    await run("juplend deposit", user, [deposit(b, account, user, tokens, 1_000_000_000n)], watch(b, account, tokens));
+    const executor = await s.funded();
+    const exWallet = await h.tokenAccount(p.mint, executor.address, 0n);
+    const [order] = await pda(PROGRAM, ["rebalance_order", account, p.mint]);
+    const [pool] = await pda(PROGRAM, ["rebalance_fee_pool", account]);
+    await run(
+      "place a rebalance order",
+      user,
+      [
+        s.ix(
+          "marginfi_account_place_rebalance_order",
+          {
+            allowed_banks: [b.address, nBank.address].map(pk),
+            min_improvement: fx(ONE / 10_000n),
+            cooldown_seconds: new BN(60),
+            amount: null,
+            keeper_tip: new BN(1_000_000),
+          },
+          [
+            { address: group.address },
+            { address: account, writable: true },
+            { address: user.address, signer: user },
+            { address: p.mint },
+            { address: order, writable: true },
+            { address: user.address, signer: user, writable: true },
+            { address: SYSTEM },
+          ] as never,
+        ),
+      ],
+      [account, order],
+    );
+    await run(
+      "fund the fee pool",
+      user,
+      [
+        s.ix("marginfi_account_top_up_rebalance_fee_pool", { amount: new BN(5_000_000) }, [
+          { address: account },
+          { address: pool, writable: true },
+          { address: user.address, signer: user, writable: true },
+          { address: SYSTEM },
+        ] as never),
+      ],
+      [pool],
+    );
+    // JupLend's block: the bank, the token reserve, its rewards model, fToken mint and the mint's rate model, then the
+    // oracles; the native bank's: the bank and its feed.
+    const blockMetas = [
+      { address: b.address, role: AccountRole.WRITABLE },
+      { address: p.reserve, role: AccountRole.READONLY },
+      { address: p.rewardsModel, role: AccountRole.READONLY },
+      { address: p.fTokenMint, role: AccountRole.READONLY },
+      { address: p.rateModel, role: AccountRole.READONLY },
+      { address: p.oracle, role: AccountRole.READONLY },
+      { address: p.lending, role: AccountRole.READONLY },
+      { address: nBank.address, role: AccountRole.WRITABLE },
+      { address: p.oracle, role: AccountRole.READONLY },
+    ];
+    let seq = 0n;
+    type Move = [number, number, bigint];
+    const moveArg = (list: Move[]) => list.map(([src, dst, amount]) => ({ src_index: src, dst_index: dst, _pad0: [0, 0, 0, 0, 0, 0], amount: fx(amount) }));
+    const health = ordered([b.address, p.oracle, p.lending], [nBank.address, p.oracle]);
+    const rebalance = async (label: string, list: Move[], legs: Instruction[], failing = false, metas = blockMetas) => {
+      tick();
+      refreshFeeds();
+      usdc.feed();
+      const [record] = await pda(PROGRAM, ["rebalance_record", account, new Uint8Array(le(seq, 8))]);
+      const start = s.ix("marginfi_account_start_rebalance", { moves: moveArg(list), execution_seq: new BN(seq.toString()) }, [
+        { address: group.address },
+        { address: account, writable: true },
+        { address: order },
+        { address: executor.address },
+        { address: record, writable: true },
+        { address: executor.address, signer: executor, writable: true },
+        { address: INSTRUCTIONS },
+        { address: SYSTEM },
+      ] as never);
+      const end = s.ix("marginfi_account_end_rebalance", {}, [
+        { address: group.address },
+        { address: account, writable: true },
+        { address: order, writable: true },
+        { address: record, writable: true },
+        { address: executor.address, signer: executor, writable: true },
+        { address: pool, writable: true },
+        { address: SYSTEM },
+      ] as never);
+      const o = await run(
+        `rebalance: ${label}`,
+        executor,
+        [
+          // The liquidity layer's token reserve (whose rate a JupLend leg reads) and the Lending, brought up to now.
+          await jx(
+            liq.methods
+              .updateExchangePrice(pk(p.mint))
+              .accounts({ tokenReserve: pk(p.reserve), rateModel: pk(p.rateModel) })
+              .instruction(),
+          ),
+          await updateRate(p),
+          { ...start, accounts: [...start.accounts!, ...metas] } as Instruction,
+          ...legs,
+          { ...end, accounts: [...end.accounts!, ...metas, ...health.map((address) => ({ address, role: AccountRole.READONLY }))] } as Instruction,
+        ],
+        [account, order, record, b.address, nBank.address, b.fTokenVault, nBank.v.liquidity, exWallet],
+        failing,
+      );
+      if (o === "ok") seq += 1n;
+      return o;
+    };
+    const fromJuplend = (amount: bigint) => [
+      withdraw(b, account, executor, exWallet, amount * 1_000_000n, null, health),
+      h.deposit(group.address, account, executor, nBank.address, exWallet, nBank.v.liquidity, amount * 1_000_000n),
+    ];
+    const intoJuplend = (amount: bigint) => [
+      h.withdraw(group.address, account, executor, nBank, exWallet, amount * 1_000_000n, { rest: health }),
+      deposit(b, account, executor, exWallet, amount * 1_000_000n),
+    ];
+    tick(120n);
+    await rebalance("into JupLend, which pays nothing", [[1, 0, 10n * ONE]], [], true);
+    const wrongModel = blockMetas.map((x) => (x.address === p.rateModel ? { ...x, address: p.reserve } : x));
+    await rebalance("another account as the rate model", [[0, 1, 400n * ONE]], fromJuplend(400n), true, wrongModel);
+    await rebalance("400 tokens out of JupLend", [[0, 1, 400n * ONE]], fromJuplend(400n));
+    // Settlement reads each bank's yield index (its venue's rate: no rewards accounts).
+    tick(4_000n);
+    refreshFeeds();
+    usdc.feed();
+    const [record0] = await pda(PROGRAM, ["rebalance_record", account, new Uint8Array(le(0n, 8))]);
+    const settleIx = s.ix("marginfi_account_settle_rebalance_tip", {}, [
+      { address: group.address },
+      { address: account },
+      { address: record0, writable: true },
+      { address: executor.address, writable: true },
+      { address: pool, writable: true },
+      { address: executor.address, signer: executor, writable: true },
+    ] as never);
+    const settleMetas = [
+      { address: b.address, role: AccountRole.WRITABLE },
+      { address: p.reserve, role: AccountRole.READONLY },
+      { address: p.oracle, role: AccountRole.READONLY },
+      { address: p.lending, role: AccountRole.READONLY },
+      { address: nBank.address, role: AccountRole.WRITABLE },
+      { address: p.oracle, role: AccountRole.READONLY },
+    ];
+    await run(
+      "settle the rebalance tip",
+      executor,
+      [await updateRate(p), { ...settleIx, accounts: [...settleIx.accounts!, ...settleMetas] } as Instruction],
+      [record0, pool, executor.address],
+    );
+    // The Lending's rewards switched on (its rewards model written in): JupLend now pays more, priced with the tokens in.
+    const model = Buffer.from(data(p.rewardsModel));
+    model.writeBigUInt64LE(0n, 40); // start TVL
+    model.writeBigUInt64LE(100_000_000n, 48); // duration
+    model.writeBigUInt64LE(t - 1_000n, 56); // start time
+    model.writeBigUInt64LE(1_000_000_000_000n, 64); // yearly reward
+    poke(p.rewardsModel, 0, model);
+    tick(120n);
+    await rebalance("200 tokens back into JupLend, with rewards", [[1, 0, 200n * ONE]], intoJuplend(200n));
+  });
+
   it("matches the original through random deposits, withdrawals, borrows and exchange prices", async () => {
     // FUZZ_SEED=<seed> reproduces a run, FUZZ_STEPS=<n> lengthens it, FUZZ_VERBOSE=1 prints the failures' codes.
     // Every transaction must match the original's outcome, error code, account bytes and events, whichever it is.

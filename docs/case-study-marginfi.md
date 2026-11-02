@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration, Solend, Kamino, Drift and JupLend banks, and every oracle setup's pricing done (all 124 instructions); venue rebalance legs to come |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration, Solend, Kamino, Drift and JupLend banks, every oracle setup's pricing and venue rebalance legs done (all 124 instructions) |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
 
@@ -280,8 +280,15 @@ banks' amounts, rates and tags; the executor withdraws and deposits in between; 
 beats its source, every bank's token amount moved as declared (within 3 native units per move), the budget, the
 account's Maintenance health and every other balance, carries order tags with their balances, and escrows the
 keeper's share of the tip; settlement pays it once the destinations out-yielded their sources, else refunds it.
-Rebalances across Kamino, Drift, Solend and JupLend banks price from those venues' supply rates, which the port does
-not read yet: it refuses them (RebalanceVenueUnsupported).
+Rebalances across Kamino, Drift and JupLend banks price each leg at the venue's supply rate
+(`programs/marginfi/src/state/rate.rs` and the mocks' rate math), as the original does: klend's 11-point borrow curve
+times utilization less its take rate, plus the reserve's reward emissions (capped by its lending market), at the
+chain's measured pace for a per-slot reserve (slots over the elapsed part of the epoch, from `epochStartTimestamp()`);
+Drift's piecewise curve less the insurance fund's factor (a market without borrows exempt from staleness); JupLend's
+liquidity-layer rate (the mint's rate model at the diluted utilization) plus its Lending's reward rate. Amounts
+convert through the venue's exchange rate (Drift's in its 9-decimal balances), deposit room is the tighter of the
+bank's limit and the venue's cap, settlement reads the venues' rates through the yield index, and the conservation
+dust widens by the largest exchange rate. Solend banks are refused (RebalanceVenueUnsupported), as there.
 
 **Part 5, resizing and the monitor archive.** `lending_pool_resize_group_account`, `lending_pool_resize_bank_account`
 and `resize_global_fee_state` grow a v1-sized account to the current struct size (anyone pays the rent short of it;
@@ -366,7 +373,7 @@ both ledgers (Marginfi only reads them):
   risk admin's liquidation (the original's `ignore_pt_emergency`);
 - `FixedKamino`, `FixedDrift`, `FixedJuplend`: a venue bank's fixed price times the venue's rate.
 
-Rebalances still refuse venue banks.
+Rebalance legs in Kamino, Drift and JupLend banks are ported too (see Part 5, rebalances, above).
 
 The venue tests (Solend, Kamino, Drift, JupLend) hold a refused transaction to the original's error, code included,
 not only to failing: one difference turned up that way and was fixed (a claim given one token account for two, which
@@ -383,6 +390,9 @@ the original lets through to its own check).
   discriminator 3001 / 3002) before it checks any account's constraints. They are `Owner<Account<T>, "…">` in the port
   (a struct of the venue's bytes with its discriminator), so a foreign account gets 3007 there too and not the bank's
   `has_one` error; Solend's reserve has a one-byte discriminator (its version), `/** @discriminator 0x01 */`.
+- **The epoch's start time.** Kamino's per-slot rates are rescaled at the chain's measured pace, slots over the
+  seconds since the epoch began: `epochStartTimestamp()` reads it from the Clock (with `slotsPerEpoch()`,
+  `firstNormalEpoch()` and `firstNormalSlot()` for the epoch's first slot).
 - **A CPI into an address-checked account.** Marginfi takes JupLend's programs as `UncheckedAccount`s with
   `address = …`: `Address<AccountInfo, "jup3Y…">` is now a CPI's program, checked by its key alone (2012).
 - **The Clock in a constraint and in the body.** Solend's deposit and withdrawal refuse a reserve not refreshed this
@@ -622,8 +632,6 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
 - **Drift withdrawals' reward accounts.** `drift_withdraw` takes three optional accounts per reward market (oracle,
   spot market, mint) and passes on whichever are given; the port passes each reward as its spot market and mint, with
   or without its oracle, and refuses other combinations ("TypeSOL port: …").
-- **Rebalances of venue banks.** Rebalance legs in Kamino, Drift or JupLend banks stop in the port
-  (RebalanceVenueUnsupported) where the original goes on with the venues' supply rates.
 - **Undecodable stake accounts.** Where the original fails with `BorshIoError` on a staked pool's stake account that
   does not decode (a runtime error without a custom code), the port fails with its own error; both fail.
 - **Token-2022 in a bad-debt claim.** `drift_claim_bad_debt`'s claim mint and distributor vault are SPL Token accounts

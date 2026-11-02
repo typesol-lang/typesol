@@ -531,5 +531,41 @@ describe("Marginfi v2 port against the mainnet binary: banks priced by another p
       [h.borrow(group.address, account, user, sol.bank, solTo, 1_000_000n, { rest: rest() })],
       [account, sol.bank.address, solTo],
     );
+    // The risk admin liquidates through an Exponent emergency (the original's ignore_pt_emergency): SOL jumps, the
+    // account is under water, the PT vault depegs; the PT is priced (at its redemption) for both accounts, not refused.
+    const liquidator = await s.key();
+    await run("liquidator account", admin, [h.accountInit(group.address, liquidator, admin)], [liquidator.address]);
+    const adminSol = await h.tokenAccount(sol.mint, admin.address, 1_000_000_000_000n);
+    await run(
+      "liquidator collateral",
+      admin,
+      [h.deposit(group.address, liquidator.address, admin, sol.bank.address, adminSol, sol.bank.v.liquidity, 500_000_000_000n)],
+      [liquidator.address],
+    );
+    putAt(v, vault(pt.mint, { start: t - 20_000n, ath: 1_100_000_000_000n }), EXPONENT, rentOf(457));
+    // The admin as the group's risk admin (written in).
+    h.editGroup(group.address, [["risk_admin", BigInt("0x" + Buffer.from(pk(admin.address).toBytes()).reverse().toString("hex")), 32]]);
+    tick();
+    usdFeed();
+    setPyth(sol.oracle, { price: 1_000_000_000_000n, conf: 1_000n, expo: -6, publishTime: t });
+    const theirs = ordered([pt.bank.address, usdOracle, v], [ptf.bank.address, vf], [sol.bank.address, sol.oracle]);
+    const mine = ordered([pt.bank.address, usdOracle, v], [sol.bank.address, sol.oracle]);
+    const liquidate = (label: string, by: KeyPairSigner, failing = false) =>
+      run(
+        label,
+        by,
+        [
+          h.liquidate(group.address, pt.bank.address, sol.bank, liquidator.address, by, account, 1_000_000n, theirs.length, mine.length, [
+            usdOracle,
+            v,
+            sol.oracle,
+            ...mine,
+            ...theirs,
+          ]),
+        ],
+        [account, liquidator.address, pt.bank.address, sol.bank.address],
+        failing,
+      );
+    await liquidate("liquidate a PT in emergency, by the risk admin", admin);
   });
 });
