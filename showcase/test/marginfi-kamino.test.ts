@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report } from "./jito-helpers.js";
+import { Rng } from "./fuzz-rng.js";
 import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
 
 const KLEND = address("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
@@ -78,10 +79,15 @@ const kOffset = (account: string, path: string) => {
 describe.skipIf(!existsSync(program("kamino_lending.so")))("Marginfi v2 port against the mainnet binary: Kamino banks", () => {
   const h = marginfiPair();
   const { s, setPyth, setSwb } = h;
-  /** h.run, and a transaction not marked failing must succeed (both failing alike would otherwise pass unnoticed). */
+  /**
+   * h.run: a transaction not marked failing must succeed (both failing alike would otherwise pass unnoticed), and one
+   * marked failing must fail with the original's error, code included.
+   */
   const run = async (...args: Parameters<typeof h.run>) => {
-    const o = await h.run(...args);
-    if (!args[4]) expect(o, args[0]).toBe("ok");
+    const [label, payer, ixs, watched, failing] = args;
+    const o = await h.run(label, payer, ixs, watched, false);
+    if (failing) expect(o, label).not.toBe("ok");
+    else expect(o, label).toBe("ok");
     return o;
   };
   let admin: KeyPairSigner;
@@ -442,6 +448,11 @@ describe.skipIf(!existsSync(program("kamino_lending.so")))("Marginfi v2 port aga
     usdc.feed();
     await run("kamino deposit: obligation not refreshed", user, [refresh(r), deposit(b, account, user, tokens, 10_000_000n)], watch(b, account, tokens), true);
     await run("kamino deposit", user, [...both(r, b), deposit(b, account, user, tokens, 10_000_000n)], watch(b, account, tokens));
+    // An account klend does not own as the reserve: Anchor loads it before any constraint (3007).
+    const stranger = await h.tokenAccount(r.mint, user.address, 0n);
+    const d = deposit(b, account, user, tokens, 1_000n);
+    const notKlend = { ...d, accounts: d.accounts!.map((a) => (a.address === r.reserve ? { ...a, address: stranger } : a)) } as Instruction;
+    await run("kamino deposit: reserve not klend's", user, [...both(r, b), notKlend], watch(b, account, tokens), true);
     await run("kamino deposit, refreshing the reserve", user, [...both(r, b), deposit(b, account, user, tokens, 5_000_000n, true)], watch(b, account, tokens));
     await run(
       "kamino deposit: more than the user has",
@@ -595,6 +606,95 @@ describe.skipIf(!existsSync(program("kamino_lending.so")))("Marginfi v2 port aga
       [account],
       true,
     );
+  });
+
+  it("matches the original through random deposits, withdrawals, borrows and rates", async () => {
+    // FUZZ_SEED=<seed> reproduces a run, FUZZ_STEPS=<n> lengthens it, FUZZ_VERBOSE=1 prints the failures' codes.
+    // Every transaction must match the original's outcome, error code, account bytes and events, whichever it is.
+    const seed = BigInt(process.env.FUZZ_SEED ?? Date.now());
+    const steps = Number(process.env.FUZZ_STEPS ?? 60);
+    const rng = new Rng(seed);
+    tick();
+    const market = await newMarket();
+    const r = await newReserve(market, 1_000_000n + BigInt(rng.int(200_000_000)), rng.chance(50), rng.pick([6, 8, 9]));
+    const b = await kaminoBank(r, 0n);
+    const usdc = await usdcBank();
+    const { user, account } = await newUser();
+    const tokens = await h.tokenAccount(r.mint, user.address, 1_000_000_000_000n);
+    const usdcTo = await h.tokenAccount(usdc.mint, user.address, 0n);
+    // The health accounts: the banks the account has a balance in (tracked from what succeeded), now and then wrong.
+    let deposited = false;
+    let owing = false;
+    const rest = (borrowing = false) => {
+      const groups = [...(deposited ? [[b.address, r.oracle, r.reserve]] : []), ...(owing || borrowing ? [[usdc.bank.address, usdc.oracle]] : [])];
+      if (rng.chance(10)) groups.push([usdc.bank.address, usdc.oracle].slice(0, 1));
+      return ordered(...groups);
+    };
+    /** h.run, counting what succeeded: a run that only ever fails would prove little. */
+    const ok = new Map<string, number>();
+    const go = async (what: string, ...more: Parameters<typeof h.run> extends [string, ...infer R] ? R : never) => {
+      const o = await h.run(`fuzz kamino (seed ${seed}): ${what}`, ...more);
+      if (o === "ok") ok.set(what, (ok.get(what) ?? 0) + 1);
+      else if (process.env.FUZZ_VERBOSE) console.log(`${what}: ${o.replace(/.*code: (\d+).*/, "$1")}`);
+      return o;
+    };
+    const amount = () => (rng.chance(25) ? BigInt(rng.int(30)) : rng.chance(50) ? rng.next() % 10_000_000n : rng.next() % 2_000_000_000n);
+    for (let i = 0; i < steps; i++) {
+      if (rng.chance(40)) {
+        tick(BigInt(1 + rng.int(600)));
+        refreshFeeds();
+        usdc.feed();
+      }
+      // The reserve and obligation refreshed first, or only the reserve, or neither (stale after a tick).
+      const fresh = rng.chance(80) ? both(r, b) : rng.chance(50) ? [refresh(r)] : [];
+      switch (rng.int(7)) {
+        case 0:
+        case 1:
+          if ((await go("deposit", user, [...fresh, deposit(b, account, user, tokens, amount())], watch(b, account, tokens))) === "ok") deposited = true;
+          break;
+        case 2:
+          await go("withdraw", user, [...fresh, withdraw(b, account, user, tokens, amount(), null, rest())], watch(b, account, tokens));
+          break;
+        case 3:
+          // Taking everything out of the reserve needs its liquidity: the written-in borrows are put back first.
+          poke(r.reserve, kOffset("Reserve", "liquidity.borrowed_amount_sf"), le(0n, 16));
+          if ((await go("withdraw all", user, [...fresh, withdraw(b, account, user, tokens, 0n, 1, rest())], watch(b, account, tokens))) === "ok")
+            deposited = false;
+          break;
+        case 4:
+          if (
+            (await go(
+              "borrow",
+              user,
+              [refresh(r), h.borrow(group.address, account, user, usdc.bank, usdcTo, rng.next() % 50_000_000n, { rest: rest(true) })],
+              [account, usdc.bank.address, usdcTo],
+            )) === "ok"
+          )
+            owing = true;
+          break;
+        case 5: {
+          // The reserve's borrowed Fraction grows its total: a rate up to 1.5 liquidity per collateral token.
+          const supply = data(r.reserve).readBigUInt64LE(kOffset("Reserve", "collateral.mint_total_supply"));
+          poke(r.reserve, kOffset("Reserve", "liquidity.borrowed_amount_sf"), le(((supply * BigInt(rng.int(11))) / 20n) << 60n, 16));
+          await go("pulse", user, [refresh(r), h.pulse(group.address, b.address, [r.oracle, r.reserve])], [b.address]);
+          break;
+        }
+        default:
+          h.tokenAccountAt(usdcTo, usdc.mint, user.address, data(usdcTo).readBigUInt64LE(64) + 1_000_000_000n);
+          if (
+            (await go(
+              "repay all",
+              user,
+              [h.repay(group.address, account, user, usdc.bank.address, usdcTo, usdc.bank.v.liquidity, 0n, { all: true })],
+              [account, usdc.bank.address],
+            )) === "ok"
+          )
+            owing = false;
+      }
+    }
+    console.log(`fuzz kamino (seed ${seed}): succeeded ${JSON.stringify(Object.fromEntries(ok))}`);
+    expect(ok.get("deposit") ?? 0, "deposits succeeded").toBeGreaterThan(0);
+    expect((ok.get("withdraw") ?? 0) + (ok.get("withdraw all") ?? 0), "withdrawals succeeded").toBeGreaterThan(0);
   });
 
   it("harvests a Kamino farm's reward into the fee wallet as the original does", async () => {

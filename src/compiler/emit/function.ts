@@ -28,7 +28,9 @@ export class FunctionEmitter extends StatementEmitter {
     this.line(`(void)params;`);
     for (const p of h.params)
       if (p.account && p.account.kind === "account" && p.account.struct.layout !== "borsh")
-        this.line(`TSS_${p.account.struct.name} *d_${p.name} = (TSS_${p.account.struct.name} *)(a_${p.name}->data + 8);`);
+        this.line(
+          `TSS_${p.account.struct.name} *d_${p.name} = (TSS_${p.account.struct.name} *)(a_${p.name}->data + ${p.account.struct.accountDiscriminator.length});`,
+        );
     for (const stmt of h.statements) this.reporter.guard(() => this.statement(stmt));
     // A helper with a result must return one; falling off the end would leave it unset.
     const end = h.returns ? `  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${h.display} ended without returning a value");` : `  return SUCCESS;`;
@@ -67,12 +69,27 @@ export class FunctionEmitter extends StatementEmitter {
       if (a.constraints.signed) head.push(`  if (!${v}->is_signer) ${this.checkFail(a, "signer", "TS_ERR_CONSTRAINT_SIGNER", `${a.name} must sign`)};`);
       // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
       // A zero-copy (bytemuck) struct is checked as Anchor's AccountLoader checks it.
-      if (k.kind === "account")
-        head.push(
-          k.struct.idlMeta?.serialization?.startsWith("bytemuck")
-            ? `  TS_TRY(ts_check_loader_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${emptySizeC(k.struct)}));`
-            : `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}));`,
-        );
+      // Owner<Account<T>, "…">: another program's account (Anchor's Account / AccountLoader of a declare_program! type),
+      // checked against that program as owner (3007), in place of this program.
+      if (k.kind === "account") {
+        const owner = a.constraints.owner ? `&co_${a.name}` : "params->program_id";
+        if (a.constraints.owner) head.push(`  static const SolPubkey co_${a.name} = {${cBytes(a.constraints.owner.bytes)}};`);
+        const n = k.struct.accountDiscriminator.length;
+        // A shorter discriminator (another program's zero-copy account): AccountLoader's checks with its length.
+        if (n !== 8)
+          head.push(
+            `  if (!ts_key_eq(&${v}->owner, ${owner})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: ${a.name} is not owned by the expected program");`,
+            `  if (${v}->data_len < ${n}) TS_FAIL(TS_ERR_DISC_NOT_FOUND, "TypeSOL: ${a.name} has no discriminator");`,
+            `  if (!ts_mem_eq(${v}->data, TS_DISC_${k.struct.name}, ${n})) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: ${a.name}: discriminator mismatch");`,
+            `  if (${v}->data_len < ${n} + ${emptySizeC(k.struct)}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: ${a.name} is too small");`,
+          );
+        else
+          head.push(
+            k.struct.idlMeta?.serialization?.startsWith("bytemuck")
+              ? `  TS_TRY(ts_check_loader_account(${v}, ${owner}, TS_DISC_${k.struct.name}, ${emptySizeC(k.struct)}));`
+              : `  TS_TRY(ts_check_program_account(${v}, ${owner}, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}));`,
+          );
+      }
       // A token account created by this instruction is checked where it is created (create/createIfNeeded).
       if (k.kind === "token" && !k.init) head.push(`  TS_TRY(ts_check_token_account(${v}));`);
       // A mint created by this instruction is checked where it is created.
@@ -138,7 +155,7 @@ export class FunctionEmitter extends StatementEmitter {
         head.push(`  TSS_${S} *d_${a.name} = NULL;`, `  TS_TRY(ts_alloc(sizeof(TSS_${S}), (uint8_t **)&d_${a.name}));`);
         if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + 8, ${v}->data_len - 8, d_${a.name}, NULL));`);
       } else if (k.kind === "account" || k.kind === "init" || k.kind === "zeroed" || k.kind === "initIfNeeded") {
-        head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + 8);`);
+        head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + ${k.struct.accountDiscriminator.length});`);
         if (k.struct.vec) {
           head.push(`  uint64_t entry_${a.name} = ${v}->data_len;`, `  (void)entry_${a.name};`);
           if (k.kind === "account") head.push(...vecLenCheck(k.struct, v, `d_${a.name}`));
@@ -647,7 +664,7 @@ export class FunctionEmitter extends StatementEmitter {
       }
       if (k === "account") out.push(...hasOne);
       out.push(...(raw.get(a.name) ?? []));
-      if (c.owner) {
+      if (c.owner && k !== "account") {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
           `  if (!ts_key_eq(&a_${a.name}->owner, &co_${a.name})) ${this.checkFail(a, "owner", "TS_ERR_CONSTRAINT_OWNER", `${a.name} is not owned by the expected program`)};`,

@@ -81,7 +81,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `Ata<TokenAccount, "owner", "mint">` | the account is the associated token account of those parameters (2009; ATA `pda` in the IDL); the owner may be a Pubkey field of a struct account parameter, `"@config.wallet"` (Anchor's `associated_token::authority = config.load()?.wallet`; the IDL names the account, as Anchor's does) |
 | `Ata<Init<TokenAccount>, "owner", "mint">`, `Ata<InitIfNeeded<TokenAccount>, "owner", "mint">` | Anchor `init` / `init_if_needed` with `associated_token::…`: `acct.create(payer)` creates the ATA (fails if it exists); `const created = acct.createIfNeeded(payer)` creates it only when missing, otherwise checks it is that ATA (2009). Then it is a `TokenAccount` of that mint and owner (2014 / 2015). Needs `AssociatedTokenProgram`, `SystemProgram` and a token program parameter; call it at the top level before using the account |
 | `Address<A, "4Nd1…">` | exact address (2012; `address` in the IDL) |
-| `Owner<A, "Tokenkeg…">`, `Executable<A>` | owner program (2004), executable (2007) |
+| `Owner<A, "Tokenkeg…">`, `Executable<A>` | owner program (2004), executable (2007). On a struct account, `Owner<Account<T>, "…">` is another program's account (Anchor's `Account` / `AccountLoader` of a `declare_program!` type): loaded with that program as its owner (3007) and Anchor's discriminator for `T`'s name, its fields read and `HasOne` checked as for this program's own; the IDL lists `T` among its types, not its accounts (an error named on such an `Owner` is not used: the load fails with 3007). Such a struct may carry a shorter discriminator, `/** @discriminator 0x01 */` (1 to 8 bytes, as Anchor's `discriminator = &[1]`; Solend's reserve), its fields then starting right after it; this program's own accounts keep 8 |
 | `Seeds<A, ["metadata", "@mint"], never, "@metadataProgram">` | the fourth argument derives the PDA under another program (a program parameter or a base58 address; `pda.program` in the IDL) |
 | `A \| null` / `Optional<A>` | optional account (Anchor `Option<Account>`): the client passes this program's id to leave it out; its checks and constraints run only when present; `x !== null` before use, or `x!` / `x!.field` to assert it was passed (5115 otherwise); `optional` in the IDL |
 | `ProgramData` | this program's ProgramData (address derived from the program id, upgradeable-loader owner and state checked); `upgradeAuthority`, `deploySlot` — gate admin setup on `programData.upgradeAuthority === admin.key` |
@@ -161,6 +161,9 @@ export function payOut(admin: Signer, treasury: Mut<SystemAccount>, recipient: M
 }
 ```
 
+- program: a `Program<"address">` (key and executable checked on entry), an `UncheckedProgram`, an
+  `Address<AccountInfo, "address">` (Anchor's `#[account(address = ID)]` on an `UncheckedAccount`: only the key is
+  checked, 2012), the system or a token program, or a remaining account.
 - accounts: `readonly(x)`, `writable(x)`, `readonlySigner(x)`, `writableSigner(x)`. The compiler refuses `writable` on a
   non-`Mut` parameter and a signer flag on an account that neither signed nor is covered by `signerSeeds`.
 - data (Borsh): integers little-endian at their declared width (`u32(2n)` is 4 bytes, a bare `5n` is a u64), booleans,

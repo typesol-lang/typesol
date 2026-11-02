@@ -46,6 +46,8 @@ import {
   fxToU64Wrapping,
   fxWrappingDiv,
   fxWrappingMul,
+  fxTryDiv,
+  fxTryMul,
 } from "./i80f48";
 import { accrualChanges, calcInterestRate, milliToU32, u32ToBasis, u32ToCenti, validateInterestRateConfig } from "./interest_rate";
 import { type Bank, type BankConfig, type MarginfiGroup, type RateLimitWindow, BankOperationalState, OracleSetup, RiskTier } from "./state";
@@ -253,6 +255,32 @@ export function setVenueConfig(
   config.oracle_max_age = maxAge;
   config.oracle_max_confidence = maxConfidence;
   config.fixed_price.value = fixedPrice;
+}
+
+/** Bank.config.asset_tag of a Drift bank, and the decimals of its balances (Drift's scaled balances). */
+export const ASSET_TAG_DRIFT: u8 = 4n;
+const DRIFT_SCALED_BALANCE_DECIMALS: u8 = 9n;
+
+/** Bank::get_balance_decimals: the decimals a balance's amount is in (9, Drift's scaled balance, for a Drift bank). */
+export function balanceDecimals(bank: Account<Bank>): u8 {
+  return bank.config.asset_tag === ASSET_TAG_DRIFT ? DRIFT_SCALED_BALANCE_DECIMALS : bank.mint_decimals;
+}
+
+/**
+ * The deposit limit against the bank's asset amount: a Drift bank's, in the mint's decimals, scaled to its balances'
+ * (scale_drift_deposit_limit; DriftMocksError::MathError, 6004, where that overflows).
+ */
+export function depositLimitFx(bank: Account<Bank>): i128 {
+  const limit = fxFromU64(bank.config.deposit_limit);
+  if (bank.config.asset_tag !== ASSET_TAG_DRIFT || bank.mint_decimals === DRIFT_SCALED_BALANCE_DECIMALS) return limit;
+  if (bank.mint_decimals < DRIFT_SCALED_BALANCE_DECIMALS) {
+    const m = fxTryMul(limit, exp10Fx(toU64(DRIFT_SCALED_BALANCE_DECIMALS - bank.mint_decimals)));
+    require(m.err === 0n, 6004n);
+    return m.v;
+  }
+  const d = fxTryDiv(limit, exp10Fx(toU64(bank.mint_decimals - DRIFT_SCALED_BALANCE_DECIMALS)));
+  require(d.err === 0n, 6004n);
+  return d.v;
 }
 
 /** BankConfig::validate: the weights, the interest curve, isolated banks' zero asset weights, the oracle age. */
@@ -622,7 +650,7 @@ export function getLiabilityShares(bank: Mut<Bank>, value: i128): i128 {
 export function changeAssetShares(bank: Mut<Bank>, shares: i128, bypassDepositLimit: boolean): void {
   const total = fxAdd(bank.total_asset_shares.value, shares);
   if (shares > I80F48_ZERO && bank.config.deposit_limit !== U64_MAX && !bypassDepositLimit)
-    require(assetAmount(bank, total) < fxFromU64(bank.config.deposit_limit), MarginfiError.BankAssetCapacityExceeded);
+    require(assetAmount(bank, total) < depositLimitFx(bank), MarginfiError.BankAssetCapacityExceeded);
   bank.total_asset_shares.value = total;
 }
 /** change_liability_shares: a positive change must leave the borrows below the borrow limit (unless bypassed). */
@@ -636,7 +664,7 @@ export function changeLiabilityShares(bank: Mut<Bank>, shares: i128, bypassBorro
 export function remainingDepositCapacity(bank: Mut<Bank>): u64 {
   if (bank.config.deposit_limit === U64_MAX) return U64_MAX;
   const current = assetAmount(bank, bank.total_asset_shares.value);
-  const limit = fxFromU64(bank.config.deposit_limit);
+  const limit = depositLimitFx(bank);
   if (current >= limit) return 0n;
   return fxToU64(fxSub(fxSub(limit, current), I80F48_ONE));
 }
@@ -872,8 +900,8 @@ export function recordWithdrawalOutflow(
   }
   if (!groupLimited) return;
   require(price > I80F48_ZERO, MarginfiError.InvalidRateLimitPrice);
-  require(bank.mint_decimals < 24n, MarginfiError.InternalLogicError);
-  const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(balanceAmount), price), exp10Fx(toU64(bank.mint_decimals))));
+  require(balanceDecimals(bank) < 24n, MarginfiError.InternalLogicError);
+  const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(balanceAmount), price), exp10Fx(toU64(balanceDecimals(bank)))));
   if (group.rate_limiter.hourly.max_outflow > 0n)
     require(value <= windowEffectiveCapacity(group.rate_limiter.hourly, timestamp), MarginfiError.GroupHourlyRateLimitExceeded);
   if (group.rate_limiter.daily.max_outflow > 0n)

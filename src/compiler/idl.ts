@@ -228,7 +228,9 @@ export function buildIdl(model: ProgramModel, address: string, version = "0.1.0"
         })),
         ...(ix.returns ? { returns: idlType(ix.returns) } : {}),
       })),
-    accounts: structs.filter((s) => model.accountStructs.has(s.name)).map((s) => ({ name: s.name, discriminator: s.accountDiscriminator })),
+    accounts: structs
+      .filter((s) => model.accountStructs.has(s.name) && !model.foreignAccounts?.has(s.name))
+      .map((s) => ({ name: s.name, discriminator: s.accountDiscriminator })),
     events: structs.filter((s) => model.events.has(s.name)).map((s) => ({ name: s.name, discriminator: s.eventDiscriminator })),
     errors: model.errors.map((e) => ({ code: e.code, name: e.name, ...(e.msg ? { msg: e.msg } : {}) })),
     types: [

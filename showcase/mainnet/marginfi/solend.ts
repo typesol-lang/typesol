@@ -5,7 +5,21 @@
 //
 // solend-mocks has its own error enum, numbered from 6000 as Marginfi's is: MathError 6000, InvalidAccountData 6001,
 // InvalidObligationCollateral 6002, InvalidObligationLiquidity 6003.
-import { type AccountInfo, type Pubkey, type u128, type u32, type u64, type u8, log, pubkey, readData, require, u64 as toU64 } from "typesol";
+import {
+  type Account,
+  type AccountInfo,
+  type FixedArray,
+  type Pubkey,
+  type u128,
+  type u32,
+  type u64,
+  type u8,
+  log,
+  pubkey,
+  readData,
+  require,
+  u64 as toU64,
+} from "typesol";
 import { fxFromU64, fxTryDiv, fxTryMul } from "./i80f48";
 import { SOLEND_MOCKS_MATH_ERROR, solendScaledSupplies } from "./oracle";
 
@@ -16,21 +30,33 @@ const INVALID_OBLIGATION_LIQUIDITY: u32 = 6003n;
 /** OBLIGATION_LEN */
 export const SOLEND_OBLIGATION_SIZE: u64 = 1300n;
 
+/**
+ * solend-mocks' SolendMinimalReserve: a Solend reserve as Marginfi loads it (AccountLoader: owner, then a one-byte
+ * discriminator, its version 1, then the size), its fields read at the offsets below.
+ *
+ * @repr c packed
+ * @serialization bytemuck
+ * @discriminator 0x01
+ */
+export interface SolendReserve {
+  bytes: FixedArray<u8, 618>;
+}
+
 /** The reserve's lending market, liquidity mint, liquidity supply and collateral mint and supply token accounts. */
-export function reserveLendingMarket(reserve: AccountInfo): Pubkey {
+export function reserveLendingMarket(reserve: Account<SolendReserve>): Pubkey {
   return readData<Pubkey>(reserve, 10n);
 }
-export function reserveLiquidityMint(reserve: AccountInfo): Pubkey {
+export function reserveLiquidityMint(reserve: Account<SolendReserve>): Pubkey {
   return readData<Pubkey>(reserve, 42n);
 }
 
 /** SolendMinimalReserve::is_stale: last_update_slot behind the current slot. */
-export function reserveSlot(reserve: AccountInfo): u64 {
+export function reserveSlot(reserve: Account<SolendReserve>): u64 {
   return readData<u64>(reserve, 1n);
 }
 
 /** collateral_to_liquidity / liquidity_to_collateral: `amount` at the reserve's exchange rate, toward −∞. */
-export function convert(reserve: AccountInfo, amount: u64, toLiquidity: boolean): u64 {
+export function convert(reserve: Account<SolendReserve>, amount: u64, toLiquidity: boolean): u64 {
   const s = solendScaledSupplies(
     readData<u64>(reserve, 171n),
     readData<u128>(reserve, 179n),

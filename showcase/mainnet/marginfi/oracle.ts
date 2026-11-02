@@ -12,6 +12,8 @@ import {
   type RemainingAccounts,
   type u128,
   currentSlot,
+  u128 as toU128,
+  u256 as toU256,
   i128 as toI128,
   type i128,
   type i32,
@@ -25,9 +27,24 @@ import {
   require,
   u64 as toU64,
 } from "typesol";
-import { ASSET_TAG_JUPLEND, BANK_ASSET_TAG_STAKED, saturatingAddI64, saturatingSubI64 } from "./bank";
+import { ASSET_TAG_DRIFT, ASSET_TAG_JUPLEND, BANK_ASSET_TAG_STAKED, saturatingAddI64, saturatingSubI64 } from "./bank";
 import { MarginfiError } from "./errors";
-import { type Fx, I80F48_ONE, exp10Fx, fxAdd, fxFromI128Wrapping, fxFromI64, fxFromU64, fxMin, fxSub, fxTryAdd, fxTryDiv, fxTryMul, fxTrySub, fxWrappingDiv } from "./i80f48";
+import {
+  type Fx,
+  I80F48_ONE,
+  exp10Fx,
+  fxAdd,
+  fxFromI128Wrapping,
+  fxFromI64,
+  fxFromU64,
+  fxMin,
+  fxSub,
+  fxTryAdd,
+  fxTryDiv,
+  fxTryMul,
+  fxTrySub,
+  fxWrappingDiv,
+} from "./i80f48";
 import { U32_MAX_FX } from "./interest_rate";
 import { type Bank, OracleSetup } from "./state";
 
@@ -35,7 +52,6 @@ import { type Bank, OracleSetup } from "./state";
 export const ASSET_TAG_DEFAULT: u8 = 0n;
 export const ASSET_TAG_SOL: u8 = 1n;
 export const ASSET_TAG_KAMINO: u8 = 3n;
-const ASSET_TAG_DRIFT: u8 = 4n;
 export const ASSET_TAG_SOLEND: u8 = 5n;
 
 /** A Pyth account that does not Borsh-decode: the original fails with ProgramError::BorshIoError (not a custom code). */
@@ -235,9 +251,19 @@ export function isKaminoSetup(s: OracleSetup): boolean {
   return s === OracleSetup.KaminoPythPush || s === OracleSetup.KaminoSwitchboardPull;
 }
 
+/** Drift's feed setups (DriftPythPull, DriftSwitchboardPull): a feed, then the spot market. */
+export function isDriftSetup(s: OracleSetup): boolean {
+  return s === OracleSetup.DriftPythPull || s === OracleSetup.DriftSwitchboardPull;
+}
+
+/** JupLend's feed setups (JuplendPythPull, JuplendSwitchboardPull): a feed, then the Lending account. */
+export function isJuplendSetup(s: OracleSetup): boolean {
+  return s === OracleSetup.JuplendPythPull || s === OracleSetup.JuplendSwitchboardPull;
+}
+
 /** The venue setups ported: a Pyth or Switchboard feed and a reserve whose exchange rate multiplies it. */
 export function isReserveSetup(s: OracleSetup): boolean {
-  return isSolendSetup(s) || isKaminoSetup(s);
+  return isSolendSetup(s) || isKaminoSetup(s) || isDriftSetup(s) || isJuplendSetup(s);
 }
 
 /** Whether validation goes on to read the feed account (after validateOracleCount passed). */
@@ -249,7 +275,14 @@ export function validatesFeedAccount(bank: Account<Bank>): boolean {
 export function validateFeedAccount(bank: Account<Bank>, a: RemainingAccount): u32 {
   if (a.key !== bank.config.oracle_keys.get(0n)) return WRONG_ORACLE_ACCOUNT_KEYS;
   const s = bank.config.oracle_setup;
-  if (s === OracleSetup.SwitchboardPull || s === OracleSetup.SolendSwitchboardPull || s === OracleSetup.KaminoSwitchboardPull) return switchboardAccountErr(a);
+  if (
+    s === OracleSetup.SwitchboardPull ||
+    s === OracleSetup.SolendSwitchboardPull ||
+    s === OracleSetup.KaminoSwitchboardPull ||
+    s === OracleSetup.DriftSwitchboardPull ||
+    s === OracleSetup.JuplendSwitchboardPull
+  )
+    return switchboardAccountErr(a);
   return pythAccountErr(a);
 }
 
@@ -258,6 +291,8 @@ export function validateVenueAccount(bank: Account<Bank>, rest: RemainingAccount
   const s = bank.config.oracle_setup;
   if (!isReserveSetup(s)) return 0n;
   if (rest.get(1n).key === bank.config.oracle_keys.get(1n)) return 0n;
+  if (isDriftSetup(s)) return DRIFT_SPOT_MARKET_VALIDATION_FAILED;
+  if (isJuplendSetup(s)) return JUPLEND_LENDING_VALIDATION_FAILED;
   return isSolendSetup(s) ? SOLEND_RESERVE_VALIDATION_FAILED : KAMINO_RESERVE_VALIDATION_FAILED;
 }
 
@@ -617,7 +652,8 @@ export function kaminoFeed(bank: Account<Bank>, rest: RemainingAccounts, first: 
   const reserve = rest.get(first + 1n);
   if (oracle.key !== bank.config.oracle_keys.get(0n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
   if (reserve.key !== bank.config.oracle_keys.get(1n)) return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
-  if (reserve.owner !== KAMINO_ID || reserve.dataLen < 8n || readData<u64>(reserve, 0n) !== KAMINO_RESERVE_DISC) return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
+  if (reserve.owner !== KAMINO_ID || reserve.dataLen < 8n || readData<u64>(reserve, 0n) !== KAMINO_RESERVE_DISC)
+    return feedErr(KAMINO_RESERVE_VALIDATION_FAILED);
   require(reserve.dataLen >= 8624n, MarginfiError.InternalLogicError);
   if (readData<u64>(reserve, 16n) < currentSlot()) return feedErr(KAMINO_RESERVE_STALE);
   const s = kaminoSupplies(reserve);
@@ -630,6 +666,140 @@ export function kaminoFeed(bank: Account<Bank>, rest: RemainingAccounts, first: 
   // kamino_borrow_power: the reserve's emergency mode, or the market's as propagated to the bank.
   if (readData<u8>(reserve, 4864n) !== 0n || (bank.flags & KAMINO_MARKET_EMERGENCY) !== 0n) f.no_borrow_power = 1n;
   return withRate(f, m, pyth, bank.config.oracle_max_confidence);
+}
+
+/**
+ * A feed times a venue's exchange rate (`numerator` / `precision`, as `mult` in I80F48 for the cache): the feed account,
+ * the cache's price (before the rate; Pyth's confidence unbounded), then the prices and confidences times the rate
+ * (mul_div: a negative price, or a result past its type, fails with MathError).
+ */
+function rateFeed(bank: Account<Bank>, oracle: RemainingAccount, pyth: boolean, numerator: u128, precision: u128, mult: i128, t: i64): Feed {
+  const maxAge = toI64(bank.config.oracle_max_age);
+  const f = pyth ? pythFeed(oracle, maxAge, t) : switchboardFeed(oracle, maxAge, t);
+  if (f.err !== 0n) return f;
+  const raw = priceAndConfidence(f, true, pyth ? 4294967295n : bank.config.oracle_max_confidence);
+  const out = feedErr(0n);
+  out.kind = f.kind;
+  out.price = f.price;
+  out.conf = f.conf;
+  out.ema_price = f.ema_price;
+  out.ema_conf = f.ema_conf;
+  out.exponent = f.exponent;
+  out.publish_time = f.publish_time;
+  out.value = f.value;
+  out.source_time = f.source_time;
+  out.has_raw = 1n;
+  out.raw_err = raw.err;
+  out.raw_price = raw.price;
+  out.raw_conf = raw.conf;
+  out.mult = mult;
+  if (pyth) {
+    // mul_div_i64 / mul_div_u64: a negative value, or a result past the type, fails.
+    const price: i128 = f.price < 0n ? -1n : mulDivU128(toU128(f.price), numerator, precision);
+    const ema: i128 = f.ema_price < 0n ? -1n : mulDivU128(toU128(f.ema_price), numerator, precision);
+    const conf: i128 = mulDivU128(toU128(f.conf), numerator, precision);
+    const emaConf: i128 = mulDivU128(toU128(f.ema_conf), numerator, precision);
+    const i64Max: i128 = 9223372036854775807n;
+    const u64Max: i128 = 18446744073709551615n;
+    if (price < 0n || price > i64Max || ema < 0n || ema > i64Max || conf < 0n || conf > u64Max || emaConf < 0n || emaConf > u64Max) {
+      out.err = VENUE_MATH_ERROR;
+      return out;
+    }
+    out.price = toI64(price);
+    out.ema_price = toI64(ema);
+    out.conf = toU64(conf);
+    out.ema_conf = toU64(emaConf);
+  } else {
+    // mul_div_i128 on Switchboard's 10^18-scaled value.
+    const v: i128 = f.value < 0n ? -1n : mulDivU128(toU128(f.value), numerator, precision);
+    if (v < 0n) {
+      out.err = VENUE_MATH_ERROR;
+      return out;
+    }
+    out.value = v;
+  }
+  return out;
+}
+
+// ---- Drift spot markets (drift_mocks::state::MinimalSpotMarket, Anchor zero-copy) ----------------------------------
+
+export const DRIFT_ID = pubkey("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
+const DRIFT_SPOT_MARKET_VALIDATION_FAILED: u32 = 6304n;
+const DRIFT_SPOT_MARKET_STALE: u32 = 6322n;
+/** The SpotMarket account's discriminator, as a little-endian u64. */
+export const DRIFT_SPOT_MARKET_DISC: u64 = 2828614232571425124n;
+/** SPOT_CUMULATIVE_INTEREST_PRECISION */
+const SPOT_INTEREST_PRECISION: u128 = 10000000000n;
+
+/** mul_div_u128: value × numerator / denominator, toward zero; -1 when the product does not fit a u128 (or the result an i128). */
+function mulDivU128(value: u128, numerator: u128, denominator: u128): i128 {
+  const p = toU256(value) * toU256(numerator);
+  if (p > 340282366920938463463374607431768211455n) return -1n;
+  const q = p / toU256(denominator);
+  if (q > 170141183460469231731687303715884105727n) return -1n;
+  return toI128(q);
+}
+
+/** I80F48::from_num of a u128 (panics past its 80 integer bits). */
+function fxFromU128(n: u128): i128 {
+  require(n <= 604462909807314587353087n, MarginfiError.InternalLogicError);
+  return toI128(n) * 281474976710656n;
+}
+
+/** `as i64` on a u64: wraps past i64::MAX. */
+function toI64Wrap(n: u64): i64 {
+  return n <= 9223372036854775807n ? toI64(n) : toI64(n - 9223372036854775808n) - 9223372036854775807n - 1n;
+}
+
+/**
+ * A Drift bank's feed (DriftPythPull, DriftSwitchboardPull): the feed's key, the spot market (its key, the account, its
+ * interest accrued this second), then the feed times its cumulative deposit interest over 10^10 (rateFeed).
+ */
+export function driftFeed(bank: Account<Bank>, rest: RemainingAccounts, first: u64, t: i64): Feed {
+  const pyth = bank.config.oracle_setup === OracleSetup.DriftPythPull;
+  const oracle = rest.get(first);
+  const market = rest.get(first + 1n);
+  if (oracle.key !== bank.config.oracle_keys.get(0n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
+  if (market.key !== bank.config.oracle_keys.get(1n)) return feedErr(DRIFT_SPOT_MARKET_VALIDATION_FAILED);
+  if (market.owner !== DRIFT_ID || market.dataLen < 8n || readData<u64>(market, 0n) !== DRIFT_SPOT_MARKET_DISC)
+    return feedErr(DRIFT_SPOT_MARKET_VALIDATION_FAILED);
+  require(market.dataLen >= 776n, MarginfiError.InternalLogicError);
+  if (toI64Wrap(readData<u64>(market, 568n)) < t) return feedErr(DRIFT_SPOT_MARKET_STALE);
+  const numerator = readData<u128>(market, 464n);
+  const mult = fxTryDiv(fxFromU128(numerator), fxFromU64(toU64(SPOT_INTEREST_PRECISION)));
+  if (mult.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+  return rateFeed(bank, oracle, pyth, numerator, SPOT_INTEREST_PRECISION, mult.v, t);
+}
+
+// ---- JupLend lendings (juplend_mocks::state::Lending, Anchor zero-copy, packed) ----------------------------------
+
+export const JUPLEND_ID = pubkey("jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9");
+const JUPLEND_LENDING_VALIDATION_FAILED: u32 = 6501n;
+const JUPLEND_LENDING_STALE: u32 = 6504n;
+/** The Lending account's discriminator, as a little-endian u64. */
+export const JUPLEND_LENDING_DISC: u64 = 17417253714645927815n;
+/** EXCHANGE_PRICES_PRECISION */
+const EXCHANGE_PRICES_PRECISION: u128 = 1000000000000n;
+
+/**
+ * A JupLend bank's feed (JuplendPythPull, JuplendSwitchboardPull): the feed's key, the Lending account (its key, the
+ * account, updated this second), the feed account, the cache's price, then the prices and confidences times the
+ * Lending's token exchange price over 10^12.
+ */
+export function juplendFeed(bank: Account<Bank>, rest: RemainingAccounts, first: u64, t: i64): Feed {
+  const pyth = bank.config.oracle_setup === OracleSetup.JuplendPythPull;
+  const oracle = rest.get(first);
+  const lending = rest.get(first + 1n);
+  if (oracle.key !== bank.config.oracle_keys.get(0n)) return feedErr(WRONG_ORACLE_ACCOUNT_KEYS);
+  if (lending.key !== bank.config.oracle_keys.get(1n)) return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+  if (lending.owner !== JUPLEND_ID || lending.dataLen < 8n || readData<u64>(lending, 0n) !== JUPLEND_LENDING_DISC)
+    return feedErr(JUPLEND_LENDING_VALIDATION_FAILED);
+  require(lending.dataLen >= 196n, MarginfiError.InternalLogicError);
+  if (toI64Wrap(readData<u64>(lending, 123n)) < t) return feedErr(JUPLEND_LENDING_STALE);
+  const numerator = toU128(readData<u64>(lending, 115n));
+  const mult = fxTryDiv(fxFromU64(readData<u64>(lending, 115n)), fxFromU128(EXCHANGE_PRICES_PRECISION));
+  if (mult.err !== 0n) return feedErr(VENUE_MATH_ERROR);
+  return rateFeed(bank, oracle, pyth, numerator, EXCHANGE_PRICES_PRECISION, mult.v, t);
 }
 
 /**

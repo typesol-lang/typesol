@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report } from "./jito-helpers.js";
+import { Rng } from "./fuzz-rng.js";
 import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
 
 const SOLEND = address("So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo");
@@ -23,10 +24,17 @@ const pk = (a: Address) => new web3.PublicKey(a);
 describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the mainnet binary: Solend banks", () => {
   const h = marginfiPair();
   const { s, setPyth, setSwb } = h;
-  /** h.run, and a transaction not marked failing must succeed (both failing alike would otherwise pass unnoticed). */
+  /**
+   * h.run: a transaction not marked failing must succeed (both failing alike would otherwise pass unnoticed), and one
+   * marked failing must fail with the original's error, code included ("if-panics": where the original fails with a
+   * runtime error, both failing).
+   */
   const run = async (...args: Parameters<typeof h.run>) => {
-    const o = await h.run(...args);
-    if (!args[4]) expect(o, args[0]).toBe("ok");
+    const [label, payer, ixs, watched, failing] = args;
+    if (failing === "if-panics") return h.run(...args);
+    const o = await h.run(label, payer, ixs, watched, false);
+    if (failing) expect(o, label).not.toBe("ok");
+    else expect(o, label).toBe("ok");
     return o;
   };
   let admin: KeyPairSigner;
@@ -380,6 +388,10 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
     setPyth(usdcOracle, { price: 1_000_000n, conf: 1_000n, expo: -6, publishTime: t });
     await run("solend deposit: stale reserve", user, [deposit(b, account, user, tokens, 10_000_000n)], watch(b, account, tokens), true);
     await run("solend deposit", user, [refresh(r), deposit(b, account, user, tokens, 10_000_000n)], watch(b, account, tokens));
+    const stranger = await h.tokenAccount(r.mint, user.address, 0n);
+    const d = deposit(b, account, user, tokens, 1_000n);
+    const notSolend = { ...d, accounts: d.accounts!.map((a) => (a.address === r.reserve ? { ...a, address: stranger } : a)) } as Instruction;
+    await run("solend deposit: reserve not Solend's", user, [refresh(r), notSolend], watch(b, account, tokens), true);
     await run("solend deposit: more than the user has", user, [refresh(r), deposit(b, account, user, tokens, 60_000_000n)], watch(b, account, tokens), true);
     // Borrow against it: the Solend balance is priced at the feed times the reserve's rate.
     const usdcTo = await h.tokenAccount(usdcMint, user.address, 0n);
@@ -399,8 +411,15 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
     );
     await run("borrow: refreshed earlier this slot", user, [h.borrow(group.address, account, user, usdc, usdcTo, 100_000n, { rest })], [account, usdc.address]);
     // With a debt, the original's withdrawal fails once its health checks pass: its circuit-breaker gate borrows the
-    // bank it still holds (AccountBorrowFailed). Past health it fails earlier.
-    await run("solend withdraw: with a debt", user, [refresh(r), withdraw(b, account, user, tokens, 1_000_000n, null, rest)], watch(b, account, tokens), true);
+    // bank it still holds (AccountBorrowFailed, a runtime error the port gives as custom error 12). Past health it fails
+    // earlier.
+    await run(
+      "solend withdraw: with a debt",
+      user,
+      [refresh(r), withdraw(b, account, user, tokens, 1_000_000n, null, rest)],
+      watch(b, account, tokens),
+      "if-panics",
+    );
     await run("solend withdraw: past health", user, [refresh(r), withdraw(b, account, user, tokens, 6_000_000n, null, rest)], watch(b, account, tokens), true);
     await run(
       "repay",
@@ -525,5 +544,110 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
     const solendRest = [b.address, r.oracle, r.reserve];
     await run("switchboard solend withdraw", user, [refresh(r), withdraw(b, account, user, tokens, 500_000_000n, null, solendRest)], watch(b, account, tokens));
     await run("switchboard solend withdraw all", user, [refresh(r), withdraw(b, account, user, tokens, 0n, true, [])], watch(b, account, tokens));
+  });
+
+  it("matches the original through random deposits, withdrawals, borrows and rates", async () => {
+    // FUZZ_SEED=<seed> reproduces a run, FUZZ_STEPS=<n> lengthens it, FUZZ_VERBOSE=1 prints the failures' codes.
+    // Every transaction must match the original's outcome, error code, account bytes and events; where the original
+    // fails with a runtime error (a withdrawal with a debt, AccountBorrowFailed), both failing.
+    const seed = BigInt(process.env.FUZZ_SEED ?? Date.now());
+    const steps = Number(process.env.FUZZ_STEPS ?? 60);
+    const rng = new Rng(seed);
+    tick();
+    const r = await newReserve(1_000_000n + BigInt(rng.int(200_000_000)), rng.chance(50), rng.pick([6, 8, 9]));
+    const b = await solendBank(r, 0n);
+    const usdcMint = await h.mint(TOKEN_PROGRAM, 6);
+    const usdcOracle = (await s.key()).address;
+    const [addUsdc, usdc] = await h.addBank(group.address, admin, usdcMint, TOKEN_PROGRAM, bankConfig());
+    await run("add usdc bank", admin, [addUsdc], [usdc.address]);
+    const usdcFeed = () => setPyth(usdcOracle, { price: 1_000_000n, conf: 1_000n, expo: -6, publishTime: t });
+    usdcFeed();
+    await run("usdc oracle", admin, [h.configureOracle(group.address, admin, usdc.address, 3, usdcOracle, [usdcOracle])], [usdc.address]);
+    const lender = await newUser();
+    const lenderTokens = await h.tokenAccount(usdcMint, lender.user.address, 1_000_000_000_000n);
+    await run(
+      "lend usdc",
+      lender.user,
+      [h.deposit(group.address, lender.account, lender.user, usdc.address, lenderTokens, usdc.v.liquidity, 500_000_000_000n)],
+      [usdc.address],
+    );
+    const { user, account } = await newUser();
+    const tokens = await h.tokenAccount(r.mint, user.address, 1_000_000_000_000n);
+    const usdcTo = await h.tokenAccount(usdcMint, user.address, 0n);
+    // The health accounts: the banks the account has a balance in (tracked from what succeeded), now and then wrong.
+    let deposited = false;
+    let owing = false;
+    const rest = (borrowing = false) => {
+      const groups = [...(deposited ? [[b.address, r.oracle, r.reserve]] : []), ...(owing || borrowing ? [[usdc.address, usdcOracle]] : [])];
+      if (rng.chance(10)) groups.push([usdc.address, usdcOracle].slice(0, 1));
+      return ordered(...groups);
+    };
+    /** h.run, counting what succeeded: a run that only ever fails would prove little. */
+    const ok = new Map<string, number>();
+    const go = async (what: string, ...more: Parameters<typeof h.run> extends [string, ...infer R] ? R : never) => {
+      const o = await h.run(`fuzz solend (seed ${seed}): ${what}`, ...more);
+      if (o === "ok") ok.set(what, (ok.get(what) ?? 0) + 1);
+      else if (process.env.FUZZ_VERBOSE) console.log(`${what}: ${o.replace(/.*code: (\d+).*/, "$1")}`);
+      return o;
+    };
+    const amount = () => (rng.chance(25) ? BigInt(rng.int(30)) : rng.chance(50) ? rng.next() % 10_000_000n : rng.next() % 2_000_000_000n);
+    for (let i = 0; i < steps; i++) {
+      if (rng.chance(40)) {
+        tick(BigInt(1 + rng.int(600)));
+        refreshFeeds();
+        usdcFeed();
+      }
+      // The reserve refreshed in the same transaction, or left as it was (stale after a tick).
+      const fresh = rng.chance(85) ? [refresh(r)] : [];
+      switch (rng.int(7)) {
+        case 0:
+        case 1:
+          if ((await go("deposit", user, [...fresh, deposit(b, account, user, tokens, amount())], watch(b, account, tokens), "if-panics")) === "ok")
+            deposited = true;
+          break;
+        case 2:
+          await go("withdraw", user, [...fresh, withdraw(b, account, user, tokens, amount(), null, rest())], watch(b, account, tokens), "if-panics");
+          break;
+        case 3:
+          if (
+            (await go("withdraw all", user, [...fresh, withdraw(b, account, user, tokens, 0n, true, rest())], watch(b, account, tokens), "if-panics")) === "ok"
+          )
+            deposited = false;
+          break;
+        case 4:
+          if (
+            (await go(
+              "borrow",
+              user,
+              [...fresh, h.borrow(group.address, account, user, usdc, usdcTo, rng.next() % 50_000_000n, { rest: rest(true) })],
+              [account, usdc.address, usdcTo],
+              "if-panics",
+            )) === "ok"
+          )
+            owing = true;
+          break;
+        case 5: {
+          // Solend's borrowed liquidity (WAD) sets the reserve's rate: up to 1.5 tokens per collateral token.
+          poke(r.reserve, 179, le((data(r.reserve).readBigUInt64LE(259) * BigInt(rng.int(11)) * 10n ** 18n) / 20n, 16));
+          await go("pulse", user, [refresh(r), h.pulse(group.address, b.address, [r.oracle, r.reserve])], [b.address], "if-panics");
+          break;
+        }
+        default:
+          h.tokenAccountAt(usdcTo, usdcMint, user.address, data(usdcTo).readBigUInt64LE(64) + 1_000_000_000n);
+          if (
+            (await go(
+              "repay all",
+              user,
+              [h.repay(group.address, account, user, usdc.address, usdcTo, usdc.v.liquidity, 0n, { all: true })],
+              [account, usdc.address],
+              "if-panics",
+            )) === "ok"
+          )
+            owing = false;
+      }
+    }
+    console.log(`fuzz solend (seed ${seed}): succeeded ${JSON.stringify(Object.fromEntries(ok))}`);
+    expect(ok.get("deposit") ?? 0, "deposits succeeded").toBeGreaterThan(0);
+    expect((ok.get("withdraw") ?? 0) + (ok.get("withdraw all") ?? 0), "withdrawals succeeded").toBeGreaterThan(0);
   });
 });

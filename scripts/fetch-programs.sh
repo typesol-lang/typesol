@@ -36,6 +36,13 @@ trimmed MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA marginfi_v2.so
 trimmed So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo solend.so
 trimmed KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD kamino_lending.so
 trimmed FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr kamino_farms.so
+# JupLend (Fluid Solana: Business Source License 1.1, fetched only). Drift's program on mainnet is now a withdraw-only
+# wind-down program; test/programs/drift.so is the Drift v2 build Marginfi's own tests use (Apache-2.0, kept).
+trimmed jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9 juplend_earn.so
+trimmed jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC juplend_liquidity.so
+trimmed jup7TthsMgcR9Y3L277b8Eo9uboVSmu1utkuXHNUKar juplend_rewards.so
+# Drift's Merkle distributor, which pays Drift's bad-debt claims (GPL-3.0, fetched only).
+trimmed distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp merkle_distributor.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded.
 for f in *.so; do

@@ -4,7 +4,7 @@
 // instruction discriminators for the CPIs.
 //
 // kamino-mocks has its own error enum, numbered from 6000 as Marginfi's is: MathError 6000.
-import { type AccountInfo, type Pubkey, type u128, type u64, type u8, readData, require, u64 as toU64 } from "typesol";
+import { type Account, type FixedArray, type Pubkey, type u128, type u64, type u8, readData, require, u64 as toU64 } from "typesol";
 import { fxFromU64, fxTryDiv, fxTryMul } from "./i80f48";
 import { SOLEND_MOCKS_MATH_ERROR, kaminoScaledSupplies } from "./oracle";
 
@@ -16,20 +16,48 @@ export const KAMINO_RESERVE_SIZE: u64 = 8624n;
 export const KAMINO_OBLIGATION_SIZE: u64 = 3344n;
 export const KAMINO_MARKET_SIZE: u64 = 4664n;
 
+/**
+ * kamino-mocks' MinimalReserve, MinimalObligation and MinimalLendingMarket: klend's accounts as Marginfi loads them
+ * (AccountLoader: owner, then klend's discriminator, then the size), their fields read at the offsets below.
+ *
+ * @repr c packed
+ * @serialization bytemuck
+ * @discriminator 0x2bf2ccca1af73b7f
+ */
+export interface KaminoReserve {
+  bytes: FixedArray<u8, 8616>;
+}
+/**
+ * @repr c packed
+ * @serialization bytemuck
+ * @discriminator 0xa8ce8d6a584caca7
+ */
+export interface KaminoObligation {
+  bytes: FixedArray<u8, 3336>;
+}
+/**
+ * @repr c packed
+ * @serialization bytemuck
+ * @discriminator 0xf6723262489d1c78
+ */
+export interface KaminoMarket {
+  bytes: FixedArray<u8, 4656>;
+}
+
 /** The reserve's lending market and liquidity mint. */
-export function reserveMarket(reserve: AccountInfo): Pubkey {
+export function reserveMarket(reserve: Account<KaminoReserve>): Pubkey {
   return readData<Pubkey>(reserve, 32n);
 }
-export function reserveMint(reserve: AccountInfo): Pubkey {
+export function reserveMint(reserve: Account<KaminoReserve>): Pubkey {
   return readData<Pubkey>(reserve, 128n);
 }
 /** MinimalReserve::is_stale */
-export function reserveStale(reserve: AccountInfo, slot: u64): boolean {
+export function reserveStale(reserve: Account<KaminoReserve>, slot: u64): boolean {
   return readData<u64>(reserve, 16n) < slot;
 }
 
 /** collateral_to_liquidity / liquidity_to_collateral at the reserve's rate, toward −∞ (KaminoMocksError::MathError). */
-export function kaminoConvert(reserve: AccountInfo, amount: u64, toLiquidity: boolean): u64 {
+export function kaminoConvert(reserve: Account<KaminoReserve>, amount: u64, toLiquidity: boolean): u64 {
   const s = kaminoScaledSupplies(
     readData<u64>(reserve, 224n),
     readData<u128>(reserve, 232n),
@@ -53,19 +81,19 @@ export function kaminoConvert(reserve: AccountInfo, amount: u64, toLiquidity: bo
 }
 
 /** The obligation's i-th deposit: its reserve and collateral amount. */
-export function depositReserve(obligation: AccountInfo, i: u64): Pubkey {
+export function depositReserve(obligation: Account<KaminoObligation>, i: u64): Pubkey {
   return readData<Pubkey>(obligation, 96n + 136n * i);
 }
-export function depositAmount(obligation: AccountInfo, i: u64): u64 {
+export function depositAmount(obligation: Account<KaminoObligation>, i: u64): u64 {
   return readData<u64>(obligation, 128n + 136n * i);
 }
 /** Whether every deposit after the first is empty. */
-export function onlyFirstDeposit(obligation: AccountInfo): boolean {
+export function onlyFirstDeposit(obligation: Account<KaminoObligation>): boolean {
   for (let i = 1n; i < 8n; i++) if (depositAmount(obligation, i) !== 0n) return false;
   return true;
 }
 
 /** MinimalLendingMarket::is_emergency_mode */
-export function marketEmergency(market: AccountInfo): u8 {
+export function marketEmergency(market: Account<KaminoMarket>): u8 {
   return readData<u8>(market, 122n);
 }

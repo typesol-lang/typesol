@@ -6,6 +6,25 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: Marginfi's Drift and JupLend banks (`lending_pool_add_bank_drift`, `drift_init_user`, `drift_deposit`,
+  `drift_withdraw`, `drift_harvest_reward`, `drift_claim_bad_debt`, `lending_pool_add_bank_juplend`,
+  `juplend_init_position`, `juplend_deposit`, `juplend_withdraw`) over Drift v2, Drift's bad-debt Merkle distributor
+  and JupLend's lending, liquidity and rewards programs, and their pricing: the feed times the spot market's
+  cumulative deposit interest or the Lending's token exchange price. All 124 of Marginfi's instructions are now ported
+  (pricing fixed venue banks and venue rebalance legs still stop in the port).
+  Against the binary on mainnet: 1,798 transactions, the same IDL for all 124. The venue tests now hold a refused
+  transaction to the original's error code, not only to failing.
+- New: `Owner<Account<T>, "…">` is another program's struct account (Anchor's `Account` / `AccountLoader` of a
+  `declare_program!` type): loaded with that program as its owner (3007), `HasOne` and fields as for this program's.
+- New: such a struct may have a discriminator of 1 to 8 bytes (`/** @discriminator 0x01 */`, as Anchor's
+  `discriminator = &[1]`), its fields starting right after it.
+- Fixed (examples): Marginfi's Solend, Kamino and Drift banks load the venues' accounts as the original's
+  `AccountLoader`s do, before any constraint (a foreign account is 3007, not the bank's `has_one` error); setting a
+  venue bank's oracle checks its reserve, spot market or Lending again; a Drift scaled balance past u64 is 4102 and a
+  Drift deposit limit past I80F48 6004, as in the original. The venue tests now fuzz deposits, withdrawals, borrows,
+  repayments and the venues' rates against the original (FUZZ_SEED, FUZZ_STEPS).
+- New: an `Address<AccountInfo, "…">` parameter may be `invoke`'s program (Anchor's `address = ID` on an
+  `UncheckedAccount`; the key alone is checked, 2012).
 - Examples: Marginfi's Solend and Kamino banks (`lending_pool_add_bank_solend`, `solend_init_obligation`,
   `solend_deposit`, `solend_withdraw`, `lending_pool_add_bank_kamino`, `kamino_init_obligation`, `kamino_deposit`,
   `kamino_withdraw`, `propagate_kamino_market_emergency`, `kamino_harvest_reward`) over Solend's, klend's and kfarms'

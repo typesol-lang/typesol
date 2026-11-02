@@ -20,6 +20,10 @@ test/anchor-twins/target/
 test/programs/mpl_*.so
 # Kamino's lending and farms programs (Business Source License 1.1), fetched the same way.
 test/programs/kamino_*.so
+# JupLend's (Fluid Solana: lending, liquidity, rewards rate model), Business Source License 1.1, fetched the same way.
+test/programs/juplend_*.so
+# Drift's Merkle distributor (claim_bad_debt), GPL-3.0, fetched the same way.
+test/programs/merkle_distributor.so
 # local validator ledgers and fixtures (scripts/localnet.sh), npm pack output, coverage, CLI keypairs
 .localnet*/
 *.tgz

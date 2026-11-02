@@ -17,8 +17,13 @@ export abstract class CpiEmitter extends MetaplexEmitter {
       programKey = `&${programHandle}->key`;
     } else {
       const program = this.accountParam(a[0], "invoke's program");
-      if (program.kind.kind !== "program" && program.kind.kind !== "system" && program.kind.kind !== "tokenProgram")
-        this.fail(a[0], 'invoke\'s program must be a Program<"address">, UncheckedProgram, SystemProgram, token program or remaining account');
+      // Address<A, "base58"> (Anchor's `address = ID` on an UncheckedAccount): the key is that program's; the runtime
+      // refuses a CPI into an account that is not executable.
+      if (program.kind.kind !== "program" && program.kind.kind !== "system" && program.kind.kind !== "tokenProgram" && !program.constraints.address)
+        this.fail(
+          a[0],
+          'invoke\'s program must be a Program<"address">, UncheckedProgram, Address<A, "address">, SystemProgram, token program or remaining account',
+        );
       programKey = `&a_${program.name}->key`;
     }
     const hasSeeds = a.length === 4;

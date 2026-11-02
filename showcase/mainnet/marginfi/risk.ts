@@ -30,7 +30,15 @@ import {
   u8 as toU8,
 } from "typesol";
 import { ACCOUNT_IN_FLASHLOAN, EMPTY_BALANCE_THRESHOLD, ZERO_KEY, claimPremium, writeOffPremium } from "./account";
-import { BANK_SAME_ASSET_EMODE_ELIGIBLE, CIRCUIT_BREAKER_ENABLED, LIQ_CACHE_LOCKED_FLAG, PREMIUM_ACTIVE, cbPriceGateErr, saturatingSubI64 } from "./bank";
+import {
+  BANK_SAME_ASSET_EMODE_ELIGIBLE,
+  CIRCUIT_BREAKER_ENABLED,
+  LIQ_CACHE_LOCKED_FLAG,
+  PREMIUM_ACTIVE,
+  balanceDecimals,
+  cbPriceGateErr,
+  saturatingSubI64,
+} from "./bank";
 import { MarginfiError } from "./errors";
 import {
   type Fx,
@@ -66,6 +74,10 @@ import {
   solendFeed,
   isKaminoSetup,
   kaminoFeed,
+  isDriftSetup,
+  driftFeed,
+  isJuplendSetup,
+  juplendFeed,
   oracleCount,
   priceAndConfidence,
   priceOfType,
@@ -138,6 +150,8 @@ export function feedAt(bank: Account<Bank>, rest: RemainingAccounts, first: u64,
   if (n === 0n) return fixedFeed(bank);
   if (isSolendSetup(bank.config.oracle_setup)) return solendFeed(bank, rest, first, t);
   if (isKaminoSetup(bank.config.oracle_setup)) return kaminoFeed(bank, rest, first, t);
+  if (isDriftSetup(bank.config.oracle_setup)) return driftFeed(bank, rest, first, t);
+  if (isJuplendSetup(bank.config.oracle_setup)) return juplendFeed(bank, rest, first, t);
   return loadFeed(bank, rest.get(first), t);
 }
 
@@ -385,7 +399,7 @@ function initDiscount(bank: Account<Bank>, price: i128): Fx {
   if (limit === 0n) return { err: 0n, v: I80F48_ONE };
   const amount = fxTryMul(bank.total_asset_shares.value, bank.asset_share_value.value);
   if (amount.err !== 0n) return amount;
-  const deposits = calcValueChecked(amount.v, price, bank.mint_decimals, I80F48_ZERO, false);
+  const deposits = calcValueChecked(amount.v, price, balanceDecimals(bank), I80F48_ZERO, false);
   if (deposits.err !== 0n) return deposits;
   const l = fxFromU64(limit);
   if (deposits.v > l) return fxTryDiv(l, deposits.v);
@@ -435,7 +449,7 @@ export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, s
   }
   const amount = fxTryMul(shares, bank.asset_share_value.value);
   if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
-  const v = calcValue(amount.v, lower.v, bank.mint_decimals, w, true);
+  const v = calcValue(amount.v, lower.v, balanceDecimals(bank), w, true);
   if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   return { err: 0n, value: v.v, price: lower.v, premium: needPremium ? lower.v : 0n, code: 0n };
 }
@@ -451,7 +465,7 @@ export function liabilityLeg(bank: Account<Bank>, f: Feed, req: u8, shares: i128
   if (higher.err !== 0n) return { err: higher.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   const amount = fxTryMul(shares, bank.liability_share_value.value);
   if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
-  const v = calcValue(amount.v, higher.v, bank.mint_decimals, liabilityWeight(bank, req), true);
+  const v = calcValue(amount.v, higher.v, balanceDecimals(bank), liabilityWeight(bank, req), true);
   if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   return { err: 0n, value: v.v, price: higher.v, premium: 0n, code: 0n };
 }
@@ -477,7 +491,7 @@ function cachedLeg(bank: Account<Bank>, req: u8, r: Reconciled, side: u8, assets
   if (p.err !== 0n) return { err: p.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   const amount = side === 1n ? fxTryMul(assets, bank.asset_share_value.value) : fxTryMul(liabs, bank.liability_share_value.value);
   if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
-  const v = calcValue(amount.v, p.v, bank.mint_decimals, side === 1n ? assetWeight(bank, req, r) : liabilityWeight(bank, req), true);
+  const v = calcValue(amount.v, p.v, balanceDecimals(bank), side === 1n ? assetWeight(bank, req, r) : liabilityWeight(bank, req), true);
   if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   return { err: 0n, value: v.v, price: p.v, premium: p.v, code: 0n };
 }
@@ -637,7 +651,7 @@ export function healthComponents(
         return h;
       }
       if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
-        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, req), true);
+        const v = calcValueChecked(total.v, leg.price, balanceDecimals(bank), liabilityWeight(bank, req), true);
         if (v.err !== 0n) {
           h.err = v.err;
           return h;
@@ -653,7 +667,7 @@ export function healthComponents(
       if (side === 1n) {
         if (leg.premium > I80F48_ZERO && countable) {
           const amount = fxTryMul(assets, bank.asset_share_value.value);
-          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, bank.mint_decimals, I80F48_ZERO, false);
+          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, balanceDecimals(bank), I80F48_ZERO, false);
           if (usd.err !== 0n) {
             h.err = usd.err;
             return h;
@@ -802,7 +816,7 @@ export function cachedHealthComponents(
         return h;
       }
       if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
-        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, req), true);
+        const v = calcValueChecked(total.v, leg.price, balanceDecimals(bank), liabilityWeight(bank, req), true);
         if (v.err !== 0n) {
           h.err = v.err;
           return h;
@@ -818,7 +832,7 @@ export function cachedHealthComponents(
       if (side === 1n) {
         if (leg.premium > I80F48_ZERO && countable) {
           const amount = fxTryMul(assets, bank.asset_share_value.value);
-          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, bank.mint_decimals, I80F48_ZERO, false);
+          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, balanceDecimals(bank), I80F48_ZERO, false);
           if (usd.err !== 0n) {
             h.err = usd.err;
             return h;
@@ -1504,7 +1518,7 @@ export function taggedHealth(acc: Account<MarginfiAccount>, group: Account<Margi
         return out;
       }
       if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
-        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, REQ_EQUITY), true);
+        const v = calcValueChecked(total.v, leg.price, balanceDecimals(bank), liabilityWeight(bank, REQ_EQUITY), true);
         if (v.err !== 0n) {
           out.err = v.err;
           return out;
