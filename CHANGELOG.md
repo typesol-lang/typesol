@@ -15,6 +15,11 @@ codes, and says so here.
 - New: `systemProgram.createPda(payer, account, space, owner, seeds)`, Anchor's `init` with `owner = …` on an
   `UncheckedAccount`: another program's account at this program's PDA, created (or, over an address someone funded
   first, topped up, allocated and assigned) before the instruction's constraints, the PDA recorded in the IDL.
+- Examples: Marginfi's I80F48 magnitudes widen to u256 once (their sum stays in u128) and a float's bit length is
+  found by halving, not bit by bit: a classic liquidation takes 7% fewer compute units (130,448 → 121,210 on the
+  test's partial liquidation; 38% under the original's).
+- Tests: a `TYPESOL_PROFILE=1` build's VM has no 1.4M compute limit and keeps every log line, so `typesol profile`
+  sees a whole Marginfi liquidation (its markers took it past both before).
 - Examples: more of Marginfi's venue paths against the binary: Kamino and Solend deposits and withdrawals of disabled,
   frozen and paused accounts, Kamino's receivership, deleverage, group outflow limit and deleverage day's limit branches
   and its bank's `has_one` accounts, and the risk admin deleveraging an Exponent PT through a vault emergency.

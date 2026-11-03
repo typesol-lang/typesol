@@ -28,7 +28,8 @@ export interface Fx {
 
 /** |x| as a u256 (i128::MIN included). */
 function magnitude(x: i128): u256 {
-  return x >= 0n ? u256(u128(x)) : u256(u128(-(x + 1n))) + 1n;
+  // At most 2^127: the u128 sum cannot overflow, and the one widening is the only u256 step.
+  return u256(x >= 0n ? u128(x) : u128(-(x + 1n)) + 1n);
 }
 /** The i128 with this magnitude and sign; MathError when it does not fit. */
 function signed(m: u256, negative: boolean): i128 {
@@ -347,12 +348,8 @@ export function fxToF64Bits(a: i128): u64 {
   if (a === 0n) return 0n;
   const sign: u64 = a < 0n ? 9223372036854775808n : 0n;
   const m = magnitude(a);
-  let bits: u64 = 0n;
-  let rest = m;
-  while (rest > 0n) {
-    rest = rest >> 1n;
-    bits += 1n;
-  }
+  // |a| is at most 2^127, so its bit length is a u128's.
+  let bits = bitLength(u128(m));
   let mantissa: u256 = 0n;
   if (bits <= 53n) mantissa = m << (53n - bits);
   else {

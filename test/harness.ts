@@ -15,7 +15,7 @@ import {
   setTransactionMessageFeePayerSigner,
   signTransactionMessageWithSigners,
 } from "@solana/kit";
-import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm";
+import { ComputeBudget, FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -49,7 +49,14 @@ export async function deployFile(file: string, opts: { svm?: LiteSVM; programId?
   // TYPESOL_PROFILE=1: a --profile build (a marker and the compute units left before each line), to find where a
   // transaction spends: run it and pass its logs to `typesol profile`.
   const res = build(file, out, programId, { profile: !!process.env.TYPESOL_PROFILE });
-  const svm = opts.svm ?? new LiteSVM();
+  let svm = opts.svm ?? new LiteSVM();
+  // A profile build's markers cost compute units and log lines: let such a VM run past the 1.4M limit and keep every
+  // log line, so `typesol profile` sees a whole transaction.
+  if (process.env.TYPESOL_PROFILE && !opts.svm) {
+    const budget = new ComputeBudget();
+    budget.computeUnitLimit = 100_000_000n;
+    svm = svm.withComputeBudget(budget).withLogBytesLimit();
+  }
   svm.addProgramFromFile(programId, res.soPath);
   rmSync(out, { recursive: true, force: true }); // loaded: the build files are not needed again
   const idl = res.idl as unknown as Idl;
