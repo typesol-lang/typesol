@@ -237,13 +237,24 @@ describe.skipIf(!existsSync(program("drift.so")))("Marginfi v2 port against the 
       { address: TOKEN_PROGRAM },
       { address: SYSTEM },
     ]);
-  const withdraw = (b: DriftBank, account: Address, user: KeyPairSigner, tokens: Address, amount: bigint, all: boolean | null, rest: Address[]) => {
+  /** The optional accounts: the market's oracle, and up to two reward markets' oracle, spot market and mint. */
+  type Optional = { oracle?: Address; rewards?: [Address?, Address?, Address?, Address?, Address?, Address?] };
+  const withdraw = (
+    b: DriftBank,
+    account: Address,
+    user: KeyPairSigner,
+    tokens: Address,
+    amount: bigint,
+    all: boolean | null,
+    rest: Address[],
+    opt: Optional = {},
+  ) => {
     const i = s.ix("drift_withdraw", { amount: new BN(amount.toString()), withdraw_all: all }, [
       { address: group.address },
       { address: account, writable: true },
       { address: user.address, signer: user },
       { address: b.address, writable: true },
-      { address: PROGRAM },
+      { address: opt.oracle ?? PROGRAM },
       { address: b.v.liquidityAuth },
       { address: b.v.liquidity, writable: true },
       { address: tokens, writable: true },
@@ -252,7 +263,7 @@ describe.skipIf(!existsSync(program("drift.so")))("Marginfi v2 port against the 
       { address: b.stats, writable: true },
       { address: b.m.market, writable: true },
       { address: b.m.vault, writable: true },
-      ...Array(6).fill({ address: PROGRAM }),
+      ...Array.from({ length: 6 }, (_, k) => ({ address: opt.rewards?.[k] ?? PROGRAM, writable: k % 3 === 1 && !!opt.rewards?.[k] })),
       { address: signer },
       { address: b.m.mint },
       { address: DRIFT },
@@ -504,6 +515,35 @@ describe.skipIf(!existsSync(program("drift.so")))("Marginfi v2 port against the 
       ),
     } as Instruction;
     await run("drift admin deposit", admin, [adminDeposit], [b.user, reward.vault]);
+    // A withdrawal with the admin's deposit there: Drift wants the reward market's accounts, passed in any combination
+    // the original's six optional accounts allow (each passed on only when given).
+    const { user, account } = await newUser();
+    const tokens = await h.tokenAccount(usdc.mint, user.address, 100_000_000n);
+    refreshFeeds();
+    fresh(usdc);
+    fresh(reward);
+    await run("drift deposit", user, [deposit(b, account, user, tokens, 10_000_000n)], watch(b, account, tokens));
+    const health = [b.address, usdc.oracle, usdc.market];
+    const R = reward;
+    for (const [label, opt] of [
+      ["no reward accounts", {}],
+      ["the reward market's oracle, spot market and mint", { rewards: [R.oracle, R.market, R.mint] }],
+      ["the reward's spot market and mint", { rewards: [undefined, R.market, R.mint] }],
+      ["the reward's spot market alone", { rewards: [undefined, R.market] }],
+      ["the reward's oracle and spot market", { rewards: [R.oracle, R.market] }],
+      ["the reward as the second", { rewards: [undefined, undefined, undefined, R.oracle, R.market, R.mint] }],
+      ["the market's oracle too", { oracle: usdc.oracle, rewards: [R.oracle, R.market, R.mint] }],
+      ["the reward in both", { rewards: [R.oracle, R.market, R.mint, R.oracle, R.market, R.mint] }],
+    ] as [string, Optional][]) {
+      fresh(usdc);
+      fresh(reward);
+      await h.run(
+        `drift withdraw with an admin deposit: ${label}`,
+        user,
+        [withdraw(b, account, user, tokens, 1_000_000n, null, health, opt)],
+        watch(b, account, tokens, R.market),
+      );
+    }
     const [intermediary] = await pda(ATA_PROGRAM, [b.v.liquidityAuth, TOKEN_PROGRAM, rewardMint]);
     const [destination] = await pda(ATA_PROGRAM, [h.feeWallet, TOKEN_PROGRAM, rewardMint]);
     h.tokenAccountAt(intermediary, rewardMint, b.v.liquidityAuth);

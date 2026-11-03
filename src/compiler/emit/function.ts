@@ -505,7 +505,7 @@ export class FunctionEmitter extends StatementEmitter {
 
   /**
    * How many statements at the start of `body` create this instruction's Init / InitIfNeeded accounts
-   * (`acct.create(…)`, `acct.createIfNeeded(…)`, alone, as a const's value or assigned). 0 when none do, or when one reads a
+   * (`acct.create(…)`, `acct.createIfNeeded(…)`, `systemProgram.createPda(…)`, alone, as a const's value or assigned). 0 when none do, or when one reads a
    * bump the constraint checks find (`acct.pdaBump` of a Seeds account), which must run first.
    */
   protected leadingCreates(ix: Instruction, body: readonly ts.Statement[]): number {
@@ -513,12 +513,13 @@ export class FunctionEmitter extends StatementEmitter {
       const a = ts.isIdentifier(e) ? ix.accounts.find((x) => x.name === e.text) : undefined;
       return !!a && (a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || ((a.kind.kind === "token" || a.kind.kind === "mint") && !!a.kind.init));
     };
+    const isSystem = (e: ts.Expression) => ts.isIdentifier(e) && ix.accounts.find((x) => x.name === e.text)?.kind.kind === "system";
     const createCall = (e: ts.Expression | undefined) =>
       !!e &&
       ts.isCallExpression(e) &&
       ts.isPropertyAccessExpression(e.expression) &&
-      (e.expression.name.text === "create" || e.expression.name.text === "createIfNeeded") &&
-      isInit(e.expression.expression);
+      (((e.expression.name.text === "create" || e.expression.name.text === "createIfNeeded") && isInit(e.expression.expression)) ||
+        (e.expression.name.text === "createPda" && isSystem(e.expression.expression)));
     let n = 0;
     for (const stmt of body) {
       const e = ts.isExpressionStatement(stmt)
@@ -663,7 +664,11 @@ export class FunctionEmitter extends StatementEmitter {
         }
       }
       if (k === "account") out.push(...hasOne);
-      out.push(...(raw.get(a.name) ?? []));
+      // constraint(…) lines: Anchor evaluates the expression as written, so another optional account it mentions
+      // (`x === null`, or `x!`, which fails when it is missing) does not skip it; only this account being optional does.
+      const rawLines = raw.get(a.name) ?? [];
+      const rawAt = out.length - start;
+      out.push(...rawLines);
       if (c.owner && k !== "account") {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
@@ -678,11 +683,18 @@ export class FunctionEmitter extends StatementEmitter {
         );
       }
       if (k !== "account") out.push(...hasOne);
-      // Constraints run only when every optional account they mention was passed.
+      // The declared constraints run only when every optional account they mention was passed.
       const lines = out.splice(start);
-      const optional = this.optionalIn(lines.join("\n"));
-      if (optional.length && lines.length) out.push(`  if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) {`, ...lines.map((l) => `  ${l}`), `  }`);
-      else out.push(...lines);
+      const guard = (part: string[], optional: string[]) => {
+        if (optional.length && part.length) out.push(`  if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) {`, ...part.map((l) => `  ${l}`), `  }`);
+        else out.push(...part);
+      };
+      const before = lines.slice(0, rawAt);
+      const after = lines.slice(rawAt + rawLines.length);
+      const declared = this.optionalIn([...before, ...after].join("\n"));
+      guard(before, declared);
+      guard(rawLines, a.optional ? [a.name] : []);
+      guard(after, declared);
     }
     return [...bumpDecls, ...out];
   }

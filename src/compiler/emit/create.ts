@@ -533,6 +533,31 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     return undefined;
   }
 
+  /**
+   * systemProgram.createPda(payer, account, space, owner, seeds): Anchor's `init` with `seeds`, `space` and `owner = …`
+   * on an `UncheckedAccount` — the PDA of this program for `seeds` (2006 otherwise), created owned by `owner`, or over
+   * an address someone already funded topped up, allocated and assigned. Returns the bump. Leading the body, it runs
+   * before the other constraints, as Anchor's `init` does.
+   */
+  protected createPda(node: ts.CallExpression): Value {
+    const a = node.arguments;
+    if (a.length !== 5) this.fail(node, "createPda(payer, account, space, owner, seeds)");
+    const payer = this.accountParam(a[0], "the payer");
+    if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0], "the payer must be a Mut<Signer>");
+    const acct = this.accountParam(a[1], "the new account");
+    if (acct.kind.kind !== "info" || !isWritable(acct.kind)) this.fail(a[1], "the new account must be a Mut<AccountInfo>");
+    const space = this.tmp("space");
+    this.line(`uint64_t ${space} = ${this.expect(this.expr(a[2], U64), U64, a[2]).c};`);
+    const owner = this.tmp("owner");
+    this.line(`SolPubkey ${owner} = *(${this.expect(this.expr(a[3], PUBKEY), PUBKEY, a[3]).c});`);
+    const seeds = this.seeds(a[4], 1);
+    this.recordPda(acct, seeds.idl);
+    const b = this.tmp("bump");
+    this.line(`uint8_t ${b};`);
+    this.line(`TS_TRY(ts_create_pda_owned(params, a_${payer.name}, a_${acct.name}, ${seeds.name}, ${seeds.count}, &${owner}, ${space}, &${b}));`);
+    return { c: b, type: U8 };
+  }
+
   /** systemProgram.allocate(account, space, signerSeeds?) / systemProgram.assign(account, owner, signerSeeds?). */
   protected allocateOrAssign(node: ts.CallExpression, system: AccountParam, method: "allocate" | "assign"): undefined {
     const a = node.arguments;

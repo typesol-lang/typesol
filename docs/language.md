@@ -83,7 +83,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `Address<A, "4Nd1…">` | exact address (2012; `address` in the IDL) |
 | `Owner<A, "Tokenkeg…">`, `Executable<A>` | owner program (2004), executable (2007). On a struct account, `Owner<Account<T>, "…">` is another program's account (Anchor's `Account` / `AccountLoader` of a `declare_program!` type): loaded with that program as its owner (3007) and Anchor's discriminator for `T`'s name, its fields read and `HasOne` checked as for this program's own; the IDL lists `T` among its types, not its accounts (an error named on such an `Owner` is not used: the load fails with 3007). Such a struct may carry a shorter discriminator, `/** @discriminator 0x01 */` (1 to 8 bytes, as Anchor's `discriminator = &[1]`; Solend's reserve), its fields then starting right after it; this program's own accounts keep 8 |
 | `Seeds<A, ["metadata", "@mint"], never, "@metadataProgram">` | the fourth argument derives the PDA under another program (a program parameter or a base58 address; `pda.program` in the IDL) |
-| `A \| null` / `Optional<A>` | optional account (Anchor `Option<Account>`): the client passes this program's id to leave it out; its checks and constraints run only when present; `x !== null` before use, or `x!` / `x!.field` to assert it was passed (5115 otherwise); `optional` in the IDL |
+| `A \| null` / `Optional<A>` | optional account (Anchor `Option<Account>`): the client passes this program's id to leave it out; its checks and constraints run only when present (a `constraint(other, …)` that mentions it runs as written: `x === null` is checked when it is missing); `x !== null` before use, or `x!` / `x!.field` to assert it was passed (5115 otherwise); `optional` in the IDL |
 | `ProgramData` | this program's ProgramData (address derived from the program id, upgradeable-loader owner and state checked); `upgradeAuthority`, `deploySlot` — gate admin setup on `programData.upgradeAuthority === admin.key` |
 | `EventAuthority`, `SelfProgram` | Anchor's `["__event_authority"]` PDA, and this program's own address, for `emitCpi` |
 | `Migrate<From, To>` | Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size) rewritten as `To` by `acct.migrate(payer, value)`, a top-level statement the instruction must reach. `acct.from` (read-only) before it, `acct.to` after; the value is built in full before the rewrite, so it may read `acct.from`. Resized to `To` (the payer tops up rent when it grows, at most 10 KiB; shrinking keeps the lamports; growing needs `SystemProgram`). Fixed-layout structs without growable Vecs; no constraints yet; the account cannot be passed to a helper (use `acct.to` fields in the instruction). An account already migrated fails with 3002. Keep the old struct under a new name with its discriminator: `/** @discriminator account:Counter */ interface CounterV1 { … }` |
@@ -122,7 +122,11 @@ of a position, as Raydium CLMM's tick arrays).
 
 - `systemProgram.transfer(from, to, lamports, signerSeeds?)` (`from` is a `Mut<Signer>`, or a system-owned PDA of this
   program, a SOL vault, with its seeds), `systemProgram.createAccount(payer, account, lamports, space, owner, signerSeeds?)`
-  (the new account signs: a keypair `Mut<Signer>` or this program's PDA), `rentExempt(space)`, `MINT_SIZE`, `TOKEN_ACCOUNT_SIZE`
+  (the new account signs: a keypair `Mut<Signer>` or this program's PDA), `systemProgram.createPda(payer, account, space,
+  owner, seeds)` (Anchor's `init` with `seeds`, `space` and `owner = …` on an `UncheckedAccount`: a `Mut<AccountInfo>`
+  that must be this program's PDA for `seeds` (2006), created owned by `owner`, or topped up, allocated and assigned when
+  someone funded the address first; returns the bump, records the PDA in the IDL, and among the creates a body starts
+  with runs before the constraints), `rentExempt(space)`, `MINT_SIZE`, `TOKEN_ACCOUNT_SIZE`
 - Token programs (`TokenProgram`, `Token2022Program`, `TokenInterface`) — pass `signerSeeds` (with the bump) when the authority is a PDA:
   `transfer`, `transferChecked(from, mint, to, authority, amount)` (required by Token-2022 mints with fees/hooks), `mintTo` (the mint may be one this instruction just created), `burn`, `closeAccount` (a token account, or a Token-2022 mint with a close authority),
   `approve(source, delegate, owner, amount)`, `revoke`, the checked forms `mintToChecked(mint, to, authority, amount)`,
@@ -165,7 +169,9 @@ export function payOut(admin: Signer, treasury: Mut<SystemAccount>, recipient: M
   `Address<AccountInfo, "address">` (Anchor's `#[account(address = ID)]` on an `UncheckedAccount`: only the key is
   checked, 2012), the system or a token program, or a remaining account.
 - accounts: `readonly(x)`, `writable(x)`, `readonlySigner(x)`, `writableSigner(x)`. The compiler refuses `writable` on a
-  non-`Mut` parameter and a signer flag on an account that neither signed nor is covered by `signerSeeds`.
+  non-`Mut` parameter and a signer flag on an account that neither signed nor is covered by `signerSeeds`. An optional
+  account passed as it is (`readonly(x)` / `writable(x)` with `x: A | null`, no `!`) is left out of the list when it
+  was not passed, as Rust's `if let Some(x) = &self.x { accounts.push(…) }` does.
 - data (Borsh): integers little-endian at their declared width (`u32(2n)` is 4 bytes, a bare `5n` is a u64), booleans,
   Pubkeys, strings, Options, structs and FixedArrays (their fixed layout), data enums, `Vec` arguments,
   `sighash("name")` (Anchor discriminator), `hex("0a0b")`. Up to 1024 bytes.

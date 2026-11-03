@@ -9,11 +9,22 @@ codes, and says so here.
 - Examples: Marginfi's rebalances across Kamino, Drift and JupLend banks, each leg priced at the venue's supply rate
   (klend's curve and reward emissions at the chain's measured slot pace, Drift's curve less its insurance factor,
   JupLend's liquidity-layer rate and Lending rewards), amounts through the venues' exchange rates, deposit room capped
-  by the venue's own. Against the binary on mainnet: 2,031 transactions (with the fixes below).
+  by the venue's own. Against the binary on mainnet: 2,042 transactions (with the fixes below).
 - Fixed (examples): a classic liquidation by Marginfi's risk admin flags both accounts as the original does, so their
   Exponent PT banks are priced through a vault emergency there too.
+- New: `systemProgram.createPda(payer, account, space, owner, seeds)`, Anchor's `init` with `owner = …` on an
+  `UncheckedAccount`: another program's account at this program's PDA, created (or, over an address someone funded
+  first, topped up, allocated and assigned) before the instruction's constraints, the PDA recorded in the IDL.
+- New: an optional account in `invoke`'s list, as it is (`readonly(x)` with `x: A | null`), is left out when it was not
+  passed (Rust's `if let Some(..)` pushes).
+- Fixed: a `constraint(acct, …)` that mentions another, optional account runs when that account is missing (it was
+  skipped, so `x === null` checks never failed); only `acct` itself being optional and missing skips it. Declared
+  constraints (`HasOne` and the like) still run only when the optional accounts they name were passed.
+- Fixed (examples): Marginfi's `drift_withdraw` refuses a withdrawal from a Drift user with admin deposits when the
+  reward accounts are missing (6321), as the original does, and passes any combination of the six optional reward
+  accounts on to Drift (the port refused all but some).
 - Fixed (examples): Marginfi's `solend_init_obligation` initializes an obligation address someone funded first (Anchor's
-  `init` tops the rent up, allocates and assigns), and creates it before its other checks, as the original does. The
+  `init` tops the rent up, allocates and assigns), and creates it before all its other checks, as the original does. The
   Solend fuzz holds every transaction to the original's error code; a withdrawal with a debt, where the original fails
   borrowing the bank (AccountBorrowFailed), must fail with the port's error 12.
 - New: `epochStartTimestamp()`, when the current epoch began (the Clock's `epoch_start_timestamp`).

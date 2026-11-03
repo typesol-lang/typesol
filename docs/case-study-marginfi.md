@@ -630,9 +630,6 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
 - **Health accounts.** A remaining account that is not a bank of the program fails the original's `AccountLoader`
   with the same codes as the port's (3007, 3001, 3002); one owned by the program, with a bank's discriminator but
   too short, panics in the original and fails with 3003 in the port.
-- **Drift withdrawals' reward accounts.** `drift_withdraw` takes three optional accounts per reward market (oracle,
-  spot market, mint) and passes on whichever are given; the port passes each reward as its spot market and mint, with
-  or without its oracle, and refuses other combinations ("TypeSOL port: …").
 - **Undecodable stake accounts.** Where the original fails with `BorshIoError` on a staked pool's stake account that
   does not decode (a runtime error without a custom code), the port fails with its own error; both fail.
 - **Token-2022 in a bad-debt claim.** `drift_claim_bad_debt`'s claim mint and distributor vault are SPL Token accounts
@@ -641,10 +638,6 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
   refuses any writable account passed twice (2040) unless the pair is `Dup<…>`. `drift_claim_bad_debt`'s two token
   accounts are, so its own check answers as the original's does (6311); elsewhere such a transaction fails earlier in
   the port than in the original.
-- **Initializing a Solend obligation twice, with a wrong bank account.** Anchor's `init` runs before every other
-  constraint, so the original fails creating the existing obligation (0) before it looks at the bank's `has_one`s and
-  the vault authority's seeds; TypeSOL checks those declared constraints first. The token account's mint and owner and
-  the bank's asset tag come after the creation in both.
 - **AccountBorrowFailed.** Where the original's `solend_withdraw` fails borrowing a bank it holds (see above), the port
   fails with error 12. The tests, the fuzz's included, check that the original fails that way and the port with 12 (the
   only refused venue transaction not held to the original's code).

@@ -364,6 +364,9 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
     // Anchor's init comes first: an existing obligation fails creating, before the token account's mint is checked.
     const otherTokens = await h.tokenAccount(other.mint, admin.address, 1_000n);
     await run("init obligation: again, another mint's tokens", admin, [refresh(r), initObligation(b, admin, otherTokens, 50n)], watch(b, otherTokens), true);
+    const wrongVault = initObligation(b, admin, tokens, 50n);
+    const swapped = { ...wrongVault, accounts: wrongVault.accounts!.map((m) => (m.address === b.v.liquidity ? { ...m, address: b2.v.liquidity } : m)) };
+    await run("init obligation: again, another bank's vault", admin, [refresh(r), swapped as Instruction], watch(b, tokens), true);
     // An obligation address someone funded first: init tops the rent up, allocates and assigns.
     const [add3, b3] = await addSolendBank(r, 2n);
     await run("add a third solend bank", admin, [add3], watch(b3, group.address));

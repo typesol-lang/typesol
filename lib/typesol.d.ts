@@ -1642,6 +1642,13 @@ export interface SystemProgram extends AccountMeta {
    * `Mut<Signer>` keypair, or a PDA of this program when you pass its `signerSeeds` (with the bump).
    */
   createAccount(payer: Mut<Signer>, account: AccountMeta, lamports: u64, space: u64, owner: Pubkey, signerSeeds?: Seed[] | SignerSeeds): void;
+  /**
+   * Anchor's `init` with `seeds`, `space` and `owner = …` on an `UncheckedAccount`: `account` must be the PDA of this
+   * program for `seeds` (no bump; 2006 otherwise); it is created with `space` bytes owned by `owner`, or, when someone
+   * already funded the address, topped up to rent, allocated and assigned. Returns the bump. Among the creates a body
+   * starts with, it runs before the other accounts' constraints, as Anchor's `init` does.
+   */
+  createPda(payer: Mut<Signer>, account: Mut<AccountInfo>, space: u64, owner: Pubkey, seeds: Seed[]): u8;
   /** System Allocate: give `account` `space` bytes of data. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
   allocate(account: AccountMeta, space: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** System Assign: make `owner` the account's owner. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
@@ -1830,9 +1837,13 @@ export interface UncheckedProgram extends AccountMeta {
 export interface CpiAccount {
   readonly __cpi_account: void;
 }
-export declare function readonly(account: AccountMeta | RemainingAccount): CpiAccount;
+/**
+ * An optional account (`A | null`) passed as it is, without `!`: left out of the CPI's list when it was not passed
+ * (Rust's `if let Some(a) = &self.a { accounts.push(a) }`, as for `with_remaining_accounts`).
+ */
+export declare function readonly(account: AccountMeta | RemainingAccount | null): CpiAccount;
 export declare function readonly(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
-export declare function writable(account: AccountMeta | RemainingAccount): CpiAccount;
+export declare function writable(account: AccountMeta | RemainingAccount | null): CpiAccount;
 export declare function writable(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
 export declare function readonlySigner(account: AccountMeta | RemainingAccount): CpiAccount;
 export declare function writableSigner(account: AccountMeta | RemainingAccount): CpiAccount;

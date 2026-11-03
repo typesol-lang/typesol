@@ -711,6 +711,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "initIfNeeded" && method === "createIfNeeded") return this.create(node, target, topLevel, true);
         if (target?.kind.kind === "system" && method === "transfer") return this.systemTransfer(node);
         if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, target);
+        if (target?.kind.kind === "system" && method === "createPda") return this.createPda(node);
         if (target?.kind.kind === "system" && (method === "allocate" || method === "assign")) return this.allocateOrAssign(node, target, method);
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
