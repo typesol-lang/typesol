@@ -312,7 +312,8 @@ an obligation its liquidity vault authority owns, and holds the reserve's collat
 `lending_pool_add_bank_solend` and `lending_pool_add_bank_kamino` (the governance admin: the bank from a compact
 config, the reserve of its mint, the obligation's address, the feed and the reserve checked; Kamino's event names the
 group's admin as its signer, as the original's does), `solend_init_obligation` and `kamino_init_obligation` (anyone:
-the obligation, klend's user metadata and farm state first, and a deposit of at least 10 tokens that keeps it open),
+the obligation, klend's user metadata and farm state first, and a deposit of at least 10 tokens that keeps it open;
+Solend's obligation is created as Anchor's `init` does, over an address someone funded too),
 `solend_deposit`, `kamino_deposit`, `solend_withdraw` and `kamino_withdraw` (the tokens through the liquidity vault
 into the reserve and back, the obligation's change checked against the amount at the reserve's rate, give or take one
 token; withdrawals in collateral tokens, then the account's health), `propagate_kamino_market_emergency` (the market's
@@ -640,8 +641,13 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
   refuses any writable account passed twice (2040) unless the pair is `Dup<…>`. `drift_claim_bad_debt`'s two token
   accounts are, so its own check answers as the original's does (6311); elsewhere such a transaction fails earlier in
   the port than in the original.
+- **Initializing a Solend obligation twice, with a wrong bank account.** Anchor's `init` runs before every other
+  constraint, so the original fails creating the existing obligation (0) before it looks at the bank's `has_one`s and
+  the vault authority's seeds; TypeSOL checks those declared constraints first. The token account's mint and owner and
+  the bank's asset tag come after the creation in both.
 - **AccountBorrowFailed.** Where the original's `solend_withdraw` fails borrowing a bank it holds (see above), the port
-  fails with error 12. The test checks that both fail (the only refused venue transaction not held to the original's code).
+  fails with error 12. The tests, the fuzz's included, check that the original fails that way and the port with 12 (the
+  only refused venue transaction not held to the original's code).
 
 ## Cost
 

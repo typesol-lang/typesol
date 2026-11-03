@@ -26,12 +26,16 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
   const { s, setPyth, setSwb } = h;
   /**
    * h.run: a transaction not marked failing must succeed (both failing alike would otherwise pass unnoticed), and one
-   * marked failing must fail with the original's error, code included ("if-panics": where the original fails with a
-   * runtime error, both failing).
+   * marked failing must fail with the original's error, code included ("borrow-failed": where the original fails
+   * borrowing an account, a runtime error, the port with its custom error 12).
    */
   const run = async (...args: Parameters<typeof h.run>) => {
     const [label, payer, ixs, watched, failing] = args;
-    if (failing === "if-panics") return h.run(...args);
+    if (failing === "borrow-failed") {
+      const o = await h.run(...args);
+      expect(o, label).not.toBe("ok");
+      return o;
+    }
     const o = await h.run(label, payer, ixs, watched, false);
     if (failing) expect(o, label).not.toBe("ok");
     else expect(o, label).toBe("ok");
@@ -357,6 +361,22 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
     await run("init obligation: again", admin, [refresh(r), initObligation(b, admin, tokens, 50n)], watch(b, tokens), true);
     tick();
     await run("init obligation: no refresh first", admin, [initObligation(b2, admin, tokens, 50n)], watch(b2, tokens));
+    // Anchor's init comes first: an existing obligation fails creating, before the token account's mint is checked.
+    const otherTokens = await h.tokenAccount(other.mint, admin.address, 1_000n);
+    await run("init obligation: again, another mint's tokens", admin, [refresh(r), initObligation(b, admin, otherTokens, 50n)], watch(b, otherTokens), true);
+    // An obligation address someone funded first: init tops the rent up, allocates and assigns.
+    const [add3, b3] = await addSolendBank(r, 2n);
+    await run("add a third solend bank", admin, [add3], watch(b3, group.address));
+    h.tokenAccountAt(b3.userCollateral, r.colMint, b3.v.liquidityAuth);
+    for (const funded of [1n, 100_000_000n]) {
+      for (const vm of s.vms())
+        vm.setAccount({ address: b3.obligation, data: new Uint8Array(0), executable: false, lamports: lamports(funded), programAddress: SYSTEM, space: 0n });
+      await run(`init obligation: ${funded} lamports there first`, admin, [refresh(r), initObligation(b3, admin, tokens, 50n)], watch(b3, tokens));
+      if (funded === 1n) {
+        for (const vm of s.vms())
+          vm.setAccount({ address: b3.obligation, data: new Uint8Array(0), executable: false, lamports: lamports(0n), programAddress: SYSTEM, space: 0n });
+      }
+    }
     const sw = await newReserve(150_000_000n, true, 9);
     await solendBank(sw, 0n);
   });
@@ -418,7 +438,7 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
       user,
       [refresh(r), withdraw(b, account, user, tokens, 1_000_000n, null, rest)],
       watch(b, account, tokens),
-      "if-panics",
+      "borrow-failed",
     );
     await run("solend withdraw: past health", user, [refresh(r), withdraw(b, account, user, tokens, 6_000_000n, null, rest)], watch(b, account, tokens), true);
     await run(
@@ -602,15 +622,15 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
       switch (rng.int(7)) {
         case 0:
         case 1:
-          if ((await go("deposit", user, [...fresh, deposit(b, account, user, tokens, amount())], watch(b, account, tokens), "if-panics")) === "ok")
-            deposited = true;
+          if ((await go("deposit", user, [...fresh, deposit(b, account, user, tokens, amount())], watch(b, account, tokens))) === "ok") deposited = true;
           break;
         case 2:
-          await go("withdraw", user, [...fresh, withdraw(b, account, user, tokens, amount(), null, rest())], watch(b, account, tokens), "if-panics");
+          await go("withdraw", user, [...fresh, withdraw(b, account, user, tokens, amount(), null, rest())], watch(b, account, tokens), "borrow-failed");
           break;
         case 3:
           if (
-            (await go("withdraw all", user, [...fresh, withdraw(b, account, user, tokens, 0n, true, rest())], watch(b, account, tokens), "if-panics")) === "ok"
+            (await go("withdraw all", user, [...fresh, withdraw(b, account, user, tokens, 0n, true, rest())], watch(b, account, tokens), "borrow-failed")) ===
+            "ok"
           )
             deposited = false;
           break;
@@ -621,7 +641,6 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
               user,
               [...fresh, h.borrow(group.address, account, user, usdc, usdcTo, rng.next() % 50_000_000n, { rest: rest(true) })],
               [account, usdc.address, usdcTo],
-              "if-panics",
             )) === "ok"
           )
             owing = true;
@@ -629,7 +648,7 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
         case 5: {
           // Solend's borrowed liquidity (WAD) sets the reserve's rate: up to 1.5 tokens per collateral token.
           poke(r.reserve, 179, le((data(r.reserve).readBigUInt64LE(259) * BigInt(rng.int(11)) * 10n ** 18n) / 20n, 16));
-          await go("pulse", user, [refresh(r), h.pulse(group.address, b.address, [r.oracle, r.reserve])], [b.address], "if-panics");
+          await go("pulse", user, [refresh(r), h.pulse(group.address, b.address, [r.oracle, r.reserve])], [b.address]);
           break;
         }
         default:
@@ -640,7 +659,6 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
               user,
               [h.repay(group.address, account, user, usdc.address, usdcTo, usdc.v.liquidity, 0n, { all: true })],
               [account, usdc.address],
-              "if-panics",
             )) === "ok"
           )
             owing = false;

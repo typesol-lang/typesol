@@ -9,9 +9,13 @@ codes, and says so here.
 - Examples: Marginfi's rebalances across Kamino, Drift and JupLend banks, each leg priced at the venue's supply rate
   (klend's curve and reward emissions at the chain's measured slot pace, Drift's curve less its insurance factor,
   JupLend's liquidity-layer rate and Lending rewards), amounts through the venues' exchange rates, deposit room capped
-  by the venue's own. Against the binary on mainnet: 2,017 transactions.
+  by the venue's own. Against the binary on mainnet: 2,031 transactions (with the fixes below).
 - Fixed (examples): a classic liquidation by Marginfi's risk admin flags both accounts as the original does, so their
   Exponent PT banks are priced through a vault emergency there too.
+- Fixed (examples): Marginfi's `solend_init_obligation` initializes an obligation address someone funded first (Anchor's
+  `init` tops the rent up, allocates and assigns), and creates it before its other checks, as the original does. The
+  Solend fuzz holds every transaction to the original's error code; a withdrawal with a debt, where the original fails
+  borrowing the bank (AccountBorrowFailed), must fail with the port's error 12.
 - New: `epochStartTimestamp()`, when the current epoch began (the Clock's `epoch_start_timestamp`).
 - Examples: Marginfi's pricing, every oracle setup: staked SOL (a single pool's stake per LST, before and after its
   on-ramp), mSOL (Marinade's rate) and LSTs (an SPL or Sanctum stake pool's), Scope entries, Exponent PTs (linear to

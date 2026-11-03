@@ -3491,6 +3491,19 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await edit("a new oracle", gov, { oracle: new web3.PublicKey(solOracle2) });
     await propagate("a new oracle, not given", staked);
     await propagate("a new oracle", staked, [solOracle2]);
+    // A new oracle onto a bank in same-asset e-mode; a staked bank of another group.
+    const flagsAt = offsetOf("Bank", "flags");
+    const stakedFlags = data(staked).readBigUInt64LE(flagsAt);
+    const solOracle3 = (await generateKeyPairSigner()).address;
+    setPyth(solOracle3, { price: 152_000_000n, conf: 100_000n, expo: -6, publishTime: t });
+    await edit("a third oracle", gov, { oracle: new web3.PublicKey(solOracle3) });
+    editBank(staked, [["flags", stakedFlags | 4096n, 8]]);
+    await propagate("a new oracle, e-mode eligible", staked, [solOracle3]);
+    editBank(staked, [["flags", stakedFlags, 8]]);
+    editBank(staked, [["group", keyBits(other.address), 32]]);
+    await propagate("a staked bank of another group", staked, [solOracle3]);
+    editBank(staked, [["group", keyBits(group.address), 32]]);
+    await propagate("a third oracle", staked, [solOracle3]);
     // Scope oracles (governance admin): an OraclePrices account of Scope's, the bank's entry refreshed.
     const scopeAt = async (entry: number, value: bigint, exp: bigint, ts: bigint, o: { owner?: Address; len?: number } = {}) => {
       const a = (await generateKeyPairSigner()).address;
@@ -3505,15 +3518,23 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
       h.put(a, d, o.owner ?? SCOPE);
       return a;
     };
-    const scope = (label: string, bank: Address, oracle: Address, entry: number, rest: Address[] = [oracle], failing: boolean | "if-panics" = false) =>
+    const scope = (
+      label: string,
+      bank: Address,
+      oracle: Address,
+      entry: number,
+      rest: Address[] = [oracle],
+      failing: boolean | "if-panics" = false,
+      by: KeyPairSigner = gov,
+    ) =>
       run(
         `scope oracle: ${label}`,
-        gov,
+        by,
         [
           withRest(
             s.ix("lending_pool_configure_bank_oracle_scope", { oracle: new web3.PublicKey(oracle), entry_index: entry }, [
               { address: group.address },
-              { address: gov.address, signer: gov },
+              { address: by.address, signer: by },
               { address: bank, writable: true },
               { address: INSTRUCTIONS },
             ] as never),
@@ -3536,6 +3557,21 @@ describe("Marginfi v2 port against the mainnet binary: withdrawals, borrows and 
     await scope("a Kamino bank without its reserve", scopeBank.address, good, 7);
     await scope("a Kamino bank, the wrong reserve", scopeBank.address, good, 7, [good, other.address]);
     editBank(scopeBank.address, [["config.asset_tag", 0n, 1]]);
+    await scope("by someone else", scopeBank.address, good, 7, [good], false, other);
+    await scope("oversized", scopeBank.address, await scopeAt(7, 150_000_000n, 6n, t, { len: 8 + 32 + 512 * 56 + 8 }), 7);
+    for (const [tag, what] of [
+      [1n, "a SOL bank"],
+      [4n, "a Drift bank"],
+      [5n, "a Solend bank"],
+    ] as const) {
+      editBank(scopeBank.address, [["config.asset_tag", tag, 1]]);
+      await scope(what, scopeBank.address, good, 7);
+    }
+    editBank(scopeBank.address, [["config.asset_tag", 0n, 1]]);
+    const scopeFlags = data(scopeBank.address).readBigUInt64LE(offsetOf("Bank", "flags"));
+    editBank(scopeBank.address, [["flags", scopeFlags | 4096n, 8]]);
+    await scope("a bank in same-asset e-mode", scopeBank.address, good, 7);
+    editBank(scopeBank.address, [["flags", scopeFlags, 8]]);
     editBank(scopeBank.address, [["flags", 8n, 8]]);
     await scope("a frozen bank", scopeBank.address, good, 7, [good], "if-panics");
     editBank(scopeBank.address, [["flags", 0n, 8]]);

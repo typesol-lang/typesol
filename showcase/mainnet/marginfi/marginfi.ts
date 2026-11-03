@@ -5711,14 +5711,25 @@ export function solendInitObligation(
   system_program: SystemProgram,
   amount: u64,
 ): void {
-  constraint(bank, bank.config.asset_tag === ASSET_TAG_SOLEND, MarginfiError.WrongBankAssetTagForSolendOperation);
-  constraint(signer_token_account, signer_token_account.mint === mint.key, AnchorError.ConstraintTokenMint);
-  constraint(signer_token_account, signer_token_account.owner === fee_payer.key, AnchorError.ConstraintTokenOwner);
-  system_program.createAccount(fee_payer, integration_acc_2, rentExempt(SOLEND_OBLIGATION_SIZE), SOLEND_OBLIGATION_SIZE, SOLEND_PROGRAM_ID, [
-    "solend_obligation",
-    bank.key,
-    integration_acc_2.pdaBump,
-  ]);
+  // Anchor's `init` runs before the other constraints (the bank's has_one and the authority's seeds, declared for the
+  // IDL, still come first here), and on an address someone already funded it tops the rent up, allocates and assigns.
+  const obligationBump = integration_acc_2.pdaBump;
+  if (integration_acc_2.lamports === 0n) {
+    system_program.createAccount(fee_payer, integration_acc_2, rentExempt(SOLEND_OBLIGATION_SIZE), SOLEND_OBLIGATION_SIZE, SOLEND_PROGRAM_ID, [
+      "solend_obligation",
+      bank.key,
+      obligationBump,
+    ]);
+  } else {
+    let required = rentExempt(SOLEND_OBLIGATION_SIZE);
+    if (required === 0n) required = 1n;
+    if (required > integration_acc_2.lamports) system_program.transfer(fee_payer, integration_acc_2, required - integration_acc_2.lamports);
+    system_program.allocate(integration_acc_2, SOLEND_OBLIGATION_SIZE, ["solend_obligation", bank.key, obligationBump]);
+    system_program.assign(integration_acc_2, SOLEND_PROGRAM_ID, ["solend_obligation", bank.key, obligationBump]);
+  }
+  require(bank.config.asset_tag === ASSET_TAG_SOLEND, MarginfiError.WrongBankAssetTagForSolendOperation);
+  require(signer_token_account.mint === mint.key, AnchorError.ConstraintTokenMint);
+  require(signer_token_account.owner === fee_payer.key, AnchorError.ConstraintTokenOwner);
   require(amount >= 10n, MarginfiError.ObligationInitDepositInsufficient);
   const bump = bank.liquidity_vault_authority_bump;
   invoke(
