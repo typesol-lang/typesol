@@ -12,7 +12,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
-import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
+import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
 
 const KLEND = address("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 const FARMS = address("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr");
@@ -78,7 +78,7 @@ const kOffset = (account: string, path: string) => {
 
 describe.skipIf(!existsSync(program("kamino_lending.so")))("Marginfi v2 port against the mainnet binary: Kamino banks", () => {
   const h = marginfiPair();
-  const { s, setPyth, setSwb } = h;
+  const { s, setPyth, setSwb, editGroup } = h;
   /**
    * h.run: a transaction not marked failing must succeed (both failing alike would otherwise pass unnoticed), and one
    * marked failing must fail with the original's error, code included.
@@ -507,6 +507,85 @@ describe.skipIf(!existsSync(program("kamino_lending.so")))("Marginfi v2 port aga
       [account, usdc.bank.address, usdcTo],
     );
     await run("kamino withdraw at the new rate", user, [...both(r, b), withdraw(b, account, user, tokens, 500_000n, null, rest)], watch(b, account, tokens));
+    // What the venue instructions refuse, and their withdrawal branches, held to the original's outcome and code.
+    // Another user, with no debt, so a withdrawal reaches each branch's own check.
+    const editAccount = h.edit("MarginfiAccount");
+    const { user: user2, account: account2 } = await newUser();
+    const tokens2 = await h.tokenAccount(r.mint, user2.address, 100_000_000n);
+    await run("kamino deposit, another user", user2, [...both(r, b), deposit(b, account2, user2, tokens2, 50_000_000n)], watch(b, account2, tokens2));
+    const rest2 = ordered([b.address, r.oracle, r.reserve]);
+    const flags = data(account2).readBigUInt64LE(offsetOf("MarginfiAccount", "account_flags"));
+    const pair = async (label: string, amount = 100_000n) => {
+      await h.run(`kamino deposit: ${label}`, user2, [...both(r, b), deposit(b, account2, user2, tokens2, 1_000n)], watch(b, account2, tokens2));
+      await h.run(
+        `kamino withdraw: ${label}`,
+        user2,
+        [...both(r, b), withdraw(b, account2, user2, tokens2, amount, null, rest2)],
+        watch(b, account2, tokens2, group.address),
+      );
+    };
+    for (const [label, flag] of [
+      ["a disabled account", 1n],
+      ["a frozen account", 64n],
+      ["an account in receivership", 16n],
+      ["an account in deleverage", 32n],
+    ] as const) {
+      editAccount(account2, [["account_flags", flags | flag, 8]]);
+      await pair(label);
+    }
+    // Paused (deleverage still withdraws), then a group outflow limit, then a deleverage day's limit.
+    editGroup(group.address, [
+      ["panic_state_cache.pause_flags", 1n, 1],
+      ["panic_state_cache.pause_start_timestamp", t - 10n, 8],
+    ]);
+    await pair("a paused group, in deleverage");
+    editAccount(account2, [["account_flags", flags, 8]]);
+    await pair("a paused group");
+    editGroup(group.address, [["panic_state_cache.pause_flags", 0n, 1]]);
+    for (const [label, max] of [
+      ["under the group's hourly outflow limit", 1_000_000_000n],
+      ["past the group's hourly outflow limit", 1n],
+    ] as const) {
+      editGroup(group.address, [
+        ["rate_limiter.hourly.max_outflow", max, 8],
+        ["rate_limiter.hourly.window_duration", 3600n, 8],
+        ["rate_limiter.hourly.window_start", t, 8],
+      ]);
+      await pair(label, 5_000_000n);
+    }
+    // The deleverage day's limit is checked against the withdrawal's value, priced only with a group limit on.
+    editGroup(group.address, [["rate_limiter.hourly.max_outflow", 1_000_000_000n, 8]]);
+    editAccount(account2, [["account_flags", flags | 32n, 8]]);
+    for (const [label, limit] of [
+      ["in deleverage, under the day's limit", 1_000_000n],
+      ["in deleverage, past the day's limit", 1n],
+    ] as const) {
+      editGroup(group.address, [
+        ["deleverage_withdraw_window_cache.daily_limit", limit, 4],
+        ["deleverage_withdraw_window_cache.last_daily_reset_timestamp", t, 8],
+      ]);
+      await pair(label, 5_000_000n);
+    }
+    editGroup(group.address, [
+      ["deleverage_withdraw_window_cache.daily_limit", 0n, 4],
+      ["rate_limiter.hourly.max_outflow", 0n, 8],
+    ]);
+    editAccount(account2, [["account_flags", flags, 8]]);
+    // The bank's has_one accounts: another bank's obligation and vault, another mint.
+    const b2 = await kaminoBank(r, 1n);
+    for (const [label, from, to] of [
+      ["another bank's obligation", b.obligation, b2.obligation],
+      ["another bank's liquidity vault", b.v.liquidity, b2.v.liquidity],
+      ["another mint", r.mint, usdc.mint],
+    ] as const) {
+      for (const [what, ix] of [
+        ["deposit", deposit(b, account, user, tokens, 1_000n)],
+        ["withdraw", withdraw(b, account, user, tokens, 100_000n, null, rest)],
+      ] as const) {
+        const swapped = { ...ix, accounts: ix.accounts!.map((a) => (a.address === from ? { ...a, address: to } : a)) } as Instruction;
+        await run(`kamino ${what}: ${label}`, user, [...both(r, b), swapped], watch(b, account, tokens), true);
+      }
+    }
     // A fixed price (FixedKamino): $1.10 times the reserve's rate, priced from the reserve alone.
     const fixedRest = ordered([b.address, r.reserve], [usdc.bank.address, usdc.oracle]);
     await run(

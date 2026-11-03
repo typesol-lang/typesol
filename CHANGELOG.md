@@ -9,12 +9,17 @@ codes, and says so here.
 - Examples: Marginfi's rebalances across Kamino, Drift and JupLend banks, each leg priced at the venue's supply rate
   (klend's curve and reward emissions at the chain's measured slot pace, Drift's curve less its insurance factor,
   JupLend's liquidity-layer rate and Lending rewards), amounts through the venues' exchange rates, deposit room capped
-  by the venue's own. Against the binary on mainnet: 2,042 transactions (with the fixes below).
+  by the venue's own. Against the binary on mainnet: 2,081 transactions (with the fixes and tests below).
 - Fixed (examples): a classic liquidation by Marginfi's risk admin flags both accounts as the original does, so their
   Exponent PT banks are priced through a vault emergency there too.
 - New: `systemProgram.createPda(payer, account, space, owner, seeds)`, Anchor's `init` with `owner = …` on an
   `UncheckedAccount`: another program's account at this program's PDA, created (or, over an address someone funded
   first, topped up, allocated and assigned) before the instruction's constraints, the PDA recorded in the IDL.
+- Examples: more of Marginfi's venue paths against the binary: Kamino and Solend deposits and withdrawals of disabled,
+  frozen and paused accounts, Kamino's receivership, deleverage, group outflow limit and deleverage day's limit branches
+  and its bank's `has_one` accounts, and the risk admin deleveraging an Exponent PT through a vault emergency.
+  (`*DepositFailed` / `*WithdrawFailed` guard against a venue that moves other amounts than asked; the venues' own
+  programs never do, so they stay untested.)
 - New: an optional account in `invoke`'s list, as it is (`readonly(x)` with `x: A | null`), is left out when it was not
   passed (Rust's `if let Some(..)` pushes).
 - Fixed: a `constraint(acct, …)` that mentions another, optional account runs when that account is missing (it was

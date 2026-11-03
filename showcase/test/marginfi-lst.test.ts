@@ -567,5 +567,50 @@ describe("Marginfi v2 port against the mainnet binary: banks priced by another p
         failing,
       );
     await liquidate("liquidate a PT in emergency, by the risk admin", admin);
+    // The risk admin deleverages through it too: start, withdraw the PT (priced through the emergency), end.
+    const [record] = await pda(PROGRAM, ["liq_record", account]);
+    await run(
+      "liq record",
+      admin,
+      [
+        s.ix("marginfi_account_init_liq_record", {}, [
+          { address: account, writable: true },
+          { address: admin.address, signer: admin, writable: true },
+          { address: record, writable: true },
+          { address: SYSTEM },
+        ]),
+      ],
+      [account, record],
+    );
+    const adminPt = await h.tokenAccount(pt.mint, admin.address, 0n);
+    const sandwich = (which: "start" | "end") => {
+      const ix = s.ix(`${which}_deleverage`, {}, [
+        { address: account, writable: true },
+        { address: record, writable: true },
+        { address: group.address },
+        { address: admin.address, signer: admin },
+        { address: INSTRUCTIONS },
+      ]);
+      // The start takes the health accounts; the end only the banks.
+      const banks = [pt.bank.address, ptf.bank.address, sol.bank.address];
+      const list = which === "start" ? theirs : theirs.filter((a) => banks.includes(a));
+      return { ...ix, accounts: [...ix.accounts!, ...list.map((address) => ({ address, role: 1 }) as never)] } as Instruction;
+    };
+    // Withdrawing the PT and repaying SOL improves health; withdrawing alone worsens it (6072).
+    for (const [label, repay] of [
+      ["deleverage a PT in emergency", 1_000_000n],
+      ["deleverage a PT in emergency, no repayment", 0n],
+    ] as const)
+      await h.run(
+        label,
+        admin,
+        [
+          sandwich("start"),
+          h.withdraw(group.address, account, admin, pt.bank, adminPt, 100_000_000n, { rest: theirs }),
+          ...(repay ? [h.repay(group.address, account, admin, sol.bank.address, adminSol, sol.bank.v.liquidity, repay)] : []),
+          sandwich("end"),
+        ],
+        [account, record, pt.bank.address, sol.bank.address, adminPt, group.address],
+      );
   });
 });

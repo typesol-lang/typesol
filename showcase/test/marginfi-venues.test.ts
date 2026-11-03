@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
-import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
+import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
 
 const SOLEND = address("So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo");
 const RENT = address("SysvarRent111111111111111111111111111111111");
@@ -23,7 +23,7 @@ const pk = (a: Address) => new web3.PublicKey(a);
 
 describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the mainnet binary: Solend banks", () => {
   const h = marginfiPair();
-  const { s, setPyth, setSwb } = h;
+  const { s, setPyth, setSwb, editGroup } = h;
   /**
    * h.run: a transaction not marked failing must succeed (both failing alike would otherwise pass unnoticed), and one
    * marked failing must fail with the original's error, code included ("borrow-failed": where the original fails
@@ -444,6 +444,28 @@ describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the
       "borrow-failed",
     );
     await run("solend withdraw: past health", user, [refresh(r), withdraw(b, account, user, tokens, 6_000_000n, null, rest)], watch(b, account, tokens), true);
+    // The account and group states the venue instructions refuse, held to the original's code.
+    const editAccount = h.edit("MarginfiAccount");
+    const flags = data(account).readBigUInt64LE(offsetOf("MarginfiAccount", "account_flags"));
+    const states: [string, () => void][] = [
+      ["a disabled account", () => editAccount(account, [["account_flags", flags | 1n, 8]])],
+      ["a frozen account", () => editAccount(account, [["account_flags", flags | 64n, 8]])],
+      [
+        "a paused group",
+        () =>
+          editGroup(group.address, [
+            ["panic_state_cache.pause_flags", 1n, 1],
+            ["panic_state_cache.pause_start_timestamp", t - 10n, 8],
+          ]),
+      ],
+    ];
+    for (const [label, set] of states) {
+      set();
+      await run(`solend deposit: ${label}`, user, [refresh(r), deposit(b, account, user, tokens, 1_000n)], watch(b, account, tokens), true);
+      await run(`solend withdraw: ${label}`, user, [refresh(r), withdraw(b, account, user, tokens, 1_000n, null, rest)], watch(b, account, tokens), true);
+      editAccount(account, [["account_flags", flags, 8]]);
+      editGroup(group.address, [["panic_state_cache.pause_flags", 0n, 1]]);
+    }
     await run(
       "repay",
       user,
