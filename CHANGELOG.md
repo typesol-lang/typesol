@@ -6,6 +6,20 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.39.0 — 2026-11-06
+
+Marginfi v2 ported in full: all 124 instructions, checked against the mainnet binary on 2,081 transactions with the
+same outcomes, account bytes, events and IDL. The compiler gained what it needed: `Option` struct and `Vec`
+arguments, `f64` fields, hashes as PDA seeds, account resizing and raw writes, `systemProgram.createPda`, and Anchor's
+order and error codes for `init` and zero-copy accounts. The ports moved to `showcase/`. The repository now lives at
+github.com/typesol-lang, and releases are published by hand (no workflow publishes).
+
+Upgrading: the IDL writes `Vec<u8>` arguments and account fields as `bytes`, as Anchor does, so an Anchor client
+passes a Buffer for them (the bytes on the wire are unchanged). Accounts created at the start of an instruction now
+run before the other accounts' constraints, and zero-copy accounts are checked in `AccountLoader`'s order, so a
+transaction that breaks several checks can fail with a different error code; programs with such creates or zero-copy
+accounts compile differently (see "Changed" below).
+
 - Project: no scheduled or publishing automation in the repository: npm releases are published by hand from a
   maintainer's machine (the release workflow is gone), the macOS suite runs on demand only, and Dependabot no longer
   opens weekly pull requests.
