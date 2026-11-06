@@ -99,10 +99,33 @@ function init({ typescript: ts }) {
       return found;
     }
 
+    /**
+     * TypeScript's errors in a TypeSOL project's files, each with the hint the CLI prints under it (TypeScript's own
+     * advice, such as installing @types/node, points the wrong way in a program). Needs the in-process compiler.
+     */
+    function withHints(fileName, diagnostics) {
+      if (!compiler || !compiler.typescriptHint || !entriesNear(path.dirname(path.resolve(fileName))).size) return diagnostics;
+      return diagnostics.map((d) => {
+        if (d.category !== ts.DiagnosticCategory.Error) return d;
+        let hint;
+        try {
+          hint = compiler.typescriptHint(d);
+        } catch {
+          return d;
+        }
+        if (!hint) return d;
+        const text = `hint: ${hint}`;
+        const messageText =
+          typeof d.messageText === "string"
+            ? `${d.messageText}\n${text}`
+            : { ...d.messageText, next: [...(d.messageText.next || []), { messageText: text, category: d.category, code: d.code, next: undefined }] };
+        return { ...d, messageText };
+      });
+    }
     const proxy = Object.create(null);
     for (const k of Object.keys(ls)) proxy[k] = (...args) => ls[k](...args);
     proxy.getSemanticDiagnostics = (fileName) => {
-      const prior = ls.getSemanticDiagnostics(fileName);
+      const prior = withHints(fileName, ls.getSemanticDiagnostics(fileName));
       if (prior.some((d) => d.category === ts.DiagnosticCategory.Error)) return prior; // TypeScript's errors first
       const target = path.resolve(fileName);
       const entries = entriesNear(path.dirname(target));

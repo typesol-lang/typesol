@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- Editor: the plugin (`typesol/ts-plugin`) adds the same hints under TypeScript's errors in a program's files, once the
+  in-process compiler has loaded, so VS Code shows what to write instead too.
+- CLI: `typesol init` names the other starters (`--template vault`, `--template escrow`) after the next steps.
 - CLI: build errors show the path relative to the working directory and the source line with the problem marked.
   `--json` and the compiler API keep their fields (a hint is a line of the message).
 - New: hints for the errors newcomers meet first, under TypeScript's message: a number where a u64 is (`1n`), `Math.max`
