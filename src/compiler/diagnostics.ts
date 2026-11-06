@@ -7,6 +7,8 @@ export interface Diagnostic {
   message: string;
   /** Characters the problem spans from line:column (the construct refused), when known. */
   length?: number;
+  /** What to write instead, when known (also the message's last line, "hint: …"): for tools and AI agents. */
+  hint?: string;
 }
 
 export class CompileError extends Error {

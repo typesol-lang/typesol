@@ -89,7 +89,7 @@ const COMMANDS: Record<string, Command> = {
   init: {
     usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow]",
     help: [
-      "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore, .vscode/settings.json (editor errors).",
+      "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore, .vscode/settings.json (editor errors), AGENTS.md / CLAUDE.md / .cursor/rules (the rules for AI coding agents) and .mcp.json / .cursor/mcp.json (the TypeSOL MCP server).",
       "Refuses to overwrite files. <name> must be snake_case (default: derived from <dir>).",
       "--template counter   a PDA counter per user (default)",
       "--template vault     a SOL vault at a PDA: deposit, withdraw above rent, close",
@@ -238,6 +238,20 @@ const COMMANDS: Record<string, Command> = {
       const { c } = generate(mustExist(one(args, "<program.ts>")), { profile: !!v.profile });
       if (v.out) writeFileSync(v.out as string, c);
       else process.stdout.write(c);
+      return 0;
+    },
+  },
+  mcp: {
+    usage: "typesol mcp",
+    help: [
+      "Serve the Model Context Protocol on stdio for AI coding agents: tools to check a program (errors with hints), read",
+      "its IDL, search the docs, and read the rules a TypeSOL program follows. `typesol init` writes .mcp.json (Claude",
+      "Code) and .cursor/mcp.json (Cursor) that start it as `npx typesol mcp`.",
+    ].join("\n  "),
+    options: {},
+    async run() {
+      const { serve } = await import("./tools/mcp.js");
+      await serve();
       return 0;
     },
   },

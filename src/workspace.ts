@@ -11,6 +11,7 @@
  * Program keypairs live in `<out>/deploy/<name>-keypair.json` (created on first build; keep them, never commit them).
  * The address is recorded in typesol.json on first build, so a lost or swapped keypair is caught before deploying.
  */
+import { agentsMd, CLAUDE_MD, cursorRule, MCP_JSON } from "./ai.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { writeClient } from "./tools/clientgen.js";
@@ -208,6 +209,13 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
         null,
         2,
       ) + "\n",
+    // AI coding agents: the rules (AGENTS.md, and CLAUDE.md / Cursor's rules pointing at the same text) and the
+    // TypeSOL MCP server (check, IDL, docs as tools).
+    "AGENTS.md": agentsMd(name),
+    "CLAUDE.md": CLAUDE_MD,
+    ".cursor/rules/typesol.mdc": cursorRule(),
+    ".mcp.json": MCP_JSON,
+    ".cursor/mcp.json": MCP_JSON,
     // VS Code loads tsconfig plugins (typesol/ts-plugin) only with the workspace's TypeScript: offer to switch to it.
     ".vscode/settings.json":
       JSON.stringify({ "typescript.tsdk": "node_modules/typescript/lib", "typescript.enablePromptUseWorkspaceTsdk": true }, null, 2) + "\n",

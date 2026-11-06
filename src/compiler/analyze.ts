@@ -327,9 +327,10 @@ function typecheck(entry: string, files?: SourceOverrides): { program: ts.Progra
       const flat = ts.flattenDiagnosticMessageText(d.messageText, "\n");
       const hint = hintForTypeScript(d, flat, LIB_PATH);
       const message = hint ? `${flat}\nhint: ${hint}` : flat;
-      if (!d.file || d.start === undefined) return { file: entry, line: 1, column: 1, message };
+      const extra = hint ? { hint } : {};
+      if (!d.file || d.start === undefined) return { file: entry, line: 1, column: 1, message, ...extra };
       const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
-      return { file: d.file.fileName, line: line + 1, column: character + 1, message, length: d.length };
+      return { file: d.file.fileName, line: line + 1, column: character + 1, message, length: d.length, ...extra };
     });
     throw new CompileError(diagnostics);
   }
