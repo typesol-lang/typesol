@@ -17,6 +17,12 @@ printed commands yourself.
 Restore it from your backup. Without it you cannot upgrade the deployed program; removing `"address"` from
 `typesol.json` gives the program a new address.
 
+**A build error you don't recognize** — the compiler adds a `hint:` line under TypeScript's message where TypeScript's
+own advice points the wrong way for a program. The usual ones: integers are `bigint` (`1n`, `u64` parameters, not
+`number`); `require`, `log`, `min`, `max` and `fixedArray` are imported from `"typesol"`; arrays are read with `.get(i)`
+and written with `.set(i, v)`; an account you change is a `Mut<T>` parameter; there is no `async`, `try`, `throw` or
+`class`. The full list of what the subset covers is in [language.md](language.md).
+
 **A transaction fails with a custom error** — see [errors.md](errors.md). Failures raised by the
 compiler's checks log their TypeScript location, e.g. `TypeSOL: arithmetic overflow (vault.ts:42)`.
 

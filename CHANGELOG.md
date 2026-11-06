@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- CLI: build errors show the path relative to the working directory and the source line with the problem marked.
+  `--json` and the compiler API keep their fields (a hint is a line of the message).
+- New: hints for the errors newcomers meet first, under TypeScript's message: a number where a u64 is (`1n`), `Math.max`
+  (`min` / `max`), `console.log` (`log`), a missing `typesol` import, `async`, writing an account that is not `Mut<T>`,
+  `xs[i]` (`.get` / `.set`). Refused syntax is named in TypeScript's words ("classes are not supported: …") instead of
+  the compiler's internal node names, and `require` with a template string says what its error can be.
+- Docs: Marginfi's case study lists part 5 as done (all 124 instructions); troubleshooting points to the hints.
 - Releases: `scripts/release-manifest.ts` builds the program-examples ports of sources up to 0.38.0 (`test/ports/`; a
   0.38.0 tree listed only 18 programs). docs/testing.md and CONTRIBUTING describe the manifest and binary diff as attached
   by hand.

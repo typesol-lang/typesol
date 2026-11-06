@@ -6,7 +6,7 @@ mainnet as `MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA` (version 0.1.12 in its 
 456093551), not a rebuild.
 
 Marginfi is large: 124 instructions, 12 zero-copy accounts, 255 errors, and its amounts, prices and rates in I80F48
-fixed point. The port comes in parts, each checked before the next:
+fixed point. All 124 are ported, in five parts, each checked against the binary before the next:
 
 | Part | What | Status |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration, Solend, Kamino, Drift and JupLend banks, every oracle setup's pricing and venue rebalance legs done (all 124 instructions) |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | done |
 
 The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet/marginfi):
 

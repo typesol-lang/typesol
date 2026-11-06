@@ -394,6 +394,63 @@ describe("subset enforcement", () => {
   });
 });
 
+describe("hints for newcomers", () => {
+  // TypeScript's own advice (install @types/node, add the dom library, return a Promise) points the wrong way in a
+  // program; the compiler adds what to write instead, and keeps TypeScript's message.
+  const bare = (body: string) => body.replace(/, require, u8 \} from "typesol"/, ', u8 } from "typesol"');
+  const cases: [string, string, RegExp, ((b: string) => string)?][] = [
+    [
+      "a number where a u64 is",
+      `export function f(b: Mut<Box>): void { b.value += 1; }`,
+      /cannot be applied[\s\S]*hint: integers .* are bigint in TypeSOL: write 1n/,
+    ],
+    ["a number parameter", `export function f(b: Mut<Box>, by: number): void { b.value += by; }`, /hint: integers .* bigint/],
+    [
+      "Math.max",
+      `export function f(b: Mut<Box>, by: u64): void { b.value = Math.max(b.value, by); }`,
+      /hint: Math works on numbers; use min\(a, b\) and max\(a, b\)/,
+    ],
+    ["console.log", `export function f(b: Mut<Box>): void { console.log("x"); }`, /Cannot find name 'console'[\s\S]*hint: a program writes logs with log/],
+    [
+      "require without its import",
+      `export function f(b: Mut<Box>): void { require(b.value > 0n, "zero"); }`,
+      /hint: import \{ require \} from "typesol"/,
+      bare,
+    ],
+    ["async", `export async function f(b: Mut<Box>): void { b.value = 1n; }`, /hint: async is not supported/],
+    [
+      "writing a read-only account",
+      `export function f(b: Account<Box>): void { b.value = 1n; }`,
+      /read-only property[\s\S]*hint: to change an account, take it as Mut<T>/,
+    ],
+    [
+      "indexing an array",
+      `export interface Arr { xs: FixedArray<u64, 2>; }\nexport function f(a: Mut<Arr>): void { a.xs[0] = 1n; }`,
+      /hint: indexing with \[ \] is not supported: use \.get\(i\) and \.set/,
+    ],
+    ["a class", `class Foo { x = 1n; }\nexport function f(): void {}`, /classes are not supported: describe account data with an interface/],
+    [
+      "a template string as require's error",
+      "export function f(b: Mut<Box>): void { require(b.value > 0n, `bad ${b.value}`); }",
+      /require's error is a string literal, a member of an error enum/,
+    ],
+  ];
+  for (const [what, body, expected, edit] of cases) {
+    it(what, () => {
+      const file = path.join(dir, `hint-${what.replace(/\W+/g, "-")}.ts`);
+      writeFileSync(file, (edit ?? ((x) => x))(HEADER) + body);
+      let messages: string[] = [];
+      try {
+        generate(file);
+      } catch (e) {
+        if (!(e instanceof CompileError)) throw e;
+        messages = e.diagnostics.map((d) => d.message);
+      }
+      expect(messages.join("\n")).toMatch(expected);
+    });
+  }
+});
+
 describe("codegen is stable", () => {
   it("matches the checked-in C for examples/counter.ts", () => {
     const examples = fileURLToPath(new URL("../../examples/", import.meta.url));

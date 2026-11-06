@@ -77,6 +77,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (!this.namesError(args[1])) {
           // A code computed at run time (a helper that returns its error as a value): u32, the program error it names.
           const v = this.expr(args[1], U32);
+          if (v.type.kind === "string")
+            this.fail(
+              args[1],
+              "require's error is a string literal, a member of an error enum (CounterError.X) or a u32 code; a template string or string variable is not: give the message to an error enum member",
+            );
           const code = v.literal !== undefined ? this.literal(v.literal, U32, args[1]) : this.expect(v, U32, args[1]);
           this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
           return undefined;
