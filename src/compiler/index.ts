@@ -3,7 +3,8 @@ import { createRequire } from "node:module";
 import ts from "typescript";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { analyze } from "./analyze.js";
+import { analyze, LIB_PATH } from "./analyze.js";
+import { hintForTypeScript } from "./hints.js";
 import { emitProgram, type EmitOptions } from "./emit/index.js";
 import { buildIdl } from "./idl.js";
 import { buildSharedObject, toolchainVersion, type Sbpf } from "./toolchain.js";
@@ -13,6 +14,11 @@ import type { ProgramModel } from "./model.js";
 export { CompileError, formatDiagnostic, type Diagnostic } from "./diagnostics.js";
 export type { ProgramModel } from "./model.js";
 export { SBPF_VERSIONS, type Sbpf } from "./toolchain.js";
+
+/** The hint the CLI adds under a TypeScript error (what to write instead in a TypeSOL program), for the editor plugin. */
+export function typescriptHint(d: ts.Diagnostic): string | undefined {
+  return hintForTypeScript(d, ts.flattenDiagnosticMessageText(d.messageText, "\n"), LIB_PATH);
+}
 
 export interface Generated {
   model: ProgramModel;

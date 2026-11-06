@@ -104,4 +104,14 @@ describe("typesol/ts-plugin", () => {
     p.edit(helper, `import { type u64 } from "typesol";\nexport const f = (x: u64) => x;\n`);
     expect(p.ls.getSemanticDiagnostics(helper)).toEqual([]);
   });
+
+  it("adds the CLI's hint under a TypeScript error in a program file", async () => {
+    const p = project();
+    await p.ls.typesolReady();
+    p.edit(p.file, p.text().replace("counter.count += by;", "counter.count += 1;"));
+    const diags = p.ls.getSemanticDiagnostics(p.file);
+    const text = diags.map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n")).join("\n");
+    expect(text).toMatch(/cannot be applied[\s\S]*hint: integers .* are bigint in TypeSOL: write 1n/);
+    expect(diags.every((d) => d.source !== "typesol")).toBe(true); // still TypeScript's error, with its code
+  });
 });

@@ -123,7 +123,8 @@ const COMMANDS: Record<string, Command> = {
           (rel === "." ? "" : `    cd ${rel}\n`) +
           `    npm install\n` +
           `    npm test             # builds ${name} and runs its test in LiteSVM, a Solana runtime in-process\n` +
-          `    npx typesol doctor   # checks the toolchain, keypair and RPC before a deploy`,
+          `    npx typesol doctor   # checks the toolchain, keypair and RPC before a deploy` +
+          (template === "counter" ? `\n\n  other starters: typesol init <dir> --template vault (SOL at a PDA) or --template escrow (SPL token escrow)` : ""),
       );
       return 0;
     },
