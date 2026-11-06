@@ -561,6 +561,17 @@ export declare function masterEditionAddress(mint: Pubkey): Pubkey;
  */
 export declare function bigEndian(value: bigint): Seed;
 export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
+/**
+ * `Pubkey::create_program_address(seeds, program)`: the address of these seeds with the bump given as the last seed,
+ * or null when they give no program address (a point on the curve, or too many / too long seeds).
+ */
+export declare function createProgramAddress(seeds: Seed[], program: Pubkey): Pubkey | null;
+/**
+ * Log `prefix` followed by the base64 (standard, padded) of a struct value's bytes, as a native program's
+ * `msg!("ray_log: {}", base64(bincode(log)))` does. The struct holds integers, Pubkeys and fixed arrays of them only,
+ * so its bytes are its serialized form.
+ */
+export declare function logBase64(prefix: string, value: object): void;
 /** The bump of that canonical program address (`Pubkey::find_program_address(seeds, program).1`), to sign with it. */
 export declare function findProgramAddressBump(seeds: Seed[], program: Pubkey): u8;
 /** This program's address (`crate::ID`). */

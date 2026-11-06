@@ -668,6 +668,28 @@ static inline uint64_t ts_create_pda_address(const SolSignerSeed *seeds, int n, 
   return SUCCESS;
 }
 
+/* msg!("{prefix}{base64(bytes)}") with standard padding, as Raydium's ray_log writes it (at most 300 bytes in). */
+static __attribute__((noinline, unused)) void ts_log_base64(const char *prefix, uint64_t plen, const uint8_t *data, uint64_t len) {
+  static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  char out[64 + 4 * ((300 + 2) / 3)];
+  if (plen > 64 || len > 300) return;
+  uint64_t o = 0;
+  for (uint64_t i = 0; i < plen; i++) out[o++] = prefix[i];
+  uint64_t i = 0;
+  for (; i + 3 <= len; i += 3) {
+    uint32_t v = ((uint32_t)data[i] << 16) | ((uint32_t)data[i + 1] << 8) | data[i + 2];
+    out[o++] = tbl[(v >> 18) & 63]; out[o++] = tbl[(v >> 12) & 63]; out[o++] = tbl[(v >> 6) & 63]; out[o++] = tbl[v & 63];
+  }
+  if (len - i == 1) {
+    uint32_t v = (uint32_t)data[i] << 16;
+    out[o++] = tbl[(v >> 18) & 63]; out[o++] = tbl[(v >> 12) & 63]; out[o++] = '='; out[o++] = '=';
+  } else if (len - i == 2) {
+    uint32_t v = ((uint32_t)data[i] << 16) | ((uint32_t)data[i + 1] << 8);
+    out[o++] = tbl[(v >> 18) & 63]; out[o++] = tbl[(v >> 12) & 63]; out[o++] = tbl[(v >> 6) & 63]; out[o++] = '=';
+  }
+  sol_log_(out, o);
+}
+
 /* sol_try_find_program_address: the canonical (highest) bump. */
 static inline uint64_t ts_find_pda(const SolSignerSeed *seeds, int n, const SolPubkey *program, SolPubkey *out, uint8_t *bump_out) {
   if (!ts_pda_seeds_ok(seeds, n, TS_MAX_PDA_SEEDS - 1)) return 1; /* not SUCCESS: the PDA syscalls fail the same inputs */

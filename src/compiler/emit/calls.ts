@@ -554,6 +554,31 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_init_account(${h}, params->program_id, TS_DISC_${s.name}, sizeof(TSS_${s.name})));`);
         return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: true } };
       }
+      case "createProgramAddress": {
+        // Pubkey::create_program_address(seeds, program): the bump is the last seed; null when the seeds give a point
+        // on the curve (Rust's Err(PubkeyError::InvalidSeeds)) or are too many / too long.
+        if (args.length !== 2) this.fail(node, "createProgramAddress(seeds, program) takes the seeds (bump last) and the program's address");
+        const seeds = this.seeds(args[0]!, 0);
+        const program = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
+        const t = this.tmp("cpa");
+        this.model.options.set("pubkey", PUBKEY);
+        this.line(`${optC(PUBKEY)} ${t};`);
+        this.line(`${t}.some = ts_create_pda_address(${seeds.name}, ${seeds.count}, ${program.c}, &${t}.v) == SUCCESS;`);
+        return { c: t, type: { kind: "option", inner: PUBKEY } };
+      }
+      case "logBase64": {
+        // msg!("{prefix}{base64 of the struct's bytes}"): a fixed-layout struct's bytes are its bincode / Borsh form
+        // when it holds integers and Pubkeys only (Raydium's ray_log).
+        if (args.length !== 2 || !ts.isStringLiteralLike(args[0]!)) this.fail(node, 'logBase64("prefix", value) takes a string literal and a struct value');
+        const place = this.structPlace(args[1]!);
+        if (!place) this.fail(args[1]!, "logBase64 logs a struct value (a local, a literal bound to a const, or account data)");
+        const sd = this.model.structs.get(place.struct)!;
+        if (sd.size === undefined || sd.vec || sd.fields.some((f) => !["int", "pubkey", "array"].includes(f.type.kind)))
+          this.fail(args[1]!, `${sd.name} must hold only integers, Pubkeys and fixed arrays of them for its bytes to be its serialized form`);
+        const prefix = (args[0] as ts.StringLiteralLike).text;
+        this.line(`ts_log_base64(${cString(prefix)}, ${Buffer.byteLength(prefix)}, (const uint8_t *)${place.ptr}, sizeof(TSS_${sd.name}));`);
+        return undefined;
+      }
       case "findProgramAddress": {
         // Pubkey::find_program_address(seeds, program).0: the canonical PDA of any program.
         if (args.length !== 2) this.fail(node, "findProgramAddress(seeds, program) takes the seeds and the program's address");
