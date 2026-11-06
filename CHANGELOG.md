@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.41.0 — 2026-11-07
+
+TypeSOL for AI coding agents, and Raydium CP-Swap ported in full. `typesol init` writes the rules an agent needs
+(AGENTS.md, CLAUDE.md, Cursor's rules) and an MCP server configuration; `typesol mcp` gives agents check, IDL and docs
+search as tools; `llms.txt` / `llms-full.txt` put the docs in one file for models. Raydium CP-Swap now has all 21 of its
+instructions, checked against today's mainnet binary with a fuzz test. Programs that do not log a narrowed Option
+compile to the same C as in 0.40.0.
+
 - AI agents (docs/ai.md): `typesol init` writes AGENTS.md, CLAUDE.md and Cursor's rules (what TypeSOL refuses that
   TypeScript habits produce, how to check and test) and the MCP server's configuration (.mcp.json, .cursor/mcp.json).
 - New: `typesol mcp`, a Model Context Protocol server on stdio with the tools `check` (diagnostics with hints, from a
