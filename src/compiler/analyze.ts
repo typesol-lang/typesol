@@ -470,8 +470,10 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               const tag = ts.getJSDocTags(m).find((t) => t.tagName.text === "code");
               if (tag) {
                 const text = typeof tag.comment === "string" ? tag.comment.trim() : "";
-                if (!/^\d+$/.test(text) || Number(text) < code || Number(text) > 4_294_967_295)
-                  reporter.fail(m, `@code must be a number from ${code} up (codes only go up, and start at 6000)`);
+                // The first code may be below 6000: a native program's `ProgramError::Custom(n)` errors start at 0.
+                const least = errors.length ? code : 0;
+                if (!/^\d+$/.test(text) || Number(text) < least || Number(text) > 4_294_967_295)
+                  reporter.fail(m, `@code must be a number from ${least} up (codes only go up; untagged ones start at 6000)`);
                 code = Number(text);
               }
               const def = { code, name: m.name.getText(file), msg: m.initializer.text };
@@ -837,7 +839,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
         }
         reporter.error(
           ix.node.name ?? ix.node,
-          `argument ${a.name}: ${n} holds a FixedVec and is also account data, nested or returned (a fixed layout there, Borsh in arguments); declare a separate struct for the argument, or pass the list as its own FixedVec<T, N> argument`,
+          `argument ${a.name}: ${n} holds a FixedVec and is also account data, nested or returned: its bytes there are a fixed layout, in instruction data Borsh, and the IDL describes a type one way; declare a separate struct for the argument, or pass the list as its own FixedVec<T, N> argument`,
         );
       }
     }

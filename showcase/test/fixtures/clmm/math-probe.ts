@@ -39,6 +39,15 @@ export function swapAmounts(a: u128, b: u128, liquidity: u128, zeroForOne: boole
 export function liquidity(price: u128, a: u128, b: u128, amount0: u64, amount1: u64): u128 {
   return liquidityFromAmounts(price, a, b, amount0, amount1);
 }
-export function step(current: u128, target: u128, liquidity: u128, remaining: u64, feeRate: u32, baseInput: boolean, zeroForOne: boolean, feeOnInput: boolean): SwapStep {
+export function step(
+  current: u128,
+  target: u128,
+  liquidity: u128,
+  remaining: u64,
+  feeRate: u32,
+  baseInput: boolean,
+  zeroForOne: boolean,
+  feeOnInput: boolean,
+): SwapStep {
   return computeSwap(current, target, liquidity, remaining, feeRate, baseInput, zeroForOne, feeOnInput);
 }

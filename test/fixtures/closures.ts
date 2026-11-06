@@ -128,3 +128,32 @@ export function bumpTotal(payer: Signer, cart: Mut<Cart>, by: u64): u64 {
   bump(cart, (t) => t + by);
   return cart.total;
 }
+
+function twice(x: u64): u64 {
+  return x * 2n;
+}
+
+/** A function chosen at run time (the condition read once, where it is chosen), and a list of functions run in turn. */
+export function chosen(k: u64, x: u64): u64 {
+  const sq = (v: u64): u64 => v * v;
+  let m = k;
+  const g = m === 1n ? twice : m === 2n ? inc : sq;
+  m = 1n; // the choice was made above: g stays what it was
+  const h = x > 100n ? g : twice;
+  let total = 0n;
+  for (const f of [twice, inc, sq, g]) {
+    if (f(x) === 0n) continue;
+    total += f(x);
+    if (total > 1_000_000n) break;
+  }
+  return g(x) * 1_000_000n + h(x) * 1_000n + total + m * 0n;
+}
+
+/** An inner condition of a choice is read only when its side is taken: x = 0 never divides by it. */
+export function lazyChoice(x: u64): u64 {
+  const sq = (v: u64): u64 => v * v;
+  const g = x === 0n ? twice : 10n / x > 1n ? inc : sq;
+  const h = x > 5n ? sq : x > 1n ? inc : twice; // a ternary between values stays one
+  const pick = x > 1n ? 1n : x === 1n ? 2n : 3n;
+  return g(x) * 1_000_000n + h(x) * 10n + pick;
+}

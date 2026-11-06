@@ -90,6 +90,12 @@ export interface Ref {
   };
 }
 
+export interface FunctionChoice {
+  sel: string;
+  whenTrue: Closure | FunctionChoice;
+  whenFalse: Closure | FunctionChoice;
+}
+
 export interface Local {
   c: string;
   /** A value, or a local FixedArray / FixedVec (`fixedArray<T, N>(…)`, `const ys = xs.map(…)`) held in place. */
@@ -104,6 +110,11 @@ export interface Local {
   decl?: ts.VariableDeclaration | ts.ParameterDeclaration;
   /** A local closure (`const f = (…) => …` reading the enclosing function's variables), expanded where it is called. */
   closure?: Closure;
+  /**
+   * `const g = c ? f : h` between functions: the condition, evaluated once where g is declared (`sel`, a C bool), and
+   * the two functions, each a closure or another choice. A call runs the chosen one's expansion only.
+   */
+  choice?: FunctionChoice;
   /** `const t = loadAccount<T>(acct)` / `loadAccountMut`: the account it views (a `TsAccount *`), to pass to helpers. */
   loaded?: { handle: string; struct: string; mut: boolean };
   /** A struct value this function holds itself (a literal, or what a helper returned): never account data. */

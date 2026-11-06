@@ -71,6 +71,15 @@
 /* Every failure logs through this one sol_log_ call: each syscall call site costs a 16-byte relocation in the binary. */
 static __attribute__((noinline)) uint64_t ts_fail(uint64_t code, const char *msg, uint64_t len) {
   sol_log_(msg, len);
+#ifdef TS_PANIC_ON_OVERFLOW
+  /* PANIC_ON_OVERFLOW: arithmetic fails as a Rust `checked_*().unwrap()` does, with a panic (ProgramFailedToComplete). */
+  if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) sol_panic_("", 0, 0, 0);
+#endif
+#ifdef TS_CUSTOM_ZERO
+  /* An error with code 0 (a native program's first error) is returned as solana_program returns
+   * ProgramError::Custom(0): the built-in CUSTOM_ZERO, since 0 itself means success. */
+  if (code == 0) return (uint64_t)1 << 32;
+#endif
   return code;
 }
 #define TS_FAIL(code, msg) return ts_fail((code), (msg), sol_strlen(msg))
@@ -662,6 +671,28 @@ static inline bool ts_pda_seeds_ok(const SolSignerSeed *seeds, int n, int max) {
 static inline uint64_t ts_create_pda_address(const SolSignerSeed *seeds, int n, const SolPubkey *program, SolPubkey *out) {
   if (!ts_pda_seeds_ok(seeds, n, TS_MAX_PDA_SEEDS) || !ts_pda_hash(seeds, n, NULL, program, out)) return 1; /* not SUCCESS: the PDA syscalls fail the same inputs */
   return SUCCESS;
+}
+
+/* msg!("{prefix}{base64(bytes)}") with standard padding, as Raydium's ray_log writes it (at most 300 bytes in). */
+static __attribute__((noinline, unused)) void ts_log_base64(const char *prefix, uint64_t plen, const uint8_t *data, uint64_t len) {
+  static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  char out[64 + 4 * ((300 + 2) / 3)];
+  if (plen > 64 || len > 300) return;
+  uint64_t o = 0;
+  for (uint64_t i = 0; i < plen; i++) out[o++] = prefix[i];
+  uint64_t i = 0;
+  for (; i + 3 <= len; i += 3) {
+    uint32_t v = ((uint32_t)data[i] << 16) | ((uint32_t)data[i + 1] << 8) | data[i + 2];
+    out[o++] = tbl[(v >> 18) & 63]; out[o++] = tbl[(v >> 12) & 63]; out[o++] = tbl[(v >> 6) & 63]; out[o++] = tbl[v & 63];
+  }
+  if (len - i == 1) {
+    uint32_t v = (uint32_t)data[i] << 16;
+    out[o++] = tbl[(v >> 18) & 63]; out[o++] = tbl[(v >> 12) & 63]; out[o++] = '='; out[o++] = '=';
+  } else if (len - i == 2) {
+    uint32_t v = ((uint32_t)data[i] << 16) | ((uint32_t)data[i + 1] << 8);
+    out[o++] = tbl[(v >> 18) & 63]; out[o++] = tbl[(v >> 12) & 63]; out[o++] = tbl[(v >> 6) & 63]; out[o++] = '=';
+  }
+  sol_log_(out, o);
 }
 
 /* sol_try_find_program_address: the canonical (highest) bump. */
@@ -2021,6 +2052,22 @@ static inline unsigned __int128 ts_isqrt_u128(unsigned __int128 x) {
   while (1) {
     unsigned __int128 n = (r + x / r) / 2;
     if (n >= r) return r;
+    r = n;
+  }
+}
+
+/* floor(sqrt(x)) of a u256 (the `uint` crate's U256::integer_sqrt): Newton's method from a power of two above it. */
+static inline TsU256 ts_isqrt_u256(TsU256 x) {
+  int top = 3;
+  while (top > 0 && x.w[top] == 0) top--;
+  if (top == 0 && x.w[0] < 2) return x;
+  int bits = 64 * top + (64 - __builtin_clzll(x.w[top]));
+  TsU256 r = ts_u256_shl(ts_u256_lit(1, 0, 0, 0), (uint64_t)((bits + 1) / 2));
+  while (1) {
+    TsU256 q = ts_u256_divmod(x, r, true), s;
+    ts_u256_add(r, q, &s); /* r + x / r stays below 2^256: r <= 2^128 and x / r < 2^256 / r */
+    TsU256 n = ts_u256_shr(s, 1);
+    if (ts_u256_cmp(n, r) >= 0) return r;
     r = n;
   }
 }

@@ -227,10 +227,15 @@ export function uploadMerkleRoot(
   max_total_claim: u64,
   max_num_nodes: u64,
 ): void {
-  constraint(priority_fee_distribution_account, priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen), AnchorError.ConstraintRentExempt);
+  constraint(
+    priority_fee_distribution_account,
+    priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen),
+    AnchorError.ConstraintRentExempt,
+  );
   require(merkle_root_upload_authority.key === priority_fee_distribution_account.merkle_root_upload_authority, ErrorCode.Unauthorized);
   const epoch = currentEpoch();
-  if (priority_fee_distribution_account.merkle_root !== null) require(priority_fee_distribution_account.merkle_root.num_nodes_claimed === 0n, ErrorCode.Unauthorized);
+  if (priority_fee_distribution_account.merkle_root !== null)
+    require(priority_fee_distribution_account.merkle_root.num_nodes_claimed === 0n, ErrorCode.Unauthorized);
   require(epoch > priority_fee_distribution_account.epoch_created_at, ErrorCode.PrematureMerkleRootUpload);
   require(epoch <= priority_fee_distribution_account.expires_at, ErrorCode.ExpiredPriorityFeeDistributionAccount);
   priority_fee_distribution_account.merkle_root = { root, max_total_claim, max_num_nodes, total_funds_claimed: 0n, num_nodes_claimed: 0n };
@@ -242,10 +247,7 @@ export function uploadMerkleRoot(
 }
 
 /** Close a claim record once its tip distribution account has expired; its rent goes back to who paid it. */
-export function closeClaimStatus(
-  claim_status: CloseTo<Mut<ClaimStatus>, "claim_status_payer">,
-  claim_status_payer: Mut<AccountInfo>,
-): void {
+export function closeClaimStatus(claim_status: CloseTo<Mut<ClaimStatus>, "claim_status_payer">, claim_status_payer: Mut<AccountInfo>): void {
   constraint(claim_status, claim_status_payer.key === claim_status.claim_status_payer);
   require(currentEpoch() > claim_status.expires_at, ErrorCode.PrematureCloseClaimStatus);
   emit<ClaimStatusClosedEvent>({ claim_status_payer: claim_status_payer.key, claim_status_account: claim_status.key });
@@ -255,7 +257,11 @@ export function closeClaimStatus(
 export function closePriorityFeeDistributionAccount(
   config: Account<Config>,
   expired_funds_account: Dup<Mut<AccountInfo>>,
-  priority_fee_distribution_account: Seeds<CloseTo<Mut<PriorityFeeDistributionAccount>, "validator_vote_account">, ["PF_DISTRIBUTION_ACCOUNT", "@validator_vote_account", "@_epoch"], "bump">,
+  priority_fee_distribution_account: Seeds<
+    CloseTo<Mut<PriorityFeeDistributionAccount>, "validator_vote_account">,
+    ["PF_DISTRIBUTION_ACCOUNT", "@validator_vote_account", "@_epoch"],
+    "bump"
+  >,
   validator_vote_account: Mut<AccountInfo>,
   signer: Dup<Mut<Signer>>,
   _epoch: u64,
@@ -290,7 +296,11 @@ export function claim(
   amount: u64,
   proof: Vec<Hash>,
 ): void {
-  constraint(priority_fee_distribution_account, priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen), AnchorError.ConstraintRentExempt);
+  constraint(
+    priority_fee_distribution_account,
+    priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen),
+    AnchorError.ConstraintRentExempt,
+  );
   claim_status.create(payer, ["CLAIM_STATUS", claimant.key, priority_fee_distribution_account.key], 48n);
   require(merkle_root_upload_authority.key === priority_fee_distribution_account.merkle_root_upload_authority, ErrorCode.Unauthorized);
   require(currentEpoch() <= priority_fee_distribution_account.expires_at, ErrorCode.ExpiredPriorityFeeDistributionAccount);
@@ -305,10 +315,12 @@ export function claim(
   claim_status.expires_at = priority_fee_distribution_account.expires_at;
   require(priority_fee_distribution_account.merkle_root.total_funds_claimed <= U64_MAX - amount, ErrorCode.ArithmeticError);
   priority_fee_distribution_account.merkle_root.total_funds_claimed += amount;
-  require(priority_fee_distribution_account.merkle_root.total_funds_claimed <= priority_fee_distribution_account.merkle_root.max_total_claim, ErrorCode.ExceedsMaxClaim);
+  require(priority_fee_distribution_account.merkle_root.total_funds_claimed <=
+    priority_fee_distribution_account.merkle_root.max_total_claim, ErrorCode.ExceedsMaxClaim);
   require(priority_fee_distribution_account.merkle_root.num_nodes_claimed < U64_MAX, ErrorCode.ArithmeticError);
   priority_fee_distribution_account.merkle_root.num_nodes_claimed += 1n;
-  require(priority_fee_distribution_account.merkle_root.num_nodes_claimed <= priority_fee_distribution_account.merkle_root.max_num_nodes, ErrorCode.ExceedsMaxNumNodes);
+  require(priority_fee_distribution_account.merkle_root.num_nodes_claimed <=
+    priority_fee_distribution_account.merkle_root.max_num_nodes, ErrorCode.ExceedsMaxNumNodes);
   emit<ClaimedEvent>({ priority_fee_distribution_account: priority_fee_distribution_account.key, payer: payer.key, claimant: claimant.key, amount });
   validPfda(priority_fee_distribution_account);
 }
@@ -352,10 +364,15 @@ export function migrateTdaMerkleRootUploadAuthority(
   priority_fee_distribution_account: Mut<PriorityFeeDistributionAccount>,
   merkle_root_upload_config: Seeds<Account<MerkleRootUploadConfig>, ["ROOT_UPLOAD_CONFIG"]>,
 ): void {
-  constraint(priority_fee_distribution_account, priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen), AnchorError.ConstraintRentExempt);
+  constraint(
+    priority_fee_distribution_account,
+    priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen),
+    AnchorError.ConstraintRentExempt,
+  );
   constraint(merkle_root_upload_config, merkle_root_upload_config.lamports >= rentExempt(merkle_root_upload_config.dataLen), AnchorError.ConstraintRentExempt);
   require(priority_fee_distribution_account.merkle_root === null, ErrorCode.InvalidTdaForMigration);
-  require(priority_fee_distribution_account.merkle_root_upload_authority === merkle_root_upload_config.original_upload_authority, ErrorCode.InvalidTdaForMigration);
+  require(priority_fee_distribution_account.merkle_root_upload_authority ===
+    merkle_root_upload_config.original_upload_authority, ErrorCode.InvalidTdaForMigration);
   priority_fee_distribution_account.merkle_root_upload_authority = merkle_root_upload_config.override_authority;
 }
 
@@ -371,7 +388,11 @@ export function transferPriorityFeeTips(
   lamports: u64,
 ): void {
   constraint(config, config.lamports >= rentExempt(config.dataLen), AnchorError.ConstraintRentExempt);
-  constraint(priority_fee_distribution_account, priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen), AnchorError.ConstraintRentExempt);
+  constraint(
+    priority_fee_distribution_account,
+    priority_fee_distribution_account.lamports >= rentExempt(priority_fee_distribution_account.dataLen),
+    AnchorError.ConstraintRentExempt,
+  );
   const epoch = currentEpoch();
   require(priority_fee_distribution_account.epoch_created_at === epoch, ErrorCode.AccountValidationFailure);
   require(priority_fee_distribution_account.total_lamports_transferred <= U64_MAX - lamports, ErrorCode.ArithmeticError);

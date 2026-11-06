@@ -47,6 +47,15 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
       reporter.error(analysis.sourceFile, "MAX_ACCOUNTS must be an integer from 32 to 255 (accounts one instruction takes)");
     else if (maxAccounts.value > 32n) out.push(`#define TS_MAX_ACCOUNTS ${maxAccounts.value}`);
   }
+  // `const PANIC_ON_OVERFLOW = true`: arithmetic overflow and division by zero stop the program as a Rust panic does
+  // (`checked_mul(…).unwrap()`: ProgramFailedToComplete, no code) instead of failing with 5100 / 5101.
+  const panicFlag = model.constants.get("PANIC_ON_OVERFLOW");
+  if (panicFlag) {
+    if (typeof panicFlag.value !== "boolean") reporter.error(analysis.sourceFile, "PANIC_ON_OVERFLOW must be true or false");
+    else if (panicFlag.value) out.push(`#define TS_PANIC_ON_OVERFLOW 1`);
+  }
+  // An error with code 0 must not return 0 (success): see ts_fail.
+  if ([...model.errorEnums.values()].some((m) => [...m.values()].some((e) => e.code === 0))) out.push(`#define TS_CUSTOM_ZERO 1`);
   out.push(`#include "typesol_rt.h"`, "");
 
   for (const inner of model.options.values())

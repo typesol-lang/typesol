@@ -228,7 +228,11 @@ export function closeClaimStatus(
 export function closeTipDistributionAccount(
   config: Account<Config>,
   expired_funds_account: Dup<Mut<AccountInfo>>,
-  tip_distribution_account: Seeds<CloseTo<Mut<TipDistributionAccount>, "validator_vote_account">, ["TIP_DISTRIBUTION_ACCOUNT", "@validator_vote_account", "@_epoch"], "bump">,
+  tip_distribution_account: Seeds<
+    CloseTo<Mut<TipDistributionAccount>, "validator_vote_account">,
+    ["TIP_DISTRIBUTION_ACCOUNT", "@validator_vote_account", "@_epoch"],
+    "bump"
+  >,
   validator_vote_account: Mut<AccountInfo>,
   signer: Dup<Mut<Signer>>,
   _epoch: u64,

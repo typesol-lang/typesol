@@ -428,6 +428,17 @@ describe("hints for newcomers", () => {
       `export interface Arr { xs: FixedArray<u64, 2>; }\nexport function f(a: Mut<Arr>): void { a.xs[0] = 1n; }`,
       /hint: indexing with \[ \] is not supported: use \.get\(i\) and \.set/,
     ],
+    ["comparing a u8 with a number", `export function f(b: Mut<Box>, k: u8): void { if (k === 1) b.value = 1n; }`, /no overlap[\s\S]*hint: integers .* bigint/],
+    [
+      "a function chosen from arrows written in place",
+      `export function f(b: Mut<Box>): void { const g = b.value > 0n ? (x: u64): u64 => x : (x: u64): u64 => x + 1n; b.value = g(b.value); }`,
+      /declare each function with const first/,
+    ],
+    [
+      "a map to structs in a chain without naming the struct",
+      `export interface Arr { xs: FixedArray<u64, 4>; }\nexport interface P { v: u64; }\nexport function f(a: Mut<Arr>, b: Mut<Box>): void { b.value = a.xs.map((x) => ({ v: x })).reduce((s, p) => s + p.v, 0n); }`,
+      /name the struct the callback builds/,
+    ],
     ["a class", `class Foo { x = 1n; }\nexport function f(): void {}`, /classes are not supported: describe account data with an interface/],
     [
       "a template string as require's error",

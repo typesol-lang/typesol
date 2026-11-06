@@ -52,6 +52,35 @@ import { ExpressionEmitter } from "./expressions.js";
  * Calls: built-in functions, Vec methods, helpers, remaining accounts, foreign account reads and return data.
  */
 /** List methods taking a callback (or a value) that expand into a loop. */
+/** solana_program's ProgramError variants with no data, in order from InvalidArgument (2) on. */
+const PROGRAM_ERRORS = [
+  "InvalidArgument",
+  "InvalidInstructionData",
+  "InvalidAccountData",
+  "AccountDataTooSmall",
+  "InsufficientFunds",
+  "IncorrectProgramId",
+  "MissingRequiredSignature",
+  "AccountAlreadyInitialized",
+  "UninitializedAccount",
+  "NotEnoughAccountKeys",
+  "AccountBorrowFailed",
+  "MaxSeedLengthExceeded",
+  "InvalidSeeds",
+  "BorshIoError",
+  "AccountNotRentExempt",
+  "UnsupportedSysvar",
+  "IllegalOwner",
+  "MaxAccountsDataAllocationsExceeded",
+  "InvalidRealloc",
+  "MaxInstructionTraceLengthExceeded",
+  "BuiltinProgramsMustConsumeComputeUnits",
+  "InvalidAccountOwner",
+  "ArithmeticOverflow",
+  "Immutable",
+  "IncorrectAuthority",
+];
+
 const LIST_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "reduce", "includes", "indexOf"]);
 
 export abstract class CallEmitter extends ExpressionEmitter {
@@ -86,8 +115,41 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
           return undefined;
         }
+        // A built-in ProgramError: its u64 form (the index shifted into the high 32 bits), as solana_program returns it.
+        if (ts.isPropertyAccessExpression(args[1]) && this.exportName(args[1].expression) === "ProgramError") {
+          const idx = PROGRAM_ERRORS.indexOf(args[1].name.text);
+          if (idx < 0) this.fail(args[1].name, `ProgramError has no ${args[1].name.text}`);
+          // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
+          const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
+          const text = typeof pre === "string" ? `${pre}${args[1].name.text}` : `Error: ${args[1].name.text} (${this.location(node)})`;
+          this.line(`if (!${cond.c}) TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)});`);
+          return undefined;
+        }
         const err = this.errorRef(args[1]);
-        this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(`Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`)});`);
+        // `const ERROR_LOG_PREFIX = "AMM error: "`: the program's errors log as its native entrypoint logs them.
+        const prefix = this.model.constants.get("ERROR_LOG_PREFIX")?.value;
+        const text = typeof prefix === "string" ? `${prefix}${err.msg}` : `Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`;
+        this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
+        return undefined;
+      }
+      case "panic": {
+        // String literals, or top-level string constants.
+        const text = (a: ts.Expression): string | undefined => {
+          if (ts.isStringLiteralLike(a)) return a.text;
+          const v = ts.isIdentifier(a) ? this.model.constants.get(a.text)?.value : undefined;
+          return typeof v === "string" ? v : undefined;
+        };
+        if (args.length > 2 || args.some((a) => text(a) === undefined))
+          this.fail(node, 'panic() takes an optional message and an optional "file:line:column" location: string literals or string constants');
+        const msg = args.length ? text(args[0]!)! : "explicit panic";
+        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
+        // ported program's panic reports it, else this source line.
+        const at = args.length > 1 ? text(args[1]!)! : this.location(node);
+        const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
+        const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
+        this.line(`sol_log(${cString(msg)});`);
+        this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
+        this.line(`__builtin_unreachable();`);
         return undefined;
       }
       case "log": {
@@ -240,7 +302,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length !== 1) this.fail(node, "isqrt(x) takes one unsigned integer");
         const v = this.expr(args[0]);
         const x = v.literal !== undefined ? this.literal(v.literal, U64, args[0]) : v;
-        if (x.type.kind !== "int" || INT_INFO[x.type.name].signed) this.fail(args[0], "isqrt needs an unsigned integer (u8 … u128)");
+        if (x.type.kind !== "int" || INT_INFO[x.type.name].signed) this.fail(args[0], "isqrt needs an unsigned integer (u8 … u256)");
+        if (x.type.name === "u256") return { c: `ts_isqrt_u256(${x.c})`, type: x.type };
         const wide = INT_INFO[x.type.name].bytes === 16;
         return { c: wide ? `ts_isqrt_u128(${x.c})` : `((${INT_INFO[x.type.name].c})ts_isqrt_u64((uint64_t)(${x.c})))`, type: x.type };
       }
@@ -510,6 +573,31 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`TS_TRY(ts_init_account(${h}, params->program_id, TS_DISC_${s.name}, sizeof(TSS_${s.name})));`);
         return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: true } };
       }
+      case "createProgramAddress": {
+        // Pubkey::create_program_address(seeds, program): the bump is the last seed; null when the seeds give a point
+        // on the curve (Rust's Err(PubkeyError::InvalidSeeds)) or are too many / too long.
+        if (args.length !== 2) this.fail(node, "createProgramAddress(seeds, program) takes the seeds (bump last) and the program's address");
+        const seeds = this.seeds(args[0]!, 0);
+        const program = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
+        const t = this.tmp("cpa");
+        this.model.options.set("pubkey", PUBKEY);
+        this.line(`${optC(PUBKEY)} ${t};`);
+        this.line(`${t}.some = ts_create_pda_address(${seeds.name}, ${seeds.count}, ${program.c}, &${t}.v) == SUCCESS;`);
+        return { c: t, type: { kind: "option", inner: PUBKEY } };
+      }
+      case "logBase64": {
+        // msg!("{prefix}{base64 of the struct's bytes}"): a fixed-layout struct's bytes are its bincode / Borsh form
+        // when it holds integers and Pubkeys only (Raydium's ray_log).
+        if (args.length !== 2 || !ts.isStringLiteralLike(args[0]!)) this.fail(node, 'logBase64("prefix", value) takes a string literal and a struct value');
+        const place = this.structPlace(args[1]!);
+        if (!place) this.fail(args[1]!, "logBase64 logs a struct value (a local, a literal bound to a const, or account data)");
+        const sd = this.model.structs.get(place.struct)!;
+        if (sd.size === undefined || sd.vec || sd.fields.some((f) => !["int", "pubkey", "array"].includes(f.type.kind)))
+          this.fail(args[1]!, `${sd.name} must hold only integers, Pubkeys and fixed arrays of them for its bytes to be its serialized form`);
+        const prefix = (args[0] as ts.StringLiteralLike).text;
+        this.line(`ts_log_base64(${cString(prefix)}, ${Buffer.byteLength(prefix)}, (const uint8_t *)${place.ptr}, sizeof(TSS_${sd.name}));`);
+        return undefined;
+      }
       case "findProgramAddress": {
         // Pubkey::find_program_address(seeds, program).0: the canonical PDA of any program.
         if (args.length !== 2) this.fail(node, "findProgramAddress(seeds, program) takes the seeds and the program's address");
@@ -567,6 +655,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.fail(node, "bigEndian(value) is a PDA seed: use it inside a seeds list");
       case "loadAccount":
       case "loadAccountMut":
+      case "loadRaw":
+      case "loadRawMut":
       case "loadForeign":
         this.fail(node, `bind ${builtin}<T>(...) to a const first: const p = ${builtin}<T>(account)`);
       case "emit":
@@ -608,6 +698,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (local?.closure && this.returnedFunction(local.closure.node))
         this.fail(node, `${callee.text} returns a function: bind it (const f = ${callee.text}(…)) or call it right away (${callee.text}(…)(…))`);
       if (local?.closure) return this.expandClosure(local.closure, node.arguments, node);
+      if (local?.choice) return this.callChoice(local.choice, node.arguments, node);
       const name = calleeName(callee, this.model.helperDecls, this.checker) ?? callee.text;
       if (!local && this.model.factories.has(name))
         this.fail(node, `${callee.text} returns a function: bind it (const f = ${callee.text}(…)) or call it right away (${callee.text}(…)(…))`);
@@ -634,7 +725,30 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (ts.isIdentifier(callee.expression)) {
         const l = this.lookup(callee.expression.text);
         if (l?.type.kind === "vecArg") {
-          if (method !== "get" || args.length !== 1) this.fail(node, "Vec arguments are read-only: use .get(i) and .length");
+          // Bytes (instruction data, a Vec<u8> argument): little-endian reads at a byte offset, bounds-checked (5104).
+          const le: Record<string, [string, number, Value["type"]]> = {
+            readU8: ["uint8_t", 1, U8],
+            readU16: ["uint16_t", 2, { kind: "int", name: "u16" }],
+            readU32: ["uint32_t", 4, { kind: "int", name: "u32" }],
+            readU64: ["uint64_t", 8, U64],
+            readU128: ["__uint128_t", 16, { kind: "int", name: "u128" }],
+            readPubkey: ["SolPubkey", 32, PUBKEY],
+          };
+          if (le[method] && l.type.elem.kind === "int" && l.type.elem.name === "u8") {
+            if (args.length !== 1) this.fail(node, `${method}(offset) takes the byte offset`);
+            const [c, size, type] = le[method]!;
+            const off = this.tmp("off");
+            this.line(`uint64_t ${off} = ${this.expect(this.expr(args[0], U64), U64, args[0]).c};`);
+            this.line(
+              `if (${off} > (uint64_t)${l.c}.len || (uint64_t)${l.c}.len - ${off} < ${size}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: read past the end of the bytes");`,
+            );
+            const t = this.tmp("rd");
+            this.line(`${c} ${t};`);
+            this.line(`ts_memcpy(&${t}, ${l.c}.ptr + ${off}, ${size});`);
+            return type.kind === "pubkey" ? { c: `(&${t})`, type } : { c: t, type };
+          }
+          if (method !== "get" || args.length !== 1)
+            this.fail(node, "Vec arguments are read-only: use .get(i), .length, and on bytes readU8/U16/U32/U64/U128/readPubkey(offset)");
           const elem = l.type.elem;
           if (elem.kind === "string") {
             const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
@@ -1232,6 +1346,43 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: false } };
   }
 
+  /**
+   * `loadRaw<T>(acct)` / `loadRawMut<T>(acct)`: a native program's account (no discriminator) as a fixed-layout struct
+   * from byte 0, checked as a `#[repr(C)]` type's load_checked does: this program's (3007), large enough (3003).
+   */
+  protected loadRaw(node: ts.CallExpression, mut: boolean): Value {
+    const fn = mut ? "loadRawMut" : "loadRaw";
+    const targ = node.typeArguments?.[0];
+    const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
+    if (!s || s.size === undefined || s.vec) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
+    if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: ${fn} reads fixed layouts only`);
+    if (node.arguments.length !== 1) this.fail(node, `${fn}<T>(account) takes one remaining account or AccountInfo parameter`);
+    let h = this.handle(node.arguments[0]);
+    let param: number | undefined;
+    if (!h) {
+      const acct = this.accountParam(node.arguments[0], "the account");
+      if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
+      if (mut && !isWritable(acct.kind)) this.fail(node.arguments[0], `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut`);
+      if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
+      h = `a_${acct.name}`;
+      param = this.ix.accounts.indexOf(acct);
+    }
+    this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
+    if (mut) {
+      this.line(`TS_TRY(ts_check_writable(${h}));`);
+      const slot = this.claimSlots.get(node);
+      if (slot)
+        this.line(
+          param === undefined
+            ? `TS_TRY(ts_claim_mut_rec(params, ${h}, &${slot}, params->ka_num));`
+            : `TS_TRY(ts_claim_mut_at_rec(params, ${param}, &${slot}));`,
+        );
+      else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
+    }
+    return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut } };
+  }
+
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
   protected loadAccount(node: ts.CallExpression, mut: boolean): Value {
     let targ = node.typeArguments?.[0];
@@ -1577,7 +1728,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected namesError(node: ts.Expression): boolean {
     if (ts.isStringLiteral(node)) return true;
     if (!ts.isPropertyAccessExpression(node)) return false;
-    if (this.exportName(node.expression) === "AnchorError") return true;
+    if (this.exportName(node.expression) === "AnchorError" || this.exportName(node.expression) === "ProgramError") return true;
     return ts.isIdentifier(node.expression) && this.model.errorEnums.has(node.expression.text);
   }
 

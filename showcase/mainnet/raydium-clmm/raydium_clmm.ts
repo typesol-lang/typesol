@@ -88,7 +88,18 @@ import {
   accrueRewards,
   NO_KEY,
 } from "./liquidity";
-import { FEE_RATE_DENOMINATOR_VALUE, MAX_SQRT_PRICE_X64, MAX_TICK, MIN_SQRT_PRICE_X64, MIN_TICK, Q64, addDelta, computeSwap, getSqrtPriceAtTick, getTickAtSqrtPrice } from "./math";
+import {
+  FEE_RATE_DENOMINATOR_VALUE,
+  MAX_SQRT_PRICE_X64,
+  MAX_TICK,
+  MIN_SQRT_PRICE_X64,
+  MIN_TICK,
+  Q64,
+  addDelta,
+  computeSwap,
+  getSqrtPriceAtTick,
+  getTickAtSqrtPrice,
+} from "./math";
 import {
   arrayInExtension,
   crossTick,
@@ -216,8 +227,7 @@ function createTokenVault(
   // GetAccountDataSize with ImmutableOwner: the size the token program wants for an account of this mint.
   invoke(token_program, [readonly(mint)], [u8(21n), u16(7n)]);
   const space = returnData<u64>(token_program);
-  if (vault.lamports === 0n)
-    system_program.createAccount(payer, vault, rentExempt(space), space, token_program.key, [seed, pool.key, mint.key, bump]);
+  if (vault.lamports === 0n) system_program.createAccount(payer, vault, rentExempt(space), space, token_program.key, [seed, pool.key, mint.key, bump]);
   else {
     const min = rentExempt(space) > 1n ? rentExempt(space) : 1n;
     if (min > vault.lamports) system_program.transfer(payer, vault, min - vault.lamports);
@@ -317,7 +327,6 @@ export function createPool(
   });
 }
 
-
 // ---- positions and liquidity ---------------------------------------------------------------------------------------
 
 /** The pool's signer seeds (PoolState::seeds): a pool made with a seed index signs with it, others without. */
@@ -349,7 +358,15 @@ function createTickArray(payer: Mut<Signer>, array: Mut<AccountInfo>, pool: Acco
 }
 
 /** transfer_from_user_to_pool_vault (v2): transfer_checked under the program that holds the user's account. */
-function transferIn(authority: Signer, from: Mut<TokenAccount>, vault: Mut<TokenAccount>, mint: Mint, token_program: TokenProgram, token_program_2022: Token2022Program, amount: u64): void {
+function transferIn(
+  authority: Signer,
+  from: Mut<TokenAccount>,
+  vault: Mut<TokenAccount>,
+  mint: Mint,
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  amount: u64,
+): void {
   if (amount === 0n) return;
   if (from.tokenProgram === token_program_2022.key) token_program_2022.transferChecked(from, mint, vault, authority, amount);
   else token_program.transferChecked(from, mint, vault, authority, amount);
@@ -508,7 +525,16 @@ export function openPositionWithToken22Nft(
     liquidity === 0n && base_flag !== null
       ? liquidityFromOneAmount(pool_state, vault_0_mint, vault_1_mint, base_flag, amount_0_max, amount_1_max, tick_lower_index, tick_upper_index)
       : liquidity;
-  const change = addLiquidityToTicks(pool_state, lower, upper, resolved, liquidity === 0n && base_flag === null, tick_lower_index, tick_upper_index, u64(now()));
+  const change = addLiquidityToTicks(
+    pool_state,
+    lower,
+    upper,
+    resolved,
+    liquidity === 0n && base_flag === null,
+    tick_lower_index,
+    tick_upper_index,
+    u64(now()),
+  );
   let fee0: u64 = 0n;
   let fee1: u64 = 0n;
   if (!change.skipped) {
@@ -622,7 +648,16 @@ export function increaseLiquidityV2(
     liquidity === 0n && base_flag !== null
       ? liquidityFromOneAmount(pool_state, vault_0_mint, vault_1_mint, base_flag, amount_0_max, amount_1_max, tickLower, tickUpper)
       : liquidity;
-  const change = addLiquidityToTicks(pool_state, tick_array_lower, tick_array_upper, resolved, liquidity === 0n && base_flag === null, tickLower, tickUpper, u64(now()));
+  const change = addLiquidityToTicks(
+    pool_state,
+    tick_array_lower,
+    tick_array_upper,
+    resolved,
+    liquidity === 0n && base_flag === null,
+    tickLower,
+    tickUpper,
+    u64(now()),
+  );
   let fee0: u64 = 0n;
   let fee1: u64 = 0n;
   if (!change.skipped) {
@@ -804,8 +839,18 @@ export function decreaseLiquidityV2(
       const recipient = rest.get(r);
       const mint = rest.get(m);
       // InterfaceAccount<TokenAccount> / <Mint>: owned by a token program and holding one.
-      requireTokenAccount(vault.owner, vault.dataLen, vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n, vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n);
-      requireTokenAccount(recipient.owner, recipient.dataLen, recipient.dataLen > 108n ? readData<u8>(recipient, 108n) : 0n, recipient.dataLen > 165n ? readData<u8>(recipient, 165n) : 0n);
+      requireTokenAccount(
+        vault.owner,
+        vault.dataLen,
+        vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n,
+        vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n,
+      );
+      requireTokenAccount(
+        recipient.owner,
+        recipient.dataLen,
+        recipient.dataLen > 108n ? readData<u8>(recipient, 108n) : 0n,
+        recipient.dataLen > 165n ? readData<u8>(recipient, 165n) : 0n,
+      );
       requireMintAccount(mint.owner, mint.dataLen, mint.dataLen > 45n ? readData<u8>(mint, 45n) : 0n, mint.dataLen > 165n ? readData<u8>(mint, 165n) : 0n);
       require(readData<Pubkey>(vault, 0n) === readData<Pubkey>(recipient, 0n), AnchorError.RequireKeysEqViolated);
       const info = pool_state.reward_infos.get(i);
@@ -824,7 +869,12 @@ export function decreaseLiquidityV2(
         info.reward_claimed += amount;
         const decimals = readData<u8>(mint, 44n);
         if (vault.owner === SPL_TOKEN_2022)
-          invoke(token_program_2022, [writable(vault), readonly(mint), writable(recipient), readonlySigner(pool_state)], [u8(12n), amount, decimals], poolSigner);
+          invoke(
+            token_program_2022,
+            [writable(vault), readonly(mint), writable(recipient), readonlySigner(pool_state)],
+            [u8(12n), amount, decimals],
+            poolSigner,
+          );
         else invoke(token_program, [writable(vault), readonly(mint), writable(recipient), readonlySigner(pool_state)], [u8(12n), amount, decimals], poolSigner);
       }
       rewards.set(i, amount);
@@ -843,9 +893,7 @@ export function decreaseLiquidityV2(
   });
 }
 
-
 // ---- swaps -------------------------------------------------------------------------------------------------------
-
 
 /**
  * Swap `amount` of one token of the pool (or, with `is_base_input` false, for exactly `amount` of the other), across
@@ -895,12 +943,9 @@ export function swapV2(
   const priceBefore = pool_state.sqrt_price_x64;
   const zeroForOne = input_vault.mint === pool_state.token_mint_0;
   require(timestamp > pool_state.open_time, AnchorError.RequireGtViolated);
-  require(
-    zeroForOne
-      ? input_vault.key === pool_state.token_vault_0 && output_vault.key === pool_state.token_vault_1
-      : input_vault.key === pool_state.token_vault_1 && output_vault.key === pool_state.token_vault_0,
-    ErrorCode.InvalidInputPoolVault,
-  );
+  require(zeroForOne
+    ? input_vault.key === pool_state.token_vault_0 && output_vault.key === pool_state.token_vault_1
+    : input_vault.key === pool_state.token_vault_1 && output_vault.key === pool_state.token_vault_0, ErrorCode.InvalidInputPoolVault);
   // The remaining accounts: tick arrays and the bitmap extension, told apart by size, up to the first that is neither.
   const rest = remainingAccounts();
   let scanEnd = rest.length;
@@ -948,12 +993,9 @@ export function swapV2(
   // swap_internal
   require(specified !== 0n, ErrorCode.ZeroAmountSpecified);
   require((pool_state.status & 16n) === 0n, ErrorCode.NotApproved);
-  require(
-    zeroForOne
-      ? limit < pool_state.sqrt_price_x64 && limit > MIN_SQRT_PRICE_X64
-      : limit > pool_state.sqrt_price_x64 && limit < MAX_SQRT_PRICE_X64,
-    ErrorCode.SqrtPriceLimitOverflow,
-  );
+  require(zeroForOne
+    ? limit < pool_state.sqrt_price_x64 && limit > MIN_SQRT_PRICE_X64
+    : limit > pool_state.sqrt_price_x64 && limit < MAX_SQRT_PRICE_X64, ErrorCode.SqrtPriceLimitOverflow);
   accrueRewards(pool_state, u64(blockTimestamp));
   require(observation_state.pool_id === pool_state.key, AnchorError.RequireKeysEqViolated);
   // first_tick_array_index_with_extension_info
@@ -1230,7 +1272,6 @@ export function collectFundFee(
   );
 }
 
-
 // ---- admin --------------------------------------------------------------------------------------------------------
 
 /** InterfaceAccount<TokenAccount>::try_from on a remaining account: owned by a token program and an initialized token account. */
@@ -1241,7 +1282,9 @@ function requireTokenAccount(owner: Pubkey, dataLen: u64, state: u8, accountType
 /** InterfaceAccount<Mint>::try_from on a remaining account: owned by a token program and an initialized mint. */
 function requireMintAccount(owner: Pubkey, dataLen: u64, initialized: u8, accountType: u8): void {
   require(owner === SPL_TOKEN || owner === SPL_TOKEN_2022, AnchorError.AccountOwnedByWrongProgram);
-  require(dataLen >= 82n && initialized !== 0n && (dataLen === 82n || (dataLen > 165n && dataLen !== 355n && accountType === 1n)), AnchorError.AccountDidNotDeserialize);
+  require(dataLen >= 82n &&
+    initialized !== 0n &&
+    (dataLen === 82n || (dataLen > 165n && dataLen !== 355n && accountType === 1n)), AnchorError.AccountDidNotDeserialize);
 }
 
 const SUPPORT_MINT_OWNER = pubkey("RayVyjyJQz9vAi126A4sGexKnSU1XeZaHTRcM1mZMPY");
@@ -1384,7 +1427,14 @@ export function createDynamicFeeConfig(
 ): void {
   dynamic_fee_config.create(owner, ["dynamic_fee_config", bigEndian(index)]);
   dynamic_fee_config.index = index;
-  require(validDynamicFee(MAX_TICK_SPACING, filter_period, decay_period, reduction_factor, dynamic_fee_control, max_volatility_accumulator), ErrorCode.InvalidDynamicFeeConfigParams);
+  require(validDynamicFee(
+    MAX_TICK_SPACING,
+    filter_period,
+    decay_period,
+    reduction_factor,
+    dynamic_fee_control,
+    max_volatility_accumulator,
+  ), ErrorCode.InvalidDynamicFeeConfigParams);
   dynamic_fee_config.filter_period = filter_period;
   dynamic_fee_config.decay_period = decay_period;
   dynamic_fee_config.reduction_factor = reduction_factor;
@@ -1402,7 +1452,14 @@ export function updateDynamicFeeConfig(
   dynamic_fee_control: u32,
   max_volatility_accumulator: u32,
 ): void {
-  require(validDynamicFee(MAX_TICK_SPACING, filter_period, decay_period, reduction_factor, dynamic_fee_control, max_volatility_accumulator), ErrorCode.InvalidDynamicFeeConfigParams);
+  require(validDynamicFee(
+    MAX_TICK_SPACING,
+    filter_period,
+    decay_period,
+    reduction_factor,
+    dynamic_fee_control,
+    max_volatility_accumulator,
+  ), ErrorCode.InvalidDynamicFeeConfigParams);
   dynamic_fee_config.filter_period = filter_period;
   dynamic_fee_config.decay_period = decay_period;
   dynamic_fee_config.reduction_factor = reduction_factor;
@@ -1477,7 +1534,11 @@ export function collectExcessLamports(
     const t22 = source.owner === SPL_TOKEN_2022;
     if (source.owner !== SPL_TOKEN && !t22) continue;
     // token_account_native_and_amount
-    const unpacks = tokenAccountUnpacks(source.dataLen, source.dataLen > 108n ? readData<u8>(source, 108n) : 0n, source.dataLen > 165n ? readData<u8>(source, 165n) : 0n);
+    const unpacks = tokenAccountUnpacks(
+      source.dataLen,
+      source.dataLen > 108n ? readData<u8>(source, 108n) : 0n,
+      source.dataLen > 165n ? readData<u8>(source, 165n) : 0n,
+    );
     const native = unpacks && readData<u32>(source, 109n) === 1n;
     if (!native) {
       // WithdrawExcessLamports
@@ -1493,7 +1554,8 @@ export function collectExcessLamports(
     require(after >= before, ErrorCode.LamportsCalculateError);
     const excess = after - before;
     if (excess === 0n) continue;
-    if (t22) invoke(token_program_2022, [writable(source), writable(collect_lamports_wallet), readonlySigner(pool_state)], [u8(45n), u8(1n), excess], poolSigner);
+    if (t22)
+      invoke(token_program_2022, [writable(source), writable(collect_lamports_wallet), readonlySigner(pool_state)], [u8(45n), u8(1n), excess], poolSigner);
     else invoke(token_program, [writable(source), writable(collect_lamports_wallet), readonlySigner(pool_state)], [u8(45n), u8(1n), excess], poolSigner);
     require(readData<u64>(source, 64n) === before, ErrorCode.LamportsCalculateError);
   }
@@ -1554,10 +1616,14 @@ function initCustomizablePool(
 
 /** PoolState::initialize_dynamic_fee_info from a DynamicFeeConfig (the last remaining account). */
 function initDynamicFee(pool: Mut<PoolState>, config: Account<DynamicFeeConfig>, tick: i32): void {
-  require(
-    validDynamicFee(pool.tick_spacing, config.filter_period, config.decay_period, config.reduction_factor, config.dynamic_fee_control, config.max_volatility_accumulator),
-    ErrorCode.InvalidDynamicFeeConfigParams,
-  );
+  require(validDynamicFee(
+    pool.tick_spacing,
+    config.filter_period,
+    config.decay_period,
+    config.reduction_factor,
+    config.dynamic_fee_control,
+    config.max_volatility_accumulator,
+  ), ErrorCode.InvalidDynamicFeeConfigParams);
   const f = pool.dynamic_fee_info;
   f.filter_period = config.filter_period;
   f.decay_period = config.decay_period;
@@ -1827,19 +1893,25 @@ export function initializeReward(
     }
   }
   require(supportedMint(reward_token_mint, associated), ErrorCode.NotSupportMint);
-  createTokenVault(reward_funder, pool_state, reward_token_vault, reward_token_mint, system_program, reward_token_program, reward_token_vault.pdaBump, "pool_reward_vault");
-  require(
-    reward_funder.key === ADMIN || reward_funder.key === pool_state.owner || isOperator(operation_state, reward_funder.key),
-    ErrorCode.NotApproved,
+  createTokenVault(
+    reward_funder,
+    pool_state,
+    reward_token_vault,
+    reward_token_mint,
+    system_program,
+    reward_token_program,
+    reward_token_vault.pdaBump,
+    "pool_reward_vault",
   );
+  require(reward_funder.key === ADMIN || reward_funder.key === pool_state.owner || isOperator(operation_state, reward_funder.key), ErrorCode.NotApproved);
   const timestamp = now();
   log(`current block timestamp:${timestamp}`);
   const current = u64(timestamp);
   // InitializeRewardParam::check
-  require(
-    param.open_time < param.end_time && param.open_time >= current && param.end_time >= current && param.emissions_per_second_x64 !== 0n,
-    ErrorCode.InvalidRewardInitParam,
-  );
+  require(param.open_time < param.end_time &&
+    param.open_time >= current &&
+    param.end_time >= current &&
+    param.emissions_per_second_x64 !== 0n, ErrorCode.InvalidRewardInitParam);
   const period = param.end_time - param.open_time;
   require(period >= MIN_REWARD_PERIOD && period <= MAX_REWARD_PERIOD, ErrorCode.InvalidRewardPeriod);
   const amount = rewardAmount(period, param.emissions_per_second_x64);
@@ -1847,10 +1919,23 @@ export function initializeReward(
   require(amount <= 18446744073709551615n - fee, ErrorCode.CalculateOverflow);
   require(funder_token_account.amount >= amount + fee, AnchorError.RequireGteViolated);
   require(6148914691236517205n > amount, AnchorError.RequireGtViolated);
-  addReward(pool_state, operation_state, param.open_time, param.end_time, param.emissions_per_second_x64, reward_token_mint, reward_token_vault.key, reward_funder.key);
+  addReward(
+    pool_state,
+    operation_state,
+    param.open_time,
+    param.end_time,
+    param.emissions_per_second_x64,
+    reward_token_mint,
+    reward_token_vault.key,
+    reward_funder.key,
+  );
   // transfer_from_user_to_pool_vault into the vault just made.
   if (amount + fee > 0n)
-    invoke(reward_token_program, [writable(funder_token_account), readonly(reward_token_mint), writable(reward_token_vault), readonlySigner(reward_funder)], [u8(12n), amount + fee, reward_token_mint.decimals]);
+    invoke(
+      reward_token_program,
+      [writable(funder_token_account), readonly(reward_token_mint), writable(reward_token_vault), readonlySigner(reward_funder)],
+      [u8(12n), amount + fee, reward_token_mint.decimals],
+    );
 }
 
 /** Bring the pool's reward streams up to now. */
@@ -1891,7 +1976,16 @@ export function collectRemainingRewards(
   const poolSigner = poolIsIndexed(pool_state)
     ? signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, seedIndex, pool_state.bump.get(0n)])
     : signer(["pool", pool_state.amm_config, pool_state.token_mint_0, pool_state.token_mint_1, pool_state.bump.get(0n)]);
-  transferOut(pool_state, reward_token_vault, funder_token_account, reward_vault_mint, token_program, token_program_2022, reward_token_vault.amount - unclaimed, poolSigner);
+  transferOut(
+    pool_state,
+    reward_token_vault,
+    funder_token_account,
+    reward_vault_mint,
+    token_program,
+    token_program_2022,
+    reward_token_vault.amount - unclaimed,
+    poolSigner,
+  );
 }
 
 /**
@@ -1988,7 +2082,12 @@ export function setRewardParams(
     const from = rest.get(1n);
     const mint = rest.get(2n);
     // InterfaceAccount<TokenAccount> / <Mint>
-    requireTokenAccount(vault.owner, vault.dataLen, vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n, vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n);
+    requireTokenAccount(
+      vault.owner,
+      vault.dataLen,
+      vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n,
+      vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n,
+    );
     requireTokenAccount(from.owner, from.dataLen, from.dataLen > 108n ? readData<u8>(from, 108n) : 0n, from.dataLen > 165n ? readData<u8>(from, 165n) : 0n);
     requireMintAccount(mint.owner, mint.dataLen, mint.dataLen > 45n ? readData<u8>(mint, 45n) : 0n, mint.dataLen > 165n ? readData<u8>(mint, 165n) : 0n);
     require(readData<Pubkey>(vault, 0n) === readData<Pubkey>(from, 0n), AnchorError.RequireKeysEqViolated);
@@ -2002,7 +2101,6 @@ export function setRewardParams(
     else invoke(token_program, [writable(from), readonly(mint), writable(vault), readonlySigner(authority)], [u8(12n), amount + fee, decimals]);
   }
 }
-
 
 /** finishAddLiquidity for the v1 instructions: no transfer fees, plain SPL Token transfers. */
 function finishAddLiquidityLegacy(
@@ -2045,7 +2143,6 @@ function finishAddLiquidityLegacy(
   });
   return { fee_0: 0n, fee_1: 0n };
 }
-
 
 /** Open a position as a Metaplex NFT (SPL Token, metadata always), adding `liquidity` between two ticks. */
 export function openPosition(
@@ -2183,7 +2280,6 @@ export function openPosition(
   token_program.setAuthority(position_nft_mint, pool_state, AuthorityType.MintTokens, null, poolSigner);
 }
 
-
 /** open_position with Token-2022 pool tokens and a choice of metadata: the NFT is still a Metaplex one (SPL Token). */
 export function openPositionV2(
   payer: Mut<Signer>,
@@ -2255,7 +2351,16 @@ export function openPositionV2(
     liquidity === 0n && base_flag !== null
       ? liquidityFromOneAmount(pool_state, vault_0_mint, vault_1_mint, base_flag, amount_0_max, amount_1_max, tick_lower_index, tick_upper_index)
       : liquidity;
-  const change = addLiquidityToTicks(pool_state, lower, upper, resolved, liquidity === 0n && base_flag === null, tick_lower_index, tick_upper_index, u64(now()));
+  const change = addLiquidityToTicks(
+    pool_state,
+    lower,
+    upper,
+    resolved,
+    liquidity === 0n && base_flag === null,
+    tick_lower_index,
+    tick_upper_index,
+    u64(now()),
+  );
   let fee0: u64 = 0n;
   let fee1: u64 = 0n;
   if (!change.skipped) {
@@ -2550,8 +2655,18 @@ export function decreaseLiquidity(
       const vault = rest.get(v);
       const recipient = rest.get(r);
       // InterfaceAccount<TokenAccount> / <Mint>: owned by a token program and holding one.
-      requireTokenAccount(vault.owner, vault.dataLen, vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n, vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n);
-      requireTokenAccount(recipient.owner, recipient.dataLen, recipient.dataLen > 108n ? readData<u8>(recipient, 108n) : 0n, recipient.dataLen > 165n ? readData<u8>(recipient, 165n) : 0n);
+      requireTokenAccount(
+        vault.owner,
+        vault.dataLen,
+        vault.dataLen > 108n ? readData<u8>(vault, 108n) : 0n,
+        vault.dataLen > 165n ? readData<u8>(vault, 165n) : 0n,
+      );
+      requireTokenAccount(
+        recipient.owner,
+        recipient.dataLen,
+        recipient.dataLen > 108n ? readData<u8>(recipient, 108n) : 0n,
+        recipient.dataLen > 165n ? readData<u8>(recipient, 165n) : 0n,
+      );
       require(readData<Pubkey>(vault, 0n) === readData<Pubkey>(recipient, 0n), AnchorError.RequireKeysEqViolated);
       const info = pool_state.reward_infos.get(i);
       require(vault.key === info.token_vault, AnchorError.RequireKeysEqViolated);
@@ -2586,8 +2701,6 @@ export function decreaseLiquidity(
   });
 }
 
-
-
 /**
  * Close an empty position (no liquidity, fees or rewards owed): the NFT burned, its account and (Token-2022) its mint
  * closed, the position's rent to the owner. A frozen NFT account (a restricted-asset pool) is thawed by the pool, the
@@ -2608,7 +2721,9 @@ export function closePosition(
   constraint(position_nft_account, position_nft_account.owner === nft_owner.key, AnchorError.ConstraintTokenOwner);
   constraint(position_nft_account, position_nft_account.tokenProgram === token_program.key, AnchorError.ConstraintTokenTokenProgram);
   if (personal_position.liquidity !== 0n || personal_position.token_fees_owed_0 !== 0n || personal_position.token_fees_owed_1 !== 0n) {
-    log(`remaing liquidity:${personal_position.liquidity},token_fees_owed_0:${personal_position.token_fees_owed_0},token_fees_owed_1:${personal_position.token_fees_owed_1}`);
+    log(
+      `remaing liquidity:${personal_position.liquidity},token_fees_owed_0:${personal_position.token_fees_owed_0},token_fees_owed_1:${personal_position.token_fees_owed_1}`,
+    );
     require(false, ErrorCode.ClosePositionErr);
   }
   for (let i = 0n; i < 3n; i++) {
@@ -2702,7 +2817,14 @@ export function openLimitOrder(
   // get_or_create_tick_array
   require(isValidStartIndex(start, spacing), ErrorCode.InvalidTickIndex);
   if (tick_array.owner === SYSTEM)
-    createTickArray(payer, tick_array, pool_state, system_program, start, findProgramAddressBump(["tick_array", pool_state.key, bigEndian(start)], programId()));
+    createTickArray(
+      payer,
+      tick_array,
+      pool_state,
+      system_program,
+      start,
+      findProgramAddressBump(["tick_array", pool_state.key, bigEndian(start)], programId()),
+    );
   const array = loadAccountMut<TickArrayState>(tick_array);
   const countBefore = array.initialized_tick_count;
   const offset = orderOffset(array, tick_index, spacing);
@@ -2920,7 +3042,6 @@ export function closeLimitOrder(signer: Signer, rent_receiver: Mut<AccountInfo>,
   close(limit_order, rent_receiver);
 }
 
-
 /**
  * swap_v2 for SPL Token pools: no transfer fees, and the first tick array an account of the instruction (the others,
  * and the bitmap extension, remaining accounts).
@@ -2960,12 +3081,9 @@ export function swap(
   const priceBefore = pool_state.sqrt_price_x64;
   const zeroForOne = input_vault.mint === pool_state.token_mint_0;
   require(timestamp > pool_state.open_time, AnchorError.RequireGtViolated);
-  require(
-    zeroForOne
-      ? input_vault.key === pool_state.token_vault_0 && output_vault.key === pool_state.token_vault_1
-      : input_vault.key === pool_state.token_vault_1 && output_vault.key === pool_state.token_vault_0,
-    ErrorCode.InvalidInputPoolVault,
-  );
+  require(zeroForOne
+    ? input_vault.key === pool_state.token_vault_0 && output_vault.key === pool_state.token_vault_1
+    : input_vault.key === pool_state.token_vault_1 && output_vault.key === pool_state.token_vault_0, ErrorCode.InvalidInputPoolVault);
   // The remaining accounts: tick arrays and the bitmap extension, told apart by size, up to the first that is neither.
   const rest = remainingAccounts();
   let scanEnd = rest.length;
@@ -3013,12 +3131,9 @@ export function swap(
   // swap_internal
   require(specified !== 0n, ErrorCode.ZeroAmountSpecified);
   require((pool_state.status & 16n) === 0n, ErrorCode.NotApproved);
-  require(
-    zeroForOne
-      ? limit < pool_state.sqrt_price_x64 && limit > MIN_SQRT_PRICE_X64
-      : limit > pool_state.sqrt_price_x64 && limit < MAX_SQRT_PRICE_X64,
-    ErrorCode.SqrtPriceLimitOverflow,
-  );
+  require(zeroForOne
+    ? limit < pool_state.sqrt_price_x64 && limit > MIN_SQRT_PRICE_X64
+    : limit > pool_state.sqrt_price_x64 && limit < MAX_SQRT_PRICE_X64, ErrorCode.SqrtPriceLimitOverflow);
   accrueRewards(pool_state, u64(blockTimestamp));
   require(observation_state.pool_id === pool_state.key, AnchorError.RequireKeysEqViolated);
   // first_tick_array_index_with_extension_info
@@ -3150,7 +3265,6 @@ export function swap(
   }
 }
 
-
 /**
  * Swap `amount_in` through a chain of pools, each hop's output the next hop's input (swap_v2 by input, no price
  * limit). Per hop, as remaining accounts: its AmmConfig, pool, output token account, input vault, output vault, output
@@ -3194,7 +3308,12 @@ export function swapRouterBaseIn(
       const t = rest.get(pos + k);
       requireTokenAccount(t.owner, t.dataLen, t.dataLen > 108n ? readData<u8>(t, 108n) : 0n, t.dataLen > 165n ? readData<u8>(t, 165n) : 0n);
     }
-    requireMintAccount(outMint.owner, outMint.dataLen, outMint.dataLen > 45n ? readData<u8>(outMint, 45n) : 0n, outMint.dataLen > 165n ? readData<u8>(outMint, 165n) : 0n);
+    requireMintAccount(
+      outMint.owner,
+      outMint.dataLen,
+      outMint.dataLen > 45n ? readData<u8>(outMint, 45n) : 0n,
+      outMint.dataLen > 165n ? readData<u8>(outMint, 165n) : 0n,
+    );
     require(pool.observation_key === obs.key, AnchorError.RequireKeysEqViolated);
     require(pool.amm_config === config.key, AnchorError.RequireKeysEqViolated);
     pos += 7n;
@@ -3208,10 +3327,9 @@ export function swapRouterBaseIn(
     const inVaultMint = readData<Pubkey>(inVault, 0n);
     const zeroForOne = inVaultMint === pool.token_mint_0;
     require(timestamp > pool.open_time, AnchorError.RequireGtViolated);
-    require(
-      zeroForOne ? inVault.key === pool.token_vault_0 && outVault.key === pool.token_vault_1 : inVault.key === pool.token_vault_1 && outVault.key === pool.token_vault_0,
-      ErrorCode.InvalidInputPoolVault,
-    );
+    require(zeroForOne
+      ? inVault.key === pool.token_vault_0 && outVault.key === pool.token_vault_1
+      : inVault.key === pool.token_vault_1 && outVault.key === pool.token_vault_0, ErrorCode.InvalidInputPoolVault);
     let scanEnd = rest.length;
     let extAt = rest.length;
     for (let i = pos; i < rest.length && scanEnd === rest.length; i++) {
@@ -3258,12 +3376,9 @@ export function swapRouterBaseIn(
     // swap_internal
     require(specified !== 0n, ErrorCode.ZeroAmountSpecified);
     require((pool.status & 16n) === 0n, ErrorCode.NotApproved);
-    require(
-      zeroForOne
-        ? limit < pool.sqrt_price_x64 && limit > MIN_SQRT_PRICE_X64
-        : limit > pool.sqrt_price_x64 && limit < MAX_SQRT_PRICE_X64,
-      ErrorCode.SqrtPriceLimitOverflow,
-    );
+    require(zeroForOne
+      ? limit < pool.sqrt_price_x64 && limit > MIN_SQRT_PRICE_X64
+      : limit > pool.sqrt_price_x64 && limit < MAX_SQRT_PRICE_X64, ErrorCode.SqrtPriceLimitOverflow);
     accrueRewards(pool, u64(blockTimestamp));
     require(obs.pool_id === pool.key, AnchorError.RequireKeysEqViolated);
     // first_tick_array_index_with_extension_info
@@ -3393,13 +3508,23 @@ export function swapRouterBaseIn(
       if (inAccount < 0n) {
         const decimals = input_token_mint.decimals;
         if (input_token_account.tokenProgram === SPL_TOKEN_2022)
-          invoke(token_program_2022, [writable(input_token_account), readonly(input_token_mint), writable(inVault), readonlySigner(payer)], [u8(12n), sendIn, decimals]);
-        else invoke(token_program, [writable(input_token_account), readonly(input_token_mint), writable(inVault), readonlySigner(payer)], [u8(12n), sendIn, decimals]);
+          invoke(
+            token_program_2022,
+            [writable(input_token_account), readonly(input_token_mint), writable(inVault), readonlySigner(payer)],
+            [u8(12n), sendIn, decimals],
+          );
+        else
+          invoke(
+            token_program,
+            [writable(input_token_account), readonly(input_token_mint), writable(inVault), readonlySigner(payer)],
+            [u8(12n), sendIn, decimals],
+          );
       } else {
         const from = rest.get(u64(inAccount));
         const mint = rest.get(u64(inMint));
         const decimals = readData<u8>(mint, 44n);
-        if (from.owner === SPL_TOKEN_2022) invoke(token_program_2022, [writable(from), readonly(mint), writable(inVault), readonlySigner(payer)], [u8(12n), sendIn, decimals]);
+        if (from.owner === SPL_TOKEN_2022)
+          invoke(token_program_2022, [writable(from), readonly(mint), writable(inVault), readonlySigner(payer)], [u8(12n), sendIn, decimals]);
         else invoke(token_program, [writable(from), readonly(mint), writable(inVault), readonlySigner(payer)], [u8(12n), sendIn, decimals]);
       }
     }
@@ -3411,8 +3536,19 @@ export function swapRouterBaseIn(
         : signer(["pool", pool.amm_config, pool.token_mint_0, pool.token_mint_1, pool.bump.get(0n)]);
       const decimals = readData<u8>(outMint, 44n);
       if (outVault.owner === SPL_TOKEN_2022)
-        invoke(token_program_2022, [writable(outVault), readonly(outMint), writable(outAccount), readonlySigner(rest.get(pos - 6n))], [u8(12n), received, decimals], poolSigner);
-      else invoke(token_program, [writable(outVault), readonly(outMint), writable(outAccount), readonlySigner(rest.get(pos - 6n))], [u8(12n), received, decimals], poolSigner);
+        invoke(
+          token_program_2022,
+          [writable(outVault), readonly(outMint), writable(outAccount), readonlySigner(rest.get(pos - 6n))],
+          [u8(12n), received, decimals],
+          poolSigner,
+        );
+      else
+        invoke(
+          token_program,
+          [writable(outVault), readonly(outMint), writable(outAccount), readonlySigner(rest.get(pos - 6n))],
+          [u8(12n), received, decimals],
+          poolSigner,
+        );
     }
     if (zeroForOne) require(priceBefore >= pool.sqrt_price_x64, AnchorError.RequireGteViolated);
     else require(pool.sqrt_price_x64 >= priceBefore, AnchorError.RequireGteViolated);

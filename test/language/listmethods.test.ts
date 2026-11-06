@@ -10,6 +10,41 @@ describe("list methods", () => {
     d = await deployFile(fileURLToPath(new URL("../fixtures/listmethods.ts", import.meta.url)));
   });
 
+  it("map to structs inside a chain without storing the list", async () => {
+    const payer = await fundedSigner(d.svm);
+    const [book] = await pda(d.programId, ["book", payer.address]);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "setup", {}, [{ address: payer.address, signer: payer, writable: true }, { address: book, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+    const r = expectOk(await send(d.svm, payer, [ix(d, "fused", {}, [{ address: payer.address, signer: payer }, { address: book }])]));
+    // orders 5 (open), 0, 7 (open): scores 10, 0, 14 → (10 + 5) + (14 + 7) = 36; indexes > 0: 2; 7 * 3 = 21: true.
+    expect(Buffer.from(r.returnData().data()).readBigUInt64LE(0)).toBe(36n * 1_000n + 2n * 10n + 1n);
+  });
+
+  it("read a field of the element find matched, with ! or ?.", async () => {
+    const payer = await fundedSigner(d.svm);
+    const [book] = await pda(d.programId, ["book", payer.address]);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "setup", {}, [{ address: payer.address, signer: payer, writable: true }, { address: book, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+    const found = (qty: number) => send(d.svm, payer, [ix(d, "found", { qty: new BN(qty) }, [{ address: payer.address, signer: payer }, { address: book }])]);
+    const value = async (qty: number) =>
+      Buffer.from(
+        expectOk(await found(qty))
+          .returnData()
+          .data(),
+      ).readBigUInt64LE(0);
+    // orders: 5 (open), 0 (closed), 7 (open).
+    expect(await value(7)).toBe(7n * 10_000n + 1n * 1_000n + 7n); // found, open, first qty >= 7 is 7
+    expect(await value(0)).toBe(0n * 10_000n + 2n * 1_000n + 5n); // found but closed: ?. on the open match is empty; first >= 0 is 5
+    expect(await value(6)).toBe(999n * 10_000n + 2n * 1_000n + 7n); // no exact match: ?? gives 999
+    expect(customError(await found(8))).toBe(5108); // ! with nothing matched
+  });
+
   it("run callbacks over Vec, FixedArray, FixedVec and Vec arguments", async () => {
     const payer = await fundedSigner(d.svm);
     const [book] = await pda(d.programId, ["book", payer.address]);

@@ -6,8 +6,31 @@
 // account in place: the original works on a copy and writes the same four fields back at the end.
 import { AnchorError, type Account, type Mut, type u16, currentEpoch, i32, i64, i128, log, require, u32, u64, u128, u256 } from "typesol";
 import { ErrorCode } from "./errors";
-import { NO_KEY, abs32, arrayStartIndex, flipBitDefault, isValidStartIndex, maxTickInBitmap, overflowsDefaultBitmap, tickCount, wrappingAdd128, wrappingSub128 } from "./liquidity";
-import { FEE_RATE_DENOMINATOR_VALUE, MAX_TICK, MIN_TICK, Q64, addDelta, computeSwap, getSqrtPriceAtTick, getTickAtSqrtPrice, mulDivCeil64, mulDivFloor128, msb128 } from "./math";
+import {
+  NO_KEY,
+  abs32,
+  arrayStartIndex,
+  flipBitDefault,
+  isValidStartIndex,
+  maxTickInBitmap,
+  overflowsDefaultBitmap,
+  tickCount,
+  wrappingAdd128,
+  wrappingSub128,
+} from "./liquidity";
+import {
+  FEE_RATE_DENOMINATOR_VALUE,
+  MAX_TICK,
+  MIN_TICK,
+  Q64,
+  addDelta,
+  computeSwap,
+  getSqrtPriceAtTick,
+  getTickAtSqrtPrice,
+  mulDivCeil64,
+  mulDivFloor128,
+  msb128,
+} from "./math";
 import { type AmmConfig, type ObservationState, type PoolState, type TickArrayBitmapExtension, type TickArrayState, type TickState } from "./state";
 
 const MAX_FEE_RATE_NUMERATOR: u32 = 100_000n;
@@ -372,7 +395,7 @@ export function currentArrayInBitmap(pool: Account<PoolState>): ArraySearch {
   if (tick < 0n && tick % multiplier !== 0n) compressed -= 1n;
   const pos = u64(abs32(compressed));
   const word = pool.tick_array_bitmap.get(pos / 64n);
-  return { found: ((word >> pos % 64n) & 1n) === 1n, start: (compressed - 512n) * multiplier };
+  return { found: ((word >> (pos % 64n)) & 1n) === 1n, start: (compressed - 512n) * multiplier };
 }
 
 /** tick_array_bit_map::next_initialized_tick_array_start_index: the next marked array in the pool's own bitmap. */
@@ -421,7 +444,7 @@ export function arrayInExtension(ext: Account<TickArrayBitmapExtension>, start: 
   const row = extensionRow(start, spacing);
   const bit = extensionBit(start, spacing);
   const word = extensionWord(ext, start < 0n, row, bit / 64n);
-  return { found: ((word >> bit % 64n) & 1n) === 1n, start };
+  return { found: ((word >> (bit % 64n)) & 1n) === 1n, start };
 }
 
 /** TickArrayBitmapExtension::next_initialized_tick_array_from_one_bitmap. */
@@ -513,7 +536,6 @@ export function spacingBound(pool: Account<PoolState>, s: SwapState, zeroForOne:
   log(`state.tick:${s.tick}, state.tick_spacing_index:${s.tick_spacing_index}, bounded_tick:${bounded}`);
   return i32(bounded < i64(MIN_TICK) ? i64(MIN_TICK) : bounded > i64(MAX_TICK) ? i64(MAX_TICK) : bounded);
 }
-
 
 /** SwapState::new: the pool's price, liquidity and the fee growth of the token fees are taken in. */
 export function newSwapRun(pool: Account<PoolState>, amount: u64, zeroForOne: boolean, firstHasPoolTick: boolean): SwapRun {
@@ -661,7 +683,8 @@ export function swapInArray(
       if (st.sqrt_price_next_x64 === reached) {
         // At the tick: its limit orders, then crossing it.
         const filled = matchLimitOrder(array, slot, st.amount_specified_remaining, zeroForOne, baseInput, feeRate, isFeeOnInput, st.sqrt_price_next_x64);
-        if (filled.amount_in !== 0n || filled.amount_out !== 0n || filled.amm_fee_amount !== 0n) apply(filled.amount_in, filled.amount_out, filled.amm_fee_amount);
+        if (filled.amount_in !== 0n || filled.amount_out !== 0n || filled.amm_fee_amount !== 0n)
+          apply(filled.amount_in, filled.amount_out, filled.amm_fee_amount);
         if (!tickInitialized(array.ticks.get(slot))) {
           require(array.initialized_tick_count > 0n, ErrorCode.CalculateOverflow);
           array.initialized_tick_count -= 1n;

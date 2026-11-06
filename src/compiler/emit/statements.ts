@@ -1,7 +1,21 @@
 import ts from "typescript";
 import { MAX_RETURN_DATA, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type ValueType, isScalar, optionKey, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, type Value, type Local, type Closure, type Ref, cString, fixedVecC, optC, scalarC, scalarStorageC, valueC } from "./shared.js";
+import {
+  U64,
+  BOOL,
+  type Value,
+  type Local,
+  type Closure,
+  type FunctionChoice,
+  type Ref,
+  cString,
+  fixedVecC,
+  optC,
+  scalarC,
+  scalarStorageC,
+  valueC,
+} from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
 
 /**
@@ -224,6 +238,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (!d || !(list.flags & ts.NodeFlags.Const) || !ts.isIdentifier(d.name) || d.type)
       this.fail(stmt.initializer, "write for (const x of list): one const name, no type annotation");
     if (this.isRemaining(stmt.expression)) this.fail(stmt.expression, "iterate remaining accounts with for (let i = 0n; i < rest.length; i++) and rest.get(i)");
+    if (ts.isArrayLiteralExpression(stmt.expression) && this.functionList(stmt.expression)) return this.forOfFunctions(stmt, d!.name as ts.Identifier);
     // Synthetic `list.length` / `list.get(i)` nodes placed at the loop, so errors and checks point at the source.
     const f = ts.factory;
     const index = `__of${this.temp++}`;
@@ -249,6 +264,131 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`}`);
       this.loops.pop();
     });
+  }
+
+  /** The functions a list literal names (`[f, g]`: closures, helpers or choices), or undefined when it holds anything else. */
+  protected functionList(list: ts.ArrayLiteralExpression): (Closure | FunctionChoice)[] | undefined {
+    if (!list.elements.length) return undefined;
+    const fns: (Closure | FunctionChoice)[] = [];
+    for (const el of list.elements) {
+      if (!ts.isIdentifier(el)) return undefined;
+      const l = this.lookup(el.text);
+      const f = l?.choice ?? this.functionNamed(el);
+      if (!f) return undefined;
+      fns.push(f);
+    }
+    return fns;
+  }
+
+  /**
+   * `for (const f of [g, h]) …`: unrolled, the body once per function with f bound to it, in order. `continue` goes to
+   * the next function, `break` past the last (the copies sit in a do { } while (0)).
+   */
+  protected forOfFunctions(stmt: ts.ForOfStatement, name: ts.Identifier) {
+    const fns = this.functionList(stmt.expression as ts.ArrayLiteralExpression)!;
+    this.line(`do {`);
+    this.block(() => {
+      for (const f of fns) {
+        const next = this.tmp("ts_continue_");
+        this.line(`{`);
+        this.block(() => {
+          this.scopes.at(-1)!.set(name.text, "sel" in f ? { c: "", type: BOOL, mutable: false, choice: f } : { c: "", type: BOOL, mutable: false, closure: f });
+          this.loops.push(next);
+          try {
+            this.body(stmt.statement);
+          } finally {
+            this.loops.pop();
+          }
+        });
+        this.line(`}`);
+        this.line(`${next}:;`);
+      }
+    });
+    this.line(`} while (0);`);
+  }
+
+  /**
+   * `c ? f : h` where both sides name functions (or other choices): the condition is evaluated here, once, into a C bool,
+   * and a call later expands only the chosen function. Undefined when the expression is not such a choice.
+   */
+  protected functionChoice(init: ts.Expression, name: string): FunctionChoice | undefined {
+    const strip = (x: ts.Expression): ts.Expression => (ts.isParenthesizedExpression(x) ? strip(x.expression) : x);
+    const e = strip(init);
+    if (!ts.isConditionalExpression(e)) return undefined;
+    const inline = (x: ts.Expression): boolean => ts.isArrowFunction(strip(x)) || ts.isFunctionExpression(strip(x));
+    // What a side names, decided from the names alone (nothing is evaluated): a function, a choice, or neither.
+    const named = (x: ts.Expression): boolean => {
+      const y = strip(x);
+      if (ts.isIdentifier(y)) return !!(this.lookup(y.text)?.choice ?? this.functionNamed(y));
+      return ts.isConditionalExpression(y) && named(y.whenTrue) && named(y.whenFalse);
+    };
+    const fnSide = (x: ts.Expression): boolean => {
+      const y = strip(x);
+      return named(y) || (ts.isConditionalExpression(y) && (fnSide(y.whenTrue) || fnSide(y.whenFalse)));
+    };
+    if (!fnSide(e.whenTrue) && !fnSide(e.whenFalse)) {
+      if (inline(e.whenTrue) && inline(e.whenFalse)) this.fail(e, "declare each function with const first, then choose between them: const g = c ? f : h");
+      return undefined; // a choice between values: an ordinary conditional
+    }
+    if (inline(e.whenTrue) || inline(e.whenFalse)) this.fail(e, "declare each function with const first, then choose between them: const g = c ? f : h");
+    if (!named(e)) this.fail(e, "choose between functions on both sides: const g = c ? f : h");
+    return this.bindChoice(e, name);
+  }
+
+  /**
+   * Evaluate a function choice's conditions into C bools, as JS does: the outer one first, an inner one only when its
+   * side is taken (`a ? f : b ? g : h` reads b only when a is false). Its sides are known to name functions.
+   */
+  private bindChoice(e: ts.ConditionalExpression, name: string, guard?: string): FunctionChoice {
+    const strip = (x: ts.Expression): ts.Expression => (ts.isParenthesizedExpression(x) ? strip(x.expression) : x);
+    const sel = `l_${name}_sel_${this.temp++}`;
+    if (guard === undefined) {
+      const cond = this.expect(this.expr(e.condition, BOOL), BOOL, e.condition);
+      this.line(`bool ${sel} = ${cond.c};`);
+    } else {
+      this.line(`bool ${sel} = false;`);
+      this.line(`if (${guard}) {`);
+      this.block(() => {
+        const cond = this.expect(this.expr(e.condition, BOOL), BOOL, e.condition);
+        this.line(`${sel} = ${cond.c};`);
+      });
+      this.line(`}`);
+    }
+    const within = (taken: string) => (guard === undefined ? taken : `(${guard}) && ${taken}`);
+    const side = (x: ts.Expression, taken: string): Closure | FunctionChoice => {
+      const y = strip(x);
+      if (ts.isIdentifier(y)) return (this.lookup(y.text)?.choice ?? this.functionNamed(y))!;
+      return this.bindChoice(y as ts.ConditionalExpression, name, within(taken));
+    };
+    return { sel, whenTrue: side(e.whenTrue, sel), whenFalse: side(e.whenFalse, `!${sel}`) };
+  }
+
+  /** A call of a function chosen at run time: an if / else, each side expanding its function with the same arguments. */
+  protected callChoice(choice: FunctionChoice, args: readonly ts.Expression[], node: ts.Node): Value | undefined {
+    const t = this.tmp("chosen");
+    const declAt = this.lines.length;
+    this.line(`/* ${t} */`);
+    let type: ValueType | undefined;
+    let anyValue = false;
+    const branch = (f: Closure | FunctionChoice) => {
+      const v = "sel" in f ? this.callChoice(f, args, node) : this.expandClosure(f, args, node);
+      if (!v) return;
+      anyValue = true;
+      if (!type) type = v.type;
+      const w = this.ownedString(this.expect(v, type, node));
+      this.line(w.type.kind === "pubkey" ? `${t} = *(${w.c});` : `${t} = ${w.c};`);
+    };
+    this.line(`if (${choice.sel}) {`);
+    this.block(() => branch(choice.whenTrue));
+    this.line(`} else {`);
+    this.block(() => branch(choice.whenFalse));
+    this.line(`}`);
+    if (!anyValue || !type) return undefined;
+    const vt: ValueType = type;
+    if (vt.kind === "account" || vt.kind === "remaining" || vt.kind === "structRef" || vt.kind === "vecArg")
+      this.fail(node, "functions chosen at run time return plain values (integers, booleans, Pubkeys, strings, options)");
+    this.lines[declAt] = this.lines[declAt]!.replace(`/* ${t} */`, `${vt.kind === "pubkey" ? "SolPubkey" : valueC(vt)} ${t};`);
+    return vt.kind === "pubkey" ? { c: `(&${t})`, type: vt } : { c: t, type: vt };
   }
 
   /** The function an identifier names (a closure, a local function or a helper), as something to expand; else undefined. */
@@ -334,8 +474,33 @@ export abstract class StatementEmitter extends CpiEmitter {
           if (st.kind === "map") {
             const ret = st.fn.body && !ts.isBlock(st.fn.body) ? st.fn.body : undefined;
             const bare = ret && ts.isParenthesizedExpression(ret) ? ret.expression : ret;
-            if (bare && ts.isObjectLiteralExpression(bare))
-              this.fail(st.fn, "a map to structs is stored, with the struct type: const ys: FixedVec<MyStruct, N> = xs.map((x) => ({ … }))");
+            if (bare && ts.isObjectLiteralExpression(bare)) {
+              // A map to structs inside a chain: each element built in a struct of its own, which the next stage reads.
+              const sname = st.fn.type ? structNameOf(st.fn.type, this.scope) : undefined;
+              const S = sname ? this.model.structs.get(sname) : undefined;
+              if (!S)
+                this.fail(
+                  st.fn,
+                  "name the struct the callback builds: xs.map((x): MyStruct => ({ … })) (or store the list: const ys: FixedVec<MyStruct, N> = xs.map(…))",
+                );
+              if (S.size === undefined || S.vec) this.fail(st.fn, `${S.name} has variable-size fields and cannot be built in a chain`);
+              const closure: Closure = { node: st.fn, name: "map's callback", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
+              const sc = this.tmp("lm_s");
+              this.line(`TSS_${S.name} ${sc}__v;`);
+              this.line(`ts_memzero(&${sc}__v, sizeof(${sc}__v));`);
+              this.expandClosure(closure, [element, idx].slice(0, st.fn.parameters.length), st.fn, {
+                lv: `${sc}__v`,
+                type: { kind: "struct", name: S.name },
+                writable: true,
+              });
+              this.line(`TSS_${S.name} *${sc} = &${sc}__v;`);
+              const id = `__ls${this.temp++}`;
+              this.scopes
+                .at(-1)!
+                .set(id, { c: sc, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${sc}`], owned: true });
+              element = place(f.createIdentifier(id));
+              continue;
+            }
           }
           const closure: Closure = { node: st.fn, name: `${st.kind}'s callback`, scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
           const v = this.expandClosure(closure, [element, idx].slice(0, st.fn.parameters.length), st.fn);
@@ -540,7 +705,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       params.set(name, { c: c2, type, mutable: true });
     });
     const declared = fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword ? resolveValueType(fn.type, calleeScope) : undefined;
-    if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword && !declared)
+    if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword && !declared && !into)
       this.fail(fn.type, "closures return integers, booleans, Pubkeys, strings, enums or Options");
     const frame = {
       label: this.tmp("ts_ret_"),
@@ -894,6 +1059,12 @@ export abstract class StatementEmitter extends CpiEmitter {
       // A function as a value: another name for one (`const h = g`), or the one a function returns (`adder(5n)`).
       const made = ts.isCallExpression(init) ? this.madeFunction(init) : undefined;
       const alias = ts.isIdentifier(init) ? this.functionNamed(init) : undefined;
+      const choice = this.functionChoice(init, name);
+      if (choice) {
+        if (mutable) this.fail(d, "bind functions with const");
+        this.scopes.at(-1)!.set(name, { c: "", type: BOOL, mutable: false, choice });
+        continue;
+      }
       if (made || alias) {
         if (mutable) this.fail(d, "bind functions with const");
         this.scopes.at(-1)!.set(name, { c: "", type: BOOL, mutable: false, closure: (made ?? alias)! });
@@ -946,13 +1117,18 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.scopes.at(-1)!.set(name, { c, type: t, mutable });
         continue;
       }
-      if (fn === "loadAccount" || fn === "loadAccountMut" || fn === "loadForeign") {
+      if (fn === "loadAccount" || fn === "loadAccountMut" || fn === "loadForeign" || fn === "loadRaw" || fn === "loadRawMut") {
         if (mutable) this.fail(d, "bind loaded accounts with const");
-        const t = fn === "loadForeign" ? this.loadForeign(init as ts.CallExpression) : this.loadAccount(init as ts.CallExpression, fn === "loadAccountMut");
+        const t =
+          fn === "loadForeign"
+            ? this.loadForeign(init as ts.CallExpression)
+            : fn === "loadRaw" || fn === "loadRawMut"
+              ? this.loadRaw(init as ts.CallExpression, fn === "loadRawMut")
+              : this.loadAccount(init as ts.CallExpression, fn === "loadAccountMut");
         this.line(`${valueC(t.type)}${c} = ${t.c};`);
         // The account it views, kept to pass the struct on to a helper that takes Account<T> / Mut<T>.
         let loaded: Local["loaded"];
-        if (fn !== "loadForeign" && t.type.kind === "structRef") {
+        if ((fn === "loadAccount" || fn === "loadAccountMut") && t.type.kind === "structRef") {
           // The view is `((TSS_T *)(h->data + 8))` over a `TsAccount *h` that stays in scope with it.
           const h = /^\(\(TSS_\w+ \*\)\((\w+)->data \+ 8\)\)$/.exec(t.c)?.[1];
           if (h) loaded = { handle: h, struct: t.type.struct, mut: fn === "loadAccountMut" };

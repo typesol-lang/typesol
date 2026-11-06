@@ -6,6 +6,29 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: showcase/mainnet/raydium-amm, a port of Raydium AMM v4 (the native program at 675kPX9M…, all of its
+  instructions: Initialize2, deposits, withdrawals, the v1 and v2 swaps base in and base out, P&L, parameters, the
+  config, excess lamports), checked against the mainnet binary (test/programs/raydium_amm_v4.so) on 484 transactions,
+  fuzzed: the same outcomes, account bytes and log lines, ray_log records and the original's panics included; swaps
+  take 41–44% of the original's compute units, deposits and withdrawals 35–37%. See docs/case-study-raydium-amm.md.
+- New (native programs; docs/language.md "Porting a native program"): `loadRaw<T>` / `loadRawMut<T>` for accounts
+  without a discriminator; `readU8/U16/U32/U64/U128/readPubkey(offset)` on `instructionData()`; error enums from code 0
+  (returned as CUSTOM_ZERO); `require(c, ProgramError.X)` for Solana's built-in errors; `panic(message, location?)`;
+  `PANIC_ON_OVERFLOW`, `ERROR_LOG_PREFIX` and `PROGRAM_ERROR_LOG_PREFIX` program constants; `createProgramAddress`;
+  `logBase64(prefix, struct)`.
+- Fixed: `isqrt` of a u256 (it generated C that did not compile).
+- New: a function chosen at run time, `const g = k === 1n ? dbl : inc; g(x)` (the condition read once; only the chosen
+  function runs), and a list of functions run in turn, `for (const f of [dbl, inc]) …` (unrolled; `continue` and `break`
+  work).
+- New: `xs.find(f)!.field` and `xs.find(f)?.field` on lists of structs (located with findIndex, read in place; `!` aborts
+  with 5108 when nothing matched, `?.` gives an Option).
+- New: `map` to structs inside a chain when the callback names the struct, `xs.map((o): Scored => ({ … })).filter(…)
+  .reduce(…)`: one struct per element, nothing stored.
+- Hints: comparing an integer with a number (`k === 1`) points at `1n`. `.length` on something that is not a list says
+  what it is instead of asking for byteLength; the FixedVec argument/account refusal says why (two byte layouts, one IDL
+  type).
+- Docs: the README's quick start ends with a first change to make and a short "where next" list (it was one long
+  paragraph); the showcase lists Marginfi v2 as complete and links every case study.
 - Editor: the plugin (`typesol/ts-plugin`) adds the same hints under TypeScript's errors in a program's files, once the
   in-process compiler has loaded, so VS Code shows what to write instead too.
 - CLI: `typesol init` names the other starters (`--template vault`, `--template escrow`) after the next steps.

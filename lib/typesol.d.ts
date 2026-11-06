@@ -184,6 +184,14 @@ export declare function remainingAccounts(): RemainingAccounts;
  */
 export declare function loadAccount<T>(account: RemainingAccount | AccountInfo): Account<T>;
 export declare function loadAccountMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
+/**
+ * A native (non-Anchor) program's own account as a fixed-layout struct, as a `#[repr(C)]` type's `load_checked` /
+ * `load_mut_checked` reads it: owned by this program (3007) and at least as large as the struct (3003). There is no
+ * discriminator: the fields start at byte 0. `loadRawMut` also requires the account to be writable and not loaded
+ * mutably twice in the instruction (2040). Bind it with const: `const amm = loadRawMut<AmmInfo>(ammInfo)`.
+ */
+export declare function loadRaw<T>(account: RemainingAccount | AccountInfo): Account<T>;
+export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
 
 /** 32 bytes of hash output (sha256 / keccak256, Merkle roots). Compare with `===`. */
 export interface Hash {
@@ -553,6 +561,17 @@ export declare function masterEditionAddress(mint: Pubkey): Pubkey;
  */
 export declare function bigEndian(value: bigint): Seed;
 export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
+/**
+ * `Pubkey::create_program_address(seeds, program)`: the address of these seeds with the bump given as the last seed,
+ * or null when they give no program address (a point on the curve, or too many / too long seeds).
+ */
+export declare function createProgramAddress(seeds: Seed[], program: Pubkey): Pubkey | null;
+/**
+ * Log `prefix` followed by the base64 (standard, padded) of a struct value's bytes, as a native program's
+ * `msg!("ray_log: {}", base64(bincode(log)))` does. The struct holds integers, Pubkeys and fixed arrays of them only,
+ * so its bytes are its serialized form.
+ */
+export declare function logBase64(prefix: string, value: object): void;
 /** The bump of that canonical program address (`Pubkey::find_program_address(seeds, program).1`), to sign with it. */
 export declare function findProgramAddressBump(seeds: Seed[], program: Pubkey): u8;
 /** This program's address (`crate::ID`). */
@@ -1993,7 +2012,48 @@ export declare enum AnchorError {
  * as computed at run time (`require(r.err === 0n, r.err)`, a helper returning its error as a value, as Rust's `?` passes
  * one on); a zero code fails with 5100.
  */
-export declare function require(condition: boolean, error: string | AnchorError | u32): asserts condition;
+export declare function require(condition: boolean, error: string | AnchorError | ProgramError | u32): asserts condition;
+
+/**
+ * Solana's built-in program errors (`solana_program::program_error::ProgramError`, no custom code): a native program's
+ * `Err(ProgramError::InvalidInstructionData)`. `require(condition, ProgramError.InvalidInstructionData)` fails the same
+ * way (the runtime reports the built-in error, not a custom one). Not listed in the IDL's errors.
+ */
+export declare enum ProgramError {
+  InvalidArgument = 2,
+  InvalidInstructionData = 3,
+  InvalidAccountData = 4,
+  AccountDataTooSmall = 5,
+  InsufficientFunds = 6,
+  IncorrectProgramId = 7,
+  MissingRequiredSignature = 8,
+  AccountAlreadyInitialized = 9,
+  UninitializedAccount = 10,
+  NotEnoughAccountKeys = 11,
+  AccountBorrowFailed = 12,
+  MaxSeedLengthExceeded = 13,
+  InvalidSeeds = 14,
+  BorshIoError = 15,
+  AccountNotRentExempt = 16,
+  UnsupportedSysvar = 17,
+  IllegalOwner = 18,
+  MaxAccountsDataAllocationsExceeded = 19,
+  InvalidRealloc = 20,
+  MaxInstructionTraceLengthExceeded = 21,
+  BuiltinProgramsMustConsumeComputeUnits = 22,
+  InvalidAccountOwner = 23,
+  ArithmeticOverflow = 24,
+  Immutable = 25,
+  IncorrectAuthority = 26,
+}
+
+/**
+ * Stop the program as a Rust `panic!` / `unwrap()` on `None` / `unreachable!()` does: the message is logged and the
+ * instruction fails with ProgramFailedToComplete (no error code). For porting native programs whose failures panic:
+ * `location` ("program/src/instruction.rs:482:17") is the place the runtime reports, as the original's panic gives it;
+ * by default this source line.
+ */
+export declare function panic(message?: string, location?: string): never;
 /**
  * Anchor's `constraint = condition @ error` on `account`. Written at the start of an instruction's body (before any
  * other statement), it runs with that account's checks, after its has_one and before its owner check, so a transaction
@@ -2007,7 +2067,18 @@ export declare function constraint(account: AccountMeta | RemainingAccount | nul
  * `data.get(i)`, or pass it on to `invokeInstruction`. A `/** @fallback *\/` instruction (Anchor's fallback: no
  * parameters, run when no instruction matches) reads its input this way, and its accounts with remainingAccounts().
  */
-export declare function instructionData(): IndexedList<u8>;
+export declare function instructionData(): InstructionBytes;
+
+/** The instruction data, read in place: its bytes, and little-endian values at a byte offset. */
+export interface InstructionBytes extends IndexedList<u8> {
+  /** The little-endian value at `offset`; reading past the end fails the instruction (5104). */
+  readU8(offset: u64): u8;
+  readU16(offset: u64): u16;
+  readU32(offset: u64): u32;
+  readU64(offset: u64): u64;
+  readU128(offset: u64): u128;
+  readPubkey(offset: u64): Pubkey;
+}
 
 /** Write a string, integer or pubkey to the program log. */
 export declare function log(value: string | bigint | Pubkey | Hash): void;

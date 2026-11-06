@@ -602,7 +602,8 @@ function marinadeRate(bank: Account<Bank>, a: RemainingAccount, idx: u64): Fx {
   const parts: u128 = toU128(readData<u64>(a, 376n)) + toU128(readData<u64>(a, 226n)) + toU128(readData<u64>(a, 568n)) + toU128(readData<u64>(a, 496n));
   // Each checked_add of the u64s: past u64, MathError.
   if (toU128(readData<u64>(a, 376n)) + toU128(readData<u64>(a, 226n)) > 18446744073709551615n) return { err: VENUE_MATH_ERROR, v: 0n };
-  if (toU128(readData<u64>(a, 376n)) + toU128(readData<u64>(a, 226n)) + toU128(readData<u64>(a, 568n)) > 18446744073709551615n) return { err: VENUE_MATH_ERROR, v: 0n };
+  if (toU128(readData<u64>(a, 376n)) + toU128(readData<u64>(a, 226n)) + toU128(readData<u64>(a, 568n)) > 18446744073709551615n)
+    return { err: VENUE_MATH_ERROR, v: 0n };
   if (parts > 18446744073709551615n) return { err: VENUE_MATH_ERROR, v: 0n };
   const tickets = readData<u64>(a, 528n);
   const staked = toU64(parts) > tickets ? toU64(parts) - tickets : 0n;
@@ -640,7 +641,8 @@ function lstAccountErr(bank: Account<Bank>, a: RemainingAccount, idx: u64): u32 
     return readData<Pubkey>(a, 8n) === bank.mint ? 0n : MARINADE_STATE_VALIDATION_FAILED;
   }
   if (a.key !== bank.config.oracle_keys.get(idx)) return STAKE_POOL_VALIDATION_FAILED;
-  if (a.owner !== SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_MULTI_STAKE_POOL_ID) return STAKE_POOL_VALIDATION_FAILED;
+  if (a.owner !== SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_STAKE_POOL_ID && a.owner !== SANCTUM_SPL_MULTI_STAKE_POOL_ID)
+    return STAKE_POOL_VALIDATION_FAILED;
   if (a.dataLen < 282n || readData<u8>(a, 0n) !== 1n) return STAKE_POOL_VALIDATION_FAILED;
   return readData<Pubkey>(a, 162n) === bank.mint ? 0n : STAKE_POOL_VALIDATION_FAILED;
 }
@@ -706,7 +708,12 @@ export function isReserveSetup(s: OracleSetup): boolean {
 
 /** Whether validation goes on to read the feed account (after validateOracleCount passed). */
 export function validatesFeedAccount(bank: Account<Bank>): boolean {
-  return readsOneFeed(bank.config.oracle_setup) || isReserveSetup(bank.config.oracle_setup) || isLstSetup(bank.config.oracle_setup) || bank.config.oracle_setup === OracleSetup.PTPyth;
+  return (
+    readsOneFeed(bank.config.oracle_setup) ||
+    isReserveSetup(bank.config.oracle_setup) ||
+    isLstSetup(bank.config.oracle_setup) ||
+    bank.config.oracle_setup === OracleSetup.PTPyth
+  );
 }
 
 /** The feed account's checks: its key, then a Pyth update's discriminator and Borsh form or a Switchboard feed's. */
