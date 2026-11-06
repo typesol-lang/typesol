@@ -71,8 +71,7 @@ export enum ErrorCode {
 }
 
 function assertUniqueOwners(owners: Vec<Pubkey>): void {
-  for (let i = 0n; i < owners.length; i++)
-    for (let j = i + 1n; j < owners.length; j++) require(owners.get(i) !== owners.get(j), ErrorCode.UniqueOwners);
+  for (let i = 0n; i < owners.length; i++) for (let j = i + 1n; j < owners.length; j++) require(owners.get(i) !== owners.get(j), ErrorCode.UniqueOwners);
 }
 
 /** Initializes a new multisig account with a set of owners and a threshold. */

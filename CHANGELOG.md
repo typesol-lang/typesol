@@ -6,6 +6,17 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: showcase/mainnet/raydium-amm, a port of Raydium AMM v4 (the native program at 675kPX9M…, all of its
+  instructions: Initialize2, deposits, withdrawals, the v1 and v2 swaps base in and base out, P&L, parameters, the
+  config, excess lamports), checked against the mainnet binary (test/programs/raydium_amm_v4.so) on 484 transactions,
+  fuzzed: the same outcomes, account bytes and log lines, ray_log records and the original's panics included; swaps
+  take 41–44% of the original's compute units, deposits and withdrawals 35–37%. See docs/case-study-raydium-amm.md.
+- New (native programs; docs/language.md "Porting a native program"): `loadRaw<T>` / `loadRawMut<T>` for accounts
+  without a discriminator; `readU8/U16/U32/U64/U128/readPubkey(offset)` on `instructionData()`; error enums from code 0
+  (returned as CUSTOM_ZERO); `require(c, ProgramError.X)` for Solana's built-in errors; `panic(message, location?)`;
+  `PANIC_ON_OVERFLOW`, `ERROR_LOG_PREFIX` and `PROGRAM_ERROR_LOG_PREFIX` program constants; `createProgramAddress`;
+  `logBase64(prefix, struct)`.
+- Fixed: `isqrt` of a u256 (it generated C that did not compile).
 - New: a function chosen at run time, `const g = k === 1n ? dbl : inc; g(x)` (the condition read once; only the chosen
   function runs), and a list of functions run in turn, `for (const f of [dbl, inc]) …` (unrolled; `continue` and `break`
   work).

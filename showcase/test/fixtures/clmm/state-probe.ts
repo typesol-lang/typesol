@@ -2,13 +2,7 @@
 // the comparison with the on-chain IDL in showcase/test/raydium-clmm-state.test.ts. Deployed at Raydium's program id,
 // so the owner checks pass.
 import { type Account, type Pubkey, type i32, type i64, type i128, type u8, type u16, type u32, type u64, type u128 } from "typesol";
-import {
-  type AmmConfig,
-  type ObservationState,
-  type PoolState,
-  type TickArrayBitmapExtension,
-  type TickArrayState,
-} from "../../../mainnet/raydium-clmm/state";
+import { type AmmConfig, type ObservationState, type PoolState, type TickArrayBitmapExtension, type TickArrayState } from "../../../mainnet/raydium-clmm/state";
 
 export interface PoolView {
   observation_key: Pubkey;

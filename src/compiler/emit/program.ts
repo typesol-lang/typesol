@@ -54,6 +54,8 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     if (typeof panicFlag.value !== "boolean") reporter.error(analysis.sourceFile, "PANIC_ON_OVERFLOW must be true or false");
     else if (panicFlag.value) out.push(`#define TS_PANIC_ON_OVERFLOW 1`);
   }
+  // An error with code 0 must not return 0 (success): see ts_fail.
+  if ([...model.errorEnums.values()].some((m) => [...m.values()].some((e) => e.code === 0))) out.push(`#define TS_CUSTOM_ZERO 1`);
   out.push(`#include "typesol_rt.h"`, "");
 
   for (const inner of model.options.values())

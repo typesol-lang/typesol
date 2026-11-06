@@ -75,6 +75,11 @@ static __attribute__((noinline)) uint64_t ts_fail(uint64_t code, const char *msg
   /* PANIC_ON_OVERFLOW: arithmetic fails as a Rust `checked_*().unwrap()` does, with a panic (ProgramFailedToComplete). */
   if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) sol_panic_("", 0, 0, 0);
 #endif
+#ifdef TS_CUSTOM_ZERO
+  /* An error with code 0 (a native program's first error) is returned as solana_program returns
+   * ProgramError::Custom(0): the built-in CUSTOM_ZERO, since 0 itself means success. */
+  if (code == 0) return (uint64_t)1 << 32;
+#endif
   return code;
 }
 #define TS_FAIL(code, msg) return ts_fail((code), (msg), sol_strlen(msg))

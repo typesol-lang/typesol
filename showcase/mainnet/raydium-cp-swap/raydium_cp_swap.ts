@@ -60,7 +60,6 @@ const PROTOCOL_FEE_OWNER = pubkey("ProCXqRcXJjoUd1RNoo28bSizAA6EEqt9wURZYPDc5u")
 const FUND_FEE_OWNER = pubkey("FUNDduJTA7XcckKHKfAoEnnhuSud2JUCUZv6opWEjrBU");
 const MAX_U128 = 340282366920938463463374607431768211455n;
 
-
 // ---- pool state helpers (states/pool.rs) ------------------------------------------------------------------------
 
 /** Whether the pool allows deposits (bit 0), withdrawals (bit 1) or swaps (bit 2). */
@@ -174,7 +173,15 @@ function fromVault(
   if (mint.tokenProgram === tokenProgram.key) tokenProgram.transferChecked(vault, mint, to, authority, amount, seeds);
   else token2022.transferChecked(vault, mint, to, authority, amount, seeds);
 }
-function toVault(owner: Signer, from: Mut<TokenAccount>, vault: Mut<TokenAccount>, mint: Mint, tokenProgram: TokenProgram, token2022: Token2022Program, amount: u64): void {
+function toVault(
+  owner: Signer,
+  from: Mut<TokenAccount>,
+  vault: Mut<TokenAccount>,
+  mint: Mint,
+  tokenProgram: TokenProgram,
+  token2022: Token2022Program,
+  amount: u64,
+): void {
   if (amount === 0n) return;
   if (mint.tokenProgram === tokenProgram.key) tokenProgram.transferChecked(from, mint, vault, owner, amount);
   else token2022.transferChecked(from, mint, vault, owner, amount);
@@ -497,8 +504,26 @@ export function withdraw(
   require(receive_0 >= minimum_token_0_amount && receive_1 >= minimum_token_1_amount, ErrorCode.ExceededSlippage);
   pool_state.lp_supply -= lp_token_amount;
   token_program.burn(owner_lp_token, lp_mint, owner, lp_token_amount, ["vault_and_lp_mint_auth_seed", pool_state.auth_bump]);
-  fromVault(authority, token_0_vault, token_0_account, vault_0_mint, token_program, token_program_2022, token_0_amount, signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]));
-  fromVault(authority, token_1_vault, token_1_account, vault_1_mint, token_program, token_program_2022, token_1_amount, signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]));
+  fromVault(
+    authority,
+    token_0_vault,
+    token_0_account,
+    vault_0_mint,
+    token_program,
+    token_program_2022,
+    token_0_amount,
+    signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]),
+  );
+  fromVault(
+    authority,
+    token_1_vault,
+    token_1_account,
+    vault_1_mint,
+    token_program,
+    token_program_2022,
+    token_1_amount,
+    signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]),
+  );
   pool_state.recent_epoch = currentEpoch();
 }
 
@@ -709,8 +734,26 @@ export function collectProtocolFee(
   pool_state.protocol_fees_token_0 -= amount_0;
   pool_state.protocol_fees_token_1 -= amount_1;
   pool_state.recent_epoch = currentEpoch();
-  fromVault(authority, token_0_vault, recipient_token_0_account, vault_0_mint, token_program, token_program_2022, amount_0, signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]));
-  fromVault(authority, token_1_vault, recipient_token_1_account, vault_1_mint, token_program, token_program_2022, amount_1, signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]));
+  fromVault(
+    authority,
+    token_0_vault,
+    recipient_token_0_account,
+    vault_0_mint,
+    token_program,
+    token_program_2022,
+    amount_0,
+    signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]),
+  );
+  fromVault(
+    authority,
+    token_1_vault,
+    recipient_token_1_account,
+    vault_1_mint,
+    token_program,
+    token_program_2022,
+    amount_1,
+    signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]),
+  );
 }
 
 export function collectFundFee(
@@ -740,6 +783,24 @@ export function collectFundFee(
   pool_state.fund_fees_token_0 -= amount_0;
   pool_state.fund_fees_token_1 -= amount_1;
   pool_state.recent_epoch = currentEpoch();
-  fromVault(authority, token_0_vault, recipient_token_0_account, vault_0_mint, token_program, token_program_2022, amount_0, signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]));
-  fromVault(authority, token_1_vault, recipient_token_1_account, vault_1_mint, token_program, token_program_2022, amount_1, signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]));
+  fromVault(
+    authority,
+    token_0_vault,
+    recipient_token_0_account,
+    vault_0_mint,
+    token_program,
+    token_program_2022,
+    amount_0,
+    signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]),
+  );
+  fromVault(
+    authority,
+    token_1_vault,
+    recipient_token_1_account,
+    vault_1_mint,
+    token_program,
+    token_program_2022,
+    amount_1,
+    signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]),
+  );
 }

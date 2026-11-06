@@ -26,7 +26,17 @@ import {
   u256,
 } from "typesol";
 import { ErrorCode } from "./errors";
-import { MAX_TICK, MIN_TICK, Q64, addDelta, deltaAmountsSigned, getSqrtPriceAtTick, liquidityFromSingleAmount0, liquidityFromSingleAmount1, mulDivFloor128 } from "./math";
+import {
+  MAX_TICK,
+  MIN_TICK,
+  Q64,
+  addDelta,
+  deltaAmountsSigned,
+  getSqrtPriceAtTick,
+  liquidityFromSingleAmount0,
+  liquidityFromSingleAmount1,
+  mulDivFloor128,
+} from "./math";
 import { type PersonalPositionState, type PoolState, type TickArrayBitmapExtension, type TickArrayState } from "./state";
 
 const MAX_U64: u64 = 18446744073709551615n;
@@ -142,7 +152,7 @@ export function flipBitDefault(pool: Mut<PoolState>, start: i32): void {
   require(isValidStartIndex(start, pool.tick_spacing), ErrorCode.InvalidTickIndex);
   const offset = u64(start / tickCount(pool.tick_spacing) + TICK_ARRAY_BITMAP_SIZE);
   const word = offset / 64n;
-  pool.tick_array_bitmap.set(word, pool.tick_array_bitmap.get(word) ^ (u64(1n) << offset % 64n));
+  pool.tick_array_bitmap.set(word, pool.tick_array_bitmap.get(word) ^ (u64(1n) << (offset % 64n)));
 }
 /** TickArrayBitmapExtension::flip_tick_array_bit. */
 export function flipBitExtension(ext: Mut<TickArrayBitmapExtension>, start: i32, spacing: u16): void {
@@ -160,7 +170,7 @@ export function flipBitExtension(ext: Mut<TickArrayBitmapExtension>, start: i32,
   if (start < 0n && m !== 0n) bit = TICK_ARRAY_BITMAP_SIZE - bit;
   const row = u64(offset);
   const word = u64(bit) / 64n;
-  const mask = u64(1n) << u64(bit) % 64n;
+  const mask = u64(1n) << (u64(bit) % 64n);
   if (start < 0n) ext.negative_tick_array_bitmap.get(row).set(word, ext.negative_tick_array_bitmap.get(row).get(word) ^ mask);
   else ext.positive_tick_array_bitmap.get(row).set(word, ext.positive_tick_array_bitmap.get(row).get(word) ^ mask);
 }
@@ -271,8 +281,10 @@ function modifyPosition(
   for (let i = 0n; i < 3n; i++) {
     const r = pool.reward_infos.get(i);
     if (r.token_mint === NO_KEY) continue;
-    const below = current >= lower.tick ? lower.reward_growths_outside_x64.get(i) : wrappingSub128(r.reward_growth_global_x64, lower.reward_growths_outside_x64.get(i));
-    const above = current < upper.tick ? upper.reward_growths_outside_x64.get(i) : wrappingSub128(r.reward_growth_global_x64, upper.reward_growths_outside_x64.get(i));
+    const below =
+      current >= lower.tick ? lower.reward_growths_outside_x64.get(i) : wrappingSub128(r.reward_growth_global_x64, lower.reward_growths_outside_x64.get(i));
+    const above =
+      current < upper.tick ? upper.reward_growths_outside_x64.get(i) : wrappingSub128(r.reward_growth_global_x64, upper.reward_growths_outside_x64.get(i));
     rewards.set(i, wrappingSub128(wrappingSub128(r.reward_growth_global_x64, below), above));
   }
 
@@ -312,7 +324,16 @@ function signed(liquidity: u128): i128 {
  * add_liquidity's liquidity from one amount (liquidity 0, base_flag true: amount_0_max, false: amount_1_max). The
  * transfer fee comes off the amount first: the pool gets only what is left of it.
  */
-export function liquidityFromOneAmount(pool: Account<PoolState>, mint0: Mint, mint1: Mint, base0: boolean, amount0Max: u64, amount1Max: u64, tickLower: i32, tickUpper: i32): u128 {
+export function liquidityFromOneAmount(
+  pool: Account<PoolState>,
+  mint0: Mint,
+  mint1: Mint,
+  base0: boolean,
+  amount0Max: u64,
+  amount1Max: u64,
+  tickLower: i32,
+  tickUpper: i32,
+): u128 {
   const sqrtLower = getSqrtPriceAtTick(tickLower);
   const sqrtUpper = getSqrtPriceAtTick(tickUpper);
   if (base0) return liquidityFromSingleAmount0(pool.sqrt_price_x64, sqrtLower, sqrtUpper, amount0Max - transferFee(mint0, amount0Max));
@@ -472,7 +493,15 @@ function updatePositionRewards(position: Mut<PersonalPositionState>, growths: Fi
 }
 
 /** PersonalPositionState::initialize. */
-export function initPosition(position: Mut<PersonalPositionState>, bump: u8, nftMint: Pubkey, pool: Pubkey, tickLower: i32, tickUpper: i32, change: LiquidityChange): void {
+export function initPosition(
+  position: Mut<PersonalPositionState>,
+  bump: u8,
+  nftMint: Pubkey,
+  pool: Pubkey,
+  tickLower: i32,
+  tickUpper: i32,
+  change: LiquidityChange,
+): void {
   position.bump.set(0n, bump);
   position.nft_mint = nftMint;
   position.pool_id = pool;
@@ -489,8 +518,18 @@ export function initPosition(position: Mut<PersonalPositionState>, bump: u8, nft
 
 /** PersonalPositionState::increase_liquidity / decrease_liquidity: fees and rewards earned so far, then the liquidity. */
 export function updatePosition(position: Mut<PersonalPositionState>, change: LiquidityChange, increase: boolean): void {
-  position.token_fees_owed_0 = latestTokenFees(position.token_fees_owed_0, position.fee_growth_inside_0_last_x64, change.fee_growth_inside_0_x64, position.liquidity);
-  position.token_fees_owed_1 = latestTokenFees(position.token_fees_owed_1, position.fee_growth_inside_1_last_x64, change.fee_growth_inside_1_x64, position.liquidity);
+  position.token_fees_owed_0 = latestTokenFees(
+    position.token_fees_owed_0,
+    position.fee_growth_inside_0_last_x64,
+    change.fee_growth_inside_0_x64,
+    position.liquidity,
+  );
+  position.token_fees_owed_1 = latestTokenFees(
+    position.token_fees_owed_1,
+    position.fee_growth_inside_1_last_x64,
+    change.fee_growth_inside_1_x64,
+    position.liquidity,
+  );
   position.fee_growth_inside_0_last_x64 = change.fee_growth_inside_0_x64;
   position.fee_growth_inside_1_last_x64 = change.fee_growth_inside_1_x64;
   updatePositionRewards(position, change.reward_growths_inside, true);

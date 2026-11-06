@@ -212,6 +212,26 @@ When an instruction calls `x.create(payer, seeds)` or `requirePda(x, seeds, bump
 an integer literal, an argument, `acct.key` or a scalar field of an account, the IDL entry for `x` gets Anchor `pda.seeds`
 (`const` / `arg` / `account`), so Anchor and Codama clients derive the address themselves.
 
+## Porting a native program
+
+A program written without Anchor (Raydium AMM v4, SPL programs) reads a tag byte and its arguments itself and takes its
+accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-amm` and `test/fixtures/native.ts`):
+
+- One `/** @fallback */` entry: `const data = instructionData()` gives the bytes, with `data.readU8/U16/U32/U64/U128/
+  readPubkey(offset)` (little-endian, bounds-checked: 5104); `remainingAccounts()` gives the accounts by position.
+- Accounts without a discriminator: `loadRaw<T>(acct)` / `loadRawMut<T>(acct)` view one as a fixed-layout struct from
+  byte 0 (this program's, 3007; at least the struct's size, 3003; `loadRawMut`: writable, loaded once). Make the
+  original's own checks (an exact size, its error codes) before the load. Structs are packed, as `#[repr(C, packed)]`.
+- Errors as the original returns them: an error enum may start at code 0 (`/** @code 0 */`, Rust's
+  `ProgramError::Custom(0)`, returned as Solana's CUSTOM_ZERO); `require(c, ProgramError.InvalidInstructionData)` for a
+  built-in error; `panic(message, "program/src/lib.rs:12:5")` for a Rust panic (ProgramFailedToComplete, the runtime
+  reporting that location); `const PANIC_ON_OVERFLOW = true` makes arithmetic overflow and division by zero panic as
+  `checked_*().unwrap()` does instead of failing with 5100 / 5101.
+- Log lines as the original writes them: `const ERROR_LOG_PREFIX = "AMM error: "` and `const PROGRAM_ERROR_LOG_PREFIX =
+  "Program error: "` replace the compiler's failure line with the entrypoint's (`msg!("AMM error: {}", e)`);
+  `logBase64("ray_log: ", record)` logs a struct's bytes in base64 (a native `bincode` log record);
+  `createProgramAddress(seeds, program)` is `Pubkey::create_program_address` (null for no address).
+
 ## Not supported yet
 
 A struct holding a FixedVec that is both an argument and account data (its bytes differ there, and the IDL describes a

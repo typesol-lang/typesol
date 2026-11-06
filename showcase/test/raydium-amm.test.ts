@@ -35,6 +35,12 @@ const enc = getAddressEncoder();
 const key = (a: string) => Buffer.from(enc.encode(address(a)));
 const u8 = (n: number) => Buffer.from([n]);
 const u64 = (n: bigint) => Buffer.from(BigUint64Array.of(n).buffer);
+/** An account that must exist. */
+const got = (vm: LiteSVM, a: Address) => {
+  const acct = vm.getAccount(a);
+  if (!acct.exists) throw new Error(`${a} does not exist`);
+  return acct;
+};
 const outcome = (r: Result) => (r instanceof FailedTransactionMetadata ? `error: ${String(r.err())}` : "ok");
 const meta = (r: Result) => (r instanceof FailedTransactionMetadata ? r.meta() : r);
 /** The log lines both must share: everything but compute-unit lines and the port's own failure / panic lines. */
@@ -173,7 +179,19 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
     const [cfg] = await pda(PROGRAM, ["amm_config_account_seed"]);
     if (original.getAccount(cfg).exists) return cfg;
     expect(
-      await both("create_config", admin, [ix(u8(14), [{ address: admin.address, signer: admin, writable: true }, { address: cfg, writable: true }, { address: admin.address }, { address: SYSTEM }])], [cfg]),
+      await both(
+        "create_config",
+        admin,
+        [
+          ix(u8(14), [
+            { address: admin.address, signer: admin, writable: true },
+            { address: cfg, writable: true },
+            { address: admin.address },
+            { address: SYSTEM },
+          ]),
+        ],
+        [cfg],
+      ),
     ).toBe("ok");
     return cfg;
   }
@@ -251,9 +269,20 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
   function swapMetas(p: Pool, t: Trader, from: "coin" | "pc", form: 17 | 18 | 8): Meta[] {
     const src = from === "coin" ? t.coin : t.pc;
     const dst = from === "coin" ? t.pc : t.coin;
-    const user: Meta[] = [{ address: src, writable: true }, { address: dst, writable: true }, { address: t.signer.address, signer: t.signer }];
+    const user: Meta[] = [
+      { address: src, writable: true },
+      { address: dst, writable: true },
+      { address: t.signer.address, signer: t.signer },
+    ];
     if (form === 8)
-      return [{ address: TOKEN }, { address: p.amm, writable: true }, { address: p.authority }, { address: p.coinVault, writable: true }, { address: p.pcVault, writable: true }, ...user];
+      return [
+        { address: TOKEN },
+        { address: p.amm, writable: true },
+        { address: p.authority },
+        { address: p.coinVault, writable: true },
+        { address: p.pcVault, writable: true },
+        ...user,
+      ];
     const filler = { address: SYSTEM };
     return [
       { address: TOKEN },
@@ -310,8 +339,17 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
     const t = await trader(p, 10_000_000_000n, 500_000_000_000_000n);
     for (const form of [17, 18, 8] as const)
       for (const from of ["coin", "pc"] as const) {
-        expect(await both(`swap in ${from} ${form}`, t.signer, [swapIx(p, t, from, form, true, from === "coin" ? 1_000_000n : 40_000_000_000n, 1n)], watch(p, t))).toBe("ok");
-        expect(await both(`swap out ${from} ${form}`, t.signer, [swapIx(p, t, from, form, false, 10n ** 15n, from === "coin" ? 30_000_000_000n : 500_000n)], watch(p, t))).toBe("ok");
+        expect(
+          await both(`swap in ${from} ${form}`, t.signer, [swapIx(p, t, from, form, true, from === "coin" ? 1_000_000n : 40_000_000_000n, 1n)], watch(p, t)),
+        ).toBe("ok");
+        expect(
+          await both(
+            `swap out ${from} ${form}`,
+            t.signer,
+            [swapIx(p, t, from, form, false, 10n ** 15n, from === "coin" ? 30_000_000_000n : 500_000n)],
+            watch(p, t),
+          ),
+        ).toBe("ok");
       }
   });
 
@@ -347,8 +385,9 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
     expect(await both("deposit, zero", t.signer, [depositIx(p, t, 0n, 1n, 0n)], watch(p, t))).toBe(custom(29));
     expect(await both("deposit past u64", t.signer, [depositIx(p, t, 2n ** 64n - 1n, 1n, 0n)], watch(p, t))).not.toBe("ok");
     // Swaps grow x * y: the next deposit and withdrawal set P&L aside.
-    for (let i = 0; i < 6; i++) await both(`churn ${i}`, t.signer, [swapIx(p, t, i % 2 ? "pc" : "coin", 8, true, i % 2 ? 30_000_000_000n : 900_000n, 1n)], watch(p, t));
-    const lp = BigInt(token.getTokenDecoder().decode(original.getAccount(t.lp).data).amount);
+    for (let i = 0; i < 6; i++)
+      await both(`churn ${i}`, t.signer, [swapIx(p, t, i % 2 ? "pc" : "coin", 8, true, i % 2 ? 30_000_000_000n : 900_000n, 1n)], watch(p, t));
+    const lp = BigInt(token.getTokenDecoder().decode(got(original, t.lp).data).amount);
     expect(await both("withdraw half", t.signer, [withdrawIx(p, t, lp / 2n)], watch(p, t))).toBe("ok");
     expect(await both("withdraw with minimums", t.signer, [withdrawIx(p, t, lp / 4n, [1n, 1n])], watch(p, t))).toBe("ok");
     expect(await both("withdraw, minimums missed", t.signer, [withdrawIx(p, t, lp / 8n, [10n ** 15n, 1n])], watch(p, t))).toBe(custom(30));
@@ -358,7 +397,11 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
   it("lets the admin set parameters and the P&L owner take the P&L", async () => {
     const p = await pool();
     const t = await trader(p, 10_000_000_000n, 500_000_000_000_000n);
-    const set = (data: Buffer, signer: KeyPairSigner) => ix(data, [{ address: p.amm, writable: true }, { address: signer.address, signer }]);
+    const set = (data: Buffer, signer: KeyPairSigner) =>
+      ix(data, [
+        { address: p.amm, writable: true },
+        { address: signer.address, signer },
+      ]);
     expect(await both("set status, not the admin", t.signer, [set(Buffer.concat([u8(6), u8(0), u64(2n)]), t.signer)], [p.amm])).toBe(custom(21));
     expect(await both("set status 3", admin, [set(Buffer.concat([u8(6), u8(0), u64(3n)]), admin)], [p.amm])).toBe("ok");
     expect(await both("swap while withdraw-only", t.signer, [swapIx(p, t, "coin", 8, true, 1_000n, 1n)], watch(p, t))).toBe(custom(22));
@@ -370,7 +413,8 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
     expect(await both("set fees, invalid", admin, [set(Buffer.concat([u8(6), u8(2), fees(10000n)]), admin)], [p.amm])).toBe(custom(48));
     expect(await both("set open time", admin, [set(Buffer.concat([u8(6), u8(3), u64(5n)]), admin)], [p.amm])).toBe("ok");
     expect(await both("set params, bad param", admin, [set(Buffer.concat([u8(6), u8(7), u64(5n)]), admin)], [p.amm])).not.toBe("ok");
-    for (let i = 0; i < 8; i++) await both(`pnl churn ${i}`, t.signer, [swapIx(p, t, i % 2 ? "pc" : "coin", 8, true, i % 2 ? 300_000_000_000n : 9_000_000n, 1n)], watch(p, t));
+    for (let i = 0; i < 8; i++)
+      await both(`pnl churn ${i}`, t.signer, [swapIx(p, t, i % 2 ? "pc" : "coin", 8, true, i % 2 ? 300_000_000_000n : 9_000_000n, 1n)], watch(p, t));
     const pnlCoin = await account(p.creator, p.coinMint, admin.address, 0n);
     const pnlPc = await account(p.creator, p.pcMint, admin.address, 0n);
     const take = ix(u8(7), [
@@ -390,7 +434,11 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
 
   it("updates the config and refuses the instructions it no longer supports", async () => {
     const cfg = await config();
-    const upd = (data: Buffer, s: KeyPairSigner) => ix(data, [{ address: s.address, signer: s }, { address: cfg, writable: true }]);
+    const upd = (data: Buffer, s: KeyPairSigner) =>
+      ix(data, [
+        { address: s.address, signer: s },
+        { address: cfg, writable: true },
+      ]);
     const someone = await funded();
     expect(await both("config: pnl owner", admin, [upd(Buffer.concat([u8(15), u8(0), key(someone.address)]), admin)], [cfg])).toBe("ok");
     expect(await both("config: cancel owner", admin, [upd(Buffer.concat([u8(15), u8(1), key(someone.address)]), admin)], [cfg])).toBe("ok");
@@ -398,7 +446,21 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
     expect(await both("config: fee", admin, [upd(Buffer.concat([u8(15), u8(2), u64(0n)]), admin)], [cfg])).toBe("ok");
     expect(await both("config: bad param", admin, [upd(Buffer.concat([u8(15), u8(3), u64(1n)]), admin)], [cfg])).not.toBe("ok");
     expect(await both("config: not the admin", someone, [upd(Buffer.concat([u8(15), u8(2), u64(1n)]), someone)], [cfg])).toBe(custom(21));
-    expect(await both("create config again", admin, [ix(u8(14), [{ address: admin.address, signer: admin, writable: true }, { address: cfg, writable: true }, { address: admin.address }, { address: SYSTEM }])], [cfg])).toBe(custom(55));
+    expect(
+      await both(
+        "create config again",
+        admin,
+        [
+          ix(u8(14), [
+            { address: admin.address, signer: admin, writable: true },
+            { address: cfg, writable: true },
+            { address: admin.address },
+            { address: SYSTEM },
+          ]),
+        ],
+        [cfg],
+      ),
+    ).toBe(custom(55));
     for (const tag of [0, 2, 5, 8, 10, 12, 13, 19, 255]) expect(await both(`tag ${tag}`, someone, [ix(u8(tag), [])], [])).not.toBe("ok");
     expect(await both("no data", someone, [ix(Buffer.alloc(0), [])], [])).not.toBe("ok");
   });
@@ -406,10 +468,15 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
   it("sends excess lamports of program accounts to the collector", async () => {
     const p = await pool();
     for (const vm of vms()) {
-      const a = vm.getAccount(p.amm);
+      const a = got(vm, p.amm);
       vm.setAccount({ ...a, lamports: a.lamports + 12_345n } as never);
     }
-    const take = ix(u8(18), [{ address: collector.address, signer: collector, writable: true }, { address: p.authority }, { address: TOKEN }, { address: p.amm, writable: true }]);
+    const take = ix(u8(18), [
+      { address: collector.address, signer: collector, writable: true },
+      { address: p.authority },
+      { address: TOKEN },
+      { address: p.amm, writable: true },
+    ]);
     expect(await both("excess lamports", collector, [take], [p.amm, collector.address])).toBe("ok");
   });
 
@@ -429,10 +496,11 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
       const from = rnd(2n) ? "coin" : "pc";
       let i0: Instruction;
       if (k <= 1n) i0 = swapIx(p, t, from, form, true, 1n + rnd(from === "coin" ? 2_000_000_000n : 1_000_000_000_000n), rnd(3n) ? 0n : rnd(10n ** 12n));
-      else if (k === 2n) i0 = swapIx(p, t, from, form, false, rnd(4n) ? 10n ** 15n : rnd(10n ** 12n), 1n + rnd(from === "coin" ? 500_000_000_000n : 1_000_000_000n));
+      else if (k === 2n)
+        i0 = swapIx(p, t, from, form, false, rnd(4n) ? 10n ** 15n : rnd(10n ** 12n), 1n + rnd(from === "coin" ? 500_000_000_000n : 1_000_000_000n));
       else if (k === 3n) i0 = depositIx(p, t, 1n + rnd(1_000_000_000n), 1n + rnd(1_000_000_000_000n), rnd(2n));
       else {
-        const lp = BigInt(token.getTokenDecoder().decode(original.getAccount(t.lp).data).amount);
+        const lp = BigInt(token.getTokenDecoder().decode(got(original, t.lp).data).amount);
         i0 = withdrawIx(p, t, lp === 0n ? 1n : 1n + rnd(lp));
       }
       await both(`fuzz ${i}`, t.signer, [i0], watch(p, t));
@@ -441,7 +509,8 @@ describe("showcase/mainnet/raydium-amm against Raydium AMM v4 on mainnet", () =>
 
   it("reports compute units", () => {
     const rows = Object.entries(cu).filter(([l]) => /^(swap (in|out)|deposit base|withdraw half|initialize2)/.test(l));
-    for (const [l, [a, b]] of rows) console.log(`${l.padEnd(24)} original ${String(a).padStart(7)}  TypeSOL ${String(b).padStart(7)}  ${((Number(b) / Number(a)) * 100).toFixed(0)}%`);
+    for (const [l, [a, b]] of rows)
+      console.log(`${l.padEnd(24)} original ${String(a).padStart(7)}  TypeSOL ${String(b).padStart(7)}  ${((Number(b) / Number(a)) * 100).toFixed(0)}%`);
     console.log(`${compared} transactions compared`);
     expect(compared).toBeGreaterThan(50);
   });

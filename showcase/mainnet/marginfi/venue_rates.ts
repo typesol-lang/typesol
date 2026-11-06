@@ -208,7 +208,8 @@ export function kaminoSupplyApr(bank: Account<Bank>, r: RemainingAccount, market
   if (base.err !== 0n) return base;
   // The reserve's lending market caps the emissions.
   if (market.key !== readData<Pubkey>(r, 32n)) return { err: VR_INVALID_BANK_ACCOUNT, v: 0n };
-  if (market.owner !== VR_KLEND_ID || market.dataLen < 8n || readData<u64>(market, 0n) !== VR_KAMINO_MARKET_DISC) return { err: VR_INVALID_BANK_ACCOUNT, v: 0n };
+  if (market.owner !== VR_KLEND_ID || market.dataLen < 8n || readData<u64>(market, 0n) !== VR_KAMINO_MARKET_DISC)
+    return { err: VR_INVALID_BANK_ACCOUNT, v: 0n };
   require(market.dataLen >= 4664n, MarginfiError.InternalLogicError);
   const rewards = kaminoRewardsAprAt(r, toU64(readData<u16>(market, 3358n)), extra, sps);
   if (rewards.err !== 0n) return rewards;
@@ -440,7 +441,11 @@ function juplendBorrowRate(model: RemainingAccount, utilization: u256): i128 {
   const absSlope: u256 = slope < 0n ? toU256(toU128(-slope)) : toU256(toU128(slope));
   if (absSlope * utilization > I128_MAX) return -1n;
   const prod = slope * toI128(utilization);
-  if ((constant > 0n && prod > 170141183460469231731687303715884105727n - constant) || (constant < 0n && prod < -170141183460469231731687303715884105728n - constant)) return -1n;
+  if (
+    (constant > 0n && prod > 170141183460469231731687303715884105727n - constant) ||
+    (constant < 0n && prod < -170141183460469231731687303715884105728n - constant)
+  )
+    return -1n;
   const v = prod + constant;
   const rate = v < 0n ? -(-v / 1000000000000n) : v / 1000000000000n;
   if (rate < 0n) return -1n;

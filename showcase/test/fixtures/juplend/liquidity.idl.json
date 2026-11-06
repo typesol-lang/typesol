@@ -9,16 +9,7 @@
   "instructions": [
     {
       "name": "change_status",
-      "discriminator": [
-        236,
-        145,
-        131,
-        228,
-        227,
-        17,
-        192,
-        255
-      ],
+      "discriminator": [236, 145, 131, 228, 227, 17, 192, 255],
       "accounts": [
         {
           "name": "authority",
@@ -41,23 +32,12 @@
     },
     {
       "name": "claim",
-      "discriminator": [
-        62,
-        198,
-        214,
-        193,
-        213,
-        159,
-        108,
-        210
-      ],
+      "discriminator": [62, 198, 214, 193, 213, 159, 108, 210],
       "accounts": [
         {
           "name": "user",
           "signer": true,
-          "relations": [
-            "claim_account"
-          ]
+          "relations": ["claim_account"]
         },
         {
           "name": "liquidity"
@@ -68,10 +48,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "token_reserve",
-            "claim_account"
-          ]
+          "relations": ["token_reserve", "claim_account"]
         },
         {
           "name": "recipient_token_account",
@@ -94,38 +71,7 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           }
@@ -151,44 +97,11 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           },
-          "relations": [
-            "token_reserve"
-          ]
+          "relations": ["token_reserve"]
         },
         {
           "name": "claim_account",
@@ -211,24 +124,13 @@
     },
     {
       "name": "close_claim_account",
-      "discriminator": [
-        241,
-        146,
-        203,
-        216,
-        58,
-        222,
-        91,
-        118
-      ],
+      "discriminator": [241, 146, 203, 216, 58, 222, 91, 118],
       "accounts": [
         {
           "name": "user",
           "writable": true,
           "signer": true,
-          "relations": [
-            "claim_account"
-          ]
+          "relations": ["claim_account"]
         },
         {
           "name": "claim_account",
@@ -248,16 +150,7 @@
     },
     {
       "name": "collect_revenue",
-      "discriminator": [
-        87,
-        96,
-        211,
-        36,
-        240,
-        43,
-        246,
-        87
-      ],
+      "discriminator": [87, 96, 211, 36, 240, 43, 246, 87],
       "accounts": [
         {
           "name": "authority",
@@ -272,9 +165,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "token_reserve"
-          ]
+          "relations": ["token_reserve"]
         },
         {
           "name": "revenue_collector_account",
@@ -297,38 +188,7 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           }
@@ -361,44 +221,11 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           },
-          "relations": [
-            "token_reserve"
-          ]
+          "relations": ["token_reserve"]
         },
         {
           "name": "token_program"
@@ -416,16 +243,7 @@
     },
     {
       "name": "init_claim_account",
-      "discriminator": [
-        112,
-        141,
-        47,
-        170,
-        42,
-        99,
-        144,
-        145
-      ],
+      "discriminator": [112, 141, 47, 170, 42, 99, 144, 145],
       "accounts": [
         {
           "name": "signer",
@@ -439,18 +257,7 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [
-                  117,
-                  115,
-                  101,
-                  114,
-                  95,
-                  99,
-                  108,
-                  97,
-                  105,
-                  109
-                ]
+                "value": [117, 115, 101, 114, 95, 99, 108, 97, 105, 109]
               },
               {
                 "kind": "arg",
@@ -481,16 +288,7 @@
     },
     {
       "name": "init_liquidity",
-      "discriminator": [
-        95,
-        189,
-        216,
-        183,
-        188,
-        62,
-        244,
-        108
-      ],
+      "discriminator": [95, 189, 216, 183, 188, 62, 244, 108],
       "accounts": [
         {
           "name": "signer",
@@ -504,17 +302,7 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [
-                  108,
-                  105,
-                  113,
-                  117,
-                  105,
-                  100,
-                  105,
-                  116,
-                  121
-                ]
+                "value": [108, 105, 113, 117, 105, 100, 105, 116, 121]
               }
             ]
           }
@@ -526,17 +314,7 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [
-                  97,
-                  117,
-                  116,
-                  104,
-                  95,
-                  108,
-                  105,
-                  115,
-                  116
-                ]
+                "value": [97, 117, 116, 104, 95, 108, 105, 115, 116]
               }
             ]
           }
@@ -559,16 +337,7 @@
     },
     {
       "name": "init_new_protocol",
-      "discriminator": [
-        193,
-        147,
-        5,
-        32,
-        138,
-        135,
-        213,
-        158
-      ],
+      "discriminator": [193, 147, 5, 32, 138, 135, 213, 158],
       "accounts": [
         {
           "name": "authority",
@@ -585,28 +354,7 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [
-                  117,
-                  115,
-                  101,
-                  114,
-                  95,
-                  115,
-                  117,
-                  112,
-                  112,
-                  108,
-                  121,
-                  95,
-                  112,
-                  111,
-                  115,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110
-                ]
+                "value": [117, 115, 101, 114, 95, 115, 117, 112, 112, 108, 121, 95, 112, 111, 115, 105, 116, 105, 111, 110]
               },
               {
                 "kind": "arg",
@@ -626,28 +374,7 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [
-                  117,
-                  115,
-                  101,
-                  114,
-                  95,
-                  98,
-                  111,
-                  114,
-                  114,
-                  111,
-                  119,
-                  95,
-                  112,
-                  111,
-                  115,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110
-                ]
+                "value": [117, 115, 101, 114, 95, 98, 111, 114, 114, 111, 119, 95, 112, 111, 115, 105, 116, 105, 111, 110]
               },
               {
                 "kind": "arg",
@@ -682,16 +409,7 @@
     },
     {
       "name": "init_token_reserve",
-      "discriminator": [
-        228,
-        235,
-        65,
-        129,
-        159,
-        15,
-        6,
-        84
-      ],
+      "discriminator": [228, 235, 65, 129, 159, 15, 6, 84],
       "accounts": [
         {
           "name": "authority",
@@ -728,38 +446,7 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           }
@@ -771,18 +458,7 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [
-                  114,
-                  97,
-                  116,
-                  101,
-                  95,
-                  109,
-                  111,
-                  100,
-                  101,
-                  108
-                ]
+                "value": [114, 97, 116, 101, 95, 109, 111, 100, 101, 108]
               },
               {
                 "kind": "account",
@@ -798,15 +474,7 @@
             "seeds": [
               {
                 "kind": "const",
-                "value": [
-                  114,
-                  101,
-                  115,
-                  101,
-                  114,
-                  118,
-                  101
-                ]
+                "value": [114, 101, 115, 101, 114, 118, 101]
               },
               {
                 "kind": "account",
@@ -831,24 +499,12 @@
     },
     {
       "name": "operate",
-      "discriminator": [
-        217,
-        106,
-        208,
-        99,
-        116,
-        151,
-        42,
-        135
-      ],
+      "discriminator": [217, 106, 208, 99, 116, 151, 42, 135],
       "accounts": [
         {
           "name": "protocol",
           "signer": true,
-          "relations": [
-            "user_supply_position",
-            "user_borrow_position"
-          ]
+          "relations": ["user_supply_position", "user_borrow_position"]
         },
         {
           "name": "liquidity"
@@ -859,12 +515,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "token_reserve",
-            "rate_model",
-            "borrow_claim_account",
-            "withdraw_claim_account"
-          ]
+          "relations": ["token_reserve", "rate_model", "borrow_claim_account", "withdraw_claim_account"]
         },
         {
           "name": "vault",
@@ -887,44 +538,11 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           },
-          "relations": [
-            "token_reserve"
-          ]
+          "relations": ["token_reserve"]
         },
         {
           "name": "user_supply_position",
@@ -961,38 +579,7 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           }
@@ -1019,38 +606,7 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           }
@@ -1102,16 +658,7 @@
     },
     {
       "name": "pause_user",
-      "discriminator": [
-        18,
-        63,
-        43,
-        94,
-        239,
-        53,
-        101,
-        14
-      ],
+      "discriminator": [18, 63, 43, 94, 239, 53, 101, 14],
       "accounts": [
         {
           "name": "authority",
@@ -1158,24 +705,12 @@
     },
     {
       "name": "pre_operate",
-      "discriminator": [
-        129,
-        205,
-        158,
-        155,
-        198,
-        155,
-        72,
-        133
-      ],
+      "discriminator": [129, 205, 158, 155, 198, 155, 72, 133],
       "accounts": [
         {
           "name": "protocol",
           "signer": true,
-          "relations": [
-            "user_supply_position",
-            "user_borrow_position"
-          ]
+          "relations": ["user_supply_position", "user_borrow_position"]
         },
         {
           "name": "liquidity"
@@ -1208,44 +743,11 @@
             "program": {
               "kind": "const",
               "value": [
-                140,
-                151,
-                37,
-                143,
-                78,
-                36,
-                137,
-                241,
-                187,
-                61,
-                16,
-                41,
-                20,
-                142,
-                13,
-                131,
-                11,
-                90,
-                19,
-                153,
-                218,
-                255,
-                16,
-                132,
-                4,
-                142,
-                123,
-                216,
-                219,
-                233,
-                248,
-                89
+                140, 151, 37, 143, 78, 36, 137, 241, 187, 61, 16, 41, 20, 142, 13, 131, 11, 90, 19, 153, 218, 255, 16, 132, 4, 142, 123, 216, 219, 233, 248, 89
               ]
             }
           },
-          "relations": [
-            "token_reserve"
-          ]
+          "relations": ["token_reserve"]
         },
         {
           "name": "token_reserve",
@@ -1268,16 +770,7 @@
     },
     {
       "name": "unpause_user",
-      "discriminator": [
-        71,
-        115,
-        128,
-        252,
-        182,
-        126,
-        234,
-        62
-      ],
+      "discriminator": [71, 115, 128, 252, 182, 126, 234, 62],
       "accounts": [
         {
           "name": "authority",
@@ -1324,16 +817,7 @@
     },
     {
       "name": "update_authority",
-      "discriminator": [
-        32,
-        46,
-        64,
-        28,
-        149,
-        75,
-        243,
-        88
-      ],
+      "discriminator": [32, 46, 64, 28, 149, 75, 243, 88],
       "accounts": [
         {
           "name": "authority",
@@ -1357,16 +841,7 @@
     },
     {
       "name": "update_auths",
-      "discriminator": [
-        93,
-        96,
-        178,
-        156,
-        57,
-        117,
-        253,
-        209
-      ],
+      "discriminator": [93, 96, 178, 156, 57, 117, 253, 209],
       "accounts": [
         {
           "name": "authority",
@@ -1395,16 +870,7 @@
     },
     {
       "name": "update_exchange_price",
-      "discriminator": [
-        239,
-        244,
-        10,
-        248,
-        116,
-        25,
-        53,
-        150
-      ],
+      "discriminator": [239, 244, 10, 248, 116, 25, 53, 150],
       "accounts": [
         {
           "name": "token_reserve",
@@ -1424,16 +890,7 @@
     },
     {
       "name": "update_guardians",
-      "discriminator": [
-        43,
-        62,
-        250,
-        138,
-        141,
-        117,
-        132,
-        97
-      ],
+      "discriminator": [43, 62, 250, 138, 141, 117, 132, 97],
       "accounts": [
         {
           "name": "authority",
@@ -1462,16 +919,7 @@
     },
     {
       "name": "update_rate_data_v1",
-      "discriminator": [
-        6,
-        20,
-        34,
-        122,
-        22,
-        150,
-        180,
-        22
-      ],
+      "discriminator": [6, 20, 34, 122, 22, 150, 180, 22],
       "accounts": [
         {
           "name": "authority",
@@ -1486,10 +934,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "rate_model",
-            "token_reserve"
-          ]
+          "relations": ["rate_model", "token_reserve"]
         },
         {
           "name": "token_reserve",
@@ -1509,16 +954,7 @@
     },
     {
       "name": "update_rate_data_v2",
-      "discriminator": [
-        116,
-        73,
-        53,
-        146,
-        216,
-        45,
-        228,
-        124
-      ],
+      "discriminator": [116, 73, 53, 146, 216, 45, 228, 124],
       "accounts": [
         {
           "name": "authority",
@@ -1533,10 +969,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "rate_model",
-            "token_reserve"
-          ]
+          "relations": ["rate_model", "token_reserve"]
         },
         {
           "name": "token_reserve",
@@ -1556,16 +989,7 @@
     },
     {
       "name": "update_revenue_collector",
-      "discriminator": [
-        167,
-        142,
-        124,
-        240,
-        220,
-        113,
-        141,
-        59
-      ],
+      "discriminator": [167, 142, 124, 240, 220, 113, 141, 59],
       "accounts": [
         {
           "name": "authority",
@@ -1585,16 +1009,7 @@
     },
     {
       "name": "update_token_config",
-      "discriminator": [
-        231,
-        122,
-        181,
-        79,
-        255,
-        79,
-        144,
-        167
-      ],
+      "discriminator": [231, 122, 181, 79, 255, 79, 144, 167],
       "accounts": [
         {
           "name": "authority",
@@ -1609,10 +1024,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "rate_model",
-            "token_reserve"
-          ]
+          "relations": ["rate_model", "token_reserve"]
         },
         {
           "name": "token_reserve",
@@ -1632,16 +1044,7 @@
     },
     {
       "name": "update_user_borrow_config",
-      "discriminator": [
-        100,
-        176,
-        201,
-        174,
-        247,
-        2,
-        54,
-        168
-      ],
+      "discriminator": [100, 176, 201, 174, 247, 2, 54, 168],
       "accounts": [
         {
           "name": "authority",
@@ -1649,9 +1052,7 @@
         },
         {
           "name": "protocol",
-          "relations": [
-            "user_borrow_position"
-          ]
+          "relations": ["user_borrow_position"]
         },
         {
           "name": "auth_list"
@@ -1661,11 +1062,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "rate_model",
-            "token_reserve",
-            "user_borrow_position"
-          ]
+          "relations": ["rate_model", "token_reserve", "user_borrow_position"]
         },
         {
           "name": "token_reserve",
@@ -1689,16 +1086,7 @@
     },
     {
       "name": "update_user_class",
-      "discriminator": [
-        12,
-        206,
-        68,
-        135,
-        63,
-        212,
-        48,
-        119
-      ],
+      "discriminator": [12, 206, 68, 135, 63, 212, 48, 119],
       "accounts": [
         {
           "name": "authority",
@@ -1724,16 +1112,7 @@
     },
     {
       "name": "update_user_supply_config",
-      "discriminator": [
-        217,
-        239,
-        225,
-        218,
-        33,
-        49,
-        234,
-        183
-      ],
+      "discriminator": [217, 239, 225, 218, 33, 49, 234, 183],
       "accounts": [
         {
           "name": "authority",
@@ -1741,9 +1120,7 @@
         },
         {
           "name": "protocol",
-          "relations": [
-            "user_supply_position"
-          ]
+          "relations": ["user_supply_position"]
         },
         {
           "name": "auth_list"
@@ -1753,11 +1130,7 @@
         },
         {
           "name": "mint",
-          "relations": [
-            "rate_model",
-            "token_reserve",
-            "user_supply_position"
-          ]
+          "relations": ["rate_model", "token_reserve", "user_supply_position"]
         },
         {
           "name": "token_reserve",
@@ -1781,16 +1154,7 @@
     },
     {
       "name": "update_user_withdrawal_limit",
-      "discriminator": [
-        162,
-        9,
-        186,
-        9,
-        213,
-        30,
-        173,
-        78
-      ],
+      "discriminator": [162, 9, 186, 9, 213, 30, 173, 78],
       "accounts": [
         {
           "name": "authority",
@@ -1823,343 +1187,109 @@
   "accounts": [
     {
       "name": "AuthorizationList",
-      "discriminator": [
-        19,
-        157,
-        117,
-        43,
-        236,
-        167,
-        251,
-        69
-      ]
+      "discriminator": [19, 157, 117, 43, 236, 167, 251, 69]
     },
     {
       "name": "Liquidity",
-      "discriminator": [
-        54,
-        252,
-        249,
-        226,
-        137,
-        172,
-        121,
-        58
-      ]
+      "discriminator": [54, 252, 249, 226, 137, 172, 121, 58]
     },
     {
       "name": "RateModel",
-      "discriminator": [
-        94,
-        3,
-        203,
-        219,
-        107,
-        137,
-        4,
-        162
-      ]
+      "discriminator": [94, 3, 203, 219, 107, 137, 4, 162]
     },
     {
       "name": "TokenReserve",
-      "discriminator": [
-        21,
-        18,
-        59,
-        135,
-        120,
-        20,
-        31,
-        12
-      ]
+      "discriminator": [21, 18, 59, 135, 120, 20, 31, 12]
     },
     {
       "name": "UserBorrowPosition",
-      "discriminator": [
-        73,
-        126,
-        65,
-        123,
-        220,
-        126,
-        197,
-        24
-      ]
+      "discriminator": [73, 126, 65, 123, 220, 126, 197, 24]
     },
     {
       "name": "UserClaim",
-      "discriminator": [
-        228,
-        142,
-        195,
-        181,
-        228,
-        147,
-        32,
-        209
-      ]
+      "discriminator": [228, 142, 195, 181, 228, 147, 32, 209]
     },
     {
       "name": "UserSupplyPosition",
-      "discriminator": [
-        202,
-        219,
-        136,
-        118,
-        61,
-        177,
-        21,
-        146
-      ]
+      "discriminator": [202, 219, 136, 118, 61, 177, 21, 146]
     }
   ],
   "events": [
     {
       "name": "LogBorrowRateCap",
-      "discriminator": [
-        156,
-        131,
-        232,
-        94,
-        254,
-        156,
-        14,
-        117
-      ]
+      "discriminator": [156, 131, 232, 94, 254, 156, 14, 117]
     },
     {
       "name": "LogChangeStatus",
-      "discriminator": [
-        89,
-        77,
-        37,
-        172,
-        141,
-        31,
-        74,
-        42
-      ]
+      "discriminator": [89, 77, 37, 172, 141, 31, 74, 42]
     },
     {
       "name": "LogClaim",
-      "discriminator": [
-        238,
-        50,
-        157,
-        85,
-        151,
-        58,
-        231,
-        45
-      ]
+      "discriminator": [238, 50, 157, 85, 151, 58, 231, 45]
     },
     {
       "name": "LogCollectRevenue",
-      "discriminator": [
-        64,
-        198,
-        22,
-        194,
-        123,
-        87,
-        166,
-        82
-      ]
+      "discriminator": [64, 198, 22, 194, 123, 87, 166, 82]
     },
     {
       "name": "LogOperate",
-      "discriminator": [
-        180,
-        8,
-        81,
-        71,
-        19,
-        132,
-        173,
-        8
-      ]
+      "discriminator": [180, 8, 81, 71, 19, 132, 173, 8]
     },
     {
       "name": "LogPauseUser",
-      "discriminator": [
-        100,
-        17,
-        114,
-        224,
-        180,
-        30,
-        52,
-        170
-      ]
+      "discriminator": [100, 17, 114, 224, 180, 30, 52, 170]
     },
     {
       "name": "LogUnpauseUser",
-      "discriminator": [
-        170,
-        91,
-        132,
-        96,
-        179,
-        77,
-        168,
-        26
-      ]
+      "discriminator": [170, 91, 132, 96, 179, 77, 168, 26]
     },
     {
       "name": "LogUpdateAuthority",
-      "discriminator": [
-        150,
-        152,
-        157,
-        143,
-        6,
-        135,
-        193,
-        101
-      ]
+      "discriminator": [150, 152, 157, 143, 6, 135, 193, 101]
     },
     {
       "name": "LogUpdateAuths",
-      "discriminator": [
-        88,
-        80,
-        109,
-        48,
-        111,
-        203,
-        76,
-        251
-      ]
+      "discriminator": [88, 80, 109, 48, 111, 203, 76, 251]
     },
     {
       "name": "LogUpdateExchangePrices",
-      "discriminator": [
-        190,
-        194,
-        69,
-        204,
-        30,
-        86,
-        181,
-        163
-      ]
+      "discriminator": [190, 194, 69, 204, 30, 86, 181, 163]
     },
     {
       "name": "LogUpdateGuardians",
-      "discriminator": [
-        231,
-        28,
-        191,
-        51,
-        53,
-        140,
-        79,
-        142
-      ]
+      "discriminator": [231, 28, 191, 51, 53, 140, 79, 142]
     },
     {
       "name": "LogUpdateRateDataV1",
-      "discriminator": [
-        30,
-        102,
-        131,
-        192,
-        0,
-        30,
-        85,
-        223
-      ]
+      "discriminator": [30, 102, 131, 192, 0, 30, 85, 223]
     },
     {
       "name": "LogUpdateRateDataV2",
-      "discriminator": [
-        206,
-        53,
-        195,
-        70,
-        113,
-        211,
-        92,
-        129
-      ]
+      "discriminator": [206, 53, 195, 70, 113, 211, 92, 129]
     },
     {
       "name": "LogUpdateRevenueCollector",
-      "discriminator": [
-        44,
-        143,
-        80,
-        250,
-        211,
-        147,
-        180,
-        159
-      ]
+      "discriminator": [44, 143, 80, 250, 211, 147, 180, 159]
     },
     {
       "name": "LogUpdateTokenConfigs",
-      "discriminator": [
-        24,
-        205,
-        191,
-        130,
-        47,
-        40,
-        233,
-        218
-      ]
+      "discriminator": [24, 205, 191, 130, 47, 40, 233, 218]
     },
     {
       "name": "LogUpdateUserBorrowConfigs",
-      "discriminator": [
-        210,
-        251,
-        242,
-        159,
-        205,
-        33,
-        154,
-        74
-      ]
+      "discriminator": [210, 251, 242, 159, 205, 33, 154, 74]
     },
     {
       "name": "LogUpdateUserClass",
-      "discriminator": [
-        185,
-        193,
-        106,
-        248,
-        11,
-        53,
-        0,
-        136
-      ]
+      "discriminator": [185, 193, 106, 248, 11, 53, 0, 136]
     },
     {
       "name": "LogUpdateUserSupplyConfigs",
-      "discriminator": [
-        142,
-        160,
-        21,
-        90,
-        87,
-        88,
-        18,
-        51
-      ]
+      "discriminator": [142, 160, 21, 90, 87, 88, 18, 51]
     },
     {
       "name": "LogUpdateUserWithdrawalLimit",
-      "discriminator": [
-        114,
-        131,
-        152,
-        189,
-        120,
-        253,
-        88,
-        105
-      ]
+      "discriminator": [114, 131, 152, 189, 120, 253, 88, 105]
     }
   ],
   "errors": [
@@ -2842,18 +1972,13 @@
     },
     {
       "name": "RateDataV1Params",
-      "docs": [
-        "@notice struct to set borrow rate data for version 1"
-      ],
+      "docs": ["@notice struct to set borrow rate data for version 1"],
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "kink",
-            "docs": [
-              "",
-              "@param kink in borrow rate. in 1e2: 100% = 10_000; 1% = 100"
-            ],
+            "docs": ["", "@param kink in borrow rate. in 1e2: 100% = 10_000; 1% = 100"],
             "type": "u128"
           },
           {
@@ -2889,9 +2014,7 @@
     },
     {
       "name": "RateDataV2Params",
-      "docs": [
-        "@notice struct to set borrow rate data for version 2"
-      ],
+      "docs": ["@notice struct to set borrow rate data for version 2"],
       "type": {
         "kind": "struct",
         "fields": [
@@ -2955,9 +2078,7 @@
     },
     {
       "name": "RateModel",
-      "docs": [
-        "Interest rate model data"
-      ],
+      "docs": ["Interest rate model data"],
       "serialization": "bytemuck",
       "repr": {
         "kind": "c",
@@ -3003,26 +2124,18 @@
     },
     {
       "name": "TokenConfig",
-      "docs": [
-        "@notice struct to set token config"
-      ],
+      "docs": ["@notice struct to set token config"],
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "token",
-            "docs": [
-              "",
-              "@param token address"
-            ],
+            "docs": ["", "@param token address"],
             "type": "pubkey"
           },
           {
             "name": "fee",
-            "docs": [
-              "",
-              "@param fee charges on borrower's interest. in 1e2: 100% = 10_000; 1% = 100"
-            ],
+            "docs": ["", "@param fee charges on borrower's interest. in 1e2: 100% = 10_000; 1% = 100"],
             "type": "u128"
           },
           {
@@ -3039,9 +2152,7 @@
     },
     {
       "name": "TokenReserve",
-      "docs": [
-        "Token configuration and exchange prices"
-      ],
+      "docs": ["Token configuration and exchange prices"],
       "serialization": "bytemuck",
       "repr": {
         "kind": "c",
@@ -3140,18 +2251,13 @@
     },
     {
       "name": "UserBorrowConfig",
-      "docs": [
-        "@notice struct to set user borrow & payback config"
-      ],
+      "docs": ["@notice struct to set user borrow & payback config"],
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "mode",
-            "docs": [
-              "",
-              "@param mode: 0 = without interest. 1 = with interest"
-            ],
+            "docs": ["", "@param mode: 0 = without interest. 1 = with interest"],
             "type": "u8"
           },
           {
@@ -3165,11 +2271,7 @@
           },
           {
             "name": "expand_duration",
-            "docs": [
-              "",
-              "@param expandDuration debt limit expand duration in seconds.",
-              "used to calculate rate together with expandPercent"
-            ],
+            "docs": ["", "@param expandDuration debt limit expand duration in seconds.", "used to calculate rate together with expandPercent"],
             "type": "u128"
           },
           {
@@ -3198,9 +2300,7 @@
     },
     {
       "name": "UserBorrowPosition",
-      "docs": [
-        "User borrow position"
-      ],
+      "docs": ["User borrow position"],
       "serialization": "bytemuck",
       "repr": {
         "kind": "c",
@@ -3299,18 +2399,13 @@
     },
     {
       "name": "UserSupplyConfig",
-      "docs": [
-        "@notice struct to set user supply & withdrawal config"
-      ],
+      "docs": ["@notice struct to set user supply & withdrawal config"],
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "mode",
-            "docs": [
-              "",
-              "@param mode: 0 = without interest. 1 = with interest"
-            ],
+            "docs": ["", "@param mode: 0 = without interest. 1 = with interest"],
             "type": "u8"
           },
           {
@@ -3324,11 +2419,7 @@
           },
           {
             "name": "expand_duration",
-            "docs": [
-              "",
-              "@param expandDuration withdrawal limit expand duration in seconds.",
-              "used to calculate rate together with expandPercent"
-            ],
+            "docs": ["", "@param expandDuration withdrawal limit expand duration in seconds.", "used to calculate rate together with expandPercent"],
             "type": "u128"
           },
           {
@@ -3346,9 +2437,7 @@
     },
     {
       "name": "UserSupplyPosition",
-      "docs": [
-        "User supply position"
-      ],
+      "docs": ["User supply position"],
       "serialization": "bytemuck",
       "repr": {
         "kind": "c",

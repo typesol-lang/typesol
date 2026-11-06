@@ -6,7 +6,7 @@ This repository also holds third-party material used only by its tests. None of 
 
 - test/programs/: program binaries dumped from Solana clusters. The ones kept in the repository are Apache-2.0:
   SPL Account Compression and SPL Noop (solana-labs/solana-program-library), Program Metadata
-  (solana-program/program-metadata), coral-xyz/multisig, Raydium CP-Swap and Raydium CLMM (raydium-io), Jito's tip
+  (solana-program/program-metadata), coral-xyz/multisig, Raydium CP-Swap, Raydium CLMM and Raydium AMM v4 (raydium-io), Jito's tip
   payment, tip distribution and priority fee distribution programs (jito-foundation/jito-programs), marginfi v2
   (mrgnlabs/marginfi-v2) and Solend's token-lending (solendprotocol/solana-program-library). The licence text is test/programs/LICENSE-Apache-2.0.txt; each binary's source, program id
   and sha256 are in test/programs/SOURCES.md.
@@ -23,5 +23,5 @@ This repository also holds third-party material used only by its tests. None of 
 - showcase/test/fixtures/clmm/: Raydium CLMM's on-chain IDL and the accounts of one mainnet pool (raydium-io/raydium-clmm,
   Apache-2.0).
 
-Examples under examples/ that port these programs (raydium-cp-swap, raydium-clmm, jito-mev, marginfi, multisig.ts)
+Examples under examples/ that port these programs (raydium-cp-swap, raydium-clmm, raydium-amm, jito-mev, marginfi, multisig.ts)
 follow their originals' source, which is Apache-2.0; see each file's header.

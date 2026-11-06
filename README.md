@@ -185,7 +185,8 @@ If the build refuses something, the error points at the line and, for the usual 
   `typesol port` starts from your program's IDL; [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one
   program through the port.
 - Real programs checked against their mainnet binaries: [Showcase](#showcase-ports-checked-against-mainnet), with a
-  case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions).
+  case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions; Raydium AMM v4, a native
+  program, down to its log lines).
 - To mainnet (wallet, cost, deploy, IDL, verification): [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
@@ -341,7 +342,7 @@ Details are in [docs/testing.md](docs/testing.md).
 [`showcase/`](showcase) holds programs ported from Anchor and checked against the binaries deployed on mainnet (same
 outcomes, account bytes and events; [`showcase/test`](showcase/test)), and the ports of all 46
 [solana-developers/program-examples](showcase/program-examples/README.md).
-Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Raydium CLMM](docs/case-study-raydium-clmm.md),
+Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Raydium AMM v4](docs/case-study-raydium-amm.md), [Raydium CLMM](docs/case-study-raydium-clmm.md),
 [Raydium CP-Swap](docs/case-study-raydium-cp-swap.md), [Jito MEV](docs/case-study-jito-mev.md),
 [coral-xyz/multisig](docs/case-study-multisig.md), [an Anchor escrow](docs/case-study-escrow.md).
 
@@ -351,6 +352,7 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Raydium CLMM](docs/ca
 | [`raydium-clmm/`](showcase/mainnet/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
 | [`jito-mev/`](showcase/mainnet/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
 | [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2 in full, all 124 instructions: I80F48 fixed-point arithmetic, zero-copy accounts, oracles (Pyth, Switchboard, staked SOL, Scope, venue exchange rates), the risk engine, liquidation and bankruptcy, flash loans, orders, rebalances, and the Solend, Kamino, Drift and JupLend banks |
+| [`raydium-amm/`](showcase/mainnet/raydium-amm) | Raydium AMM v4, the original constant-product AMM and a native (non-Anchor) program, in full: pool creation, deposits and withdrawals, the v1 and v2 swaps, P&L and administration, down to its log records and panics |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status

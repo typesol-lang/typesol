@@ -131,4 +131,3 @@ export function decreaseOrder(order: Mut<LimitOrderState>, array: Mut<TickArrayS
 export function orderOffset(array: Account<TickArrayState>, tick: i32, spacing: u16): u64 {
   return tickOffset(array.start_tick_index, tick, spacing);
 }
-

@@ -8,16 +8,7 @@
   "instructions": [
     {
       "name": "init_lending_market",
-      "discriminator": [
-        34,
-        162,
-        116,
-        14,
-        101,
-        137,
-        94,
-        239
-      ],
+      "discriminator": [34, 162, 116, 14, 101, 137, 94, 239],
       "accounts": [
         {
           "name": "lending_market_owner",
@@ -45,26 +36,14 @@
         {
           "name": "quote_currency",
           "type": {
-            "array": [
-              "u8",
-              32
-            ]
+            "array": ["u8", 32]
           }
         }
       ]
     },
     {
       "name": "update_lending_market",
-      "discriminator": [
-        209,
-        157,
-        53,
-        210,
-        97,
-        180,
-        31,
-        45
-      ],
+      "discriminator": [209, 157, 53, 210, 97, 180, 31, 45],
       "accounts": [
         {
           "name": "signer",
@@ -86,26 +65,14 @@
         {
           "name": "value",
           "type": {
-            "array": [
-              "u8",
-              72
-            ]
+            "array": ["u8", 72]
           }
         }
       ]
     },
     {
       "name": "update_lending_market_owner",
-      "discriminator": [
-        118,
-        224,
-        10,
-        62,
-        196,
-        230,
-        184,
-        89
-      ],
+      "discriminator": [118, 224, 10, 62, 196, 230, 184, 89],
       "accounts": [
         {
           "name": "lending_market_owner_cached",
@@ -123,16 +90,7 @@
     },
     {
       "name": "init_reserve",
-      "discriminator": [
-        138,
-        245,
-        71,
-        225,
-        153,
-        4,
-        3,
-        43
-      ],
+      "discriminator": [138, 245, 71, 225, 153, 4, 3, 43],
       "accounts": [
         {
           "name": "signer",
@@ -192,16 +150,7 @@
     },
     {
       "name": "clone_reserve_config",
-      "discriminator": [
-        244,
-        5,
-        198,
-        113,
-        17,
-        10,
-        71,
-        33
-      ],
+      "discriminator": [244, 5, 198, 113, 17, 10, 71, 33],
       "accounts": [
         {
           "name": "signer",
@@ -234,16 +183,7 @@
     },
     {
       "name": "init_farms_for_reserve",
-      "discriminator": [
-        218,
-        6,
-        62,
-        233,
-        1,
-        33,
-        232,
-        82
-      ],
+      "discriminator": [218, 6, 62, 233, 1, 33, 232, 82],
       "accounts": [
         {
           "name": "lending_market_owner",
@@ -292,16 +232,7 @@
     },
     {
       "name": "update_reserve_config",
-      "discriminator": [
-        61,
-        148,
-        100,
-        70,
-        143,
-        107,
-        17,
-        13
-      ],
+      "discriminator": [61, 148, 100, 70, 143, 107, 17, 13],
       "accounts": [
         {
           "name": "signer",
@@ -342,16 +273,7 @@
     },
     {
       "name": "redeem_fees",
-      "discriminator": [
-        215,
-        39,
-        180,
-        41,
-        173,
-        46,
-        248,
-        220
-      ],
+      "discriminator": [215, 39, 180, 41, 173, 46, 248, 220],
       "accounts": [
         {
           "name": "reserve",
@@ -382,16 +304,7 @@
     },
     {
       "name": "withdraw_protocol_fee",
-      "discriminator": [
-        158,
-        201,
-        158,
-        189,
-        33,
-        93,
-        162,
-        103
-      ],
+      "discriminator": [158, 201, 158, 189, 33, 93, 162, 103],
       "accounts": [
         {
           "name": "global_config"
@@ -432,16 +345,7 @@
     },
     {
       "name": "seed_deposit_on_init_reserve",
-      "discriminator": [
-        254,
-        197,
-        228,
-        118,
-        183,
-        206,
-        62,
-        226
-      ],
+      "discriminator": [254, 197, 228, 118, 183, 206, 62, 226],
       "accounts": [
         {
           "name": "signer",
@@ -473,16 +377,7 @@
     },
     {
       "name": "topup_reserve_rewards",
-      "discriminator": [
-        63,
-        255,
-        130,
-        211,
-        110,
-        216,
-        88,
-        173
-      ],
+      "discriminator": [63, 255, 130, 211, 110, 216, 88, 173],
       "accounts": [
         {
           "name": "signer",
@@ -519,16 +414,7 @@
     },
     {
       "name": "socialize_loss",
-      "discriminator": [
-        245,
-        75,
-        91,
-        0,
-        236,
-        97,
-        19,
-        3
-      ],
+      "discriminator": [245, 75, 91, 0, 236, 97, 19, 3],
       "accounts": [
         {
           "name": "lending_market_owner",
@@ -558,16 +444,7 @@
     },
     {
       "name": "socialize_loss_v2",
-      "discriminator": [
-        238,
-        95,
-        98,
-        220,
-        187,
-        40,
-        204,
-        154
-      ],
+      "discriminator": [238, 95, 98, 220, 187, 40, 204, 154],
       "accounts": [
         {
           "name": "socialize_loss_accounts",
@@ -623,16 +500,7 @@
     },
     {
       "name": "mark_obligation_for_deleveraging",
-      "discriminator": [
-        164,
-        35,
-        182,
-        19,
-        0,
-        116,
-        243,
-        127
-      ],
+      "discriminator": [164, 35, 182, 19, 0, 116, 243, 127],
       "accounts": [
         {
           "name": "lending_market_owner",
@@ -658,16 +526,7 @@
     },
     {
       "name": "refresh_reserve",
-      "discriminator": [
-        2,
-        218,
-        138,
-        235,
-        79,
-        201,
-        25,
-        102
-      ],
+      "discriminator": [2, 218, 138, 235, 79, 201, 25, 102],
       "accounts": [
         {
           "name": "reserve",
@@ -697,16 +556,7 @@
     },
     {
       "name": "refresh_reserves_batch",
-      "discriminator": [
-        144,
-        110,
-        26,
-        103,
-        162,
-        204,
-        252,
-        147
-      ],
+      "discriminator": [144, 110, 26, 103, 162, 204, 252, 147],
       "accounts": [],
       "args": [
         {
@@ -717,16 +567,7 @@
     },
     {
       "name": "calculate_ctoken_exchange_rate",
-      "discriminator": [
-        32,
-        253,
-        220,
-        13,
-        19,
-        165,
-        131,
-        188
-      ],
+      "discriminator": [32, 253, 220, 13, 19, 165, 131, 188],
       "accounts": [
         {
           "name": "reserve"
@@ -741,16 +582,7 @@
     },
     {
       "name": "deposit_reserve_liquidity",
-      "discriminator": [
-        169,
-        201,
-        30,
-        126,
-        6,
-        205,
-        102,
-        68
-      ],
+      "discriminator": [169, 201, 30, 126, 6, 205, 102, 68],
       "accounts": [
         {
           "name": "owner",
@@ -804,16 +636,7 @@
     },
     {
       "name": "redeem_reserve_collateral",
-      "discriminator": [
-        234,
-        117,
-        181,
-        125,
-        185,
-        142,
-        220,
-        29
-      ],
+      "discriminator": [234, 117, 181, 125, 185, 142, 220, 29],
       "accounts": [
         {
           "name": "owner",
@@ -867,16 +690,7 @@
     },
     {
       "name": "init_obligation",
-      "discriminator": [
-        251,
-        10,
-        231,
-        76,
-        27,
-        11,
-        159,
-        96
-      ],
+      "discriminator": [251, 10, 231, 76, 27, 11, 159, 96],
       "accounts": [
         {
           "name": "obligation_owner",
@@ -923,16 +737,7 @@
     },
     {
       "name": "init_obligation_farms_for_reserve",
-      "discriminator": [
-        136,
-        63,
-        15,
-        186,
-        211,
-        152,
-        168,
-        164
-      ],
+      "discriminator": [136, 63, 15, 186, 211, 152, 168, 164],
       "accounts": [
         {
           "name": "payer",
@@ -983,16 +788,7 @@
     },
     {
       "name": "refresh_obligation_farms_for_reserve",
-      "discriminator": [
-        140,
-        144,
-        253,
-        21,
-        10,
-        74,
-        248,
-        3
-      ],
+      "discriminator": [140, 144, 253, 21, 10, 74, 248, 3],
       "accounts": [
         {
           "name": "crank",
@@ -1042,16 +838,7 @@
     },
     {
       "name": "refresh_obligation",
-      "discriminator": [
-        33,
-        132,
-        147,
-        228,
-        151,
-        192,
-        72,
-        89
-      ],
+      "discriminator": [33, 132, 147, 228, 151, 192, 72, 89],
       "accounts": [
         {
           "name": "lending_market"
@@ -1065,16 +852,7 @@
     },
     {
       "name": "deposit_obligation_collateral",
-      "discriminator": [
-        108,
-        209,
-        4,
-        72,
-        21,
-        22,
-        118,
-        133
-      ],
+      "discriminator": [108, 209, 4, 72, 21, 22, 118, 133],
       "accounts": [
         {
           "name": "owner",
@@ -1115,16 +893,7 @@
     },
     {
       "name": "deposit_obligation_collateral_v2",
-      "discriminator": [
-        137,
-        145,
-        151,
-        94,
-        167,
-        113,
-        4,
-        145
-      ],
+      "discriminator": [137, 145, 151, 94, 167, 113, 4, 145],
       "accounts": [
         {
           "name": "deposit_accounts",
@@ -1191,16 +960,7 @@
     },
     {
       "name": "withdraw_obligation_collateral",
-      "discriminator": [
-        37,
-        116,
-        205,
-        103,
-        243,
-        192,
-        92,
-        198
-      ],
+      "discriminator": [37, 116, 205, 103, 243, 192, 92, 198],
       "accounts": [
         {
           "name": "owner",
@@ -1245,16 +1005,7 @@
     },
     {
       "name": "withdraw_obligation_collateral_v2",
-      "discriminator": [
-        202,
-        249,
-        117,
-        114,
-        231,
-        192,
-        47,
-        138
-      ],
+      "discriminator": [202, 249, 117, 114, 231, 192, 47, 138],
       "accounts": [
         {
           "name": "withdraw_accounts",
@@ -1322,16 +1073,7 @@
     },
     {
       "name": "borrow_obligation_liquidity",
-      "discriminator": [
-        121,
-        127,
-        18,
-        204,
-        73,
-        245,
-        225,
-        65
-      ],
+      "discriminator": [121, 127, 18, 204, 73, 245, 225, 65],
       "accounts": [
         {
           "name": "owner",
@@ -1387,16 +1129,7 @@
     },
     {
       "name": "borrow_obligation_liquidity_v2",
-      "discriminator": [
-        161,
-        128,
-        143,
-        245,
-        171,
-        199,
-        194,
-        6
-      ],
+      "discriminator": [161, 128, 143, 245, 171, 199, 194, 6],
       "accounts": [
         {
           "name": "borrow_accounts",
@@ -1475,16 +1208,7 @@
     },
     {
       "name": "repay_obligation_liquidity",
-      "discriminator": [
-        145,
-        178,
-        13,
-        225,
-        76,
-        240,
-        147,
-        72
-      ],
+      "discriminator": [145, 178, 13, 225, 76, 240, 147, 72],
       "accounts": [
         {
           "name": "owner",
@@ -1528,16 +1252,7 @@
     },
     {
       "name": "repay_obligation_liquidity_v2",
-      "discriminator": [
-        116,
-        174,
-        213,
-        76,
-        180,
-        53,
-        210,
-        144
-      ],
+      "discriminator": [116, 174, 213, 76, 180, 53, 210, 144],
       "accounts": [
         {
           "name": "repay_accounts",
@@ -1607,16 +1322,7 @@
     },
     {
       "name": "repay_and_withdraw_and_redeem",
-      "discriminator": [
-        2,
-        54,
-        152,
-        3,
-        148,
-        96,
-        109,
-        218
-      ],
+      "discriminator": [2, 54, 152, 3, 148, 96, 109, 218],
       "accounts": [
         {
           "name": "repay_accounts",
@@ -1758,16 +1464,7 @@
     },
     {
       "name": "deposit_and_withdraw",
-      "discriminator": [
-        141,
-        153,
-        39,
-        15,
-        64,
-        61,
-        88,
-        84
-      ],
+      "discriminator": [141, 153, 39, 15, 64, 61, 88, 84],
       "accounts": [
         {
           "name": "deposit_accounts",
@@ -1928,16 +1625,7 @@
     },
     {
       "name": "deposit_reserve_liquidity_and_obligation_collateral",
-      "discriminator": [
-        129,
-        199,
-        4,
-        2,
-        222,
-        39,
-        26,
-        46
-      ],
+      "discriminator": [129, 199, 4, 2, 222, 39, 26, 46],
       "accounts": [
         {
           "name": "owner",
@@ -2000,16 +1688,7 @@
     },
     {
       "name": "deposit_reserve_liquidity_and_obligation_collateral_v2",
-      "discriminator": [
-        216,
-        224,
-        191,
-        27,
-        204,
-        151,
-        102,
-        175
-      ],
+      "discriminator": [216, 224, 191, 27, 204, 151, 102, 175],
       "accounts": [
         {
           "name": "deposit_accounts",
@@ -2095,16 +1774,7 @@
     },
     {
       "name": "withdraw_obligation_collateral_and_redeem_reserve_collateral",
-      "discriminator": [
-        75,
-        93,
-        93,
-        220,
-        34,
-        150,
-        218,
-        196
-      ],
+      "discriminator": [75, 93, 93, 220, 34, 150, 218, 196],
       "accounts": [
         {
           "name": "owner",
@@ -2167,16 +1837,7 @@
     },
     {
       "name": "withdraw_obligation_collateral_and_redeem_reserve_collateral_v2",
-      "discriminator": [
-        235,
-        52,
-        119,
-        152,
-        149,
-        197,
-        20,
-        7
-      ],
+      "discriminator": [235, 52, 119, 152, 149, 197, 20, 7],
       "accounts": [
         {
           "name": "withdraw_accounts",
@@ -2262,16 +1923,7 @@
     },
     {
       "name": "liquidate_obligation_and_redeem_reserve_collateral",
-      "discriminator": [
-        177,
-        71,
-        154,
-        188,
-        226,
-        133,
-        74,
-        55
-      ],
+      "discriminator": [177, 71, 154, 188, 226, 133, 74, 55],
       "accounts": [
         {
           "name": "liquidator",
@@ -2363,16 +2015,7 @@
     },
     {
       "name": "liquidate_obligation_and_redeem_reserve_collateral_v2",
-      "discriminator": [
-        162,
-        161,
-        35,
-        143,
-        30,
-        187,
-        185,
-        103
-      ],
+      "discriminator": [162, 161, 35, 143, 30, 187, 185, 103],
       "accounts": [
         {
           "name": "liquidation_accounts",
@@ -2502,16 +2145,7 @@
     },
     {
       "name": "flash_repay_reserve_liquidity",
-      "discriminator": [
-        185,
-        117,
-        0,
-        203,
-        96,
-        245,
-        180,
-        186
-      ],
+      "discriminator": [185, 117, 0, 203, 96, 245, 180, 186],
       "accounts": [
         {
           "name": "user_transfer_authority",
@@ -2572,16 +2206,7 @@
     },
     {
       "name": "flash_borrow_reserve_liquidity",
-      "discriminator": [
-        135,
-        231,
-        52,
-        167,
-        7,
-        52,
-        212,
-        193
-      ],
+      "discriminator": [135, 231, 52, 167, 7, 52, 212, 193],
       "accounts": [
         {
           "name": "user_transfer_authority",
@@ -2638,16 +2263,7 @@
     },
     {
       "name": "request_elevation_group",
-      "discriminator": [
-        36,
-        119,
-        251,
-        129,
-        34,
-        240,
-        7,
-        147
-      ],
+      "discriminator": [36, 119, 251, 129, 34, 240, 7, 147],
       "accounts": [
         {
           "name": "owner",
@@ -2670,16 +2286,7 @@
     },
     {
       "name": "init_referrer_token_state",
-      "discriminator": [
-        116,
-        45,
-        66,
-        148,
-        58,
-        13,
-        218,
-        115
-      ],
+      "discriminator": [116, 45, 66, 148, 58, 13, 218, 115],
       "accounts": [
         {
           "name": "payer",
@@ -2710,16 +2317,7 @@
     },
     {
       "name": "init_user_metadata",
-      "discriminator": [
-        117,
-        169,
-        176,
-        69,
-        197,
-        23,
-        15,
-        162
-      ],
+      "discriminator": [117, 169, 176, 69, 197, 23, 15, 162],
       "accounts": [
         {
           "name": "owner",
@@ -2754,16 +2352,7 @@
     },
     {
       "name": "withdraw_referrer_fees",
-      "discriminator": [
-        171,
-        118,
-        121,
-        201,
-        233,
-        140,
-        23,
-        228
-      ],
+      "discriminator": [171, 118, 121, 201, 233, 140, 23, 228],
       "accounts": [
         {
           "name": "referrer",
@@ -2803,16 +2392,7 @@
     },
     {
       "name": "init_referrer_state_and_short_url",
-      "discriminator": [
-        165,
-        19,
-        25,
-        127,
-        100,
-        55,
-        31,
-        90
-      ],
+      "discriminator": [165, 19, 25, 127, 100, 55, 31, 90],
       "accounts": [
         {
           "name": "referrer",
@@ -2846,16 +2426,7 @@
     },
     {
       "name": "delete_referrer_state_and_short_url",
-      "discriminator": [
-        153,
-        185,
-        99,
-        28,
-        228,
-        179,
-        187,
-        150
-      ],
+      "discriminator": [153, 185, 99, 28, 228, 179, 187, 150],
       "accounts": [
         {
           "name": "referrer",
@@ -2881,16 +2452,7 @@
     },
     {
       "name": "set_obligation_order",
-      "discriminator": [
-        81,
-        1,
-        99,
-        156,
-        211,
-        83,
-        78,
-        46
-      ],
+      "discriminator": [81, 1, 99, 156, 211, 83, 78, 46],
       "accounts": [
         {
           "name": "owner",
@@ -2921,16 +2483,7 @@
     },
     {
       "name": "set_borrow_order",
-      "discriminator": [
-        177,
-        186,
-        45,
-        61,
-        235,
-        91,
-        68,
-        139
-      ],
+      "discriminator": [177, 186, 45, 61, 235, 91, 68, 139],
       "accounts": [
         {
           "name": "owner",
@@ -2979,16 +2532,7 @@
     },
     {
       "name": "set_borrow_order_v2",
-      "discriminator": [
-        87,
-        255,
-        30,
-        4,
-        156,
-        230,
-        167,
-        126
-      ],
+      "discriminator": [87, 255, 30, 4, 156, 230, 167, 126],
       "accounts": [
         {
           "name": "owner",
@@ -3041,16 +2585,7 @@
     },
     {
       "name": "update_obligation_config",
-      "discriminator": [
-        82,
-        152,
-        213,
-        69,
-        250,
-        0,
-        157,
-        188
-      ],
+      "discriminator": [82, 152, 213, 69, 250, 0, 157, 188],
       "accounts": [
         {
           "name": "owner",
@@ -3089,16 +2624,7 @@
     },
     {
       "name": "rollover_fixed_term_borrow",
-      "discriminator": [
-        85,
-        30,
-        155,
-        225,
-        224,
-        186,
-        141,
-        148
-      ],
+      "discriminator": [85, 30, 155, 225, 224, 186, 141, 148],
       "accounts": [
         {
           "name": "rollover_accounts",
@@ -3179,16 +2705,7 @@
     },
     {
       "name": "fill_borrow_order",
-      "discriminator": [
-        102,
-        4,
-        167,
-        76,
-        131,
-        170,
-        93,
-        19
-      ],
+      "discriminator": [102, 4, 167, 76, 131, 170, 93, 19],
       "accounts": [
         {
           "name": "borrow_accounts",
@@ -3268,16 +2785,7 @@
     },
     {
       "name": "fill_borrow_order_v2",
-      "discriminator": [
-        197,
-        85,
-        193,
-        139,
-        40,
-        94,
-        194,
-        143
-      ],
+      "discriminator": [197, 85, 193, 139, 40, 94, 194, 143],
       "accounts": [
         {
           "name": "borrow_accounts",
@@ -3362,16 +2870,7 @@
     },
     {
       "name": "initiate_obligation_ownership_transfer",
-      "discriminator": [
-        127,
-        42,
-        81,
-        218,
-        147,
-        171,
-        76,
-        153
-      ],
+      "discriminator": [127, 42, 81, 218, 147, 171, 76, 153],
       "accounts": [
         {
           "name": "owner",
@@ -3394,16 +2893,7 @@
     },
     {
       "name": "approve_obligation_ownership_transfer",
-      "discriminator": [
-        61,
-        227,
-        231,
-        46,
-        196,
-        124,
-        60,
-        161
-      ],
+      "discriminator": [61, 227, 231, 46, 196, 124, 60, 161],
       "accounts": [
         {
           "name": "global_admin",
@@ -3427,16 +2917,7 @@
     },
     {
       "name": "accept_obligation_ownership",
-      "discriminator": [
-        249,
-        130,
-        70,
-        176,
-        151,
-        187,
-        239,
-        6
-      ],
+      "discriminator": [249, 130, 70, 176, 151, 187, 239, 6],
       "accounts": [
         {
           "name": "pending_owner",
@@ -3454,16 +2935,7 @@
     },
     {
       "name": "abort_obligation_ownership_transfer",
-      "discriminator": [
-        103,
-        217,
-        83,
-        65,
-        164,
-        5,
-        195,
-        227
-      ],
+      "discriminator": [103, 217, 83, 65, 164, 5, 195, 227],
       "accounts": [
         {
           "name": "owner",
@@ -3481,16 +2953,7 @@
     },
     {
       "name": "enqueue_to_withdraw",
-      "discriminator": [
-        134,
-        113,
-        160,
-        207,
-        90,
-        75,
-        213,
-        219
-      ],
+      "discriminator": [134, 113, 160, 207, 90, 75, 213, 219],
       "accounts": [
         {
           "name": "owner",
@@ -3563,16 +3026,7 @@
     },
     {
       "name": "withdraw_queued_liquidity",
-      "discriminator": [
-        66,
-        149,
-        187,
-        201,
-        74,
-        191,
-        174,
-        120
-      ],
+      "discriminator": [66, 149, 187, 201, 74, 191, 174, 120],
       "accounts": [
         {
           "name": "payer",
@@ -3649,16 +3103,7 @@
     },
     {
       "name": "recover_invalid_ticket_collateral",
-      "discriminator": [
-        28,
-        48,
-        176,
-        102,
-        159,
-        206,
-        210,
-        246
-      ],
+      "discriminator": [28, 48, 176, 102, 159, 206, 210, 246],
       "accounts": [
         {
           "name": "payer",
@@ -3708,16 +3153,7 @@
     },
     {
       "name": "cancel_withdraw_ticket",
-      "discriminator": [
-        180,
-        83,
-        122,
-        44,
-        120,
-        211,
-        47,
-        22
-      ],
+      "discriminator": [180, 83, 122, 44, 120, 211, 47, 22],
       "accounts": [
         {
           "name": "owner",
@@ -3765,16 +3201,7 @@
     },
     {
       "name": "init_global_config",
-      "discriminator": [
-        140,
-        136,
-        214,
-        48,
-        87,
-        0,
-        120,
-        255
-      ],
+      "discriminator": [140, 136, 214, 48, 87, 0, 120, 255],
       "accounts": [
         {
           "name": "payer",
@@ -3802,16 +3229,7 @@
     },
     {
       "name": "update_global_config",
-      "discriminator": [
-        164,
-        84,
-        130,
-        189,
-        111,
-        58,
-        250,
-        200
-      ],
+      "discriminator": [164, 84, 130, 189, 111, 58, 250, 200],
       "accounts": [
         {
           "name": "global_admin",
@@ -3842,16 +3260,7 @@
     },
     {
       "name": "update_global_config_admin",
-      "discriminator": [
-        184,
-        87,
-        23,
-        193,
-        156,
-        238,
-        175,
-        119
-      ],
+      "discriminator": [184, 87, 23, 193, 156, 238, 175, 119],
       "accounts": [
         {
           "name": "pending_admin",
@@ -3869,16 +3278,7 @@
     },
     {
       "name": "idl_missing_types",
-      "discriminator": [
-        130,
-        80,
-        38,
-        153,
-        80,
-        212,
-        182,
-        253
-      ],
+      "discriminator": [130, 80, 38, 153, 80, 212, 182, 253],
       "accounts": [
         {
           "name": "signer",
@@ -3953,200 +3353,65 @@
   "accounts": [
     {
       "name": "UserState",
-      "discriminator": [
-        72,
-        177,
-        85,
-        249,
-        76,
-        167,
-        186,
-        126
-      ]
+      "discriminator": [72, 177, 85, 249, 76, 167, 186, 126]
     },
     {
       "name": "GlobalConfig",
-      "discriminator": [
-        149,
-        8,
-        156,
-        202,
-        160,
-        252,
-        176,
-        217
-      ]
+      "discriminator": [149, 8, 156, 202, 160, 252, 176, 217]
     },
     {
       "name": "LendingMarket",
-      "discriminator": [
-        246,
-        114,
-        50,
-        98,
-        72,
-        157,
-        28,
-        120
-      ]
+      "discriminator": [246, 114, 50, 98, 72, 157, 28, 120]
     },
     {
       "name": "Obligation",
-      "discriminator": [
-        168,
-        206,
-        141,
-        106,
-        88,
-        76,
-        172,
-        167
-      ]
+      "discriminator": [168, 206, 141, 106, 88, 76, 172, 167]
     },
     {
       "name": "ReferrerState",
-      "discriminator": [
-        194,
-        81,
-        217,
-        103,
-        12,
-        19,
-        12,
-        66
-      ]
+      "discriminator": [194, 81, 217, 103, 12, 19, 12, 66]
     },
     {
       "name": "ReferrerTokenState",
-      "discriminator": [
-        39,
-        15,
-        208,
-        77,
-        32,
-        195,
-        105,
-        56
-      ]
+      "discriminator": [39, 15, 208, 77, 32, 195, 105, 56]
     },
     {
       "name": "ShortUrl",
-      "discriminator": [
-        28,
-        89,
-        174,
-        25,
-        226,
-        124,
-        126,
-        212
-      ]
+      "discriminator": [28, 89, 174, 25, 226, 124, 126, 212]
     },
     {
       "name": "UserMetadata",
-      "discriminator": [
-        157,
-        214,
-        220,
-        235,
-        98,
-        135,
-        171,
-        28
-      ]
+      "discriminator": [157, 214, 220, 235, 98, 135, 171, 28]
     },
     {
       "name": "Reserve",
-      "discriminator": [
-        43,
-        242,
-        204,
-        202,
-        26,
-        247,
-        59,
-        127
-      ]
+      "discriminator": [43, 242, 204, 202, 26, 247, 59, 127]
     },
     {
       "name": "WithdrawTicket",
-      "discriminator": [
-        237,
-        23,
-        164,
-        58,
-        53,
-        248,
-        240,
-        94
-      ]
+      "discriminator": [237, 23, 164, 58, 53, 248, 240, 94]
     }
   ],
   "events": [
     {
       "name": "BorrowOrderCancelEvent",
-      "discriminator": [
-        88,
-        228,
-        231,
-        230,
-        234,
-        248,
-        69,
-        144
-      ]
+      "discriminator": [88, 228, 231, 230, 234, 248, 69, 144]
     },
     {
       "name": "BorrowOrderFullFillEvent",
-      "discriminator": [
-        177,
-        241,
-        237,
-        250,
-        143,
-        20,
-        14,
-        183
-      ]
+      "discriminator": [177, 241, 237, 250, 143, 20, 14, 183]
     },
     {
       "name": "BorrowOrderPartialFillEvent",
-      "discriminator": [
-        113,
-        81,
-        252,
-        193,
-        152,
-        24,
-        99,
-        84
-      ]
+      "discriminator": [113, 81, 252, 193, 152, 24, 99, 84]
     },
     {
       "name": "BorrowOrderPlaceEvent",
-      "discriminator": [
-        43,
-        211,
-        208,
-        186,
-        94,
-        227,
-        218,
-        198
-      ]
+      "discriminator": [43, 211, 208, 186, 94, 227, 218, 198]
     },
     {
       "name": "BorrowOrderUpdateEvent",
-      "discriminator": [
-        21,
-        33,
-        67,
-        131,
-        48,
-        184,
-        90,
-        64
-      ]
+      "discriminator": [21, 33, 67, 131, 48, 184, 90, 64]
     }
   ],
   "errors": [
@@ -5349,50 +4614,35 @@
         "variants": [
           {
             "name": "Bool",
-            "fields": [
-              "bool"
-            ]
+            "fields": ["bool"]
           },
           {
             "name": "U8",
-            "fields": [
-              "u8"
-            ]
+            "fields": ["u8"]
           },
           {
             "name": "U8Array",
             "fields": [
               {
-                "array": [
-                  "u8",
-                  8
-                ]
+                "array": ["u8", 8]
               }
             ]
           },
           {
             "name": "U16",
-            "fields": [
-              "u16"
-            ]
+            "fields": ["u16"]
           },
           {
             "name": "U64",
-            "fields": [
-              "u64"
-            ]
+            "fields": ["u64"]
           },
           {
             "name": "U128",
-            "fields": [
-              "u128"
-            ]
+            "fields": ["u128"]
           },
           {
             "name": "Pubkey",
-            "fields": [
-              "pubkey"
-            ]
+            "fields": ["pubkey"]
           },
           {
             "name": "ElevationGroup",
@@ -5408,10 +4658,7 @@
             "name": "Name",
             "fields": [
               {
-                "array": [
-                  "u8",
-                  32
-                ]
+                "array": ["u8", 32]
               }
             ]
           }
@@ -5601,10 +4848,7 @@
           {
             "name": "alignment_padding",
             "type": {
-              "array": [
-                "u8",
-                2
-              ]
+              "array": ["u8", 2]
             }
           },
           {
@@ -5654,10 +4898,7 @@
           {
             "name": "padding1",
             "type": {
-              "array": [
-                "u64",
-                4
-              ]
+              "array": ["u64", 4]
             }
           }
         ]
@@ -5715,19 +4956,13 @@
           {
             "name": "padding1",
             "type": {
-              "array": [
-                "u8",
-                2
-              ]
+              "array": ["u8", 2]
             }
           },
           {
             "name": "end_padding",
             "type": {
-              "array": [
-                "u64",
-                5
-              ]
+              "array": ["u64", 5]
             }
           }
         ]
@@ -5805,10 +5040,7 @@
           {
             "name": "padding",
             "type": {
-              "array": [
-                "u64",
-                9
-              ]
+              "array": ["u64", 9]
             }
           }
         ]
@@ -5866,10 +5098,7 @@
           {
             "name": "padding2",
             "type": {
-              "array": [
-                "u64",
-                4
-              ]
+              "array": ["u64", 4]
             }
           }
         ]
@@ -5907,19 +5136,13 @@
           {
             "name": "padding1",
             "type": {
-              "array": [
-                "u8",
-                10
-              ]
+              "array": ["u8", 10]
             }
           },
           {
             "name": "padding2",
             "type": {
-              "array": [
-                "u128",
-                5
-              ]
+              "array": ["u128", 5]
             }
           }
         ]
@@ -5959,19 +5182,13 @@
           {
             "name": "value",
             "type": {
-              "array": [
-                "u64",
-                4
-              ]
+              "array": ["u64", 4]
             }
           },
           {
             "name": "padding",
             "type": {
-              "array": [
-                "u64",
-                2
-              ]
+              "array": ["u64", 2]
             }
           }
         ]
@@ -6011,19 +5228,13 @@
           {
             "name": "padding1",
             "type": {
-              "array": [
-                "u128",
-                32
-              ]
+              "array": ["u128", 32]
             }
           },
           {
             "name": "padding2",
             "type": {
-              "array": [
-                "u128",
-                32
-              ]
+              "array": ["u128", 32]
             }
           }
         ]
@@ -6069,10 +5280,7 @@
           {
             "name": "reserved1",
             "type": {
-              "array": [
-                "u8",
-                3
-              ]
+              "array": ["u8", 3]
             }
           },
           {
@@ -6170,10 +5378,7 @@
           {
             "name": "elevation_groups",
             "type": {
-              "array": [
-                "u8",
-                20
-              ]
+              "array": ["u8", 20]
             }
           },
           {
@@ -6199,10 +5404,7 @@
           {
             "name": "borrow_limit_against_this_collateral_in_elevation_group",
             "type": {
-              "array": [
-                "u64",
-                32
-              ]
+              "array": ["u64", 32]
             }
           },
           {
@@ -6258,10 +5460,7 @@
           {
             "name": "padding",
             "type": {
-              "array": [
-                "u8",
-                8
-              ]
+              "array": ["u8", 8]
             }
           }
         ]
@@ -6347,19 +5546,13 @@
           {
             "name": "padding2",
             "type": {
-              "array": [
-                "u64",
-                50
-              ]
+              "array": ["u64", 50]
             }
           },
           {
             "name": "padding3",
             "type": {
-              "array": [
-                "u128",
-                32
-              ]
+              "array": ["u128", 32]
             }
           }
         ]
@@ -6470,19 +5663,13 @@
           {
             "name": "price_chain",
             "type": {
-              "array": [
-                "u16",
-                4
-              ]
+              "array": ["u16", 4]
             }
           },
           {
             "name": "twap_chain",
             "type": {
-              "array": [
-                "u16",
-                4
-              ]
+              "array": ["u16", 4]
             }
           }
         ]
@@ -6512,10 +5699,7 @@
           {
             "name": "name",
             "type": {
-              "array": [
-                "u8",
-                32
-              ]
+              "array": ["u8", 32]
             }
           },
           {
@@ -6569,19 +5753,13 @@
           {
             "name": "reserved",
             "type": {
-              "array": [
-                "u8",
-                7
-              ]
+              "array": ["u8", 7]
             }
           },
           {
             "name": "padding",
             "type": {
-              "array": [
-                "u64",
-                19
-              ]
+              "array": ["u64", 19]
             }
           }
         ]
@@ -6662,37 +5840,25 @@
           {
             "name": "padding0",
             "type": {
-              "array": [
-                "u8",
-                7
-              ]
+              "array": ["u8", 7]
             }
           },
           {
             "name": "rewards_tally_scaled",
             "type": {
-              "array": [
-                "u128",
-                10
-              ]
+              "array": ["u128", 10]
             }
           },
           {
             "name": "rewards_issued_unclaimed",
             "type": {
-              "array": [
-                "u64",
-                10
-              ]
+              "array": ["u64", 10]
             }
           },
           {
             "name": "last_claim_ts",
             "type": {
-              "array": [
-                "u64",
-                10
-              ]
+              "array": ["u64", 10]
             }
           },
           {
@@ -6730,10 +5896,7 @@
           {
             "name": "padding1",
             "type": {
-              "array": [
-                "u64",
-                50
-              ]
+              "array": ["u64", 50]
             }
           }
         ]
@@ -6759,10 +5922,7 @@
           {
             "name": "padding",
             "type": {
-              "array": [
-                "u8",
-                928
-              ]
+              "array": ["u8", 928]
             }
           }
         ]
@@ -6792,10 +5952,7 @@
           {
             "name": "quote_currency",
             "type": {
-              "array": [
-                "u8",
-                32
-              ]
+              "array": ["u8", 32]
             }
           },
           {
@@ -6837,10 +5994,7 @@
           {
             "name": "reserved0",
             "type": {
-              "array": [
-                "u8",
-                8
-              ]
+              "array": ["u8", 8]
             }
           },
           {
@@ -6854,10 +6008,7 @@
           {
             "name": "reserved1",
             "type": {
-              "array": [
-                "u8",
-                8
-              ]
+              "array": ["u8", 8]
             }
           },
           {
@@ -6876,10 +6027,7 @@
           {
             "name": "elevation_group_padding",
             "type": {
-              "array": [
-                "u64",
-                90
-              ]
+              "array": ["u64", 90]
             }
           },
           {
@@ -6893,10 +6041,7 @@
           {
             "name": "name",
             "type": {
-              "array": [
-                "u8",
-                32
-              ]
+              "array": ["u8", 32]
             }
           },
           {
@@ -7010,10 +6155,7 @@
           {
             "name": "padding1",
             "type": {
-              "array": [
-                "u64",
-                153
-              ]
+              "array": ["u64", 153]
             }
           }
         ]
@@ -7097,10 +6239,7 @@
           {
             "name": "padding_deprecated_asset_tiers",
             "type": {
-              "array": [
-                "u8",
-                13
-              ]
+              "array": ["u8", 13]
             }
           },
           {
@@ -7142,10 +6281,7 @@
           {
             "name": "reserved",
             "type": {
-              "array": [
-                "u8",
-                3
-              ]
+              "array": ["u8", 3]
             }
           },
           {
@@ -7197,10 +6333,7 @@
           {
             "name": "padding3",
             "type": {
-              "array": [
-                "u64",
-                29
-              ]
+              "array": ["u64", 29]
             }
           }
         ]
@@ -7250,10 +6383,7 @@
           {
             "name": "padding",
             "type": {
-              "array": [
-                "u64",
-                31
-              ]
+              "array": ["u64", 31]
             }
           }
         ]
@@ -7299,19 +6429,13 @@
           {
             "name": "padding1",
             "type": {
-              "array": [
-                "u64",
-                51
-              ]
+              "array": ["u64", 51]
             }
           },
           {
             "name": "padding2",
             "type": {
-              "array": [
-                "u64",
-                64
-              ]
+              "array": ["u64", 64]
             }
           }
         ]
@@ -7357,10 +6481,7 @@
           {
             "name": "reserve_liquidity_padding",
             "type": {
-              "array": [
-                "u64",
-                150
-              ]
+              "array": ["u64", 150]
             }
           },
           {
@@ -7374,10 +6495,7 @@
           {
             "name": "reserve_collateral_padding",
             "type": {
-              "array": [
-                "u64",
-                150
-              ]
+              "array": ["u64", 150]
             }
           },
           {
@@ -7391,10 +6509,7 @@
           {
             "name": "config_padding",
             "type": {
-              "array": [
-                "u64",
-                112
-              ]
+              "array": ["u64", 112]
             }
           },
           {
@@ -7404,10 +6519,7 @@
           {
             "name": "borrowed_amounts_against_this_reserve_in_elevation_groups",
             "type": {
-              "array": [
-                "u64",
-                32
-              ]
+              "array": ["u64", 32]
             }
           },
           {
@@ -7421,10 +6533,7 @@
           {
             "name": "padding",
             "type": {
-              "array": [
-                "u64",
-                204
-              ]
+              "array": ["u64", 204]
             }
           }
         ]
@@ -7470,28 +6579,19 @@
           {
             "name": "alignment_padding",
             "type": {
-              "array": [
-                "u8",
-                6
-              ]
+              "array": ["u8", 6]
             }
           },
           {
             "name": "progress_callback_custom_accounts",
             "type": {
-              "array": [
-                "pubkey",
-                2
-              ]
+              "array": ["pubkey", 2]
             }
           },
           {
             "name": "end_padding",
             "type": {
-              "array": [
-                "u64",
-                40
-              ]
+              "array": ["u64", 40]
             }
           }
         ]
