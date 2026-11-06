@@ -71,6 +71,10 @@
 /* Every failure logs through this one sol_log_ call: each syscall call site costs a 16-byte relocation in the binary. */
 static __attribute__((noinline)) uint64_t ts_fail(uint64_t code, const char *msg, uint64_t len) {
   sol_log_(msg, len);
+#ifdef TS_PANIC_ON_OVERFLOW
+  /* PANIC_ON_OVERFLOW: arithmetic fails as a Rust `checked_*().unwrap()` does, with a panic (ProgramFailedToComplete). */
+  if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) sol_panic_("", 0, 0, 0);
+#endif
   return code;
 }
 #define TS_FAIL(code, msg) return ts_fail((code), (msg), sol_strlen(msg))

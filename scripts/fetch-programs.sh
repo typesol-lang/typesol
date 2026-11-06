@@ -43,6 +43,7 @@ trimmed jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC juplend_liquidity.so
 trimmed jup7TthsMgcR9Y3L277b8Eo9uboVSmu1utkuXHNUKar juplend_rewards.so
 # Drift's Merkle distributor, which pays Drift's bad-debt claims (GPL-3.0, fetched only).
 trimmed distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp merkle_distributor.so
+trimmed 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 raydium_amm_v4.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded.
 for f in *.so; do

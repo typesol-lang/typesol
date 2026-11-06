@@ -1117,13 +1117,18 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.scopes.at(-1)!.set(name, { c, type: t, mutable });
         continue;
       }
-      if (fn === "loadAccount" || fn === "loadAccountMut" || fn === "loadForeign") {
+      if (fn === "loadAccount" || fn === "loadAccountMut" || fn === "loadForeign" || fn === "loadRaw" || fn === "loadRawMut") {
         if (mutable) this.fail(d, "bind loaded accounts with const");
-        const t = fn === "loadForeign" ? this.loadForeign(init as ts.CallExpression) : this.loadAccount(init as ts.CallExpression, fn === "loadAccountMut");
+        const t =
+          fn === "loadForeign"
+            ? this.loadForeign(init as ts.CallExpression)
+            : fn === "loadRaw" || fn === "loadRawMut"
+              ? this.loadRaw(init as ts.CallExpression, fn === "loadRawMut")
+              : this.loadAccount(init as ts.CallExpression, fn === "loadAccountMut");
         this.line(`${valueC(t.type)}${c} = ${t.c};`);
         // The account it views, kept to pass the struct on to a helper that takes Account<T> / Mut<T>.
         let loaded: Local["loaded"];
-        if (fn !== "loadForeign" && t.type.kind === "structRef") {
+        if ((fn === "loadAccount" || fn === "loadAccountMut") && t.type.kind === "structRef") {
           // The view is `((TSS_T *)(h->data + 8))` over a `TsAccount *h` that stays in scope with it.
           const h = /^\(\(TSS_\w+ \*\)\((\w+)->data \+ 8\)\)$/.exec(t.c)?.[1];
           if (h) loaded = { handle: h, struct: t.type.struct, mut: fn === "loadAccountMut" };

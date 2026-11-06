@@ -52,6 +52,35 @@ import { ExpressionEmitter } from "./expressions.js";
  * Calls: built-in functions, Vec methods, helpers, remaining accounts, foreign account reads and return data.
  */
 /** List methods taking a callback (or a value) that expand into a loop. */
+/** solana_program's ProgramError variants with no data, in order from InvalidArgument (2) on. */
+const PROGRAM_ERRORS = [
+  "InvalidArgument",
+  "InvalidInstructionData",
+  "InvalidAccountData",
+  "AccountDataTooSmall",
+  "InsufficientFunds",
+  "IncorrectProgramId",
+  "MissingRequiredSignature",
+  "AccountAlreadyInitialized",
+  "UninitializedAccount",
+  "NotEnoughAccountKeys",
+  "AccountBorrowFailed",
+  "MaxSeedLengthExceeded",
+  "InvalidSeeds",
+  "BorshIoError",
+  "AccountNotRentExempt",
+  "UnsupportedSysvar",
+  "IllegalOwner",
+  "MaxAccountsDataAllocationsExceeded",
+  "InvalidRealloc",
+  "MaxInstructionTraceLengthExceeded",
+  "BuiltinProgramsMustConsumeComputeUnits",
+  "InvalidAccountOwner",
+  "ArithmeticOverflow",
+  "Immutable",
+  "IncorrectAuthority",
+];
+
 const LIST_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "reduce", "includes", "indexOf"]);
 
 export abstract class CallEmitter extends ExpressionEmitter {
@@ -86,8 +115,23 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
           return undefined;
         }
+        // A built-in ProgramError: its u64 form (the index shifted into the high 32 bits), as solana_program returns it.
+        if (ts.isPropertyAccessExpression(args[1]) && this.exportName(args[1].expression) === "ProgramError") {
+          const idx = PROGRAM_ERRORS.indexOf(args[1].name.text);
+          if (idx < 0) this.fail(args[1].name, `ProgramError has no ${args[1].name.text}`);
+          this.line(`if (!${cond.c}) TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(`Error: ${args[1].name.text} (${this.location(node)})`)});`);
+          return undefined;
+        }
         const err = this.errorRef(args[1]);
         this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(`Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`)});`);
+        return undefined;
+      }
+      case "panic": {
+        if (args.length > 1 || (args.length === 1 && !ts.isStringLiteralLike(args[0]!))) this.fail(node, "panic() takes an optional message string literal");
+        const msg = args.length ? (args[0] as ts.StringLiteralLike).text : "explicit panic";
+        this.line(`sol_log(${cString(`panicked at ${this.location(node)}: ${msg}`)});`);
+        this.line(`sol_panic_("", 0, 0, 0);`);
+        this.line(`__builtin_unreachable();`);
         return undefined;
       }
       case "log": {
@@ -567,6 +611,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.fail(node, "bigEndian(value) is a PDA seed: use it inside a seeds list");
       case "loadAccount":
       case "loadAccountMut":
+      case "loadRaw":
+      case "loadRawMut":
       case "loadForeign":
         this.fail(node, `bind ${builtin}<T>(...) to a const first: const p = ${builtin}<T>(account)`);
       case "emit":
@@ -635,7 +681,30 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (ts.isIdentifier(callee.expression)) {
         const l = this.lookup(callee.expression.text);
         if (l?.type.kind === "vecArg") {
-          if (method !== "get" || args.length !== 1) this.fail(node, "Vec arguments are read-only: use .get(i) and .length");
+          // Bytes (instruction data, a Vec<u8> argument): little-endian reads at a byte offset, bounds-checked (5104).
+          const le: Record<string, [string, number, Value["type"]]> = {
+            readU8: ["uint8_t", 1, U8],
+            readU16: ["uint16_t", 2, { kind: "int", name: "u16" }],
+            readU32: ["uint32_t", 4, { kind: "int", name: "u32" }],
+            readU64: ["uint64_t", 8, U64],
+            readU128: ["__uint128_t", 16, { kind: "int", name: "u128" }],
+            readPubkey: ["SolPubkey", 32, PUBKEY],
+          };
+          if (le[method] && l.type.elem.kind === "int" && l.type.elem.name === "u8") {
+            if (args.length !== 1) this.fail(node, `${method}(offset) takes the byte offset`);
+            const [c, size, type] = le[method]!;
+            const off = this.tmp("off");
+            this.line(`uint64_t ${off} = ${this.expect(this.expr(args[0], U64), U64, args[0]).c};`);
+            this.line(
+              `if (${off} > (uint64_t)${l.c}.len || (uint64_t)${l.c}.len - ${off} < ${size}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: read past the end of the bytes");`,
+            );
+            const t = this.tmp("rd");
+            this.line(`${c} ${t};`);
+            this.line(`ts_memcpy(&${t}, ${l.c}.ptr + ${off}, ${size});`);
+            return type.kind === "pubkey" ? { c: `(&${t})`, type } : { c: t, type };
+          }
+          if (method !== "get" || args.length !== 1)
+            this.fail(node, "Vec arguments are read-only: use .get(i), .length, and on bytes readU8/U16/U32/U64/U128/readPubkey(offset)");
           const elem = l.type.elem;
           if (elem.kind === "string") {
             const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
@@ -1233,6 +1302,43 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return { c: `((TSS_${s.name} *)(${h}->data + 8))`, type: { kind: "structRef", struct: s.name, writable: false } };
   }
 
+  /**
+   * `loadRaw<T>(acct)` / `loadRawMut<T>(acct)`: a native program's account (no discriminator) as a fixed-layout struct
+   * from byte 0, checked as a `#[repr(C)]` type's load_checked does: this program's (3007), large enough (3003).
+   */
+  protected loadRaw(node: ts.CallExpression, mut: boolean): Value {
+    const fn = mut ? "loadRawMut" : "loadRaw";
+    const targ = node.typeArguments?.[0];
+    const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
+    if (!s || s.size === undefined || s.vec) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
+    if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: ${fn} reads fixed layouts only`);
+    if (node.arguments.length !== 1) this.fail(node, `${fn}<T>(account) takes one remaining account or AccountInfo parameter`);
+    let h = this.handle(node.arguments[0]);
+    let param: number | undefined;
+    if (!h) {
+      const acct = this.accountParam(node.arguments[0], "the account");
+      if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
+      if (mut && !isWritable(acct.kind)) this.fail(node.arguments[0], `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut`);
+      if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
+      h = `a_${acct.name}`;
+      param = this.ix.accounts.indexOf(acct);
+    }
+    this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
+    if (mut) {
+      this.line(`TS_TRY(ts_check_writable(${h}));`);
+      const slot = this.claimSlots.get(node);
+      if (slot)
+        this.line(
+          param === undefined
+            ? `TS_TRY(ts_claim_mut_rec(params, ${h}, &${slot}, params->ka_num));`
+            : `TS_TRY(ts_claim_mut_at_rec(params, ${param}, &${slot}));`,
+        );
+      else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
+    }
+    return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut } };
+  }
+
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
   protected loadAccount(node: ts.CallExpression, mut: boolean): Value {
     let targ = node.typeArguments?.[0];
@@ -1578,7 +1684,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected namesError(node: ts.Expression): boolean {
     if (ts.isStringLiteral(node)) return true;
     if (!ts.isPropertyAccessExpression(node)) return false;
-    if (this.exportName(node.expression) === "AnchorError") return true;
+    if (this.exportName(node.expression) === "AnchorError" || this.exportName(node.expression) === "ProgramError") return true;
     return ts.isIdentifier(node.expression) && this.model.errorEnums.has(node.expression.text);
   }
 
