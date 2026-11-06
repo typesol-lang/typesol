@@ -6,6 +6,15 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.40.0 — 2026-11-06
+
+Raydium AMM v4 ported in full, a native (non-Anchor) program, and checked against its mainnet binary down to its log
+lines and panics. The compiler gained what a native program needs: accounts without a discriminator, the instruction
+data read by offset, errors from code 0, built-in program errors, panics with a location, and the entrypoint's log
+lines. Also: functions chosen at run time, `find(…)!.field` / `?.field` on struct lists, struct maps inside chains, and
+hints under the errors newcomers meet first, in the CLI and the editor. Programs that use none of the new features
+compile to the same C as in 0.39.0.
+
 - Examples: showcase/mainnet/raydium-amm, a port of Raydium AMM v4 (the native program at 675kPX9M…, all of its
   instructions: Initialize2, deposits, withdrawals, the v1 and v2 swaps base in and base out, P&L, parameters, the
   config, excess lamports), checked against the mainnet binary (test/programs/raydium_amm_v4.so) on 484 transactions,
