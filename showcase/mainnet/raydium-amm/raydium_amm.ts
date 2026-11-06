@@ -69,7 +69,10 @@ import {
   PC2COIN,
   calcXPower,
   ceilDiv,
-  mulDiv,
+  exchangeCoinToPcCeil,
+  exchangePcToCoinCeil,
+  exchangePoolToTokenFloor,
+  exchangeTokenToPoolFloor,
   normalizeDecimalV2,
   restoreDecimal,
   sqrt128,
@@ -83,6 +86,9 @@ import {
 
 /** `checked_*().unwrap()` and `as_u64()` past u64 panic, as in the original (no error code). */
 export const PANIC_ON_OVERFLOW = true;
+/** The entrypoint's failure lines: `msg!("AMM error: {}", e)` for its errors, `"Program error: {:?}"` for built-in ones. */
+export const ERROR_LOG_PREFIX = "AMM error: ";
+export const PROGRAM_ERROR_LOG_PREFIX = "Program error: ";
 
 // config_feature (mainnet).
 const AMM_OWNER = pubkey("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
@@ -653,7 +659,7 @@ function deposit(rest: RemainingAccounts, maxCoinAmount: u64, maxPcAmount: u64, 
   let deductCoin: u64 = 0n;
   let mintLp: u64 = 0n;
   if (baseSide === 0n) {
-    deductPc = mulDiv(maxCoinAmount, totalPc, totalCoin, true);
+    deductPc = exchangeCoinToPcCeil(maxCoinAmount, totalPc, totalCoin);
     deductCoin = maxCoinAmount;
     depositLog.deductCoin = deductCoin;
     depositLog.deductPc = deductPc;
@@ -661,9 +667,9 @@ function deposit(rest: RemainingAccounts, maxCoinAmount: u64, maxPcAmount: u64, 
       logBase64("ray_log: ", depositLog);
       require(false, AmmError.ExceededSlippage);
     }
-    mintLp = mulDiv(amm.lpAmount, deductCoin, totalCoin, false);
+    mintLp = exchangeTokenToPoolFloor(amm.lpAmount, deductCoin, totalCoin);
   } else {
-    deductCoin = mulDiv(maxPcAmount, totalCoin, totalPc, true);
+    deductCoin = exchangePcToCoinCeil(maxPcAmount, totalCoin, totalPc);
     deductPc = maxPcAmount;
     depositLog.deductCoin = deductCoin;
     depositLog.deductPc = deductPc;
@@ -671,7 +677,7 @@ function deposit(rest: RemainingAccounts, maxCoinAmount: u64, maxPcAmount: u64, 
       logBase64("ray_log: ", depositLog);
       require(false, AmmError.ExceededSlippage);
     }
-    mintLp = mulDiv(amm.lpAmount, deductPc, totalPc, false);
+    mintLp = exchangeTokenToPoolFloor(amm.lpAmount, deductPc, totalPc);
   }
   depositLog.mintLp = mintLp;
   logBase64("ray_log: ", depositLog);
@@ -755,8 +761,8 @@ function withdraw(rest: RemainingAccounts, amount: u64, hasMins: boolean, minCoi
     totalPc = taken.totalPc;
     totalCoin = taken.totalCoin;
   }
-  const coinAmount = mulDiv(totalCoin, amount, amm.lpAmount, false);
-  const pcAmount = mulDiv(totalPc, amount, amm.lpAmount, false);
+  const coinAmount = exchangePoolToTokenFloor(totalCoin, amount, amm.lpAmount);
+  const pcAmount = exchangePoolToTokenFloor(totalPc, amount, amm.lpAmount);
   const withdrawLog: WithdrawLog = {
     logType: 2n,
     withdrawLp: amount,
@@ -1133,6 +1139,8 @@ function withdrawExcessLamports(rest: RemainingAccounts): void {
 export function process(): void {
   const data = instructionData();
   const rest = remainingAccounts();
+  log(`Program ID: ${programId()}`);
+  log(`Number of accounts: ${rest.length}`);
   require(data.length >= 1n, ProgramError.InvalidInstructionData);
   const tag = data.readU8(0n);
   const n = data.length - 1n; // the bytes after the tag
@@ -1207,6 +1215,6 @@ export function process(): void {
   }
   // Initialize, MonitorStep, MigrateToOpenBook, WithdrawSrm, PreInitialize, SimulateInfo, AdminCancelOrders.
   if (tag === 0n || tag === 2n || tag === 5n || tag === 8n || tag === 10n || tag === 12n || tag === 13n)
-    panic("not implemented: This instruction is not supported");
+    panic("not implemented: This instruction is not supported", "program/src/instruction.rs:482:17");
   require(false, ProgramError.InvalidInstructionData);
 }

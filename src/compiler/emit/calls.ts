@@ -119,18 +119,36 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (ts.isPropertyAccessExpression(args[1]) && this.exportName(args[1].expression) === "ProgramError") {
           const idx = PROGRAM_ERRORS.indexOf(args[1].name.text);
           if (idx < 0) this.fail(args[1].name, `ProgramError has no ${args[1].name.text}`);
-          this.line(`if (!${cond.c}) TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(`Error: ${args[1].name.text} (${this.location(node)})`)});`);
+          // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
+          const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
+          const text = typeof pre === "string" ? `${pre}${args[1].name.text}` : `Error: ${args[1].name.text} (${this.location(node)})`;
+          this.line(`if (!${cond.c}) TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)});`);
           return undefined;
         }
         const err = this.errorRef(args[1]);
-        this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(`Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`)});`);
+        // `const ERROR_LOG_PREFIX = "AMM error: "`: the program's errors log as its native entrypoint logs them.
+        const prefix = this.model.constants.get("ERROR_LOG_PREFIX")?.value;
+        const text = typeof prefix === "string" ? `${prefix}${err.msg}` : `Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`;
+        this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
         return undefined;
       }
       case "panic": {
-        if (args.length > 1 || (args.length === 1 && !ts.isStringLiteralLike(args[0]!))) this.fail(node, "panic() takes an optional message string literal");
-        const msg = args.length ? (args[0] as ts.StringLiteralLike).text : "explicit panic";
-        this.line(`sol_log(${cString(`panicked at ${this.location(node)}: ${msg}`)});`);
-        this.line(`sol_panic_("", 0, 0, 0);`);
+        // String literals, or top-level string constants.
+        const text = (a: ts.Expression): string | undefined => {
+          if (ts.isStringLiteralLike(a)) return a.text;
+          const v = ts.isIdentifier(a) ? this.model.constants.get(a.text)?.value : undefined;
+          return typeof v === "string" ? v : undefined;
+        };
+        if (args.length > 2 || args.some((a) => text(a) === undefined))
+          this.fail(node, 'panic() takes an optional message and an optional "file:line:column" location: string literals or string constants');
+        const msg = args.length ? text(args[0]!)! : "explicit panic";
+        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
+        // ported program's panic reports it, else this source line.
+        const at = args.length > 1 ? text(args[1]!)! : this.location(node);
+        const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
+        const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
+        this.line(`sol_log(${cString(msg)});`);
+        this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
         this.line(`__builtin_unreachable();`);
         return undefined;
       }

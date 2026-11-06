@@ -63,16 +63,54 @@ export function swapTokenAmountBaseIn(amountIn: u128, totalPc: u128, totalCoin: 
   return (totalCoin * amountIn) / (totalPc + amountIn);
 }
 
-/** Calculator::swap_token_amount_base_out: the input that buys an output (rounded up). */
+const NONE = "called `Option::unwrap()` on a `None` value";
+
+/**
+ * Calculator::swap_token_amount_base_out: the input that buys an output (rounded up). Asking for the whole side or
+ * more panics where the original's unwraps do (its checked_sub, then its checked_ceil_div by zero).
+ */
 export function swapTokenAmountBaseOut(amountOut: u128, totalPc: u128, totalCoin: u128, direction: u64): u128 {
-  if (direction === COIN2PC) return ceilDiv(totalCoin * amountOut, totalPc - amountOut);
+  if (direction === COIN2PC) {
+    if (amountOut > totalPc) panic(NONE, "program/src/math.rs:341:85");
+    if (amountOut === totalPc) panic(NONE, "program/src/math.rs:346:22");
+    return ceilDiv(totalCoin * amountOut, totalPc - amountOut);
+  }
+  if (amountOut > totalCoin) panic(NONE, "program/src/math.rs:358:87");
+  if (amountOut === totalCoin) panic(NONE, "program/src/math.rs:363:22");
   return ceilDiv(totalPc * amountOut, totalCoin - amountOut);
 }
 
-/** InvariantToken::exchange_coin_to_pc / exchange_pc_to_coin and InvariantPool's: a * b / c, floor or ceiling. */
-export function mulDiv(a: u64, b: u64, c: u64, ceiling: boolean): u64 {
-  const p = u128(a) * u128(b);
-  return u64(ceiling ? ceilDiv(p, u128(c)) : p / u128(c));
+const U64_OVERFLOW = "Integer overflow when casting to u64";
+// as_u64 panics inside the U128 that construct_uint! defines at math.rs:14:1.
+const UINT_AS_U64 = "program/src/math.rs:14:1";
+
+/** InvariantToken::exchange_coin_to_pc (ceiling): token_coin * pc / coin, rounded up. */
+export function exchangeCoinToPcCeil(tokenCoin: u64, pc: u64, coin: u64): u64 {
+  if (coin === 0n) panic(NONE, "program/src/math.rs:397:18");
+  const q = ceilDiv(u128(tokenCoin) * u128(pc), u128(coin));
+  if (q > 18446744073709551615n) panic(U64_OVERFLOW, UINT_AS_U64);
+  return u64(q);
+}
+/** InvariantToken::exchange_pc_to_coin (ceiling). */
+export function exchangePcToCoinCeil(tokenPc: u64, coin: u64, pc: u64): u64 {
+  if (pc === 0n) panic(NONE, "program/src/math.rs:420:18");
+  const q = ceilDiv(u128(tokenPc) * u128(coin), u128(pc));
+  if (q > 18446744073709551615n) panic(U64_OVERFLOW, UINT_AS_U64);
+  return u64(q);
+}
+/** InvariantPool::exchange_pool_to_token (floor): total * input / pool total. */
+export function exchangePoolToTokenFloor(total: u64, input: u64, poolTotal: u64): u64 {
+  if (poolTotal === 0n) panic(NONE, "program/src/math.rs:445:18");
+  const q = (u128(total) * u128(input)) / u128(poolTotal);
+  if (q > 18446744073709551615n) panic(U64_OVERFLOW, UINT_AS_U64);
+  return u64(q);
+}
+/** InvariantPool::exchange_token_to_pool (floor): pool total * input / token total. */
+export function exchangeTokenToPoolFloor(poolTotal: u64, input: u64, total: u64): u64 {
+  if (total === 0n) panic(NONE, "program/src/math.rs:467:18");
+  const q = (u128(poolTotal) * u128(input)) / u128(total);
+  if (q > 18446744073709551615n) panic(U64_OVERFLOW, UINT_AS_U64);
+  return u64(q);
 }
 
 /** U256::integer_sqrt / U128::integer_sqrt. */

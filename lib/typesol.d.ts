@@ -2049,9 +2049,11 @@ export declare enum ProgramError {
 
 /**
  * Stop the program as a Rust `panic!` / `unwrap()` on `None` / `unreachable!()` does: the message is logged and the
- * instruction fails with ProgramFailedToComplete (no error code). For porting native programs whose failures panic.
+ * instruction fails with ProgramFailedToComplete (no error code). For porting native programs whose failures panic:
+ * `location` ("program/src/instruction.rs:482:17") is the place the runtime reports, as the original's panic gives it;
+ * by default this source line.
  */
-export declare function panic(message?: string): never;
+export declare function panic(message?: string, location?: string): never;
 /**
  * Anchor's `constraint = condition @ error` on `account`. Written at the start of an instruction's body (before any
  * other statement), it runs with that account's checks, after its has_one and before its owner check, so a transaction
