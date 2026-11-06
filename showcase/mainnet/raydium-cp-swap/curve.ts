@@ -1,9 +1,10 @@
 // The constant-product curve and fees of the Raydium CP-Swap port (programs/cp-swap/src/curve/). Where the original's
 // math returns None, its callers turn that into ZeroTradingTokens, so these helpers fail with it directly.
-import { type u64, require, u128 } from "typesol";
+import { type u64, panic, require, u128 } from "typesol";
 import { ErrorCode } from "./state";
 
 export const FEE_RATE_DENOMINATOR_VALUE = 1_000_000n;
+const UNWRAP_NONE = "called `Option::unwrap()` on a `None` value";
 
 function ceilDiv(amount: u128, numerator: u128, denominator: u128): u128 {
   require(denominator !== 0n, ErrorCode.ZeroTradingTokens);
@@ -107,7 +108,10 @@ export function curveSwapBaseOutput(
     creator_fee = out_amount_with_creator_fee - output_amount;
     actual_output_amount = out_amount_with_creator_fee;
   }
-  // delta_x = (x * delta_y) / (y - delta_y), rounded up.
+  // delta_x = (x * delta_y) / (y - delta_y), rounded up. Asking for the whole vault or more panics, as the original's
+  // `checked_sub(..).unwrap()` and `checked_ceil_div(..).unwrap()` do.
+  if (actual_output_amount > output_vault_amount) panic(UNWRAP_NONE, "programs/cp-swap/src/curve/constant_product.rs:40:74");
+  if (actual_output_amount === output_vault_amount) panic(UNWRAP_NONE, "programs/cp-swap/src/curve/constant_product.rs:41:68");
   const numerator = input_vault_amount * actual_output_amount;
   const denominator = output_vault_amount - actual_output_amount;
   let input_amount_swapped = numerator / denominator;

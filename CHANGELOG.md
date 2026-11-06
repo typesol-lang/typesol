@@ -20,7 +20,9 @@ codes, and says so here.
   fee share and supported-mint accounts (create and close), and `collect_excess_lamports`. Checked against the binary
   on mainnet today (deployed 2026-10-31; test/programs/raydium_cp_swap.so updated): 136 transactions (was 70) with
   the same outcomes, account bytes and events, Raydium's five signing keys replaced by test keys in both so the admin
-  instructions run too; 42–85% fewer compute units; 215,080 bytes against 749,848. docs/case-study-raydium-cp-swap.md.
+  instructions run too, and a fuzz test (random swaps, deposits, withdrawals and fee collections in an SPL Token
+  and a Token-2022 pool); an exact-output swap for the whole vault now panics as the original does instead of failing
+  with 5100. 42–85% fewer compute units; 214,944 bytes against 749,848. docs/case-study-raydium-cp-swap.md.
 - Docs: docs/stability.md, what 1.0 will promise, what is stable already and what is still experimental, and what to
   settle first; the audit package's line counts and its list of unreviewed changes brought up to 0.40.0.
 

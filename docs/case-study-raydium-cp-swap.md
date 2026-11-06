@@ -120,6 +120,15 @@ There are 136 transactions:
   - Swaps or deposits on a pool whose status disables them (6000).
   - The admin instructions sent by anyone but the admin (2012, 6001).
 
+**Fuzzing.** A random sequence (`FUZZ_SEED` reproduces one, `CP_FUZZ_STEPS` lengthens it; 120 steps by default) runs
+in two pools, one of SPL Token mints and one of Token-2022 mints with random transfer fees, each with the creator fee
+on in a random mode at a random rate and protocol share: swaps both ways by input and by output with random amounts
+and slippage limits, deposits, withdrawals, creator fee collections (by the creator and permissionless), protocol and
+fund fee collections, and the clock moving on. Every step must give the same outcome, account bytes and events as the
+original. Runs of 600 steps on several seeds found one difference, now fixed: an exact-output swap for the whole
+vault or more panics in the original (`checked_sub(..).unwrap()`, `checked_ceil_div(..).unwrap()`), where the port
+failed with 5100; it panics now at the original's location. These fuzz transactions are not in the 136 above.
+
 ## Cost
 
 Compute units per transaction, mainnet original against the port, from that test:
@@ -131,7 +140,7 @@ Compute units per transaction, mainnet original against the port, from that test
 | `initialize_v2`, creator fee on | 86,286 | 41,760 | −52% |
 | `initialize_with_permission` | 98,221 | 43,358 | −56% |
 | `swap_base_input` | 24,162 | 5,734 | −76% |
-| `swap_base_output` | 24,591 | 5,945 | −76% |
+| `swap_base_output` | 24,591 | 5,989 | −76% |
 | `deposit` | 25,007 | 6,194 | −75% |
 | `withdraw` | 25,214 | 6,203 | −75% |
 | `collect_protocol_fee` | 20,205 | 4,189 | −79% |
@@ -149,7 +158,7 @@ Compute units per transaction, mainnet original against the port, from that test
 The Token-2022 rows include the token program's own work, which is the same in both. Refusals cost far less. For
 example, a swap through the wrong config costs 17,193 against 1,656.
 
-On size, the port's binary is 215,080 bytes and the deployed original is 749,848 bytes, for the same 21 instructions.
+On size, the port's binary is 214,944 bytes and the deployed original is 749,848 bytes, for the same 21 instructions.
 
 Pool creation is mostly the token programs' and the System Program's own work (account creation, initialization,
 transfers), which costs the same in both. The difference is the program's part. Its cost also varies from run to run
@@ -162,13 +171,13 @@ when the values fit, and an instruction reads the Clock once. Together they took
 
 - **Panics.** Where the original calls `unwrap()` or `assert!`, it aborts with `ProgramFailedToComplete`. The port
   fails with a numbered error instead:
-  - an overflow or underflow, 5100: an exact-output swap for more than the vault holds;
-  - a division by zero, 5101: the price of an empty side, or an exact-output swap for exactly what the vault holds;
+  - a division by zero, 5101: the price of an empty side;
   - invalid input, 6003: a fee rate out of range in the admin instructions, which only the admin can reach.
   - an overflow adding to the destination's lamports in `collect_excess_lamports`, 5100 where the original returns
     `ArithmeticOverflow`: no account holds that many lamports.
 
-  The swaps and liquidity instructions reach none of these with the amounts a pool can hold.
+  The swaps and liquidity instructions reach none of these with the amounts a pool can hold. An exact-output swap for
+  the whole vault or more, which a trader can send, panics as the original does (fuzzing found it).
 - **Check order on double faults.** Account checks run in Anchor's order, so a transaction breaking one check gets the
   same code. The port keeps the pool's `address = …` and `token::…` constraints as `constraint(…)` calls in Anchor's
   order. A transaction that breaks a token check and an account-type check at once can still be reported differently.

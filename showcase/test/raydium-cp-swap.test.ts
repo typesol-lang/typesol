@@ -1032,6 +1032,103 @@ describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", 
     expect(await both("collect_excess_lamports: a trader's account", admin, [sweep(admin, [traderAccount])], [...watch, traderAccount])).toBe(custom(4));
   });
 
+  // Random swaps both ways, deposits, withdrawals and fee collections over time, in an SPL Token pool and a pool of
+  // Token-2022 fee mints, each with the creator fee on in a random mode: the same in both. Choices and amounts come
+  // from the seed (keys are fresh each run); reproduce with FUZZ_SEED=<seed>, lengthen with CP_FUZZ_STEPS=<n>.
+  it("fuzz: random swaps, liquidity changes and fee collections behave the same", async () => {
+    const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
+    const STEPS = Number(process.env.CP_FUZZ_STEPS ?? 120);
+    let x = (SEED ^ 0x3c6ef372fe94f82bn) & 0xffff_ffff_ffff_ffffn || 1n;
+    const next = () => {
+      x ^= x >> 12n;
+      x ^= (x << 25n) & 0xffff_ffff_ffff_ffffn;
+      x ^= x >> 27n;
+      return (x * 0x2545f4914f6cdd1dn) & 0xffff_ffff_ffff_ffffn;
+    };
+    const int = (n: number) => Number(next() % BigInt(n));
+    const chance = (percent: number) => int(100) < percent;
+    /** 1 to 10^digits, spread evenly over orders of magnitude. */
+    const amount = (digits: number) => 1n + (next() % 10n ** BigInt(1 + int(digits)));
+    // The fuzz's transactions are not in the counts and compute units the case study gives.
+    const [keys, compared0, events0] = [new Set(Object.keys(cu)), compared, eventsCompared];
+    const pools = [
+      await pool({ creatorFee: { rate: BigInt(1 + int(5000)), on: int(3) }, shareRate: BigInt(int(1_000_001)) }),
+      await pool({
+        creatorFee: { rate: BigInt(1 + int(5000)), on: int(3) },
+        shareRate: BigInt(int(1_000_001)),
+        fee0: { bps: 1 + int(500), max: amount(9) },
+        fee1: { bps: 1 + int(500), max: amount(12) },
+      }),
+    ];
+    const traders = [await trader(pools[0]!, 10n ** 15n, 10n ** 18n), await trader(pools[1]!, 10n ** 15n, 10n ** 18n)];
+    const stats: Record<string, Record<string, number>> = {};
+    const count = (op: string, o: string) => {
+      const k = o === "ok" ? "ok" : (/code: (\d+)/.exec(o)?.[1] ?? "other");
+      (stats[op] ??= {})[k] = (stats[op]![k] ?? 0) + 1;
+    };
+    for (let step = 0; step < STEPS; step++) {
+      const which = int(2);
+      const [p, t] = [pools[which]!, traders[which]!];
+      const label = (what: string) => `fuzz step ${step} (seed ${SEED}, pool ${which}): ${what}`;
+      const elapsed = chance(30) ? BigInt(int(60)) : 0n;
+      for (const vm of vms()) {
+        const c = vm.getClock();
+        c.unixTimestamp += elapsed;
+        vm.setClock(c);
+      }
+      const op = int(20);
+      if (op < 10) {
+        const name = chance(60) ? "swap_base_input" : "swap_base_output";
+        const zeroForOne = chance(50);
+        const [a, b] = name === "swap_base_input" ? [amount(13), chance(15) ? amount(13) : 0n] : [chance(15) ? amount(13) : 10n ** 18n, amount(12)];
+        count(name, await both(label(`${name} ${zeroForOne ? "0→1" : "1→0"} ${a} ${b}`), t.signer, [swap(name, p, t, zeroForOne, a, b)], watchAll(p, t)));
+      } else if (op < 13) {
+        const lp = amount(11);
+        const [a, b] = chance(15) ? [amount(12), amount(14)] : [10n ** 15n, 10n ** 18n];
+        count("deposit", await both(label(`deposit ${lp} max ${a}/${b}`), t.signer, [liquidity("deposit", p, t, lp, a, b)], watchAll(p, t)));
+      } else if (op < 16) {
+        const lp = amount(11);
+        const [a, b] = chance(15) ? [amount(9), amount(12)] : [0n, 0n];
+        count("withdraw", await both(label(`withdraw ${lp} min ${a}/${b}`), t.signer, [liquidity("withdraw", p, t, lp, a, b)], watchAll(p, t)));
+      } else if (op < 18) {
+        const permissionless = chance(50);
+        const payer = permissionless ? t.signer : p.admin;
+        const c = await collectCreator(p, p.admin.address, payer, permissionless);
+        count("collect_creator_fee", await both(label(`collect_creator_fee${permissionless ? "_permissionless" : ""}`), payer, [c.instruction], c.watch));
+      } else {
+        const fund = chance(50);
+        const owner = fund ? p.fundOwner : p.protocolOwner;
+        const [r0, r1] = [await account(p.admin, p.m0, owner.address, 0n), await account(p.admin, p.m1, owner.address, 0n)];
+        const [a, b] = [chance(50) ? amount(8) : 2n ** 64n - 1n, chance(50) ? amount(11) : 2n ** 64n - 1n];
+        const instruction = ix(
+          fund ? "collect_fund_fee" : "collect_protocol_fee",
+          { amount_0_requested: new BN(a.toString()), amount_1_requested: new BN(b.toString()) },
+          [
+            { address: owner.address, signer: owner },
+            { address: p.authority },
+            { address: p.pool, writable: true },
+            { address: p.config },
+            { address: p.vault0, writable: true },
+            { address: p.vault1, writable: true },
+            { address: p.m0.address },
+            { address: p.m1.address },
+            { address: r0, writable: true },
+            { address: r1, writable: true },
+            { address: TOKEN },
+            { address: TOKEN_2022 },
+          ],
+        );
+        count(
+          fund ? "collect_fund_fee" : "collect_protocol_fee",
+          await both(label(`collect ${fund ? "fund" : "protocol"} ${a}/${b}`), owner, [instruction], [p.pool, p.vault0, p.vault1, r0, r1]),
+        );
+      }
+    }
+    console.log(`cp-swap fuzz (seed ${SEED}): ${STEPS} steps`, JSON.stringify(stats));
+    for (const k of Object.keys(cu)) if (!keys.has(k)) delete cu[k];
+    [compared, eventsCompared] = [compared0, events0];
+  });
+
   it("reports compute units side by side", () => {
     const rows = Object.entries(cu).map(([k, [o, t]]) => `${k.padEnd(40)} ${String(o).padStart(8)} ${String(t).padStart(8)}`);
     console.log(["instruction".padEnd(40) + " original  TypeSOL", ...rows].join("\n"));
