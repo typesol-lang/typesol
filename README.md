@@ -188,6 +188,7 @@ If the build refuses something, the error points at the line and, for the usual 
   case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions; Raydium AMM v4, a native
   program, down to its log lines).
 - To mainnet (wallet, cost, deploy, IDL, verification): [docs/mainnet.md](docs/mainnet.md).
+- With an AI coding agent: [docs/ai.md](docs/ai.md) (agent rules, [llms.txt](https://typesol.com/llms.txt), the MCP server).
 
 ## How it works
 
@@ -227,11 +228,12 @@ The full reference, with every type, check and built-in, is in [docs/language.md
 
 | Command | What it does |
 | --- | --- |
-| `typesol init` | scaffold a project with a program, a LiteSVM test and TypeScript configs |
+| `typesol init` | scaffold a project with a program, a LiteSVM test, TypeScript configs and the files AI coding agents read (AGENTS.md, CLAUDE.md, Cursor rules, MCP config) |
 | `typesol new <program>` | add another program and its test to a project |
 | `typesol clone <address…>` | copy mainnet accounts and programs for the tests, loaded by `testProgram` |
 | `typesol build` | compile every program in `typesol.json`, or a single `.ts` file |
-| `typesol check` | typecheck and subset-check without compiling (every program of the project, or one file) |
+| `typesol check` | typecheck and subset-check without compiling (every program of the project, or one file); `--json` gives each error's hint as a field |
+| `typesol mcp` | an MCP server for AI coding agents: check, IDL, docs search and the rules as tools ([docs/ai.md](docs/ai.md)) |
 | `typesol deploy` | `solana program deploy` with the right program keypair (`--dry-run` prints the commands) |
 | `typesol idl publish` | upload the IDL to the Program Metadata program (canonical when the upgrade authority signs) |
 | `typesol cpi <idl.json>` | generate typed CPI helpers for another program |
@@ -368,7 +370,8 @@ change.
   external audit.
 - Report vulnerabilities as described in [SECURITY.md](SECURITY.md).
 
-Not supported yet: see the end of [docs/language.md](docs/language.md#not-supported-yet).
+Not supported yet: see the end of [docs/language.md](docs/language.md#not-supported-yet). What 1.0 will promise, what is
+stable already and what is still experimental: [docs/stability.md](docs/stability.md).
 
 ## Requirements
 

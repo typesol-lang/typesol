@@ -66,7 +66,7 @@ export function entry(): void {
     const c = loadRaw<Counter>(rest.get(0n));
     const pda = createProgramAddress(["vault", u8(u64(data.readU8(1n)))], programId());
     if (pda === null) log("no address");
-    else log(pda!);
+    else log(pda); // narrowed: the value
     log(`sqrt ${isqrt(u256(c.total) * u256(c.total))}`);
     return;
   }

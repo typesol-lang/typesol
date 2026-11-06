@@ -6,6 +6,18 @@ codes, and says so here.
 
 ## Unreleased
 
+- AI agents (docs/ai.md): `typesol init` writes AGENTS.md, CLAUDE.md and Cursor's rules (what TypeSOL refuses that
+  TypeScript habits produce, how to check and test) and the MCP server's configuration (.mcp.json, .cursor/mcp.json).
+- New: `typesol mcp`, a Model Context Protocol server on stdio with the tools `check` (diagnostics with hints, from a
+  file or source text), `idl`, `docs` (search) and `rules`. No new dependencies.
+- New: `llms.txt` and `llms-full.txt` (the rules, the quick start and the reference in one file), built from the docs by
+  `scripts/llms.ts`, shipped in the npm package; the tests fail when they are out of date.
+- CLI: `typesol check --json` gives each error's hint as a `hint` field (it stays the message's last line too).
+- Fixed: `log(x)` of an Option that TypeScript narrowed to its value (after `x === null` was ruled out) generated C that
+  did not compile; it logs the value now, and a possibly-null Option is refused with what to do instead.
+- Docs: docs/stability.md, what 1.0 will promise, what is stable already and what is still experimental, and what to
+  settle first; the audit package's line counts and its list of unreviewed changes brought up to 0.40.0.
+
 ## 0.40.0 — 2026-11-06
 
 Raydium AMM v4 ported in full, a native (non-Anchor) program, and checked against its mainnet binary down to its log

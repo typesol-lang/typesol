@@ -161,7 +161,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`TS_Str ${t} = ${v.c};`);
           this.line(`sol_log_((const char *)${t}.ptr, ${t}.len);`);
         } else {
-          const value = v.literal !== undefined ? this.expect(v, U64, args[0]) : v;
+          let value = v.literal !== undefined ? this.expect(v, U64, args[0]) : v;
+          // An Option TypeScript has narrowed to its value (after `x === null` was ruled out): log the value.
+          if (value.type.kind === "option") {
+            const t = this.checker.getTypeAtLocation(args[0]);
+            if (t.isUnion() && t.types.some((m) => m.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)))
+              this.fail(args[0], "log() takes a value, not an Option that may be null: check `x !== null` first, or log `${x}` (null prints as null)");
+            value = this.unwrap(value, args[0]);
+          }
           if (value.type.kind === "pubkey") this.line(`sol_log_pubkey(${value.c});`);
           else if (value.type.kind === "int") {
             // Decimal, like console.log (sol_log_64 would print five hex words).

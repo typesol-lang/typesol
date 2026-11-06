@@ -1,0 +1,30 @@
+# TypeSOL
+
+> Write Solana programs in TypeScript. TypeSOL compiles a TypeScript subset to native SBF (no interpreter, no
+> generated Rust) and writes an Anchor-compatible IDL and a typed client for every program. npm: @typesol/cli.
+
+Integers are bigint (1n, u64), everything is imported from "typesol", and there is no throw, async, class or float.
+The rules and the whole reference in one file: https://typesol.com/llms-full.txt
+
+## Docs
+
+- [language](https://typesol.com/docs/language/): every type, check and built-in of the language
+- [errors](https://typesol.com/docs/errors/): the error codes a program fails with
+- [test-your-program](https://typesol.com/docs/test-your-program/): tests with typesol/testing in LiteSVM
+- [cli](https://typesol.com/docs/cli/): the typesol commands
+- [client](https://typesol.com/docs/client/): the typed client every build writes
+- [migrate-from-anchor](https://typesol.com/docs/migrate-from-anchor/): each Anchor construct and its TypeSOL form
+- [troubleshooting](https://typesol.com/docs/troubleshooting/): common problems
+- [mainnet](https://typesol.com/docs/mainnet/): deploying, verifying and publishing the IDL
+- [security-model](https://typesol.com/docs/security-model/): what a compiled program checks for you and what is left to you
+- [ai](https://typesol.com/docs/ai/): the agent rules, check --json hints and the MCP server
+- [stability](https://typesol.com/docs/stability/): what is stable, what is experimental, the road to 1.0
+
+## Tools
+
+- `npx @typesol/cli init my-app`: a project with a program, a LiteSVM test, AGENTS.md / CLAUDE.md and the MCP server configured
+- `npx typesol check --json`: errors with hints; `npx typesol mcp`: check, IDL and docs as MCP tools
+
+## Optional
+
+- [Case studies](https://typesol.com/docs/case-study-marginfi/): mainnet programs (Marginfi v2, Raydium AMM v4, CLMM, CP-Swap, Jito) ported and checked against their binaries
