@@ -608,6 +608,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (local?.closure && this.returnedFunction(local.closure.node))
         this.fail(node, `${callee.text} returns a function: bind it (const f = ${callee.text}(…)) or call it right away (${callee.text}(…)(…))`);
       if (local?.closure) return this.expandClosure(local.closure, node.arguments, node);
+      if (local?.choice) return this.callChoice(local.choice, node.arguments, node);
       const name = calleeName(callee, this.model.helperDecls, this.checker) ?? callee.text;
       if (!local && this.model.factories.has(name))
         this.fail(node, `${callee.text} returns a function: bind it (const f = ${callee.text}(…)) or call it right away (${callee.text}(…)(…))`);

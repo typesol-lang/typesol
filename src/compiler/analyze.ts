@@ -837,7 +837,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
         }
         reporter.error(
           ix.node.name ?? ix.node,
-          `argument ${a.name}: ${n} holds a FixedVec and is also account data, nested or returned (a fixed layout there, Borsh in arguments); declare a separate struct for the argument, or pass the list as its own FixedVec<T, N> argument`,
+          `argument ${a.name}: ${n} holds a FixedVec and is also account data, nested or returned: its bytes there are a fixed layout, in instruction data Borsh, and the IDL describes a type one way; declare a separate struct for the argument, or pass the list as its own FixedVec<T, N> argument`,
         );
       }
     }

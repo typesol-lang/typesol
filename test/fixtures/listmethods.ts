@@ -133,3 +133,27 @@ export function pairs(payer: Signer, book: Account<Book>): u64 {
   const names: FixedVec<FixedString<8>, 4> = book.orders.map((o) => (o.open ? "open" : "closed"));
   return ps.length * 1000n + ps.get(1n).doubled * 10n + byteLength(names.get(1n));
 }
+
+/** `find(…)!.field` and `find(…)?.field` on struct elements: located with findIndex, read in place. */
+export function found(payer: Signer, book: Account<Book>, qty: u64): u64 {
+  const maybe = book.orders.find((o) => o.qty === qty)?.qty ?? 999n;
+  const open = book.orders.find((o) => o.qty === qty && o.open)?.open;
+  const sure = book.orders.find((o) => o.qty >= qty)!.qty;
+  return maybe * 10_000n + (open === null ? 2n : open ? 1n : 0n) * 1_000n + sure;
+}
+
+export interface Scored {
+  qty: u64;
+  score: u64;
+}
+
+/** A map to structs inside a chain: each element built in a struct of its own, never stored as a list. */
+export function fused(payer: Signer, book: Account<Book>): u64 {
+  const sum = book.orders
+    .map((o): Scored => ({ qty: o.qty, score: o.open ? o.qty * 2n : 0n }))
+    .filter((s) => s.score > 0n)
+    .reduce((acc, s) => acc + s.score + s.qty, 0n);
+  const n = book.orders.map((o, i): Scored => ({ qty: o.qty, score: i })).filter((s) => s.score > 0n).length;
+  const any = book.orders.map((o): Scored => ({ qty: o.qty, score: o.qty * 3n })).some((s) => s.score === 21n);
+  return sum * 1_000n + n * 10n + (any ? 1n : 0n);
+}

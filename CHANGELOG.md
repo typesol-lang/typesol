@@ -6,6 +6,16 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: a function chosen at run time, `const g = k === 1n ? dbl : inc; g(x)` (the condition read once; only the chosen
+  function runs), and a list of functions run in turn, `for (const f of [dbl, inc]) …` (unrolled; `continue` and `break`
+  work).
+- New: `xs.find(f)!.field` and `xs.find(f)?.field` on lists of structs (located with findIndex, read in place; `!` aborts
+  with 5108 when nothing matched, `?.` gives an Option).
+- New: `map` to structs inside a chain when the callback names the struct, `xs.map((o): Scored => ({ … })).filter(…)
+  .reduce(…)`: one struct per element, nothing stored.
+- Hints: comparing an integer with a number (`k === 1`) points at `1n`. `.length` on something that is not a list says
+  what it is instead of asking for byteLength; the FixedVec argument/account refusal says why (two byte layouts, one IDL
+  type).
 - Docs: the README's quick start ends with a first change to make and a short "where next" list (it was one long
   paragraph); the showcase lists Marginfi v2 as complete and links every case study.
 - Editor: the plugin (`typesol/ts-plugin`) adds the same hints under TypeScript's errors in a program's files, once the

@@ -40,6 +40,7 @@ export function hintForTypeScript(d: ts.Diagnostic, message: string, libPath: st
     return undefined;
   }
   switch (d.code) {
+    case 2367: // This comparison appears to be unintentional because the types 'bigint' and 'number' have no overlap.
     case 2365: // Operator '+=' cannot be applied to types 'bigint' and 'number'.
     case 2322: // Type 'number' is not assignable to type 'bigint'.
     case 2345: // Argument of type 'bigint' is not assignable to parameter of type 'number'.

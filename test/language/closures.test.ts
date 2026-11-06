@@ -41,6 +41,25 @@ describe("closures", () => {
     expect([c.total.toNumber(), c.items[0]!.qty.toNumber()]).toEqual([25, 5]);
   });
 
+  it("call a function chosen at run time, and run a list of functions in turn", async () => {
+    // k=1: g = twice. x=5: g 10, h = twice 10, total = 10 + 6 + 25 + 10 = 51.
+    expect(await run("chosen", { k: new BN(1), x: new BN(5) })).toBe(10_000_000n + 10_000n + 51n);
+    // k=2: g = inc. x=5: g 6, h = twice 10, total = 10 + 6 + 25 + 6 = 47.
+    expect(await run("chosen", { k: new BN(2), x: new BN(5) })).toBe(6_000_000n + 10_000n + 47n);
+    // k=3: g = sq. x=200: g 40000, h = g 40000; total 400 + 201 + 40000 + 40000 = 80601.
+    expect(await run("chosen", { k: new BN(3), x: new BN(200) })).toBe(40_000_000_000n + 40_000_000n + 80_601n);
+    // x=0: every f(0) of twice and sq is 0 (skipped by continue); inc(0) = 1, and g = sq: total 1.
+    expect(await run("chosen", { k: new BN(3), x: new BN(0) })).toBe(1n);
+    // break: x = 2000, k = 3: twice 4000, inc 2001, sq 4,000,000 > 1e6 → break before g.
+    expect(await run("chosen", { k: new BN(3), x: new BN(2000) })).toBe(4_000_000n * 1_000_000n + 4_000_000n * 1_000n + 4_006_001n);
+  });
+
+  it("read an inner condition of a function choice only when its side is taken", async () => {
+    expect(await run("lazy_choice", { x: new BN(0) })).toBe(0n * 1_000_000n + 0n * 10n + 3n); // twice(0); 10 / 0 never runs
+    expect(await run("lazy_choice", { x: new BN(2) })).toBe(3n * 1_000_000n + 3n * 10n + 1n); // inc; h = inc
+    expect(await run("lazy_choice", { x: new BN(20) })).toBe(400n * 1_000_000n + 400n * 10n + 1n); // sq; h = sq
+  });
+
   it("pass named functions to helpers (an instance per function)", async () => {
     // applyTwice(inc, 5) = 7; compose(dbl, inc, 5) = applyTwice(dbl, 6) = 24.
     expect(await run("higher", { x: new BN(5) })).toBe(7024n);

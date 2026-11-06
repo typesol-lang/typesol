@@ -12,7 +12,7 @@ import {
   type ValueType,
   isScalar,
 } from "../model.js";
-import { type Value, type Ref, type Local, type Closure, isStable, cString, valueC, type EmitOptions } from "./shared.js";
+import { type Value, type Ref, type Local, type Closure, type FunctionChoice, isStable, cString, valueC, type EmitOptions } from "./shared.js";
 
 /**
  * State of one function being lowered, and the primitives every layer uses: emitting lines, temporaries,
@@ -476,6 +476,7 @@ export abstract class EmitterBase {
   protected abstract emitEvent(node: ts.CallExpression, cpi?: { authority: string; program: string }): undefined;
   protected abstract epilogue(): string[];
   protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
+  protected abstract callChoice(choice: FunctionChoice, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
   protected abstract closureOf(arg: ts.Expression): Closure;

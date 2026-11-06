@@ -94,6 +94,80 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     return { c: t, type: { kind: "option", inner: scalar } as ValueType };
   }
 
+  /**
+   * `xs.find(cb)!.a.b` and `xs.find(cb)?.a` on a list of structs: the element is located with findIndex, then read as
+   * `xs.get(i).a.b`. With `!` an element that is not found fails the instruction (5108, as `x!` on an empty Option);
+   * with `?.` the field comes back as an Option, empty when nothing matched. Undefined for any other expression.
+   */
+  protected foundAccess(node: ts.Expression, hint?: ValueType): Value | undefined {
+    if (!ts.isPropertyAccessExpression(node)) return undefined;
+    const names: ts.MemberName[] = [];
+    let e: ts.Expression = node;
+    let optional = false;
+    while (ts.isPropertyAccessExpression(e)) {
+      names.unshift(e.name);
+      if (e.questionDotToken) optional = true;
+      e = e.expression;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+    }
+    let bang = false;
+    if (ts.isNonNullExpression(e)) {
+      bang = true;
+      e = e.expression;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+    }
+    if (!ts.isCallExpression(e) || !ts.isPropertyAccessExpression(e.expression) || e.expression.name.text !== "find") return undefined;
+    if (!bang && !optional) return undefined;
+    if (bang && optional) return undefined; // `find(…)!.x?.y`: not this shape
+    const list = e.expression.expression;
+    if (this.isRemaining(list)) return undefined;
+    const f = ts.factory;
+    const place = <T extends ts.Node>(n: T): T => {
+      ts.setTextRange(n, node);
+      (n as { parent?: ts.Node }).parent = node.parent;
+      return n;
+    };
+    const findIndex = place(f.createCallExpression(place(f.createPropertyAccessExpression(list, "findIndex")), undefined, e.arguments));
+    const at = this.expr(findIndex);
+    const found = this.tmp("found");
+    this.line(`int64_t ${found} = ${at.c};`);
+    const index = `__found${this.temp++}`;
+    this.scopes.at(-1)!.set(index, { c: `((uint64_t)${found})`, type: U64, mutable: false });
+    let access: ts.Expression = place(
+      f.createCallExpression(place(f.createPropertyAccessExpression(list, "get")), undefined, [place(f.createIdentifier(index))]),
+    );
+    for (const n of names) access = place(f.createPropertyAccessExpression(access, n as ts.Identifier));
+    if (bang && !optional) {
+      this.line(`if (${found} < 0) TS_FAIL(TS_ERR_UNWRAP, "TypeSOL: find matched no element");`);
+      return this.expr(access, hint);
+    }
+    // `?.`: an Option of the field, empty when nothing matched.
+    const t = this.tmp("oc");
+    const declAt = this.lines.length;
+    this.line(`/* ${t} */`);
+    let inner: ValueType | undefined;
+    this.line(`if (${found} >= 0) {`);
+    this.block(() => {
+      const v = this.expr(access);
+      const typed = v.literal !== undefined ? this.literal(v.literal, U64, node) : v;
+      if (typed.type.kind === "option") {
+        inner = typed.type.inner as ValueType;
+        this.line(`ts_memcpy(&${t}, &${typed.c}, sizeof(${t}));`);
+        return;
+      }
+      if (typed.type.kind !== "int" && typed.type.kind !== "bool" && typed.type.kind !== "pubkey" && typed.type.kind !== "enum")
+        this.fail(node, `?. gives an Option, so the field must be an integer, boolean, Pubkey or enum, not ${typeName(typed.type)}`);
+      inner = typed.type;
+      this.line(`${t}.some = 1;`);
+      this.line(inner.kind === "pubkey" ? `${t}.v = *(${typed.c});` : `${t}.v = ${typed.c};`);
+    });
+    this.line(`}`);
+    const scalar = inner as ScalarType;
+    this.model.options.set(optionKey(scalar), scalar);
+    this.lines[declAt] = `${"  ".repeat(this.indent)}${optC(scalar)} ${t};\n${"  ".repeat(this.indent)}ts_memzero(&${t}, sizeof(${t}));`;
+    return { c: t, type: { kind: "option", inner: scalar } as ValueType };
+  }
+
   protected literal(value: bigint, type: ValueType, node: ts.Node): Value {
     if (type.kind !== "int") this.fail(node, `expected ${typeName(type)}, got an integer literal`);
     const info = INT_INFO[type.name];
@@ -123,6 +197,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (v.type.kind !== "option") this.fail(node, "! works on Option values and optional accounts (acct!.field); check other values with `x !== null`");
       return this.unwrap(v, node);
     }
+    const viaFind = this.foundAccess(node, hint);
+    if (viaFind) return viaFind;
     if (ts.isPropertyAccessExpression(node) && node.questionDotToken) return this.optionalChain(node);
     const unbanged = this.withoutBang(node);
     if (unbanged) return this.expr(unbanged, hint);
@@ -266,7 +342,14 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const l = this.lookup(node.expression.text);
         if (l?.type.kind === "vecArg") return { c: `((uint64_t)${l.c}.len)`, type: U64 };
       }
-      this.fail(node, "use byteLength(s) for strings; .length is available on arrays, Vecs and remainingAccounts()");
+      let what = "this value";
+      try {
+        what = this.checker.typeToString(this.checker.getTypeAtLocation(node.expression));
+      } catch {
+        // a synthetic node: no type to name
+      }
+      if (/^string$|^FixedString/.test(what)) this.fail(node, "use byteLength(s) for strings; .length is available on arrays, Vecs and remainingAccounts()");
+      this.fail(node, `.length is available on arrays, Vecs, map / filter chains and remainingAccounts(), not on ${what}`);
     }
     if (this.isTxIx(node.expression)) {
       const ix = this.expr(node.expression);
