@@ -2065,10 +2065,10 @@ export declare function constraint(account: AccountMeta | RemainingAccount | nul
  * `data.get(i)`, or pass it on to `invokeInstruction`. A `/** @fallback *\/` instruction (Anchor's fallback: no
  * parameters, run when no instruction matches) reads its input this way, and its accounts with remainingAccounts().
  */
-export declare function instructionData(): Bytes;
+export declare function instructionData(): InstructionBytes;
 
 /** The instruction data, read in place: its bytes, and little-endian values at a byte offset. */
-export interface Bytes extends IndexedList<u8> {
+export interface InstructionBytes extends IndexedList<u8> {
   /** The little-endian value at `offset`; reading past the end fails the instruction (5104). */
   readU8(offset: u64): u8;
   readU16(offset: u64): u16;

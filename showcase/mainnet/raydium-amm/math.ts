@@ -5,7 +5,7 @@
 // withdrawals. The original works in the `uint` crate's U128 / U256 with `checked_*().unwrap()`; here u128 / u256
 // with checked arithmetic, which the program turns into the same panic (PANIC_ON_OVERFLOW). `as_u64()` on a U128 past
 // u64 panics too, as u64(x) does here.
-import { type u128, type u256, type u64, isqrt, panic, require, u128, u256, u64 } from "typesol";
+import { isqrt, panic, require, u128, u256, u64 } from "typesol";
 import { type AmmInfo, AmmError } from "./state.js";
 
 /** SwapDirection. */

@@ -284,7 +284,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length !== 1) this.fail(node, "isqrt(x) takes one unsigned integer");
         const v = this.expr(args[0]);
         const x = v.literal !== undefined ? this.literal(v.literal, U64, args[0]) : v;
-        if (x.type.kind !== "int" || INT_INFO[x.type.name].signed) this.fail(args[0], "isqrt needs an unsigned integer (u8 … u128)");
+        if (x.type.kind !== "int" || INT_INFO[x.type.name].signed) this.fail(args[0], "isqrt needs an unsigned integer (u8 … u256)");
+        if (x.type.name === "u256") return { c: `ts_isqrt_u256(${x.c})`, type: x.type };
         const wide = INT_INFO[x.type.name].bytes === 16;
         return { c: wide ? `ts_isqrt_u128(${x.c})` : `((${INT_INFO[x.type.name].c})ts_isqrt_u64((uint64_t)(${x.c})))`, type: x.type };
       }

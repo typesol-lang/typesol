@@ -2051,6 +2051,22 @@ static inline unsigned __int128 ts_isqrt_u128(unsigned __int128 x) {
   }
 }
 
+/* floor(sqrt(x)) of a u256 (the `uint` crate's U256::integer_sqrt): Newton's method from a power of two above it. */
+static inline TsU256 ts_isqrt_u256(TsU256 x) {
+  int top = 3;
+  while (top > 0 && x.w[top] == 0) top--;
+  if (top == 0 && x.w[0] < 2) return x;
+  int bits = 64 * top + (64 - __builtin_clzll(x.w[top]));
+  TsU256 r = ts_u256_shl(ts_u256_lit(1, 0, 0, 0), (uint64_t)((bits + 1) / 2));
+  while (1) {
+    TsU256 q = ts_u256_divmod(x, r, true), s;
+    ts_u256_add(r, q, &s); /* r + x / r stays below 2^256: r <= 2^128 and x / r < 2^256 / r */
+    TsU256 n = ts_u256_shr(s, 1);
+    if (ts_u256_cmp(n, r) >= 0) return r;
+    r = n;
+  }
+}
+
 /* Decimal text of a 128-bit integer on the heap. */
 static inline uint64_t ts_str_u128(unsigned __int128 v, bool negative, TS_Str *out) {
   char tmp[40];
