@@ -4,7 +4,7 @@ This page follows one complete Anchor program into TypeSOL: the token escrow fro
 [solana-developers/program-examples](https://github.com/solana-developers/program-examples/tree/de090195e4de698e150572c4f886c333323a64a5/tokens/escrow/anchor)
 (`tokens/escrow`, commit `de09019`). It shows the original and the port side by side, what changed, how the two were
 checked against each other, where they still differ, and what the port costs to run. The port is
-[`showcase/program-examples/tokens/escrow.ts`](https://github.com/typesol/typesol/blob/main/showcase/program-examples/tokens/escrow.ts); [Migrate from Anchor](migrate-from-anchor.md) is the
+[`showcase/program-examples/tokens/escrow.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/program-examples/tokens/escrow.ts); [Migrate from Anchor](migrate-from-anchor.md) is the
 general reference.
 
 ## The program
@@ -160,17 +160,17 @@ tokenProgram.closeAccount(vault, maker, offer, ["offer", maker.key, offer.id, of
 | `ErrorCode::CustomError` (unused upstream) | `enum ErrorCode`, the same code 6000 |
 
 Nothing in the program needed a construct TypeSOL lacks, and every account constraint has its TypeSOL form; the port
-is marked PORTED in [the ports table](https://github.com/typesol/typesol/blob/main/showcase/program-examples/README.md).
+is marked PORTED in [the ports table](https://github.com/typesol-lang/typesol/blob/main/showcase/program-examples/README.md).
 
 ## Same inputs, same results
 
 Two independent checks run the original and the port against each other.
 
-- **The port's own test** ([`showcase/test/porting/ports-tokens.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/porting/ports-tokens.test.ts)) runs the upstream flow with SPL
+- **The port's own test** ([`showcase/test/porting/ports-tokens.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/porting/ports-tokens.test.ts)) runs the upstream flow with SPL
   Token mints and again with Token-2022 mints: make, take (creating the taker's and the maker's missing token accounts),
   make again, a refund attempt by someone other than the maker, and the refund. It checks balances, the decoded offer
   and that offer and vault are closed.
-- **The four-way comparison** in [typesol/benchmarks](https://github.com/typesol/benchmarks) builds the upstream Anchor,
+- **The four-way comparison** in [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) builds the upstream Anchor,
   native and Pinocchio versions unmodified and sends all four the same 21 offers (ten taken, ten refunded, one left
   open). The decoded open offer, every token balance, the vault's authority and which accounts were closed must be
   identical before any number is reported. They are.
@@ -191,7 +191,7 @@ token account. A client that matches on this code needs to accept either.
 ## Cost
 
 Mean compute units per instruction in LiteSVM (21 make_offer, 10 take_offer and 10 refund_offer calls), and the
-program size, from typesol/benchmarks (TypeSOL at this version; Anchor 1.0.2). Lower is better.
+program size, from typesol-lang/benchmarks (TypeSOL at this version; Anchor 1.0.2). Lower is better.
 
 | | TypeSOL | Anchor | Native Rust | Pinocchio |
 | --- | ---: | ---: | ---: | ---: |

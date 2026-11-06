@@ -1106,12 +1106,12 @@ static inline uint64_t ts_system_transfer(TsParams *params, TsAccount *from, TsA
 }
 
 /*
- * Create `acct` as a PDA of this program. `seeds` must have room for one extra
- * entry: the bump is appended there. Writes the discriminator on success.
+ * Create `acct` as a PDA of this program, owned by `owner` (Anchor's `init` with `owner = …`). `seeds` must have room
+ * for one extra entry: the bump is appended there.
  */
-static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccount *acct,
-                                     SolSignerSeed *seeds, int n, const uint8_t disc[8], uint64_t space,
-                                     uint8_t *bump_out) {
+static inline uint64_t ts_create_pda_owned(TsParams *params, TsAccount *payer, TsAccount *acct,
+                                           SolSignerSeed *seeds, int n, const SolPubkey *owner, uint64_t space,
+                                           uint8_t *bump_out) {
   SolPubkey derived;
   uint8_t bump;
   if (ts_find_pda(seeds, n, params->program_id, &derived, &bump) != SUCCESS ||
@@ -1131,7 +1131,7 @@ static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccou
     ts_memcpy(data, &tag, 4);
     ts_memcpy(data + 4, &lamports, 8);
     ts_memcpy(data + 12, &space, 8);
-    ts_memcpy(data + 20, params->program_id, 32);
+    ts_memcpy(data + 20, owner, 32);
     SolAccountMeta metas[2] = {{&payer->key, true, true}, {&acct->key, true, true}};
     SolInstruction ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, metas, 2, data, sizeof(data)};
     TS_TRY(ts_invoke(params, &ix, &signer, 1));
@@ -1149,14 +1149,22 @@ static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccou
     uint8_t assign[36];
     uint32_t assign_tag = 1; /* Assign */
     ts_memcpy(assign, &assign_tag, 4);
-    ts_memcpy(assign + 4, params->program_id, 32);
+    ts_memcpy(assign + 4, owner, 32);
     SolInstruction assign_ix = {(SolPubkey *)&TS_SYSTEM_PROGRAM_ID, one, 1, assign, sizeof(assign)};
     TS_TRY(ts_invoke(params, &assign_ix, &signer, 1));
   }
 
   acct->data_len = space;
-  ts_memcpy(acct->data, disc, 8);
   *bump_out = bump;
+  return SUCCESS;
+}
+
+/* Create `acct` as a PDA of this program, owned by it; writes the discriminator on success. */
+static inline uint64_t ts_create_pda(TsParams *params, TsAccount *payer, TsAccount *acct,
+                                     SolSignerSeed *seeds, int n, const uint8_t disc[8], uint64_t space,
+                                     uint8_t *bump_out) {
+  TS_TRY(ts_create_pda_owned(params, payer, acct, seeds, n, params->program_id, space, bump_out));
+  ts_memcpy(acct->data, disc, 8);
   return SUCCESS;
 }
 

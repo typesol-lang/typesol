@@ -14,16 +14,17 @@ fixed point. The port comes in parts, each checked before the next:
 | 2 | Group and bank administration, interest; accounts, deposits, repayments and fees | done |
 | 3 | Oracles, the risk engine, withdrawals and borrows | done |
 | 4 | Liquidation and bankruptcy | done |
-| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing and the monitor archive done |
+| 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration, Solend, Kamino, Drift and JupLend banks, every oracle setup's pricing and venue rebalance legs done (all 124 instructions) |
 
-The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
+The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet/marginfi):
 
 | File | Holds |
 | --- | --- |
 | `marginfi.ts` | the instructions |
 | `bank.ts` | a bank: creating one, checking its config, configuring it, accruing interest, the rate cache, its shares and limits, the states that refuse an instruction, the rate limiter, the price cache and the circuit breaker |
 | `account.ts` | a marginfi account's balances: finding or opening one, growing it, closing it, their order, the flags indexers read |
-| `oracle.ts` | the price adapter: oracle setups, validating a feed, reading Pyth push and Switchboard pull accounts, prices and confidence intervals |
+| `oracle.ts` | the price adapter: oracle setups, validating a feed, reading Pyth push and Switchboard pull accounts, a Solend or Kamino reserve's, a Drift spot market's or a JupLend Lending's exchange rate applied to them, prices and confidence intervals |
+| `solend.ts`, `kamino.ts`, `drift.ts`, `juplend.ts` | what the venue banks read from Solend's, klend's, Drift's and JupLend's accounts: reserves, obligations, a lending market's emergency mode, spot markets and users, Lendings |
 | `risk.ts` | the risk engine: an account's assets and liabilities weighted and priced, e-mode, the isolated tier, the premium a liability projects and the rates its snapshot moves to, the circuit breaker's gate, the health cache |
 | `interest_rate.ts` | the seven-point interest curve, the rates and fees it gives, the accrual arithmetic |
 | `i80f48.ts` | I80F48, bit for bit as the `fixed` crate (1.28.0) computes it, including the release build's wrapping `*`, `/` and `from_num` |
@@ -279,8 +280,15 @@ banks' amounts, rates and tags; the executor withdraws and deposits in between; 
 beats its source, every bank's token amount moved as declared (within 3 native units per move), the budget, the
 account's Maintenance health and every other balance, carries order tags with their balances, and escrows the
 keeper's share of the tip; settlement pays it once the destinations out-yielded their sources, else refunds it.
-Rebalances across Kamino, Drift, Solend and JupLend banks price from those venues' state, which comes with part 5f;
-until then the port refuses them (RebalanceVenueUnsupported).
+Rebalances across Kamino, Drift and JupLend banks price each leg at the venue's supply rate
+(`programs/marginfi/src/state/rate.rs` and the mocks' rate math), as the original does: klend's 11-point borrow curve
+times utilization less its take rate, plus the reserve's reward emissions (capped by its lending market), at the
+chain's measured pace for a per-slot reserve (slots over the elapsed part of the epoch, from `epochStartTimestamp()`);
+Drift's piecewise curve less the insurance fund's factor (a market without borrows exempt from staleness); JupLend's
+liquidity-layer rate (the mint's rate model at the diluted utilization) plus its Lending's reward rate. Amounts
+convert through the venue's exchange rate (Drift's in its 9-decimal balances), deposit room is the tighter of the
+bank's limit and the venue's cap, settlement reads the venues' rates through the yield index, and the conservation
+dust widens by the largest exchange rate. Solend banks are refused (RebalanceVenueUnsupported), as there.
 
 **Part 5, resizing and the monitor archive.** `lending_pool_resize_group_account`, `lending_pool_resize_bank_account`
 and `resize_global_fee_state` grow a v1-sized account to the current struct size (anyone pays the rent short of it;
@@ -288,11 +296,112 @@ TypeSOL's `resizeAccount`, Rust's `AccountInfo::resize`). `monitor_archive_initi
 `monitor_archive_upsert_batch` keep the snapshot manager's archive, raw bytes in a large account the client allocated
 (a tag, the meta, an index map, then a ring of 168 hourly snapshots per mint), written with `writeData`.
 
-Banks whose price needs another program's state (Kamino, Drift, Solend and JupLend reserves, mSOL and LST
-multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port stops where it would read that state.
+**Part 5, staked SOL and Scope.** `init_staked_settings`, `edit_staked_settings`, `disable_staked_oracles` and
+`enable_staked_oracle_onramp` (the governance admin: a group's staked-SOL settings, the PDA of the group, checked as the
+original checks them; the oracle flags), `propagate_staked_settings` (anyone: the settings onto a staked bank, a new
+oracle checked), `lending_pool_add_bank_permissionless` (anyone: a bank for a validator's SPL single-pool LST, from the
+settings, with a placeholder curve; the pool, its LST mint, stake account and on-ramp must be the PDAs of the vote
+account, owned as the original wants) and `lending_pool_backfill_staked_bank_validator_vote_account`. The tests write
+the pool's accounts into both ledgers (marginfi reads their owners, addresses and the LST mint; nothing calls the pool
+program). `lending_pool_configure_bank_oracle_scope` prices a bank by a Scope feed entry, Scope's `OraclePrices`
+account checked as the original checks it. Pricing staked banks (the pool's stake per LST) and Scope feeds comes with
+part 5f.
+
+**Part 5, Solend and Kamino banks.** A venue bank deposits into a Solend or Kamino (klend) reserve of its mint through
+an obligation its liquidity vault authority owns, and holds the reserve's collateral tokens; it never lends.
+`lending_pool_add_bank_solend` and `lending_pool_add_bank_kamino` (the governance admin: the bank from a compact
+config, the reserve of its mint, the obligation's address, the feed and the reserve checked; Kamino's event names the
+group's admin as its signer, as the original's does), `solend_init_obligation` and `kamino_init_obligation` (anyone:
+the obligation, klend's user metadata and farm state first, and a deposit of at least 10 tokens that keeps it open;
+Solend's obligation is created as Anchor's `init` does, over an address someone funded too),
+`solend_deposit`, `kamino_deposit`, `solend_withdraw` and `kamino_withdraw` (the tokens through the liquidity vault
+into the reserve and back, the obligation's change checked against the amount at the reserve's rate, give or take one
+token; withdrawals in collateral tokens, then the account's health), `propagate_kamino_market_emergency` (the market's
+emergency mode onto the bank) and `kamino_harvest_reward` (a klend farm's reward, harvested by the liquidity vault
+authority, to the global fee wallet's account). These CPI into Solend's and klend's mainnet programs (and kfarms'),
+loaded into both ledgers; the tests make markets, reserves and a farm with those programs' own instructions and write
+a reserve's settings into its config.
+
+Their banks are priced by `SolendPythPull`, `SolendSwitchboardPull`, `KaminoPythPush` and `KaminoSwitchboardPull`: the
+feed's prices and confidences times the reserve's exchange rate (its liquidity per collateral token, from its supplies,
+borrows and fees, scaled to the mint's decimals), the reserve refreshed this slot. The bank's price cache keeps the
+feed's price before the rate (Pyth's confidence uncapped) and the rate as its multiplier, and the circuit breaker
+watches the price times the rate. A Kamino reserve or market in emergency mode takes the collateral's Initial value
+(it backs no new borrows) but leaves its Maintenance value. One behaviour of the original is kept as it is:
+`solend_withdraw` still holds its bank when it runs the circuit-breaker gate, so a Solend withdrawal from an account
+with any liability fails (`AccountBorrowFailed` in the original, error 12 in the port) once its health checks pass.
+
+**Part 5, Drift and JupLend banks.** A Drift bank deposits into a Drift spot market of its mint through a user
+(sub-account 0) and user stats its liquidity vault authority owns, and holds Drift's scaled balance (9 decimals; its
+deposit limit, in the mint's decimals, scaled to them). `lending_pool_add_bank_drift`, `drift_init_user` (anyone: the
+user stats and user, the user moved into the market's pool, and a deposit of at least 10 tokens), `drift_deposit` and
+`drift_withdraw` (the market's interest brought up first; the user's scaled balance must change by exactly the amount's;
+a withdrawal's rewards in other markets passed with their spot markets and mints), `drift_harvest_reward` (a reward
+Drift's admin paid into the bank's user in another market, withdrawn whole and sent to the global fee wallet's account)
+and `drift_claim_bad_debt` (a claim on Drift's bad-debt Merkle distributor: the claim status' rent prefunded, the
+distributor's `new_claim` signed by the liquidity vault authority, what it paid swept to the fee wallet). Drift's
+program on mainnet is now a withdraw-only wind-down build, so the tests load the Drift v2 build Marginfi's own tests use
+(2.114), and the distributor as it runs on mainnet; a distributor's admin is a fixed key, so the tests write one into
+both ledgers.
+
+A JupLend bank deposits into JupLend's Lending of its mint (the Fluid liquidity layer behind it) and holds its
+fTokens, in a vault the bank owns. `lending_pool_add_bank_juplend` (the bank starts Uninitialized),
+`juplend_init_position` (anyone, once: a seed deposit of at least 10 tokens, and the bank is Operational),
+`juplend_deposit` (the Lending's rate brought up to date; the fTokens minted must be exactly the amount's at its
+prices) and `juplend_withdraw` (the fTokens burned rounded up, or all of them redeemed; the tokens come back through the
+liquidity vault authority's associated token account). The tests build the liquidity layer, its token reserves and the
+Lendings with JupLend's mainnet programs and their own instructions.
+
+They are priced by `DriftPythPull`, `DriftSwitchboardPull`, `JuplendPythPull` and `JuplendSwitchboardPull`: the feed
+times the spot market's cumulative deposit interest (over 10^10) or the Lending's token exchange price (over 10^12),
+the market or Lending updated this second, the cache keeping the rate as its multiplier, as for Solend and Kamino.
+
+**Part 5, every oracle setup.** The setups that price from another program's account
+(`programs/marginfi/src/state/lst_stake_price.rs`) are priced as the original prices them, the accounts written into
+both ledgers (Marginfi only reads them):
+
+- `StakedWithPythPush`: the SOL feed times the validator single pool's SOL per LST — before the pool's on-ramp, its
+  stake account's delegated stake less the 1 SOL bootstrap over the LST supply; after it, the stake account's and the
+  on-ramp's lamports above rent exemption over the supply plus 1 SOL of phantom tokens; nothing while staked oracles
+  are switched off;
+- `PythMSOL`, `PythLST` and their `KaminoMSOL`, `KaminoLST`, `JuplendMSOL`, `JuplendLST` kinds: the SOL feed times
+  Marinade's mSOL rate (its staked, cooling down and reserve SOL less tickets, over the mSOL supply) or an SPL or
+  Sanctum stake pool's LST rate (updated this epoch or the last), each in (0, 3), then the venue's rate;
+- `Scope`, `ScopeKamino`, `ScopeJuplend`: an entry of Scope's `OraclePrices` (value over 10^exp, no confidence),
+  dated, not in the future nor older than the bank's maximum age, then the venue's rate;
+- `PTPyth`, `PTFixed`: an Exponent PT accreting linearly from the bank's start price to par at maturity, capped by
+  what a PT redeems for, and not priced while the vault is in emergency mode, except for an account in deleverage or a
+  risk admin's liquidation (the original's `ignore_pt_emergency`);
+- `FixedKamino`, `FixedDrift`, `FixedJuplend`: a venue bank's fixed price times the venue's rate.
+
+Rebalance legs in Kamino, Drift and JupLend banks are ported too (see Part 5, rebalances, above).
+
+The venue tests (Solend, Kamino, Drift, JupLend) hold a refused transaction to the original's error, code included,
+not only to failing: one difference turned up that way and was fixed (a claim given one token account for two, which
+the original lets through to its own check).
+
 
 ## What it needed
 
+- **Another program's struct account.** JupLend's `Lending` is an `AccountLoader` of another program's type, with
+  `has_one = f_token_mint`: `HasOne<Owner<Account<Lending>, "jup3Y…">, "f_token_mint", …>` loads it with that program as
+  its owner (3007), Anchor's discriminator for the name, and records the relation in the IDL.
+- **The venues' accounts loaded first.** Marginfi takes Solend's reserve, klend's reserve, obligation and lending
+  market, and Drift's spot market and user as `AccountLoader`s of the venues' types, which Anchor loads (owner 3007,
+  discriminator 3001 / 3002) before it checks any account's constraints. They are `Owner<Account<T>, "…">` in the port
+  (a struct of the venue's bytes with its discriminator), so a foreign account gets 3007 there too and not the bank's
+  `has_one` error; Solend's reserve has a one-byte discriminator (its version), `/** @discriminator 0x01 */`.
+- **The epoch's start time.** Kamino's per-slot rates are rescaled at the chain's measured pace, slots over the
+  seconds since the epoch began: `epochStartTimestamp()` reads it from the Clock (with `slotsPerEpoch()`,
+  `firstNormalEpoch()` and `firstNormalSlot()` for the epoch's first slot).
+- **A CPI into an address-checked account.** Marginfi takes JupLend's programs as `UncheckedAccount`s with
+  `address = …`: `Address<AccountInfo, "jup3Y…">` is now a CPI's program, checked by its key alone (2012).
+- **The Clock in a constraint and in the body.** Solend's deposit and withdrawal refuse a reserve not refreshed this
+  slot in an account constraint, and use the time in their bodies; the compiler declared the instruction's Clock
+  cache twice (or after the constraint that read it). It is now declared first.
+- **An associated token account of a stored key.** `kamino_harvest_reward` pays into the ATA of the fee state's
+  `global_fee_wallet`: `Ata<Mut<TokenAccount>, "@fee_state.global_fee_wallet", "reward_mint">`, the owner read from the
+  struct account, recorded in the IDL as the account (`fee_state`), as Anchor records `fee_state.load()?.…`.
 - **Zero-copy accounts checked as Anchor's `AccountLoader` checks them.** For `@serialization bytemuck` structs the
   owner comes first (3007, also for an account that was never created, where `Account<T>` gives 3012), then a
   discriminator to read (3001) and match (3002), then the size.
@@ -348,9 +457,9 @@ multipliers, Exponent PT vaults, Scope, staked SOL) are not priced: the port sto
 
 ## How it is checked
 
-[`showcase/test/marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi.test.ts) loads
+[`showcase/test/marginfi.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi.test.ts) loads
 the binary dumped from mainnet on 2026-11-01 (sha256 in
-[`test/programs/SOURCES.md`](https://github.com/typesol/typesol/blob/main/test/programs/SOURCES.md)), cut where the
+[`test/programs/SOURCES.md`](https://github.com/typesol-lang/typesol/blob/main/test/programs/SOURCES.md)), cut where the
 ELF ends. The original runs in one LiteSVM and the port in another, under the same program id and with the same clock.
 For each transaction the test requires the same outcome (success, or the same error down to the code), the same
 lamports, owner and data for every account involved, and the same events byte for byte. The port's IDL must also
@@ -362,9 +471,9 @@ liability shares (a debt to accrue, repay or settle without borrowing it first),
 circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags and balances, rate limits.
 
 There are 244 transactions in that file, 174 in
-[`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 978 in
-[`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
+[`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
+for the oracles, and 1,022 in
+[`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
@@ -412,7 +521,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (978, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (1,022, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -480,7 +589,7 @@ byte into both ledgers:
   fraction left, only the fraction, more than the vault holds); super-admin moves (by someone else, on the mainnet
   build).
 
-Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
+Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
 way), fees, balances across scales, clock jumps, frozen banks, circuit-breaker settings and halts, accounts opened and
 closed, deposits into SPL Token, Token-2022 and transfer-fee banks at every scale, balances closed after being written
@@ -521,8 +630,17 @@ port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduce
 - **Health accounts.** A remaining account that is not a bank of the program fails the original's `AccountLoader`
   with the same codes as the port's (3007, 3001, 3002); one owned by the program, with a bank's discriminator but
   too short, panics in the original and fails with 3003 in the port.
-- **Oracles not ported.** Setting a bank of the matching asset tag to a venue, mSOL, LST or PT setup, and pricing
-  one, stops in the port where the original goes on to read the venue's state.
+- **Undecodable stake accounts.** Where the original fails with `BorshIoError` on a staked pool's stake account that
+  does not decode (a runtime error without a custom code), the port fails with its own error; both fail.
+- **Token-2022 in a bad-debt claim.** `drift_claim_bad_debt`'s claim mint and distributor vault are SPL Token accounts
+  in the original (3007 for Token-2022 ones); the port takes either token program there.
+- **One account for two unchecked ones.** Anchor does not refuse an `UncheckedAccount` passed twice as writable; TypeSOL
+  refuses any writable account passed twice (2040) unless the pair is `Dup<…>`. `drift_claim_bad_debt`'s two token
+  accounts are, so its own check answers as the original's does (6311); elsewhere such a transaction fails earlier in
+  the port than in the original.
+- **AccountBorrowFailed.** Where the original's `solend_withdraw` fails borrowing a bank it holds (see above), the port
+  fails with error 12. The tests, the fuzz's included, check that the original fails that way and the port with 12 (the
+  only refused venue transaction not held to the original's code).
 
 ## Cost
 
@@ -639,6 +757,29 @@ Compute units per transaction, mainnet original against the port, from one run o
 | `marginfi_account_settle_rebalance_tip`, paid | 72,189 | 36,058 | −50% |
 | `lending_pool_resize_bank_account` | 4,711 | 2,807 | −40% |
 | `monitor_archive_upsert_batch`, two mints | 2,741 | 973 | −65% |
+| `init_staked_settings` | 17,865 | 2,786 | −84% |
+| `lending_pool_add_bank_permissionless` | 77,694 | 19,023 | −76% |
+| `lending_pool_configure_bank_oracle_scope` | 9,597 | 1,225 | −87% |
+| `lending_pool_add_bank_solend` | 82,881 | 19,012 | −77% |
+| `solend_init_obligation` | 88,717 | 66,142 | −25% |
+| `solend_deposit` | 100,480 | 73,502 | −27% |
+| `solend_withdraw` | 191,792 | 137,009 | −29% |
+| `lending_pool_add_bank_kamino` | 77,023 | 17,759 | −77% |
+| `kamino_init_obligation` (with a farm) | 206,172 | 169,852 | −18% |
+| `kamino_deposit` | 133,066 | 106,321 | −20% |
+| `kamino_withdraw` | 181,565 | 125,229 | −31% |
+| `propagate_kamino_market_emergency` | 2,327 | 366 | −84% |
+| `kamino_harvest_reward` | 120,337 | 101,049 | −16% |
+| `lending_pool_add_bank_drift` | 76,034 | 17,489 | −77% |
+| `drift_init_user` | 106,471 | 83,160 | −22% |
+| `drift_deposit` | 76,268 | 57,301 | −25% |
+| `drift_withdraw` (with a debt) | 157,716 | 113,786 | −28% |
+| `drift_harvest_reward` | 78,993 | 58,487 | −26% |
+| `drift_claim_bad_debt` | 89,488 | 66,105 | −26% |
+| `lending_pool_add_bank_juplend` | 81,844 | 20,279 | −75% |
+| `juplend_init_position` | 71,441 | 49,524 | −31% |
+| `juplend_deposit` | 90,443 | 62,075 | −31% |
+| `juplend_withdraw` (with a debt) | 141,752 | 91,212 | −36% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from
@@ -646,7 +787,11 @@ refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all 
 the withdrawals that succeed use 38–63% fewer, the borrows 43–48%, the health pulses 17–64% (the least: an empty
 account, where the original does little), tags 44–45%, records 69–74%, bankruptcies 44–53%, liquidations 35–39%,
 receiverships 30–40%, deleverages 41–42% flash loans 40–52% (whole transactions, the withdrawals and repayments in them included), account administration
-38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions), rebalance orders 50–67%, rebalances 56–57% (whole transactions), monitor snapshots 28–80% (the least: 20 snapshots, byte by byte);
+38–86%, group and fee state administration 68–97%, bank administration 45–96%, emissions 53–60%, bank metadata 50–90%, orders 48–72%, executions 55–57% (whole transactions), rebalance orders 50–67%, rebalances 56–57% (whole transactions), monitor snapshots 28–80% (the least: 20 snapshots, byte by byte), staked SOL and Scope 75–87%;
 refused withdrawals and borrows 41–92% fewer, refused liquidations 46–90%. A health check is mostly I80F48 products
 and quotients, like accrual. The rates' u32 encodings (a curve point, a fee, a premium rate) decode in 64-bit
 arithmetic: `(x << 48) / (2^32 − 1)` is `y + y / (2^32 − 1)` for `y = x << 16`, with no 128-bit division.
+
+The venue banks' instructions save less (16–36%): most of their cost is Solend's, klend's, kfarms', Drift's, the
+distributor's and JupLend's own instructions, which run the same in both; creating a venue bank and propagating an
+emergency, which call none, save 75–84%.

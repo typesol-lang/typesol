@@ -10,16 +10,19 @@
 import {
   type Account,
   type AccountInfo,
+  type AccountMeta,
   type CloseTo,
   type FixedArray,
   AnchorError,
   type Dup,
   type RemainingAccounts,
+  type RemainingAccount,
   type SystemAccount,
   type FixedVec,
   type Address,
   type Mint,
   type TokenAccount,
+  type TokenOf,
   type TokenInterface,
   type i128,
   u16,
@@ -30,9 +33,12 @@ import {
   type Option,
   type Pubkey,
   type Seeds,
+  type Ata,
+  type Program,
   type Owner,
   type Signer,
   type SystemProgram,
+  type TokenProgram,
   type u32,
   type Vec,
   type Hash,
@@ -60,6 +66,8 @@ import {
   transferFeeBasisPoints,
   transferHookProgram,
   sha256,
+  sighash,
+  writableSigner,
   writable,
   log,
   now,
@@ -68,6 +76,7 @@ import {
   i64,
   u64,
   u8,
+  u128,
 } from "typesol";
 import {
   ZERO_KEY,
@@ -114,7 +123,55 @@ import {
   refreshIndexerFlags,
   clearLendingAccount,
 } from "./account";
-import { type BankConfigCompact, type BankConfigFast, type BankConfigGov, type OrderTrigger } from "./args";
+import {
+  type BankConfigCompact,
+  type BankConfigFast,
+  type BankConfigGov,
+  type OrderTrigger,
+  type DriftConfigCompact,
+  type JuplendConfigCompact,
+  type KaminoConfigCompact,
+  type SolendConfigCompact,
+  type StakedSettingsConfig,
+} from "./args";
+import {
+  type DriftSpotMarket,
+  type DriftUser,
+  activeDeposits,
+  hasAdminDeposit,
+  marketIndex,
+  marketMint,
+  marketPoolId,
+  scaledBalance,
+  spotPositionOk,
+  userScaledBalance,
+  withdrawTokenAmount,
+} from "./drift";
+import type { Lending } from "./juplend";
+import {
+  type KaminoMarket,
+  type KaminoObligation,
+  type KaminoReserve,
+  depositAmount,
+  depositReserve,
+  kaminoConvert,
+  marketEmergency,
+  onlyFirstDeposit,
+  reserveMarket,
+  reserveMint,
+  reserveStale,
+} from "./kamino";
+import {
+  SOLEND_OBLIGATION_SIZE,
+  SOLEND_PROGRAM_ID,
+  convert,
+  obligationDeposit,
+  type SolendReserve,
+  reserveLiquidityMint,
+  reserveSlot,
+  validateObligation,
+  withinOneToken,
+} from "./solend";
 import {
   ASSET_TAG_JUPLEND,
   BANK_ASSET_TAG_STAKED,
@@ -131,6 +188,11 @@ import {
   checkSameAssetFee,
   configureBank,
   initBank,
+  initBankFields,
+  ASSET_TAG_DRIFT,
+  balanceDecimals,
+  setVenueConfig,
+  setStakedConfig,
   recordDepositInflow,
   recordWithdrawalOutflow,
   socializeLoss,
@@ -168,6 +230,8 @@ import {
   toNative,
   underlying,
   venueMultiplier,
+  rateAt,
+  yieldIndex,
   whole,
 } from "./rebalance";
 import {
@@ -182,10 +246,12 @@ import {
   anyBankHalted,
   calcAmount,
   feedAt,
+  cacheOfFeed,
   liabilityBalanceErr,
   maxPremiumRate,
   tagAfterLiquidation,
   cachePrice,
+  cbPriceGateHolding,
   calcValue,
   cbPriceGate,
   bankruptcy,
@@ -201,6 +267,7 @@ import {
   HEALTH_HEALTHY,
   premiumRefreshUnavailable,
   lowPrice,
+  pricesThroughPtEmergency,
   riskTiersErr,
   updatePremiumSnapshots,
   writeHealthCache,
@@ -220,6 +287,8 @@ import {
   type RebalanceFeePoolWithdrawEvent,
   type RebalanceExecutedEvent,
   type RebalanceTipSettledEvent,
+  type EditStakedSettingsEvent,
+  type StakedSettingsEditConfig,
   type LendingPoolBankConfigureEvent,
   type LendingPoolBankConfigureFrozenEvent,
   type LendingAccountDepositEvent,
@@ -242,6 +311,7 @@ import {
   type LiquidationTagEvent,
   type LendingPoolBankHandleBankruptcyEvent,
   type DeleverageWithdrawFlowEvent,
+  type DriftClaimBadDebtEvent,
   type LendingPoolBankCollectFeesEvent,
   type LendingPoolBankConfigureOracleEvent,
   type LendingPoolBankSetOraclePriceEvent,
@@ -265,6 +335,7 @@ import {
   fxSub,
   fxToF64Bits,
   fxToU32Wrapping,
+  fxToU64Wrapping,
   fxToU64,
   fxTryAdd,
   fxTryMul,
@@ -275,6 +346,11 @@ import {
 } from "./i80f48";
 import {
   ASSET_TAG_DEFAULT,
+  ASSET_TAG_SOLEND,
+  ASSET_TAG_KAMINO,
+  KAMINO_ID,
+  DRIFT_ID,
+  KAMINO_MARKET_EMERGENCY,
   ASSET_TAG_SOL,
   BIAS_HIGH,
   priceOfType,
@@ -285,7 +361,10 @@ import {
   priceAndConfidence,
   setupOf,
   validateFeedAccount,
+  pythAccountErr,
   validateOracleCount,
+  validateVenueAccount,
+  scopeEntryErr,
   validatesFeedAccount,
 } from "./oracle";
 import { PROGRAM_FEES_ENABLED, basisToU32, u32ToBasis, u32ToCenti, validateInterestRateConfig } from "./interest_rate";
@@ -302,6 +381,8 @@ import {
   type ExecuteOrderRecord,
   type RebalanceOrder,
   type RebalanceRecord,
+  type RatePoint,
+  type StakedSettings,
   type RebalanceMove,
   OrderTriggerType,
   type WrappedI80F48,
@@ -798,6 +879,8 @@ export function lendingPoolConfigureBankOracle(
   }
   let err = validateOracleCount(bank, rem.length);
   if (err === 0n && validatesFeedAccount(bank)) err = validateFeedAccount(bank, rem.get(0n));
+  // A venue setup's second account: the reserve, spot market or Lending the bank was created with.
+  if (err === 0n) err = validateVenueAccount(bank, rem);
   require(err === 0n, err);
   emit<LendingPoolBankConfigureOracleEvent>({
     header: { signer: governance_admin.key, marginfi_group: group.key },
@@ -846,8 +929,11 @@ export function lendingPoolSetOraclePrice(
     bank.config.oracle_keys.set(0n, SYSTEM_PROGRAM_ID);
   }
   bank.config.fixed_price.value = p;
-  require(validatesFeedAccount(bank) === false, MarginfiError.InternalLogicError);
-  const err = validateOracleCount(bank, rem.length);
+  let err = validateOracleCount(bank, rem.length);
+  // PTPyth's feed (the key, then a Pyth update), then the vault.
+  if (err === 0n && validatesFeedAccount(bank)) err = validateFeedAccount(bank, rem.get(0n));
+  // A fixed venue price's account: the venue's the bank was created with.
+  if (err === 0n) err = validateVenueAccount(bank, rem);
   require(err === 0n, err);
   emit<LendingPoolBankSetOraclePriceEvent>({ header: { signer: governance_admin.key, marginfi_group: group.key }, bank: bank.key, price: { value: p } });
 }
@@ -864,13 +950,9 @@ export function lendingPoolPulseBankPriceCache(group: Account<MarginfiGroup>, ba
     updateBankCache(bank, group, t);
   }
   const rem = remainingAccounts();
-  const count = oracleCount(bank, rem.length);
-  require(count === 0n, count);
-  const f = rem.length === 0n ? fixedFeed(bank) : loadFeed(bank, rem.get(0n), t);
-  require(f.err === 0n, f.err);
-  const p = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+  const p = cacheOfFeed(bank, feedAt(bank, rem, 0n, rem.length, t, false));
   require(p.err === 0n, p.err);
-  updateCachePrice(bank, p.price, p.conf, p.source_time, t, currentSlot());
+  updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
 }
 
 // ---- marginfi accounts -------------------------------------------------------------------------------------------
@@ -1116,7 +1198,7 @@ export function lendingAccountWithdraw(
   const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
   let price = I80F48_ZERO;
   if (deferred || groupLimited) {
-    const p = lowPrice(bank, bank.key, remainingAccounts(), start, t);
+    const p = lowPrice(bank, bank.key, remainingAccounts(), start, t, pricesThroughPtEmergency(marginfi_account));
     require(p.err === 0n, p.err);
     if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
     price = p.v;
@@ -1136,10 +1218,10 @@ export function lendingAccountWithdraw(
   }
   // After a deleverage's tokenless repayments, what is left in the vault is all there is.
   if ((bank.flags & TOKENLESS_REPAYMENTS_COMPLETE) !== 0n && liquidity_vault.amount < paid) paid = liquidity_vault.amount;
-  recordWithdrawalOutflow(groupLimited, paid, price, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
+  recordWithdrawalOutflow(groupLimited, paid, paid, price, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
   if ((marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n) {
     // check_deleverage_withdraw_limit: the day's deleveraged value, in whole dollars (wrapped to u32), under the cap.
-    const value = calcValue(fxFromU64(paid), price, bank.mint_decimals, I80F48_ZERO, false);
+    const value = calcValue(fxFromU64(paid), price, balanceDecimals(bank), I80F48_ZERO, false);
     require(value.err === 0n, value.err);
     const usd = fxToU32Wrapping(value.v);
     const window = group.deleverage_withdraw_window_cache;
@@ -1203,7 +1285,7 @@ export function lendingAccountWithdraw(
     updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
   }
   const p = cachePrice(bank, bank.key, remainingAccounts(), start, t);
-  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.source_time, t, currentSlot());
+  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
 }
 
 /**
@@ -1328,9 +1410,9 @@ export function lendingAccountBorrow(
   require(gate === 0n, gate);
   updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
   const p = cachePrice(bank, bank.key, remainingAccounts(), start, t);
-  recordWithdrawalOutflow(groupLimited, pre, p.err === 0n ? p.price : I80F48_ZERO, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
+  recordWithdrawalOutflow(groupLimited, pre, pre, p.err === 0n ? p.price : I80F48_ZERO, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
   updateBankCache(bank, group, t);
-  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.source_time, t, currentSlot());
+  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
   writeHealthCache(marginfi_account, h, t, !flash);
 }
 
@@ -1616,7 +1698,7 @@ export function lendingPoolHandleBankruptcy(
   const writtenOff = writeOffPremiumAmount(marginfi_account, i);
   increaseBalance(marginfi_account, i, bank, badDebt, INCREASE_REPAY_ONLY, u64(t));
   updateBankCache(bank, group, t);
-  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.source_time, t, currentSlot());
+  if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
   marginfi_account.account_flags |= ACCOUNT_DISABLED;
   marginfi_account.indexer_flags.has_been_bankrupted = 1n;
   marginfi_account.last_update = u64(t);
@@ -1782,6 +1864,12 @@ export function lendingAccountLiquidate(
   const halted = anyBankHalted(liquidatee_marginfi_account, remainingAccounts(), liqe, len, t);
   require(halted.err === 0n, halted.err);
   const cbAdmin = halted.n !== 0n;
+  // Like deleverage, only the risk admin liquidates through an Exponent PT emergency: both accounts carry the flag
+  // (cleared at the end) so every price read here prices PTs through it.
+  if (authority.key === group.risk_admin) {
+    liquidatee_marginfi_account.account_flags |= ACCOUNT_IN_RISK_ADMIN_LIQUIDATION;
+    liquidator_marginfi_account.account_flags |= ACCOUNT_IN_RISK_ADMIN_LIQUIDATION;
+  }
   // A halted bank leaves liquidation to the admins; otherwise the breaker's gate first, as for a borrow.
   if (cbAdmin) require(authority.key === group.risk_admin || authority.key === group.admin, MarginfiError.CircuitBreakerAdminOnly);
   else {
@@ -1810,14 +1898,14 @@ export function lendingAccountLiquidate(
   const amount = fxFromU64(asset_amount);
   const assetPer = accountsPerBank(asset_bank);
   require(assetPer.err === 0n, assetPer.err);
-  const assetPrice = lowPrice(asset_bank, asset_bank.key, remainingAccounts(), start, t);
+  const assetPrice = lowPrice(asset_bank, asset_bank.key, remainingAccounts(), start, t, authority.key === group.risk_admin);
   require(assetPrice.err === 0n, assetPrice.err);
   require(assetPrice.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
   const liabPer = accountsPerBank(liab_bank);
   require(liabPer.err === 0n, liabPer.err);
   const liabFirst = start + assetPer.n - 1n;
   require(liabFirst + liabPer.n - 1n <= len, MarginfiError.InternalLogicError);
-  const feed = feedAt(liab_bank, remainingAccounts(), liabFirst, liabPer.n - 1n, t);
+  const feed = feedAt(liab_bank, remainingAccounts(), liabFirst, liabPer.n - 1n, t, authority.key === group.risk_admin);
   require(feed.err === 0n, feed.err);
   const liabPrice = priceOfType(feed, true, BIAS_HIGH, liab_bank.config.oracle_max_confidence);
   require(liabPrice.err === 0n, liabPrice.err);
@@ -1828,16 +1916,16 @@ export function lendingAccountLiquidate(
   const insuranceCut = insuranceFee(liab_bank);
   const finalDiscount = fxSub(I80F48_ONE, fxAdd(insuranceCut, liquidatorCut));
   const liquidatorDiscount = fxSub(I80F48_ONE, liquidatorCut);
-  const paidValue = calcValue(amount, assetPrice.v, asset_bank.mint_decimals, liquidatorDiscount, true);
+  const paidValue = calcValue(amount, assetPrice.v, balanceDecimals(asset_bank), liquidatorDiscount, true);
   require(paidValue.err === 0n, paidValue.err);
-  const paid = calcAmount(paidValue.v, liabPrice.v, liab_bank.mint_decimals);
+  const paid = calcAmount(paidValue.v, liabPrice.v, balanceDecimals(liab_bank));
   require(paid.err === 0n, paid.err);
-  const creditedValue = calcValue(amount, assetPrice.v, asset_bank.mint_decimals, finalDiscount, true);
+  const creditedValue = calcValue(amount, assetPrice.v, balanceDecimals(asset_bank), finalDiscount, true);
   require(creditedValue.err === 0n, creditedValue.err);
-  const credited = calcAmount(creditedValue.v, liabPrice.v, liab_bank.mint_decimals);
+  const credited = calcAmount(creditedValue.v, liabPrice.v, balanceDecimals(liab_bank));
   require(credited.err === 0n, credited.err);
   const insurance = fxSub(paid.v, credited.v);
-  const repaidMaint = calcValue(credited.v, liabPrice.v, liab_bank.mint_decimals, liab_bank.config.liability_weight_maint.value, true);
+  const repaidMaint = calcValue(credited.v, liabPrice.v, balanceDecimals(liab_bank), liab_bank.config.liability_weight_maint.value, true);
   require(repaidMaint.err === 0n, repaidMaint.err);
   // The original asserts it (a panic).
   require(insurance >= I80F48_ZERO, MarginfiError.InternalLogicError);
@@ -1897,9 +1985,9 @@ export function lendingAccountLiquidate(
   require(outstanding.err === 0n, outstanding.err);
   liab_bank.collected_insurance_fees_outstanding.value = outstanding.v;
   updateBankCache(asset_bank, group, t);
-  if (assetCache.err === 0n) updateCachePrice(asset_bank, assetCache.price, assetCache.conf, assetCache.source_time, t, currentSlot());
+  if (assetCache.err === 0n) updateCachePrice(asset_bank, assetCache.price, assetCache.conf, assetCache.mult, assetCache.source_time, t, currentSlot());
   updateBankCache(liab_bank, group, t);
-  if (liabCache.err === 0n) updateCachePrice(liab_bank, liabCache.price, liabCache.conf, liabCache.source_time, t, currentSlot());
+  if (liabCache.err === 0n) updateCachePrice(liab_bank, liabCache.price, liabCache.conf, liabCache.mult, liabCache.source_time, t, currentSlot());
 
   // The liquidator's accounts end where the liquidatee's begin (more than there are panics).
   require(u64(liquidator_accounts) <= liqe - start, MarginfiError.InternalLogicError);
@@ -1973,8 +2061,6 @@ export function lendingAccountLiquidate(
 // ---- receivership --------------------------------------------------------------------------------------------------
 
 const COMPUTE_BUDGET_ID = pubkey("ComputeBudget111111111111111111111111111111");
-const KAMINO_ID = pubkey("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
-const DRIFT_ID = pubkey("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
 const JUPLEND_EARN_ID = pubkey("jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9");
 const JUP_ID = pubkey("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4");
 const TITAN_ID = pubkey("T1TANpTeScyeqVzzgNViGDNrkQ6qHz9KrSBS4aNXvGT");
@@ -3747,8 +3833,7 @@ function addSameAssetEmodeBank(registry: Mut<SameAssetEmodeRegistry>, bankKey: P
   if (listed) return;
   const groups = u64(registry.group_count);
   let index = groups;
-  for (let i = 0n; i < groups; i++)
-    if (index === groups && registry.groups.get(i).mint === mint && registry.groups.get(i).oracle_key === oracleKey) index = i;
+  for (let i = 0n; i < groups; i++) if (index === groups && registry.groups.get(i).mint === mint && registry.groups.get(i).oracle_key === oracleKey) index = i;
   if (index === groups) {
     require(index < 32n, MarginfiError.BadEmodeConfig);
     registry.groups.get(index).mint = mint;
@@ -3793,8 +3878,7 @@ function removeSameAssetEmodeBank(registry: Mut<SameAssetEmodeRegistry>, bankKey
   registry.groups.get(lastGroup).mint = ZERO_KEY;
   registry.groups.get(lastGroup).oracle_key = ZERO_KEY;
   registry.group_count -= 1n;
-  if (gone !== lastGroup)
-    for (let i = 0n; i < last; i++) if (u64(registry.banks.get(i).group_index) === lastGroup) registry.banks.get(i).group_index = removed;
+  if (gone !== lastGroup) for (let i = 0n; i < last; i++) if (u64(registry.banks.get(i).group_index) === lastGroup) registry.banks.get(i).group_index = removed;
 }
 
 /**
@@ -3805,11 +3889,7 @@ export function lendingPoolSetBankSameAssetEmodeEligibility(
   group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
   governance_admin: Signer,
   bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
-  same_asset_emode_registry: HasOne<
-    Seeds<Mut<SameAssetEmodeRegistry>, ["same_asset_emode_registry", "@group"]>,
-    "group",
-    MarginfiError.InvalidGroup
-  >,
+  same_asset_emode_registry: HasOne<Seeds<Mut<SameAssetEmodeRegistry>, ["same_asset_emode_registry", "@group"]>, "group", MarginfiError.InvalidGroup>,
   instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
   enabled: boolean,
 ): void {
@@ -3839,12 +3919,7 @@ const BANK_DISCRIMINATOR: u64 = 13574203538458161550n;
  * Open a bank's metadata, the PDA ["metadata", bank] (anyone pays). The bank may not exist yet; when it is a bank of
  * this program whose seed is known, it must be the PDA of its group, mint and seed.
  */
-export function initBankMetadata(
-  bank: AccountInfo,
-  fee_payer: Mut<Signer>,
-  metadata: Init<BankMetadata>,
-  system_program: SystemProgram,
-): void {
+export function initBankMetadata(bank: AccountInfo, fee_payer: Mut<Signer>, metadata: Init<BankMetadata>, system_program: SystemProgram): void {
   const bump = metadata.create(fee_payer, ["metadata", bank.key]);
   if (bank.dataLen > 0n && bank.owner === programId() && bank.dataLen >= 8n + 3904n && readData<u64>(bank, 0n) === BANK_DISCRIMINATOR) {
     const b = loadAccount<Bank>(bank);
@@ -4246,12 +4321,7 @@ export function marginfiAccountEndExecuteOrder(
   const healthy = health.v >= I80F48_ZERO;
   const q = taggedHealth(marginfi_account, group, rest, order.tags.get(0n), order.tags.get(1n), t);
   require(q.err === 0n, q.err);
-  resetHealthCache(
-    marginfi_account,
-    t,
-    3n,
-    (healthy ? HEALTH_HEALTHY : 0n) | HEALTH_ENGINE_OK | (h.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n),
-  );
+  resetHealthCache(marginfi_account, t, 3n, (healthy ? HEALTH_HEALTHY : 0n) | HEALTH_ENGINE_OK | (h.emode_boosted ? HEALTH_EMODE_BOOSTED : 0n));
   marginfi_account.health_cache.asset_value_maint.value = h.assets;
   marginfi_account.health_cache.liability_value_maint.value = h.liabs;
   if (h.err_index !== 255n) {
@@ -4755,18 +4825,15 @@ function validateRebalance(ixs: InstructionsSysvar, account: Pubkey, order: Acco
   const n = ixs.length;
   for (let i = 0n; i < n; i++) {
     const p = ixs.get(i).programId;
-    require(
-      p === programId() ||
-        p === COMPUTE_BUDGET_ID ||
-        p === KAMINO_ID ||
-        p === DRIFT_ID ||
-        p === JUPLEND_EARN_ID ||
-        p === JUPLEND_LIQUIDITY_ID ||
-        p === ATA_PROGRAM_ID ||
-        p === TOKEN_PROGRAM_ID ||
-        p === TOKEN_2022_PROGRAM,
-      MarginfiError.ForbiddenIx,
-    );
+    require(p === programId() ||
+      p === COMPUTE_BUDGET_ID ||
+      p === KAMINO_ID ||
+      p === DRIFT_ID ||
+      p === JUPLEND_EARN_ID ||
+      p === JUPLEND_LIQUIDITY_ID ||
+      p === ATA_PROGRAM_ID ||
+      p === TOKEN_PROGRAM_ID ||
+      p === TOKEN_2022_PROGRAM, MarginfiError.ForbiddenIx);
   }
   const last = ixs.get(n - 1n);
   require(last.dataLength >= 8n, MarginfiError.EndNotLast);
@@ -4846,7 +4913,7 @@ export function marginfiAccountStartRebalance(
   }
   require(n >= 2n && n <= 8n && referenced <= n, MarginfiError.RebalanceBankNotAllowed);
   const minImprovement = rebalance_order.min_improvement.value;
-  const p = parseBanks(rest, group.key, n, true);
+  const p = parseBanks(rest, group.key, n, true, true);
   require(p.end === rest.length, MarginfiError.WrongNumberOfOracleAccounts);
   for (let i = 0n; i < n; i++) accrueNative(rest, p.at.get(i), group, t);
   // Each bank: in the allowlist, of the order's mint, not Solend; its rate now, its room, the account's amount there.
@@ -4854,6 +4921,8 @@ export function marginfiAccountStartRebalance(
   const room = fixedArray<i128, 8>(0n);
   const pre = fixedArray<i128, 8>(0n);
   const tags = fixedArray<u64, 8>(0n);
+  /** 1 for a venue bank (its rate need not fall as deposits grow), 0 for a native one */
+  const venue = fixedArray<u8, 8>(0n);
   let decimals: u8 = 0n;
   for (let i = 0n; i < n; i++) {
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
@@ -4863,10 +4932,11 @@ export function marginfiAccountStartRebalance(
     require(bank.mint === rebalance_order.mint, MarginfiError.RebalanceMintMismatch);
     require(bank.config.asset_tag !== 5n, MarginfiError.RebalanceVenueUnsupported);
     if (!isVenueBank(bank.config.asset_tag)) checkRateModel(bank);
-    rates.set(i, supplyRate(bank, 0n));
-    venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
-    pre.set(i, underlying(marginfi_account, bank.key, bank));
-    room.set(i, depositRoom(bank));
+    else venue.set(i, 1n);
+    rates.set(i, rateAt(bank, rest, p, i, 0n, t));
+    const multiplier = venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
+    pre.set(i, underlying(marginfi_account, bank.key, bank, multiplier));
+    room.set(i, depositRoom(bank, multiplier, rest, p, i, t));
     tags.set(i, tagIn(marginfi_account, bank.key));
     if (i === 0n) decimals = bank.mint_decimals;
   }
@@ -4898,7 +4968,7 @@ export function marginfiAccountStartRebalance(
   const landed = fixedArray<i128, 8>(0n);
   for (let i = 0n; i < n; i++) {
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
-    landed.set(i, inflowNative.get(i) === 0n ? rates.get(i) : supplyRate(bank, inflowNative.get(i)));
+    landed.set(i, inflowNative.get(i) === 0n ? rates.get(i) : rateAt(bank, rest, p, i, inflowNative.get(i), t));
   }
   for (let k = 0n; k < m; k++) {
     const mv = moves.get(k);
@@ -4909,9 +4979,10 @@ export function marginfiAccountStartRebalance(
     const amount = tagged ? inflow.get(d) : mv.amount.value;
     const amountNative = tagged ? inflowNative.get(d) : toNative(decimals, mv.amount.value);
     for (let i = 0n; i < n; i++) {
-      // Full banks, banks already at or under the destination's landed rate (more only lowers a native rate), tagged
-      // ones and banks these tokens may not enter are not candidates.
-      if (i === d || inflow.get(i) >= room.get(i) || landed.get(i) <= landed.get(d) || tags.get(i) !== 0n || taggedDst.get(i) !== 0n) continue;
+      // Full banks, native banks already at or under the destination's landed rate (more only lowers a native rate),
+      // tagged ones and banks these tokens may not enter are not candidates.
+      if (i === d || inflow.get(i) >= room.get(i) || (venue.get(i) === 0n && landed.get(i) <= landed.get(d)) || tags.get(i) !== 0n || taggedDst.get(i) !== 0n)
+        continue;
       if (tagged && (inflow.get(i) > I80F48_ZERO || amount > room.get(i) || holds(marginfi_account, rest.get(p.at.get(i)).key))) continue;
       let extra: u64 = 0n;
       if (fxAdd(inflow.get(i), amount) <= room.get(i)) {
@@ -4920,13 +4991,16 @@ export function marginfiAccountStartRebalance(
       } else extra = toNative(decimals, room.get(i));
       if (extra === inflowNative.get(i)) continue;
       const candidate = loadAccount<Bank>(rest.get(p.at.get(i)));
-      require(supplyRate(candidate, extra) <= landed.get(d), MarginfiError.RebalanceNotBestVenue);
+      require(rateAt(candidate, rest, p, i, extra, t) <= landed.get(d), MarginfiError.RebalanceNotBestVenue);
     }
   }
   // RebalanceRecord::initialize.
   for (let k = 0n; k < m; k++) {
     const mv = moves.get(k);
-    require(u64(mv.src_index) < n && u64(mv.dst_index) < n && mv.src_index !== mv.dst_index && mv.amount.value > I80F48_ZERO, MarginfiError.IllegalBalanceState);
+    require(u64(mv.src_index) < n &&
+      u64(mv.dst_index) < n &&
+      mv.src_index !== mv.dst_index &&
+      mv.amount.value > I80F48_ZERO, MarginfiError.IllegalBalanceState);
   }
   rebalance_record.order = rebalance_order.key;
   rebalance_record.marginfi_account = marginfi_account.key;
@@ -5001,27 +5075,35 @@ export function marginfiAccountEndRebalance(
   const cooldown = rebalance_order.cooldown_seconds;
   const settleDelay = cooldown < SETTLE_DELAY_MIN ? SETTLE_DELAY_MIN : cooldown > SETTLE_DELAY_MAX ? SETTLE_DELAY_MAX : cooldown;
   const minImprovement = rebalance_order.min_improvement.value;
-  const p = parseBanks(rest, group.key, n, true);
+  const p = parseBanks(rest, group.key, n, true, false);
   for (let i = 0n; i < n; i++) require(rest.get(p.at.get(i)).key === rebalance_record.ref_banks.get(i).bank, MarginfiError.InvalidBankAccount);
   const post = fixedArray<i128, 8>(0n);
   const yields = fixedArray<i128, 8>(0n);
   let decimals: u8 = 0n;
+  let maxMultiplier: i128 = I80F48_ONE;
   for (let i = 0n; i < n; i++) {
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
     if (i === 0n) decimals = bank.mint_decimals;
     const multiplier = venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t);
-    post.set(i, underlying(marginfi_account, bank.key, bank));
-    yields.set(i, fxMul(bank.asset_share_value.value, multiplier));
+    // Venues settle in whole accounting tokens: the widest multiplier is the largest rounding unit any leg makes.
+    if (multiplier > maxMultiplier) maxMultiplier = multiplier;
+    post.set(i, underlying(marginfi_account, bank.key, bank, multiplier));
+    yields.set(i, yieldIndex(bank, multiplier));
   }
   // Each move's destination, priced after its own deposit, still beats the source's rate before it.
   for (let k = 0n; k < m; k++) {
     const mv = rebalance_record.moves.get(k);
     const bank = loadAccount<Bank>(rest.get(p.at.get(u64(mv.dst_index))));
-    const postRate = supplyRate(bank, 0n);
+    const postRate = rateAt(bank, rest, p, u64(mv.dst_index), 0n, t);
     require(postRate > fxAdd(rebalance_record.pre_rate.get(u64(mv.src_index)).value, minImprovement), MarginfiError.RebalanceOvershoot);
   }
   // RebalanceRecord::reconcile: each bank's change is its declared net flow within the dust.
-  const dust = fxDiv(fxMul(fxMul(DUST_ATOMS, fxFromU64(m)), I80F48_ONE), exp10Fx(u64(decimals)));
+  // conservation_dust: 3 atoms per move, times the widest multiplier.
+  const dustAtoms = fxTryMul(DUST_ATOMS, fxFromU64(m));
+  require(dustAtoms.err === 0n, MarginfiError.MathError);
+  const dustScaled = fxTryMul(dustAtoms.v, maxMultiplier);
+  require(dustScaled.err === 0n, MarginfiError.MathError);
+  const dust = fxDiv(dustScaled.v, exp10Fx(u64(decimals)));
   let moved = I80F48_ZERO;
   let refPre = I80F48_ZERO;
   let actualTotal = I80F48_ZERO;
@@ -5164,13 +5246,13 @@ export function marginfiAccountSettleRebalanceTip(
   const pending = rebalance_record.pending_tip;
   require(rebalance_record.settle_delay <= 18446744073709551615n - rebalance_record.move_timestamp, MarginfiError.MathError);
   require(u64(t) >= rebalance_record.move_timestamp + rebalance_record.settle_delay, MarginfiError.RebalanceSettleTooEarly);
-  const p = parseBanks(rest, group.key, n, false);
+  const p = parseBanks(rest, group.key, n, false, false);
   for (let i = 0n; i < n; i++) require(rest.get(p.at.get(i)).key === rebalance_record.ref_banks.get(i).bank, MarginfiError.InvalidBankAccount);
   const current = fixedArray<i128, 8>(0n);
   for (let i = 0n; i < n; i++) {
     accrueNative(rest, p.at.get(i), group, t);
     const bank = loadAccount<Bank>(rest.get(p.at.get(i)));
-    current.set(i, fxMul(bank.asset_share_value.value, venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t)));
+    current.set(i, yieldIndex(bank, venueMultiplier(bank, rest, p.first.get(i), p.count.get(i), t)));
   }
   // Realized: each destination's index grew more than its source's (cross-multiplied).
   let realized = true;
@@ -5206,4 +5288,2675 @@ export function marginfiAccountSettleRebalanceTip(
     realized,
     tip_paid: refunded ? 0n : pending,
   });
+}
+
+// ---- staked SOL ---------------------------------------------------------------------------------------------------
+
+const SPL_SINGLE_POOL_ID = pubkey("SVSPxpvHdN29nkVg9rPapPNDddN5DipNLRUFhyjFThE");
+const NATIVE_STAKE_ID = pubkey("Stake11111111111111111111111111111111111111");
+const VOTE_PROGRAM_ID = pubkey("Vote111111111111111111111111111111111111111");
+/** STAKED_ORACLE_DISABLED, STAKED_ORACLE_PRICE_USES_ONRAMP, and both. */
+const STAKED_ORACLE_DISABLED: u64 = 512n;
+const STAKED_ORACLE_PRICE_USES_ONRAMP: u64 = 1024n;
+const STAKED_ORACLE_FLAGS: u64 = 1536n;
+
+/** StakedSettings::validate: weights in [0, 1], maintenance at least initial; an isolated tier's both 0. */
+function validateStakedSettings(s: Mut<StakedSettings>): void {
+  const init = s.asset_weight_init.value;
+  const maint = s.asset_weight_maint.value;
+  require(init >= I80F48_ZERO && init <= I80F48_ONE, MarginfiError.InvalidConfig);
+  require(maint >= init, MarginfiError.InvalidConfig);
+  require(maint <= I80F48_ONE, MarginfiError.InvalidConfig);
+  if (s.risk_tier === RiskTier.Isolated) {
+    require(init === I80F48_ZERO, MarginfiError.InvalidConfig);
+    require(maint === I80F48_ZERO, MarginfiError.InvalidConfig);
+  }
+}
+
+/** Create the group's staked-SOL settings, the PDA ["staked_settings", group] (governance admin). */
+export function initStakedSettings(
+  marginfi_group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  fee_payer: Mut<Signer>,
+  staked_settings: Init<StakedSettings>,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  settings: StakedSettingsConfig,
+): void {
+  staked_settings.create(fee_payer, ["staked_settings", marginfi_group.key]);
+  checkNoDurableNonce(instruction_sysvar);
+  staked_settings.key_ = staked_settings.key;
+  staked_settings.marginfi_group = marginfi_group.key;
+  staked_settings.oracle = settings.oracle;
+  staked_settings.asset_weight_init.value = settings.asset_weight_init.value;
+  staked_settings.asset_weight_maint.value = settings.asset_weight_maint.value;
+  staked_settings.deposit_limit = settings.deposit_limit;
+  staked_settings.total_asset_value_init_limit = settings.total_asset_value_init_limit;
+  staked_settings.oracle_max_age = settings.oracle_max_age;
+  staked_settings.risk_tier = settings.risk_tier;
+  validateStakedSettings(staked_settings);
+}
+
+/** Change the staked settings (governance admin; each field when given), then check them. */
+export function editStakedSettings(
+  marginfi_group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  staked_settings: HasOne<Mut<StakedSettings>, "marginfi_group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  settings: StakedSettingsEditConfig,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  if (settings.oracle !== null) staked_settings.oracle = settings.oracle;
+  if (settings.asset_weight_init !== null) staked_settings.asset_weight_init.value = settings.asset_weight_init.value;
+  if (settings.asset_weight_maint !== null) staked_settings.asset_weight_maint.value = settings.asset_weight_maint.value;
+  if (settings.deposit_limit !== null) staked_settings.deposit_limit = settings.deposit_limit;
+  if (settings.total_asset_value_init_limit !== null) staked_settings.total_asset_value_init_limit = settings.total_asset_value_init_limit;
+  if (settings.oracle_max_age !== null) staked_settings.oracle_max_age = settings.oracle_max_age;
+  if (settings.risk_tier !== null) staked_settings.risk_tier = settings.risk_tier;
+  validateStakedSettings(staked_settings);
+  emit<EditStakedSettingsEvent>({ group: marginfi_group.key, settings });
+}
+
+/**
+ * Copy the staked settings onto a staked bank of the group (anyone): oracle, weights, limits, age, tier and the oracle
+ * flags; a new oracle (not while the bank is in same-asset e-mode) is checked against the remaining accounts.
+ */
+export function propagateStakedSettings(
+  marginfi_group: Account<MarginfiGroup>,
+  staked_settings: HasOne<Account<StakedSettings>, "marginfi_group", MarginfiError.InvalidGroup>,
+  bank: Mut<Bank>,
+): void {
+  constraint(bank, bank.group === marginfi_group.key && bank.config.asset_tag === BANK_ASSET_TAG_STAKED);
+  const before = bank.config.oracle_keys.get(0n);
+  const after = staked_settings.oracle;
+  require(before === after || (bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) === 0n, MarginfiError.BadEmodeConfig);
+  bank.config.oracle_keys.set(0n, after);
+  bank.config.asset_weight_init.value = staked_settings.asset_weight_init.value;
+  bank.config.asset_weight_maint.value = staked_settings.asset_weight_maint.value;
+  bank.config.deposit_limit = staked_settings.deposit_limit;
+  bank.config.total_asset_value_init_limit = staked_settings.total_asset_value_init_limit;
+  bank.config.oracle_max_age = staked_settings.oracle_max_age;
+  bank.config.risk_tier = staked_settings.risk_tier;
+  bank.flags = (bank.flags & ~STAKED_ORACLE_FLAGS) | (staked_settings.flags & STAKED_ORACLE_FLAGS);
+  if (before !== after) {
+    const rem = remainingAccounts();
+    let err = validateOracleCount(bank, rem.length);
+    if (err === 0n && validatesFeedAccount(bank)) err = validateFeedAccount(bank, rem.get(0n));
+    require(err === 0n, err);
+  }
+  validateBankConfig(bank.config);
+}
+
+/** Turn staked banks' oracles off (governance admin): they price nothing until the on-ramp is enabled. */
+export function disableStakedOracles(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  staked_settings: Seeds<Mut<StakedSettings>, ["staked_settings", "@group"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(staked_settings, staked_settings.marginfi_group === group.key, MarginfiError.InvalidGroup);
+  checkNoDurableNonce(instruction_sysvar);
+  staked_settings.flags = (staked_settings.flags & ~STAKED_ORACLE_PRICE_USES_ONRAMP) | STAKED_ORACLE_DISABLED;
+}
+
+/** Price staked banks with the pool's on-ramp counted (governance admin). */
+export function enableStakedOracleOnramp(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  staked_settings: Seeds<Mut<StakedSettings>, ["staked_settings", "@group"]>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+): void {
+  constraint(staked_settings, staked_settings.marginfi_group === group.key, MarginfiError.InvalidGroup);
+  checkNoDurableNonce(instruction_sysvar);
+  staked_settings.flags = (staked_settings.flags & ~STAKED_ORACLE_DISABLED) | STAKED_ORACLE_PRICE_USES_ONRAMP;
+}
+
+/** The SPL single-validator pool's addresses for a vote account: its pool, LST mint, stake account and on-ramp. */
+function poolOf(vote: Pubkey): Pubkey {
+  return findProgramAddress(["pool", vote], SPL_SINGLE_POOL_ID);
+}
+
+/**
+ * Add a staked-SOL bank (anyone): the LST of a validator's SPL single pool, as the PDA of the group, the LST mint and
+ * a seed, configured from the group's staked settings (a placeholder interest curve: it is never borrowed), priced
+ * by the settings' SOL oracle times the pool's stake per LST. The pool's accounts must be the vote account's.
+ */
+export function lendingPoolAddBankPermissionless(
+  marginfi_group: Mut<MarginfiGroup>,
+  staked_settings: HasOne<Account<StakedSettings>, "marginfi_group", MarginfiError.InvalidGroup>,
+  fee_payer: Mut<Signer>,
+  bank_mint: Mint,
+  sol_pool: AccountInfo,
+  pool_onramp: AccountInfo,
+  stake_pool: AccountInfo,
+  validator_vote_account: AccountInfo,
+  bank: Init<Bank>,
+  liquidity_vault_authority: Seeds<AccountInfo, ["liquidity_vault_auth", "@bank"]>,
+  liquidity_vault: Init<TokenAccount>,
+  insurance_vault_authority: Seeds<AccountInfo, ["insurance_vault_auth", "@bank"]>,
+  insurance_vault: Init<TokenAccount>,
+  fee_vault_authority: Seeds<AccountInfo, ["fee_vault_auth", "@bank"]>,
+  fee_vault: Init<TokenAccount>,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  bank_seed: u64,
+): void {
+  bank.create(fee_payer, [marginfi_group.key, bank_mint.key, bank_seed]);
+  const lv = liquidity_vault.create(fee_payer, ["liquidity_vault", bank.key], bank_mint, liquidity_vault_authority.key);
+  const iv = insurance_vault.create(fee_payer, ["insurance_vault", bank.key], bank_mint, insurance_vault_authority.key);
+  const fv = fee_vault.create(fee_payer, ["fee_vault", bank.key], bank_mint, fee_vault_authority.key);
+  const t = now();
+  initBankFields(
+    bank,
+    marginfi_group.key,
+    bank_mint.key,
+    bank_mint.decimals,
+    liquidity_vault.key,
+    insurance_vault.key,
+    fee_vault.key,
+    t,
+    lv,
+    liquidity_vault_authority.pdaBump,
+    iv,
+    insurance_vault_authority.pdaBump,
+    fv,
+    fee_vault_authority.pdaBump,
+    bank_seed,
+  );
+  setStakedConfig(
+    bank,
+    staked_settings.asset_weight_init.value,
+    staked_settings.asset_weight_maint.value,
+    staked_settings.deposit_limit,
+    staked_settings.risk_tier,
+    staked_settings.total_asset_value_init_limit,
+    staked_settings.oracle_max_age,
+  );
+  bank.flags |= BANK_SEED_KNOWN;
+  bank.flags |= staked_settings.flags & STAKED_ORACLE_FLAGS;
+  if (bank_mint.tokenProgram === TOKEN_2022_ID) bank.flags |= IS_T22;
+  bank.config.oracle_setup = OracleSetup.StakedWithPythPush;
+  bank.config.oracle_keys.set(0n, staked_settings.oracle);
+  // MarginfiGroup::add_bank: the count saturates.
+  if (marginfi_group.banks < 65535n) marginfi_group.banks += 1n;
+  marginfi_group.fee_state_cache.last_update = t;
+  validateBankConfig(bank.config);
+  require(stake_pool.owner === SPL_SINGLE_POOL_ID, MarginfiError.StakePoolValidationFailed);
+  require(validator_vote_account.owner === VOTE_PROGRAM_ID, MarginfiError.StakePoolValidationFailed);
+  const pool = poolOf(validator_vote_account.key);
+  const lst = findProgramAddress(["mint", pool], SPL_SINGLE_POOL_ID);
+  const stake = findProgramAddress(["stake", pool], SPL_SINGLE_POOL_ID);
+  const onramp = findProgramAddress(["onramp", pool], SPL_SINGLE_POOL_ID);
+  require(pool === stake_pool.key, MarginfiError.StakePoolValidationFailed);
+  require(lst === bank_mint.key, MarginfiError.StakePoolValidationFailed);
+  require(stake === sol_pool.key, MarginfiError.StakePoolValidationFailed);
+  require(onramp === pool_onramp.key, MarginfiError.StakePoolValidationFailed);
+  require(pool_onramp.owner === NATIVE_STAKE_ID, MarginfiError.StakePoolValidationFailed);
+  bank.integration_acc_1 = validator_vote_account.key;
+  bank.config.oracle_keys.set(1n, bank_mint.key);
+  bank.config.oracle_keys.set(2n, sol_pool.key);
+  bank.config.oracle_keys.set(3n, onramp);
+  // validate_bank_config for a new staked bank: the SOL feed, then the pool's LST mint, stake account and on-ramp.
+  const rem = remainingAccounts();
+  require(rem.length === 4n, MarginfiError.WrongNumberOfOracleAccounts);
+  require(rem.get(0n).key === bank.config.oracle_keys.get(0n), MarginfiError.WrongOracleAccountKeys);
+  const feedErr = pythAccountErr(rem.get(0n));
+  require(feedErr === 0n, feedErr);
+  require(findProgramAddress(["mint", stake_pool.key], SPL_SINGLE_POOL_ID) === bank_mint.key, MarginfiError.StakePoolValidationFailed);
+  require(findProgramAddress(["stake", stake_pool.key], SPL_SINGLE_POOL_ID) === sol_pool.key, MarginfiError.StakePoolValidationFailed);
+  const expOnramp = findProgramAddress(["onramp", stake_pool.key], SPL_SINGLE_POOL_ID);
+  if (bank.config.oracle_keys.get(3n) !== ZERO_KEY) require(bank.config.oracle_keys.get(3n) === expOnramp, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(1n).owner === TOKEN_PROGRAM_ID, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(1n).key === bank_mint.key, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(2n).owner === NATIVE_STAKE_ID, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(2n).key === sol_pool.key, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(3n).owner === NATIVE_STAKE_ID, MarginfiError.StakePoolValidationFailed);
+  require(rem.get(3n).key === expOnramp, MarginfiError.StakePoolValidationFailed);
+  emit<LendingPoolBankCreateEvent>({
+    header: { signer: fee_payer.key, marginfi_group: marginfi_group.key },
+    bank: bank.key,
+    mint: bank_mint.key,
+  });
+}
+
+/** Record a staked bank's validator vote account (anyone; once, idempotent), and its on-ramp when it has none. */
+export function lendingPoolBackfillStakedBankValidatorVoteAccount(bank: Mut<Bank>, validator_vote_account: AccountInfo): void {
+  require(bank.config.asset_tag === BANK_ASSET_TAG_STAKED, MarginfiError.AssetTagMismatch);
+  require(bank.config.oracle_setup === OracleSetup.StakedWithPythPush, MarginfiError.StakePoolValidationFailed);
+  require(validator_vote_account.owner === VOTE_PROGRAM_ID, MarginfiError.StakePoolValidationFailed);
+  const pool = poolOf(validator_vote_account.key);
+  const lst = findProgramAddress(["mint", pool], SPL_SINGLE_POOL_ID);
+  const stake = findProgramAddress(["stake", pool], SPL_SINGLE_POOL_ID);
+  const onramp = findProgramAddress(["onramp", pool], SPL_SINGLE_POOL_ID);
+  require(lst === bank.mint, MarginfiError.StakePoolValidationFailed);
+  require(lst === bank.config.oracle_keys.get(1n), MarginfiError.StakePoolValidationFailed);
+  require(stake === bank.config.oracle_keys.get(2n), MarginfiError.StakePoolValidationFailed);
+  if (bank.config.oracle_keys.get(3n) !== ZERO_KEY) require(onramp === bank.config.oracle_keys.get(3n), MarginfiError.StakePoolValidationFailed);
+  if (bank.integration_acc_1 !== ZERO_KEY) require(bank.integration_acc_1 === validator_vote_account.key, MarginfiError.StakePoolValidationFailed);
+  else bank.integration_acc_1 = validator_vote_account.key;
+  if (bank.config.oracle_keys.get(3n) === ZERO_KEY) bank.config.oracle_keys.set(3n, onramp);
+}
+
+// ---- Scope oracles ------------------------------------------------------------------------------------------------
+
+/**
+ * Price a bank by a Scope feed entry (governance admin; not a frozen bank, which panics, nor one in same-asset
+ * e-mode): Scope for a regular or SOL bank, ScopeKamino / ScopeJuplend for a Kamino / JupLend one (its venue account
+ * second among the remaining accounts).
+ */
+export function lendingPoolConfigureBankOracleScope(
+  group: HasOne<Account<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  bank: HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  oracle: Pubkey,
+  entry_index: u16,
+): void {
+  checkNoDurableNonce(instruction_sysvar);
+  // "cannot change oracle settings on frozen banks": a panic in the original.
+  require((bank.flags & FREEZE_SETTINGS) !== FREEZE_SETTINGS, MarginfiError.InternalLogicError);
+  require((bank.flags & BANK_SAME_ASSET_EMODE_ELIGIBLE) !== BANK_SAME_ASSET_EMODE_ELIGIBLE, MarginfiError.BadEmodeConfig);
+  const tag = bank.config.asset_tag;
+  // OracleSetup::Scope (18), ScopeKamino (27), ScopeJuplend (28).
+  let code: u8 = 18n;
+  if (tag === 3n) code = 27n;
+  else if (tag === ASSET_TAG_JUPLEND) code = 28n;
+  else require(tag === ASSET_TAG_DEFAULT || tag === ASSET_TAG_SOL, MarginfiError.InvalidOracleSetup);
+  const setup = setupOf(code);
+  bank.config.oracle_setup = setup;
+  bank.config.oracle_keys.set(0n, oracle);
+  bank.config.scope_entry_index = entry_index;
+  bank.config.fixed_price.value = I80F48_ZERO;
+  const rem = remainingAccounts();
+  const venue = setup !== OracleSetup.Scope;
+  require(rem.length === (venue ? 2n : 1n), MarginfiError.WrongNumberOfOracleAccounts);
+  require(rem.get(0n).key === oracle, MarginfiError.WrongOracleAccountKeys);
+  const err = scopeEntryErr(rem.get(0n), entry_index);
+  require(err === 0n, err);
+  if (venue) {
+    if (code === 27n) require(rem.get(1n).key === bank.config.oracle_keys.get(1n), MarginfiError.KaminoReserveValidationFailed);
+    else require(rem.get(1n).key === bank.config.oracle_keys.get(1n), MarginfiError.JuplendLendingValidationFailed);
+  }
+  emit<LendingPoolBankConfigureOracleEvent>({
+    header: { signer: governance_admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    oracle_setup: code,
+    oracle,
+  });
+}
+
+// ---- Solend banks (instructions/solend) ---------------------------------------------------------------------------
+
+/**
+ * Add a Solend bank: its deposits go into a Solend reserve of the bank's mint through an obligation the bank's
+ * liquidity vault authority owns (created by solend_init_obligation, at the PDA ["solend_obligation", bank]). The bank
+ * holds the reserve's collateral tokens, priced at the feed times the reserve's exchange rate; it never lends.
+ * Governance admin only; remaining accounts: the feed, then the reserve.
+ */
+export function lendingPoolAddBankSolend(
+  group: HasOne<Mut<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  fee_payer: Mut<Signer>,
+  bank_mint: Mint,
+  bank: Init<Bank>,
+  integration_acc_1: Owner<Account<SolendReserve>, "So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo">,
+  integration_acc_2: Seeds<SystemAccount, ["solend_obligation", "@bank"]>,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"]>,
+  liquidity_vault: Init<TokenAccount>,
+  insurance_vault_authority: Seeds<SystemAccount, ["insurance_vault_auth", "@bank"]>,
+  insurance_vault: Init<TokenAccount>,
+  fee_vault_authority: Seeds<SystemAccount, ["fee_vault_auth", "@bank"]>,
+  fee_vault: Init<TokenAccount>,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  bank_config: SolendConfigCompact,
+  bank_seed: u64,
+): void {
+  constraint(integration_acc_1, reserveLiquidityMint(integration_acc_1) === bank_mint.key, MarginfiError.SolendReserveMintMismatch);
+  bank.create(fee_payer, [group.key, bank_mint.key, bank_seed]);
+  const lv = liquidity_vault.create(fee_payer, ["liquidity_vault", bank.key], bank_mint, liquidity_vault_authority.key);
+  const iv = insurance_vault.create(fee_payer, ["insurance_vault", bank.key], bank_mint, insurance_vault_authority.key);
+  const fv = fee_vault.create(fee_payer, ["fee_vault", bank.key], bank_mint, fee_vault_authority.key);
+  checkNoDurableNonce(instruction_sysvar);
+  const s = bank_config.oracle_setup;
+  require(s === OracleSetup.SolendPythPull || s === OracleSetup.SolendSwitchboardPull, MarginfiError.SolendInvalidOracleSetup);
+  const t = now();
+  initBankFields(
+    bank,
+    group.key,
+    bank_mint.key,
+    bank_mint.decimals,
+    liquidity_vault.key,
+    insurance_vault.key,
+    fee_vault.key,
+    t,
+    lv,
+    liquidity_vault_authority.pdaBump,
+    iv,
+    insurance_vault_authority.pdaBump,
+    fv,
+    fee_vault_authority.pdaBump,
+    bank_seed,
+  );
+  setVenueConfig(
+    bank,
+    bank_config.oracle,
+    integration_acc_1.key,
+    bank_config.asset_weight_init.value,
+    bank_config.asset_weight_maint.value,
+    bank_config.deposit_limit,
+    s,
+    bank_config.operational_state,
+    bank_config.risk_tier,
+    ASSET_TAG_SOLEND,
+    bank_config.config_flags,
+    bank_config.total_asset_value_init_limit,
+    bank_config.oracle_max_age,
+    bank_config.oracle_max_confidence,
+    I80F48_ZERO,
+  );
+  bank.flags |= BANK_SEED_KNOWN;
+  if (bank_mint.tokenProgram === TOKEN_2022_ID) bank.flags |= IS_T22;
+  bank.integration_acc_1 = integration_acc_1.key;
+  bank.integration_acc_2 = integration_acc_2.key;
+  // MarginfiGroup::add_bank: the count saturates.
+  if (group.banks < 65535n) group.banks += 1n;
+  group.fee_state_cache.last_update = t;
+  validateBankConfig(bank.config);
+  const rem = remainingAccounts();
+  let err = validateOracleCount(bank, rem.length);
+  if (err === 0n) err = validateFeedAccount(bank, rem.get(0n));
+  if (err === 0n) err = validateVenueAccount(bank, rem);
+  require(err === 0n, err);
+  emit<LendingPoolBankCreateEvent>({
+    header: { signer: governance_admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    mint: bank_mint.key,
+  });
+}
+
+/**
+ * Create a Solend bank's obligation (owned by its liquidity vault authority) and deposit `amount` (at least 10) of the
+ * payer's tokens into it, which keeps it from ever being closed.
+ */
+export function solendInitObligation(
+  fee_payer: Mut<Signer>,
+  bank: HasOne<
+    HasOne<
+      HasOne<HasOne<Account<Bank>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>, "integration_acc_1", MarginfiError.InvalidSolendReserve>,
+      "integration_acc_2",
+      MarginfiError.InvalidSolendObligation
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  signer_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  integration_acc_2: Mut<AccountInfo>,
+  lending_market: AccountInfo,
+  lending_market_authority: AccountInfo,
+  integration_acc_1: Owner<Mut<SolendReserve>, "So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo">,
+  mint: Mut<Mint>,
+  reserve_liquidity_supply: Mut<TokenAccount>,
+  reserve_collateral_mint: Mut<AccountInfo>,
+  reserve_collateral_supply: Mut<TokenAccount>,
+  user_collateral: Mut<AccountInfo>,
+  pyth_price: AccountInfo,
+  switchboard_feed: AccountInfo,
+  solend_program: Program<"So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo">,
+  token_program: TokenInterface,
+  rent: Address<AccountInfo, "SysvarRent111111111111111111111111111111111">,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_SOLEND, MarginfiError.WrongBankAssetTagForSolendOperation);
+  constraint(signer_token_account, signer_token_account.mint === mint.key, AnchorError.ConstraintTokenMint);
+  constraint(signer_token_account, signer_token_account.owner === fee_payer.key, AnchorError.ConstraintTokenOwner);
+  // Anchor's `init` (owned by Solend): run before the constraints, over an address someone funded first too.
+  system_program.createPda(fee_payer, integration_acc_2, SOLEND_OBLIGATION_SIZE, SOLEND_PROGRAM_ID, ["solend_obligation", bank.key]);
+  require(amount >= 10n, MarginfiError.ObligationInitDepositInsufficient);
+  const bump = bank.liquidity_vault_authority_bump;
+  invoke(
+    solend_program,
+    [writable(integration_acc_2), readonly(lending_market), readonlySigner(liquidity_vault_authority), readonly(rent), readonly(token_program)],
+    [u8(6n)],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  invoke(
+    token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(fee_payer)],
+    [u8(12n), amount, mint.decimals],
+  );
+  // Solend's DepositReserveLiquidityAndObligationCollateral, the liquidity vault authority signing.
+  invoke(
+    solend_program,
+    [
+      writable(liquidity_vault),
+      writable(user_collateral),
+      writable(integration_acc_1),
+      writable(reserve_liquidity_supply),
+      writable(reserve_collateral_mint),
+      readonly(lending_market),
+      readonly(lending_market_authority),
+      writable(reserve_collateral_supply),
+      writable(integration_acc_2),
+      readonlySigner(liquidity_vault_authority),
+      readonly(pyth_price),
+      readonly(switchboard_feed),
+      readonlySigner(liquidity_vault_authority),
+      readonly(token_program),
+    ],
+    [u8(14n), amount],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  log(`Solend obligation initialized with amount: ${amount}`);
+}
+
+/**
+ * Deposit into a Solend bank: the tokens go through the liquidity vault into the reserve, and the balance grows by the
+ * obligation's new collateral (which must be the amount at the reserve's rate, give or take one token). The reserve
+ * must have been refreshed this slot.
+ */
+export function solendDeposit(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+        "integration_acc_1",
+        MarginfiError.InvalidSolendReserve
+      >,
+      "integration_acc_2",
+      MarginfiError.InvalidSolendObligation
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  signer_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  integration_acc_2: Mut<AccountInfo>,
+  lending_market: AccountInfo,
+  lending_market_authority: AccountInfo,
+  integration_acc_1: Owner<Mut<SolendReserve>, "So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo">,
+  mint: Mint,
+  reserve_liquidity_supply: Mut<TokenAccount>,
+  reserve_collateral_mint: Mut<AccountInfo>,
+  reserve_collateral_supply: Mut<TokenAccount>,
+  user_collateral: Mut<AccountInfo>,
+  pyth_price: AccountInfo,
+  switchboard_feed: AccountInfo,
+  solend_program: Program<"So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo">,
+  token_program: TokenInterface,
+  amount: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, false), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_SOLEND, MarginfiError.WrongBankAssetTagForSolendOperation);
+  constraint(integration_acc_2, integration_acc_2.owner === SOLEND_PROGRAM_ID, MarginfiError.InvalidSolendAccount);
+  constraint(integration_acc_1, reserveSlot(integration_acc_1) >= currentSlot(), MarginfiError.SolendReserveStale);
+  validateObligation(integration_acc_2, integration_acc_1.key);
+  const t = now();
+  require(assetTagsCompatible(bank, marginfi_account), MarginfiError.AssetTagMismatch);
+  validateBankState(bank, FAILS_IF_PAUSED_OR_REDUCE_STATE, findBalance(marginfi_account, bank.key) >= 0n, t);
+  const flags = marginfi_account.account_flags;
+  require((flags & ACCOUNT_DISABLED) === 0n && (flags & ACCOUNT_IN_RECEIVERSHIP) === 0n, MarginfiError.AccountDisabled);
+  const before = obligationDeposit(integration_acc_2);
+  const expected = convert(integration_acc_1, amount, false);
+  invoke(
+    token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(authority)],
+    [u8(12n), amount, mint.decimals],
+  );
+  // Solend's DepositReserveLiquidityAndObligationCollateral, the liquidity vault authority signing.
+  invoke(
+    solend_program,
+    [
+      writable(liquidity_vault),
+      writable(user_collateral),
+      writable(integration_acc_1),
+      writable(reserve_liquidity_supply),
+      writable(reserve_collateral_mint),
+      readonly(lending_market),
+      readonly(lending_market_authority),
+      writable(reserve_collateral_supply),
+      writable(integration_acc_2),
+      readonlySigner(liquidity_vault_authority),
+      readonly(pyth_price),
+      readonly(switchboard_feed),
+      readonlySigner(liquidity_vault_authority),
+      readonly(token_program),
+    ],
+    [u8(14n), amount],
+    ["liquidity_vault_auth", bank.key, bank.liquidity_vault_authority_bump],
+  );
+  const change = obligationDeposit(integration_acc_2) - before;
+  require(withinOneToken(change, expected), MarginfiError.SolendDepositFailed);
+  const i = findOrCreateBalance(marginfi_account, bank, bank.key, t);
+  const shares = increaseBalance(marginfi_account, i, bank, fxFromU64(change), INCREASE_DEPOSIT_ONLY, u64(t));
+  recordDepositInflow(bank, group, group.key, bank.key, marginfi_account.account_flags, amount, t);
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  emit<LendingAccountDepositEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount,
+    share_amount: { value: shares },
+  });
+}
+
+/**
+ * Withdraw from a Solend bank: `amount` in the reserve's collateral tokens (or all of it), redeemed by Solend into the
+ * liquidity vault and passed on; then the account's health as a withdrawal's (the banks and their oracles after the
+ * instruction's accounts), and the bank's price cache. The reserve must have been refreshed this slot.
+ */
+export function solendWithdraw(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+        "integration_acc_1",
+        MarginfiError.InvalidSolendReserve
+      >,
+      "integration_acc_2",
+      MarginfiError.InvalidSolendObligation
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  destination_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  integration_acc_2: Mut<AccountInfo>,
+  lending_market: Mut<AccountInfo>,
+  lending_market_authority: AccountInfo,
+  integration_acc_1: Owner<Mut<SolendReserve>, "So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo">,
+  mint: Mint,
+  reserve_liquidity_supply: Mut<TokenAccount>,
+  reserve_collateral_mint: Mut<AccountInfo>,
+  reserve_collateral_supply: Mut<TokenAccount>,
+  user_collateral: Mut<AccountInfo>,
+  solend_program: Program<"So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo">,
+  token_program: TokenInterface,
+  amount: u64,
+  withdraw_all: Option<boolean>,
+): void {
+  constraint(group, !protocolPaused(group) || (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n, MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, true, false, false), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_SOLEND, MarginfiError.WrongBankAssetTagForSolendOperation);
+  constraint(
+    bank,
+    !((marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n && bank.config.asset_weight_init.value === I80F48_ZERO),
+    MarginfiError.LiquidationPremiumTooHigh,
+  );
+  constraint(integration_acc_2, integration_acc_2.owner === SOLEND_PROGRAM_ID, MarginfiError.InvalidSolendAccount);
+  constraint(integration_acc_1, reserveSlot(integration_acc_1) >= currentSlot(), MarginfiError.SolendReserveStale);
+  validateObligation(integration_acc_2, integration_acc_1.key);
+  const all = withdraw_all !== null && withdraw_all;
+  const t = now();
+  validateBankState(bank, FAILS_IN_PAUSED_STATE, !hasLiabilities(marginfi_account), t);
+  const receivership = (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n;
+  const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
+  let price = I80F48_ZERO;
+  if (receivership || groupLimited) {
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
+    require(p.err === 0n, p.err);
+    if (receivership) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
+    price = p.v;
+  }
+  const i = findBalance(marginfi_account, bank.key);
+  require(i >= 0n, MarginfiError.BankAccountNotFound);
+  let collateral: u64 = amount;
+  let shares = I80F48_ZERO;
+  if (all) {
+    const w = withdrawAll(marginfi_account, u64(i), bank, receivership);
+    collateral = w.amount;
+    shares = w.shares;
+  } else shares = decreaseBalance(marginfi_account, u64(i), bank, fxFromU64(amount), DECREASE_WITHDRAW_ONLY, u64(t));
+  const native = convert(integration_acc_1, collateral, true);
+  recordWithdrawalOutflow(groupLimited, native, collateral, price, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
+  if ((marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n) {
+    // check_deleverage_withdraw_limit: the day's deleveraged value, in whole dollars (wrapped to u32), under the cap.
+    const value = calcValue(fxFromU64(collateral), price, balanceDecimals(bank), I80F48_ZERO, false);
+    require(value.err === 0n, value.err);
+    const usd = fxToU32Wrapping(value.v);
+    const window = group.deleverage_withdraw_window_cache;
+    const today: u32 = saturatingSubI64(t, window.last_daily_reset_timestamp) >= 86400n ? 0n : window.withdrawn_today;
+    const projected: u32 = today > 4294967295n - usd ? 4294967295n : today + usd;
+    require(window.daily_limit === 0n || projected <= window.daily_limit, MarginfiError.DailyWithdrawalLimitExceeded);
+    emit<DeleverageWithdrawFlowEvent>({ group: group.key, bank: bank.key, mint: bank.mint, outflow_usd: usd, current_timestamp: t });
+  }
+  const before = obligationDeposit(integration_acc_2);
+  const vaultBefore = liquidity_vault.amount;
+  const expected = convert(integration_acc_1, collateral, true);
+  const bump = bank.liquidity_vault_authority_bump;
+  invoke(
+    solend_program,
+    [
+      writable(reserve_collateral_supply),
+      writable(user_collateral),
+      writable(integration_acc_1),
+      writable(integration_acc_2),
+      writable(lending_market),
+      readonly(lending_market_authority),
+      writable(liquidity_vault),
+      writable(reserve_collateral_mint),
+      writable(reserve_liquidity_supply),
+      readonlySigner(liquidity_vault_authority),
+      readonlySigner(liquidity_vault_authority),
+      readonly(token_program),
+      writable(integration_acc_1),
+    ],
+    [u8(15n), collateral],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  require(withinOneToken(before - obligationDeposit(integration_acc_2), collateral), MarginfiError.SolendWithdrawFailed);
+  const received = liquidity_vault.amount - vaultBefore;
+  require(withinOneToken(received, expected), MarginfiError.SolendWithdrawFailed);
+  invoke(
+    token_program,
+    [writable(liquidity_vault), readonly(mint), writable(destination_token_account), readonlySigner(liquidity_vault_authority)],
+    [u8(12n), received, mint.decimals],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  emit<LendingAccountWithdrawEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount: collateral,
+    close_balance: all,
+    share_amount: { value: shares },
+  });
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  if (!receivership) {
+    // check_account_init_health_and_clear_tag: skipped in a flash loan (checked at its end).
+    const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
+    const h = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_INITIAL, false, true, t);
+    if (!flash) {
+      require(h.err === 0n, h.err);
+      require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
+      const tiers = riskTiersErr(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length);
+      require(tiers === 0n, tiers);
+      if (marginfi_account.liquidation_tagged_at !== 0n) {
+        const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_MAINTENANCE, false, false, t);
+        if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
+      }
+    }
+    updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+    writeHealthCache(marginfi_account, h, t, !flash);
+    if (hasLiabilities(marginfi_account)) {
+      // The original still holds the bank mutably here: the gate fails when it reaches it.
+      const gate = cbPriceGateHolding(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length, t, bank.key);
+      require(gate === 0n, gate);
+    }
+  } else {
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+  }
+}
+
+// ---- Kamino banks (instructions/kamino) ---------------------------------------------------------------------------
+
+/** The bank's Kamino obligation: klend's PDA [0, 0, owner, market, system, system] of the liquidity vault authority. */
+function kaminoObligationOf(owner: Pubkey, market: Pubkey): Pubkey {
+  return findProgramAddress([u8(0n), u8(0n), owner, market, SYSTEM_PROGRAM_ID, SYSTEM_PROGRAM_ID], KAMINO_ID);
+}
+
+/**
+ * Add a Kamino bank: its deposits go into a klend reserve of the bank's mint through the obligation its liquidity vault
+ * authority owns (created by kamino_init_obligation). The bank holds the reserve's collateral tokens, priced at the
+ * feed times the reserve's exchange rate; it never lends. Governance admin only; remaining accounts: the feed, then
+ * the reserve.
+ */
+export function lendingPoolAddBankKamino(
+  group: HasOne<Mut<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  fee_payer: Mut<Signer>,
+  bank_mint: Mint,
+  bank: Init<Bank>,
+  integration_acc_1: Owner<Account<KaminoReserve>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  integration_acc_2: SystemAccount,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"]>,
+  liquidity_vault: Init<TokenAccount>,
+  insurance_vault_authority: Seeds<SystemAccount, ["insurance_vault_auth", "@bank"]>,
+  insurance_vault: Init<TokenAccount>,
+  fee_vault_authority: Seeds<SystemAccount, ["fee_vault_auth", "@bank"]>,
+  fee_vault: Init<TokenAccount>,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  bank_config: KaminoConfigCompact,
+  bank_seed: u64,
+): void {
+  constraint(integration_acc_1, reserveMint(integration_acc_1) === bank_mint.key, MarginfiError.KaminoReserveMintAddressMismatch);
+  constraint(
+    integration_acc_2,
+    kaminoObligationOf(liquidity_vault_authority.key, reserveMarket(integration_acc_1)) === integration_acc_2.key,
+    AnchorError.ConstraintSeeds,
+  );
+  bank.create(fee_payer, [group.key, bank_mint.key, bank_seed]);
+  const lv = liquidity_vault.create(fee_payer, ["liquidity_vault", bank.key], bank_mint, liquidity_vault_authority.key);
+  const iv = insurance_vault.create(fee_payer, ["insurance_vault", bank.key], bank_mint, insurance_vault_authority.key);
+  const fv = fee_vault.create(fee_payer, ["fee_vault", bank.key], bank_mint, fee_vault_authority.key);
+  checkNoDurableNonce(instruction_sysvar);
+  const s = bank_config.oracle_setup;
+  require(s === OracleSetup.KaminoPythPush || s === OracleSetup.KaminoSwitchboardPull, MarginfiError.KaminoInvalidOracleSetup);
+  const t = now();
+  initBankFields(
+    bank,
+    group.key,
+    bank_mint.key,
+    bank_mint.decimals,
+    liquidity_vault.key,
+    insurance_vault.key,
+    fee_vault.key,
+    t,
+    lv,
+    liquidity_vault_authority.pdaBump,
+    iv,
+    insurance_vault_authority.pdaBump,
+    fv,
+    fee_vault_authority.pdaBump,
+    bank_seed,
+  );
+  setVenueConfig(
+    bank,
+    bank_config.oracle,
+    integration_acc_1.key,
+    bank_config.asset_weight_init.value,
+    bank_config.asset_weight_maint.value,
+    bank_config.deposit_limit,
+    s,
+    bank_config.operational_state,
+    bank_config.risk_tier,
+    ASSET_TAG_KAMINO,
+    bank_config.config_flags,
+    bank_config.total_asset_value_init_limit,
+    bank_config.oracle_max_age,
+    bank_config.oracle_max_confidence,
+    I80F48_ZERO,
+  );
+  bank.flags |= BANK_SEED_KNOWN;
+  if (bank_mint.tokenProgram === TOKEN_2022_ID) bank.flags |= IS_T22;
+  bank.integration_acc_1 = integration_acc_1.key;
+  bank.integration_acc_2 = integration_acc_2.key;
+  if (group.banks < 65535n) group.banks += 1n;
+  group.fee_state_cache.last_update = t;
+  validateBankConfig(bank.config);
+  const rem = remainingAccounts();
+  let err = validateOracleCount(bank, rem.length);
+  if (err === 0n) err = validateFeedAccount(bank, rem.get(0n));
+  if (err === 0n) err = validateVenueAccount(bank, rem);
+  require(err === 0n, err);
+  // The original names the group's admin as the event's signer.
+  emit<LendingPoolBankCreateEvent>({
+    header: { signer: group.admin, marginfi_group: group.key },
+    bank: bank.key,
+    mint: bank_mint.key,
+  });
+}
+
+/**
+ * Create a Kamino bank's obligation (its user metadata first, owned by the bank's liquidity vault authority; its farm
+ * state too when the reserve has a collateral farm) and deposit `amount` (at least 10) of the payer's tokens into it,
+ * which keeps it from ever being closed.
+ */
+export function kaminoInitObligation(
+  fee_payer: Mut<Signer>,
+  bank: HasOne<
+    HasOne<
+      HasOne<HasOne<Account<Bank>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>, "integration_acc_1", MarginfiError.InvalidKaminoReserve>,
+      "integration_acc_2",
+      MarginfiError.InvalidKaminoObligation
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  signer_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  integration_acc_2: Mut<SystemAccount>,
+  user_metadata: Mut<SystemAccount>,
+  lending_market: AccountInfo,
+  lending_market_authority: AccountInfo,
+  integration_acc_1: Owner<Mut<KaminoReserve>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  mint: Mut<Mint>,
+  reserve_liquidity_supply: Mut<TokenAccount>,
+  reserve_collateral_mint: Mut<AccountInfo>,
+  reserve_destination_deposit_collateral: Mut<TokenAccount>,
+  obligation_farm_user_state: Mut<AccountInfo> | null,
+  reserve_farm_state: Mut<AccountInfo> | null,
+  kamino_program: Program<"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  farms_program: Program<"FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr">,
+  collateral_token_program: TokenProgram,
+  liquidity_token_program: TokenInterface,
+  instruction_sysvar_account: Address<AccountInfo, "Sysvar1nstructions1111111111111111111111111">,
+  rent: Address<AccountInfo, "SysvarRent111111111111111111111111111111111">,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_KAMINO, MarginfiError.WrongAssetTagForKaminoInstructions);
+  constraint(signer_token_account, signer_token_account.mint === mint.key, AnchorError.ConstraintTokenMint);
+  constraint(signer_token_account, signer_token_account.owner === fee_payer.key, AnchorError.ConstraintTokenOwner);
+  constraint(integration_acc_2, kaminoObligationOf(liquidity_vault_authority.key, lending_market.key) === integration_acc_2.key, AnchorError.ConstraintSeeds);
+  require(amount >= 10n, MarginfiError.ObligationInitDepositInsufficient);
+  const bump = bank.liquidity_vault_authority_bump;
+  // refresh_reserves_batch(skip_price_updates): the reserve's interest, now.
+  invoke(kamino_program, [writable(integration_acc_1), readonly(lending_market)], [sighash("refresh_reserves_batch"), u8(1n)]);
+  invoke(
+    kamino_program,
+    [
+      readonlySigner(liquidity_vault_authority),
+      writableSigner(fee_payer),
+      writable(user_metadata),
+      readonly(kamino_program),
+      readonly(rent),
+      readonly(system_program),
+    ],
+    [sighash("init_user_metadata"), SYSTEM_PROGRAM_ID],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  invoke(
+    kamino_program,
+    [
+      readonlySigner(liquidity_vault_authority),
+      writableSigner(fee_payer),
+      writable(integration_acc_2),
+      readonly(lending_market),
+      readonly(system_program),
+      readonly(system_program),
+      readonly(user_metadata),
+      readonly(rent),
+      readonly(system_program),
+    ],
+    [sighash("init_obligation"), u8(0n), u8(0n)],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  if (reserve_farm_state !== null) {
+    invoke(
+      kamino_program,
+      [
+        writableSigner(fee_payer),
+        readonly(liquidity_vault_authority),
+        writable(integration_acc_2),
+        readonly(lending_market_authority),
+        writable(integration_acc_1),
+        writable(reserve_farm_state),
+        writable(obligation_farm_user_state!),
+        readonly(lending_market),
+        readonly(farms_program),
+        readonly(rent),
+        readonly(system_program),
+      ],
+      [sighash("init_obligation_farms_for_reserve"), u8(0n)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  }
+  invoke(kamino_program, [readonly(lending_market), writable(integration_acc_2)], [sighash("refresh_obligation")]);
+  invoke(
+    liquidity_token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(fee_payer)],
+    [u8(12n), amount, mint.decimals],
+  );
+  // klend's DepositReserveLiquidityAndObligationCollateralV2 (a farm left out is klend's own id).
+  if (reserve_farm_state !== null && obligation_farm_user_state !== null)
+    invoke(
+      kamino_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(integration_acc_2),
+        readonly(lending_market),
+        readonly(lending_market_authority),
+        writable(integration_acc_1),
+        readonly(mint),
+        writable(reserve_liquidity_supply),
+        writable(reserve_collateral_mint),
+        writable(reserve_destination_deposit_collateral),
+        writable(liquidity_vault),
+        readonly(kamino_program),
+        readonly(collateral_token_program),
+        readonly(liquidity_token_program),
+        readonly(instruction_sysvar_account),
+        writable(obligation_farm_user_state),
+        writable(reserve_farm_state),
+        readonly(farms_program),
+      ],
+      [sighash("deposit_reserve_liquidity_and_obligation_collateral_v2"), amount],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      kamino_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(integration_acc_2),
+        readonly(lending_market),
+        readonly(lending_market_authority),
+        writable(integration_acc_1),
+        readonly(mint),
+        writable(reserve_liquidity_supply),
+        writable(reserve_collateral_mint),
+        writable(reserve_destination_deposit_collateral),
+        writable(liquidity_vault),
+        readonly(kamino_program),
+        readonly(collateral_token_program),
+        readonly(liquidity_token_program),
+        readonly(instruction_sysvar_account),
+        readonly(kamino_program),
+        readonly(kamino_program),
+        readonly(farms_program),
+      ],
+      [sighash("deposit_reserve_liquidity_and_obligation_collateral_v2"), amount],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  log(`Kamino obligation initialized with amount: ${amount}`);
+}
+
+/**
+ * Deposit into a Kamino bank: the tokens go through the liquidity vault into the reserve, and the balance grows by the
+ * obligation's new collateral (the amount at the reserve's rate, give or take one token). The reserve and obligation
+ * must have been refreshed this slot; `refresh_reserve` also accrues the reserve's interest first.
+ */
+export function kaminoDeposit(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+        "integration_acc_1",
+        MarginfiError.InvalidKaminoReserve
+      >,
+      "integration_acc_2",
+      MarginfiError.InvalidKaminoObligation
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  signer_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  integration_acc_2: Owner<Mut<KaminoObligation>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  lending_market: AccountInfo,
+  lending_market_authority: AccountInfo,
+  integration_acc_1: Owner<Mut<KaminoReserve>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  mint: Mint,
+  reserve_liquidity_supply: Mut<AccountInfo>,
+  reserve_collateral_mint: Mut<AccountInfo>,
+  reserve_destination_deposit_collateral: Mut<AccountInfo>,
+  obligation_farm_user_state: Mut<AccountInfo> | null,
+  reserve_farm_state: Mut<AccountInfo> | null,
+  kamino_program: Program<"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  farms_program: Program<"FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr">,
+  collateral_token_program: TokenProgram,
+  liquidity_token_program: TokenInterface,
+  instruction_sysvar_account: Address<AccountInfo, "Sysvar1nstructions1111111111111111111111111">,
+  amount: u64,
+  refresh_reserve: Option<boolean>,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, true), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_KAMINO, MarginfiError.WrongAssetTagForKaminoInstructions);
+  constraint(integration_acc_2, depositReserve(integration_acc_2, 0n) === integration_acc_1.key, MarginfiError.ObligationDepositReserveMismatch);
+  constraint(integration_acc_2, onlyFirstDeposit(integration_acc_2), MarginfiError.InvalidObligationDepositCount);
+  const t = now();
+  require(assetTagsCompatible(bank, marginfi_account), MarginfiError.AssetTagMismatch);
+  validateBankState(bank, FAILS_IF_PAUSED_OR_REDUCE_STATE, findBalance(marginfi_account, bank.key) >= 0n, t);
+  const before = depositAmount(integration_acc_2, 0n);
+  const expected = kaminoConvert(integration_acc_1, amount, false);
+  const bump = bank.liquidity_vault_authority_bump;
+  if (refresh_reserve !== null && refresh_reserve)
+    invoke(kamino_program, [writable(integration_acc_1), readonly(lending_market)], [sighash("refresh_reserves_batch"), u8(1n)]);
+  invoke(
+    liquidity_token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(authority)],
+    [u8(12n), amount, mint.decimals],
+  );
+  // klend's DepositReserveLiquidityAndObligationCollateralV2 (a farm left out is klend's own id).
+  if (reserve_farm_state !== null && obligation_farm_user_state !== null)
+    invoke(
+      kamino_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(integration_acc_2),
+        readonly(lending_market),
+        readonly(lending_market_authority),
+        writable(integration_acc_1),
+        readonly(mint),
+        writable(reserve_liquidity_supply),
+        writable(reserve_collateral_mint),
+        writable(reserve_destination_deposit_collateral),
+        writable(liquidity_vault),
+        readonly(kamino_program),
+        readonly(collateral_token_program),
+        readonly(liquidity_token_program),
+        readonly(instruction_sysvar_account),
+        writable(obligation_farm_user_state),
+        writable(reserve_farm_state),
+        readonly(farms_program),
+      ],
+      [sighash("deposit_reserve_liquidity_and_obligation_collateral_v2"), amount],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      kamino_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(integration_acc_2),
+        readonly(lending_market),
+        readonly(lending_market_authority),
+        writable(integration_acc_1),
+        readonly(mint),
+        writable(reserve_liquidity_supply),
+        writable(reserve_collateral_mint),
+        writable(reserve_destination_deposit_collateral),
+        writable(liquidity_vault),
+        readonly(kamino_program),
+        readonly(collateral_token_program),
+        readonly(liquidity_token_program),
+        readonly(instruction_sysvar_account),
+        readonly(kamino_program),
+        readonly(kamino_program),
+        readonly(farms_program),
+      ],
+      [sighash("deposit_reserve_liquidity_and_obligation_collateral_v2"), amount],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  const change = depositAmount(integration_acc_2, 0n) - before;
+  require(withinOneToken(change, expected), MarginfiError.KaminoDepositFailed);
+  const i = findOrCreateBalance(marginfi_account, bank, bank.key, t);
+  const shares = increaseBalance(marginfi_account, i, bank, fxFromU64(change), INCREASE_DEPOSIT_ONLY, u64(t));
+  recordDepositInflow(bank, group, group.key, bank.key, marginfi_account.account_flags, amount, t);
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  emit<LendingAccountDepositEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount,
+    share_amount: { value: shares },
+  });
+}
+
+/**
+ * Withdraw from a Kamino bank: `amount` in the reserve's collateral tokens (flags: 1 all of it, 2 accrue the reserve's
+ * interest first), redeemed by klend into the liquidity vault and passed on; then the account's health as a
+ * withdrawal's (deferred in a receivership, order execution or rebalance), and the bank's price cache.
+ */
+export function kaminoWithdraw(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+        "integration_acc_1",
+        MarginfiError.InvalidKaminoReserve
+      >,
+      "integration_acc_2",
+      MarginfiError.InvalidKaminoObligation
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  destination_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Seeds<Mut<TokenAccount>, ["liquidity_vault", "@bank"], "@bank.liquidity_vault_bump">,
+  integration_acc_2: Owner<Mut<KaminoObligation>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  lending_market: AccountInfo,
+  lending_market_authority: AccountInfo,
+  integration_acc_1: Owner<Mut<KaminoReserve>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  mint: Mut<Mint>,
+  reserve_liquidity_supply: Mut<AccountInfo>,
+  reserve_collateral_mint: Mut<AccountInfo>,
+  reserve_source_collateral: Mut<AccountInfo>,
+  obligation_farm_user_state: Mut<AccountInfo> | null,
+  reserve_farm_state: Mut<AccountInfo> | null,
+  kamino_program: Program<"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  farms_program: Program<"FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr">,
+  collateral_token_program: TokenProgram,
+  liquidity_token_program: TokenInterface,
+  instruction_sysvar_account: Address<AccountInfo, "Sysvar1nstructions1111111111111111111111111">,
+  amount: u64,
+  flags: Option<u8>,
+): void {
+  constraint(group, !protocolPaused(group) || (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n, MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, true, true, true), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_KAMINO, MarginfiError.WrongAssetTagForKaminoInstructions);
+  constraint(
+    bank,
+    !((marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n && bank.config.asset_weight_init.value === I80F48_ZERO),
+    MarginfiError.LiquidationPremiumTooHigh,
+  );
+  constraint(integration_acc_2, onlyFirstDeposit(integration_acc_2), MarginfiError.InvalidObligationDepositCount);
+  constraint(integration_acc_2, depositReserve(integration_acc_2, 0n) === integration_acc_1.key, MarginfiError.ObligationDepositReserveMismatch);
+  const f: u8 = flags ?? 0n;
+  const all = (f & 1n) !== 0n;
+  const t = now();
+  const vaultBefore = liquidity_vault.amount;
+  const before = depositAmount(integration_acc_2, 0n);
+  validateBankState(bank, FAILS_IN_PAUSED_STATE, !hasLiabilities(marginfi_account), t);
+  const receivership = (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n;
+  const i = findBalance(marginfi_account, bank.key);
+  require(i >= 0n, MarginfiError.BankAccountNotFound);
+  let collateral: u64 = amount;
+  let shares = I80F48_ZERO;
+  if (all) {
+    const w = withdrawAll(marginfi_account, u64(i), bank, receivership);
+    collateral = w.amount;
+    shares = w.shares;
+  } else shares = decreaseBalance(marginfi_account, u64(i), bank, fxFromU64(amount), DECREASE_WITHDRAW_ONLY, u64(t));
+  if ((f & 2n) !== 0n) invoke(kamino_program, [writable(integration_acc_1), readonly(lending_market)], [sighash("refresh_reserves_batch"), u8(1n)]);
+  const expected = kaminoConvert(integration_acc_1, collateral, true);
+  // ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_ORDER_EXECUTION | ACCOUNT_IN_REBALANCE
+  const deferred = (marginfi_account.account_flags & 400n) !== 0n;
+  const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
+  let price = I80F48_ZERO;
+  if (deferred || groupLimited) {
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
+    require(p.err === 0n, p.err);
+    if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
+    price = p.v;
+  }
+  recordWithdrawalOutflow(groupLimited, expected, collateral, price, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
+  if ((marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n) {
+    // check_deleverage_withdraw_limit: the day's deleveraged value, in whole dollars (wrapped to u32), under the cap.
+    const value = calcValue(fxFromU64(collateral), price, balanceDecimals(bank), I80F48_ZERO, false);
+    require(value.err === 0n, value.err);
+    const usd = fxToU32Wrapping(value.v);
+    const window = group.deleverage_withdraw_window_cache;
+    const today: u32 = saturatingSubI64(t, window.last_daily_reset_timestamp) >= 86400n ? 0n : window.withdrawn_today;
+    const projected: u32 = today > 4294967295n - usd ? 4294967295n : today + usd;
+    require(window.daily_limit === 0n || projected <= window.daily_limit, MarginfiError.DailyWithdrawalLimitExceeded);
+    emit<DeleverageWithdrawFlowEvent>({ group: group.key, bank: bank.key, mint: bank.mint, outflow_usd: usd, current_timestamp: t });
+  }
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  const bump = bank.liquidity_vault_authority_bump;
+  const amountForCpi = collateral;
+  // klend's WithdrawObligationCollateralAndRedeemReserveCollateralV2 (a farm left out is klend's own id).
+  if (reserve_farm_state !== null && obligation_farm_user_state !== null)
+    invoke(
+      kamino_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(integration_acc_2),
+        readonly(lending_market),
+        readonly(lending_market_authority),
+        writable(integration_acc_1),
+        readonly(mint),
+        writable(reserve_source_collateral),
+        writable(reserve_collateral_mint),
+        writable(reserve_liquidity_supply),
+        writable(liquidity_vault),
+        readonly(kamino_program),
+        readonly(collateral_token_program),
+        readonly(liquidity_token_program),
+        readonly(instruction_sysvar_account),
+        writable(obligation_farm_user_state),
+        writable(reserve_farm_state),
+        readonly(farms_program),
+      ],
+      [sighash("withdraw_obligation_collateral_and_redeem_reserve_collateral_v2"), amountForCpi],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      kamino_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(integration_acc_2),
+        readonly(lending_market),
+        readonly(lending_market_authority),
+        writable(integration_acc_1),
+        readonly(mint),
+        writable(reserve_source_collateral),
+        writable(reserve_collateral_mint),
+        writable(reserve_liquidity_supply),
+        writable(liquidity_vault),
+        readonly(kamino_program),
+        readonly(collateral_token_program),
+        readonly(liquidity_token_program),
+        readonly(instruction_sysvar_account),
+        readonly(kamino_program),
+        readonly(kamino_program),
+        readonly(farms_program),
+      ],
+      [sighash("withdraw_obligation_collateral_and_redeem_reserve_collateral_v2"), amountForCpi],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  require(before - depositAmount(integration_acc_2, 0n) === collateral, MarginfiError.KaminoWithdrawFailed);
+  const received = liquidity_vault.amount - vaultBefore;
+  require(withinOneToken(received, expected), MarginfiError.KaminoWithdrawFailed);
+  invoke(
+    liquidity_token_program,
+    [writable(liquidity_vault), readonly(mint), writable(destination_token_account), readonlySigner(liquidity_vault_authority)],
+    [u8(12n), received, mint.decimals],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  emit<LendingAccountWithdrawEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount: collateral,
+    close_balance: all,
+    share_amount: { value: shares },
+  });
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  if (!deferred) {
+    // check_account_init_health_and_clear_tag: skipped in a flash loan (checked at its end).
+    const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
+    const h = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_INITIAL, false, true, t);
+    if (!flash) {
+      require(h.err === 0n, h.err);
+      require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
+      const tiers = riskTiersErr(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length);
+      require(tiers === 0n, tiers);
+      if (marginfi_account.liquidation_tagged_at !== 0n) {
+        const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_MAINTENANCE, false, false, t);
+        if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
+      }
+    }
+    updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+    writeHealthCache(marginfi_account, h, t, !flash);
+    if (hasLiabilities(marginfi_account)) {
+      const gate = cbPriceGate(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length, t);
+      require(gate === 0n, gate);
+    }
+  } else {
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+  }
+}
+
+/** Copy the reserve's market's emergency mode onto a Kamino bank (anyone): its collateral then backs no new borrows. */
+export function propagateKaminoMarketEmergency(
+  reserve: Owner<Account<KaminoReserve>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  lending_market: Owner<Account<KaminoMarket>, "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD">,
+  bank: Mut<Bank>,
+): void {
+  constraint(lending_market, reserveMarket(reserve) === lending_market.key, MarginfiError.KaminoReserveValidationFailed);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_KAMINO && bank.config.oracle_keys.get(1n) === reserve.key, MarginfiError.KaminoReserveValidationFailed);
+  if (marketEmergency(lending_market) !== 0n) bank.flags |= KAMINO_MARKET_EMERGENCY;
+  else bank.flags &= ~KAMINO_MARKET_EMERGENCY;
+}
+
+/**
+ * Harvest a Kamino bank's farm reward (anyone): kfarms pays the obligation's reward into the liquidity vault
+ * authority's account, and all of it goes on to the global fee wallet's account for that mint.
+ */
+export function kaminoHarvestReward(
+  bank: Account<Bank>,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+  destination_token_account: Ata<Mut<TokenAccount>, "@fee_state.global_fee_wallet", "reward_mint">,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  user_state: Mut<AccountInfo>,
+  farm_state: Mut<AccountInfo>,
+  global_config: AccountInfo,
+  reward_mint: Mint,
+  user_reward_ata: Mut<AccountInfo>,
+  rewards_vault: Mut<AccountInfo>,
+  rewards_treasury_vault: Mut<AccountInfo>,
+  farm_vaults_authority: AccountInfo,
+  scope_prices: AccountInfo | null,
+  farms_program: Program<"FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr">,
+  token_program: TokenInterface,
+  reward_index: u64,
+): void {
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_KAMINO, MarginfiError.WrongAssetTagForKaminoInstructions);
+  const before = readData<u64>(user_reward_ata, 64n);
+  const bump = bank.liquidity_vault_authority_bump;
+  // kfarms' HarvestReward (no Scope prices: kfarms' own id in their place).
+  if (scope_prices !== null)
+    invoke(
+      farms_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(user_state),
+        writable(farm_state),
+        readonly(global_config),
+        readonly(reward_mint),
+        writable(user_reward_ata),
+        writable(rewards_vault),
+        writable(rewards_treasury_vault),
+        readonly(farm_vaults_authority),
+        readonly(scope_prices),
+        readonly(token_program),
+      ],
+      [sighash("harvest_reward"), reward_index],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      farms_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(user_state),
+        writable(farm_state),
+        readonly(global_config),
+        readonly(reward_mint),
+        writable(user_reward_ata),
+        writable(rewards_vault),
+        writable(rewards_treasury_vault),
+        readonly(farm_vaults_authority),
+        readonly(farms_program),
+        readonly(token_program),
+      ],
+      [sighash("harvest_reward"), reward_index],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  const received = readData<u64>(user_reward_ata, 64n) - before;
+  invoke(
+    token_program,
+    [writable(user_reward_ata), readonly(reward_mint), writable(destination_token_account), readonlySigner(liquidity_vault_authority)],
+    [u8(12n), received, reward_mint.decimals],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+}
+
+// ---- Drift banks (instructions/drift) ----------------------------------------------------------------------------
+
+/**
+ * Add a Drift bank: its deposits go into a Drift spot market of the bank's mint through the user (sub-account 0) and
+ * user stats its liquidity vault authority owns (created by drift_init_user). Its balances are Drift's scaled balances
+ * (9 decimals), priced at the feed times the market's cumulative deposit interest; it never lends. Governance admin
+ * only; remaining accounts: the feed, then the spot market.
+ */
+export function lendingPoolAddBankDrift(
+  group: HasOne<Mut<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  fee_payer: Mut<Signer>,
+  bank_mint: Mint,
+  bank: Init<Bank>,
+  integration_acc_1: Owner<Account<DriftSpotMarket>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  integration_acc_2: Seeds<SystemAccount, ["user", "@liquidity_vault_authority", "\u0000\u0000"], never, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  integration_acc_3: Seeds<SystemAccount, ["user_stats", "@liquidity_vault_authority"], never, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"]>,
+  liquidity_vault: Init<TokenAccount>,
+  insurance_vault_authority: Seeds<SystemAccount, ["insurance_vault_auth", "@bank"]>,
+  insurance_vault: Init<TokenAccount>,
+  fee_vault_authority: Seeds<SystemAccount, ["fee_vault_auth", "@bank"]>,
+  fee_vault: Init<TokenAccount>,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  bank_config: DriftConfigCompact,
+  bank_seed: u64,
+): void {
+  constraint(integration_acc_1, marketMint(integration_acc_1) === bank_mint.key, MarginfiError.DriftSpotMarketMintMismatch);
+  bank.create(fee_payer, [group.key, bank_mint.key, bank_seed]);
+  const lv = liquidity_vault.create(fee_payer, ["liquidity_vault", bank.key], bank_mint, liquidity_vault_authority.key);
+  const iv = insurance_vault.create(fee_payer, ["insurance_vault", bank.key], bank_mint, insurance_vault_authority.key);
+  const fv = fee_vault.create(fee_payer, ["fee_vault", bank.key], bank_mint, fee_vault_authority.key);
+  checkNoDurableNonce(instruction_sysvar);
+  const s = bank_config.oracle_setup;
+  require(s === OracleSetup.DriftPythPull || s === OracleSetup.DriftSwitchboardPull, MarginfiError.DriftInvalidOracleSetup);
+  require(bank_mint.decimals <= 19n, MarginfiError.DriftUnsupportedTokenDecimals);
+  const t = now();
+  initBankFields(
+    bank,
+    group.key,
+    bank_mint.key,
+    bank_mint.decimals,
+    liquidity_vault.key,
+    insurance_vault.key,
+    fee_vault.key,
+    t,
+    lv,
+    liquidity_vault_authority.pdaBump,
+    iv,
+    insurance_vault_authority.pdaBump,
+    fv,
+    fee_vault_authority.pdaBump,
+    bank_seed,
+  );
+  setVenueConfig(
+    bank,
+    bank_config.oracle,
+    integration_acc_1.key,
+    bank_config.asset_weight_init.value,
+    bank_config.asset_weight_maint.value,
+    bank_config.deposit_limit,
+    s,
+    bank_config.operational_state,
+    bank_config.risk_tier,
+    ASSET_TAG_DRIFT,
+    bank_config.config_flags,
+    bank_config.total_asset_value_init_limit,
+    bank_config.oracle_max_age,
+    bank_config.oracle_max_confidence,
+    I80F48_ZERO,
+  );
+  bank.flags |= BANK_SEED_KNOWN;
+  if (bank_mint.tokenProgram === TOKEN_2022_ID) bank.flags |= IS_T22;
+  bank.integration_acc_1 = integration_acc_1.key;
+  bank.integration_acc_2 = integration_acc_2.key;
+  bank.integration_acc_3 = integration_acc_3.key;
+  if (group.banks < 65535n) group.banks += 1n;
+  group.fee_state_cache.last_update = t;
+  validateBankConfig(bank.config);
+  const rem = remainingAccounts();
+  let err = validateOracleCount(bank, rem.length);
+  if (err === 0n) err = validateFeedAccount(bank, rem.get(0n));
+  if (err === 0n) err = validateVenueAccount(bank, rem);
+  require(err === 0n, err);
+  // The original names the group's admin as the event's signer.
+  emit<LendingPoolBankCreateEvent>({
+    header: { signer: group.admin, marginfi_group: group.key },
+    bank: bank.key,
+    mint: bank_mint.key,
+  });
+}
+
+/**
+ * Create a Drift bank's user stats and user (sub-account 0, in the market's pool) for its liquidity vault authority and
+ * deposit `amount` (at least 10) of the payer's tokens, which keeps the user from ever being deleted.
+ */
+export function driftInitUser(
+  fee_payer: Mut<Signer>,
+  signer_token_account: Mut<TokenAccount>,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<HasOne<Account<Bank>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>, "integration_acc_1", MarginfiError.InvalidDriftSpotMarket>,
+        "integration_acc_2",
+        MarginfiError.InvalidDriftUser
+      >,
+      "integration_acc_3",
+      MarginfiError.InvalidDriftUserStats
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  mint: Mut<Mint>,
+  integration_acc_3: Seeds<Mut<SystemAccount>, ["user_stats", "@liquidity_vault_authority"], never, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  integration_acc_2: Seeds<Mut<SystemAccount>, ["user", "@liquidity_vault_authority", "\u0000\u0000"], never, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  drift_state: Mut<AccountInfo>,
+  integration_acc_1: Owner<Mut<DriftSpotMarket>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  drift_spot_market_vault: Mut<AccountInfo>,
+  drift_oracle: AccountInfo | null,
+  drift_program: Program<"dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  token_program: TokenInterface,
+  rent: Address<AccountInfo, "SysvarRent111111111111111111111111111111111">,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  constraint(signer_token_account, signer_token_account.mint === mint.key, AnchorError.ConstraintTokenMint);
+  constraint(signer_token_account, signer_token_account.owner === fee_payer.key, AnchorError.ConstraintTokenOwner);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_DRIFT, MarginfiError.WrongBankAssetTagForDriftOperation);
+  const bump = bank.liquidity_vault_authority_bump;
+  const index = marketIndex(integration_acc_1);
+  const pool = marketPoolId(integration_acc_1);
+  require(amount >= 10n, MarginfiError.DriftUserInitDepositInsufficient);
+  invoke(
+    drift_program,
+    [
+      writable(integration_acc_3),
+      writable(drift_state),
+      readonlySigner(liquidity_vault_authority),
+      writableSigner(fee_payer),
+      readonly(rent),
+      readonly(system_program),
+    ],
+    [sighash("initialize_user_stats")],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  invoke(
+    drift_program,
+    [
+      writable(integration_acc_2),
+      writable(integration_acc_3),
+      writable(drift_state),
+      readonlySigner(liquidity_vault_authority),
+      writableSigner(fee_payer),
+      readonly(rent),
+      readonly(system_program),
+    ],
+    [sighash("initialize_user"), u16(0n), ZERO_KEY],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  invoke(
+    token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(fee_payer)],
+    [u8(12n), amount, mint.decimals],
+  );
+  if (pool !== 0n)
+    invoke(
+      drift_program,
+      [writable(integration_acc_2), readonlySigner(liquidity_vault_authority)],
+      [sighash("update_user_pool_id"), u16(0n), pool],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  // Drift's Deposit (reduce_only false): the oracle (if any), the spot market and the mint after its accounts.
+  if (drift_oracle !== null)
+    invoke(
+      drift_program,
+      [
+        readonly(drift_state),
+        writable(integration_acc_2),
+        writable(integration_acc_3),
+        readonlySigner(liquidity_vault_authority),
+        writable(drift_spot_market_vault),
+        writable(liquidity_vault),
+        readonly(token_program),
+        readonly(drift_oracle),
+        writable(integration_acc_1),
+        writable(mint),
+      ],
+      [sighash("deposit"), index, amount, u8(0n)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      drift_program,
+      [
+        readonly(drift_state),
+        writable(integration_acc_2),
+        writable(integration_acc_3),
+        readonlySigner(liquidity_vault_authority),
+        writable(drift_spot_market_vault),
+        writable(liquidity_vault),
+        readonly(token_program),
+        writable(integration_acc_1),
+        writable(mint),
+      ],
+      [sighash("deposit"), index, amount, u8(0n)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+}
+
+/**
+ * Deposit into a Drift bank: the market's interest accrues, the tokens go through the liquidity vault into the spot
+ * market, and the balance grows by the user's new scaled balance (exactly the amount's).
+ */
+export function driftDeposit(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<
+          HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+          "integration_acc_1",
+          MarginfiError.InvalidDriftSpotMarket
+        >,
+        "integration_acc_2",
+        MarginfiError.InvalidDriftUser
+      >,
+      "integration_acc_3",
+      MarginfiError.InvalidDriftUserStats
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  drift_oracle: AccountInfo | null,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  signer_token_account: Mut<TokenAccount>,
+  drift_state: AccountInfo,
+  integration_acc_2: Owner<Mut<DriftUser>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  integration_acc_3: Mut<AccountInfo>,
+  integration_acc_1: Owner<Mut<DriftSpotMarket>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  drift_spot_market_vault: Mut<AccountInfo>,
+  mint: Mint,
+  drift_program: Program<"dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, true), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_DRIFT, MarginfiError.WrongBankAssetTagForDriftOperation);
+  constraint(integration_acc_2, spotPositionOk(integration_acc_2, marketIndex(integration_acc_1)), MarginfiError.DriftInvalidSpotPositions);
+  constraint(integration_acc_1, marketMint(integration_acc_1) === mint.key, MarginfiError.DriftSpotMarketMintMismatch);
+  const t = now();
+  require(assetTagsCompatible(bank, marginfi_account), MarginfiError.AssetTagMismatch);
+  validateBankState(bank, FAILS_IF_PAUSED_OR_REDUCE_STATE, findBalance(marginfi_account, bank.key) >= 0n, t);
+  const index = marketIndex(integration_acc_1);
+  const bump = bank.liquidity_vault_authority_bump;
+  // Drift's UpdateSpotMarketCumulativeInterest (the oracle, or the system program for a market without one).
+  if (drift_oracle !== null)
+    invoke(
+      drift_program,
+      [readonly(drift_state), writable(integration_acc_1), readonly(drift_oracle), readonly(drift_spot_market_vault)],
+      [sighash("update_spot_market_cumulative_interest")],
+    );
+  else
+    invoke(
+      drift_program,
+      [readonly(drift_state), writable(integration_acc_1), readonly(system_program), readonly(drift_spot_market_vault)],
+      [sighash("update_spot_market_cumulative_interest")],
+    );
+  const expected = scaledBalance(integration_acc_1, amount, false);
+  const before = userScaledBalance(integration_acc_2, index);
+  invoke(
+    token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(authority)],
+    [u8(12n), amount, mint.decimals],
+  );
+  // Drift's Deposit (reduce_only false): the oracle (if any), the spot market and the mint after its accounts.
+  if (drift_oracle !== null)
+    invoke(
+      drift_program,
+      [
+        readonly(drift_state),
+        writable(integration_acc_2),
+        writable(integration_acc_3),
+        readonlySigner(liquidity_vault_authority),
+        writable(drift_spot_market_vault),
+        writable(liquidity_vault),
+        readonly(token_program),
+        readonly(drift_oracle),
+        writable(integration_acc_1),
+        readonly(mint),
+      ],
+      [sighash("deposit"), index, amount, u8(0n)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  else
+    invoke(
+      drift_program,
+      [
+        readonly(drift_state),
+        writable(integration_acc_2),
+        writable(integration_acc_3),
+        readonlySigner(liquidity_vault_authority),
+        writable(drift_spot_market_vault),
+        writable(liquidity_vault),
+        readonly(token_program),
+        writable(integration_acc_1),
+        readonly(mint),
+      ],
+      [sighash("deposit"), index, amount, u8(0n)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  const change = userScaledBalance(integration_acc_2, index) - before;
+  require(change === expected, MarginfiError.DriftScaledBalanceMismatch);
+  const i = findOrCreateBalance(marginfi_account, bank, bank.key, t);
+  const shares = increaseBalance(marginfi_account, i, bank, fxFromU64(change), INCREASE_DEPOSIT_ONLY, u64(t));
+  recordDepositInflow(bank, group, group.key, bank.key, marginfi_account.account_flags, amount, t);
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  emit<LendingAccountDepositEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount,
+    share_amount: { value: shares },
+  });
+}
+
+/**
+ * Withdraw from a Drift bank: `amount` in tokens (its scaled balance rounded up, at most the balance), or all of it;
+ * Drift's reduce-only withdrawal into the liquidity vault, passed on. Rewards Drift deposited into the user (other
+ * markets) must come with their spot markets and mints. Then the account's health as a withdrawal's.
+ */
+export function driftWithdraw(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<
+          HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+          "integration_acc_1",
+          MarginfiError.InvalidDriftSpotMarket
+        >,
+        "integration_acc_2",
+        MarginfiError.InvalidDriftUser
+      >,
+      "integration_acc_3",
+      MarginfiError.InvalidDriftUserStats
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  drift_oracle: AccountInfo | null,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  destination_token_account: Mut<TokenAccount>,
+  drift_state: AccountInfo,
+  integration_acc_2: Owner<Mut<DriftUser>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  integration_acc_3: Mut<AccountInfo>,
+  integration_acc_1: Owner<Mut<DriftSpotMarket>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  drift_spot_market_vault: Mut<AccountInfo>,
+  drift_reward_oracle: AccountInfo | null,
+  drift_reward_spot_market: AccountInfo | null,
+  drift_reward_mint: AccountInfo | null,
+  drift_reward_oracle_2: AccountInfo | null,
+  drift_reward_spot_market_2: AccountInfo | null,
+  drift_reward_mint_2: AccountInfo | null,
+  drift_signer: AccountInfo,
+  mint: Mint,
+  drift_program: Program<"dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  amount: u64,
+  withdraw_all: Option<boolean>,
+): void {
+  constraint(group, !protocolPaused(group) || (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n, MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, true, true, true), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_DRIFT, MarginfiError.WrongBankAssetTagForDriftOperation);
+  constraint(
+    bank,
+    !((marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n && bank.config.asset_weight_init.value === I80F48_ZERO),
+    MarginfiError.LiquidationPremiumTooHigh,
+  );
+  constraint(integration_acc_2, spotPositionOk(integration_acc_2, marketIndex(integration_acc_1)), MarginfiError.DriftInvalidSpotPositions);
+  constraint(
+    integration_acc_2,
+    !(activeDeposits(integration_acc_2) >= 2n && drift_reward_spot_market === null) &&
+      !(activeDeposits(integration_acc_2) >= 3n && drift_reward_spot_market_2 === null),
+    MarginfiError.DriftMissingRewardAccounts,
+  );
+  constraint(integration_acc_2, activeDeposits(integration_acc_2) <= 3n, MarginfiError.DriftBrickedAccount);
+  constraint(integration_acc_1, marketMint(integration_acc_1) === mint.key, MarginfiError.DriftSpotMarketMintMismatch);
+  const all = withdraw_all !== null && withdraw_all;
+  // Drift's UpdateSpotMarketCumulativeInterest (the oracle, or the system program for a market without one).
+  if (drift_oracle !== null)
+    invoke(
+      drift_program,
+      [readonly(drift_state), writable(integration_acc_1), readonly(drift_oracle), readonly(drift_spot_market_vault)],
+      [sighash("update_spot_market_cumulative_interest")],
+    );
+  else
+    invoke(
+      drift_program,
+      [readonly(drift_state), writable(integration_acc_1), readonly(system_program), readonly(drift_spot_market_vault)],
+      [sighash("update_spot_market_cumulative_interest")],
+    );
+  const t = now();
+  validateBankState(bank, FAILS_IN_PAUSED_STATE, !hasLiabilities(marginfi_account), t);
+  // ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_ORDER_EXECUTION | ACCOUNT_IN_REBALANCE
+  const deferred = (marginfi_account.account_flags & 400n) !== 0n;
+  const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
+  let price = I80F48_ZERO;
+  if (deferred || groupLimited) {
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
+    require(p.err === 0n, p.err);
+    if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
+    price = p.v;
+  }
+  const index = marketIndex(integration_acc_1);
+  const receivership = (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n;
+  const i = findBalance(marginfi_account, bank.key);
+  require(i >= 0n, MarginfiError.BankAccountNotFound);
+  let tokenAmount: u64 = amount;
+  let scaled: u64 = 0n;
+  let shares = I80F48_ZERO;
+  if (all) {
+    const w = withdrawAll(marginfi_account, u64(i), bank, receivership);
+    shares = w.shares;
+    tokenAmount = withdrawTokenAmount(integration_acc_1, w.amount);
+    scaled = scaledBalance(integration_acc_1, tokenAmount, true);
+    if (scaled === w.amount + 1n && tokenAmount > 0n) {
+      tokenAmount -= 1n;
+      scaled = scaledBalance(integration_acc_1, tokenAmount, true);
+    }
+    require(w.amount >= scaled, MarginfiError.MathError);
+  } else {
+    scaled = scaledBalance(integration_acc_1, amount, true);
+    const held = fxToU64Wrapping(marginfi_account.lending_account.balances.get(u64(i)).asset_shares.value);
+    require(scaled <= held + 1n, MarginfiError.OperationWithdrawOnly);
+    if (scaled === held + 1n) {
+      tokenAmount = withdrawTokenAmount(integration_acc_1, held);
+      scaled = scaledBalance(integration_acc_1, tokenAmount, true);
+    }
+    shares = decreaseBalance(marginfi_account, u64(i), bank, fxFromU64(scaled), DECREASE_WITHDRAW_ONLY, u64(t));
+  }
+  recordWithdrawalOutflow(groupLimited, tokenAmount, scaled, price, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
+  if ((marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n) {
+    // check_deleverage_withdraw_limit: the day's deleveraged value, in whole dollars (wrapped to u32), under the cap.
+    const value = calcValue(fxFromU64(scaled), price, balanceDecimals(bank), I80F48_ZERO, false);
+    require(value.err === 0n, value.err);
+    const usd = fxToU32Wrapping(value.v);
+    const window = group.deleverage_withdraw_window_cache;
+    const today: u32 = saturatingSubI64(t, window.last_daily_reset_timestamp) >= 86400n ? 0n : window.withdrawn_today;
+    const projected: u32 = today > 4294967295n - usd ? 4294967295n : today + usd;
+    require(window.daily_limit === 0n || projected <= window.daily_limit, MarginfiError.DailyWithdrawalLimitExceeded);
+    emit<DeleverageWithdrawFlowEvent>({ group: group.key, bank: bank.key, mint: bank.mint, outflow_usd: usd, current_timestamp: t });
+  }
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  const bump = bank.liquidity_vault_authority_bump;
+  let received: u64 = 0n;
+  if (!(all && tokenAmount === 0n)) {
+    const before = userScaledBalance(integration_acc_2, index);
+    const vaultBefore = liquidity_vault.amount;
+    // Drift's Withdraw (reduce_only true): the oracles, then the spot markets, then the mints, after its accounts; each
+    // optional one only when passed.
+    invoke(
+      drift_program,
+      [
+        readonly(drift_state),
+        writable(integration_acc_2),
+        writable(integration_acc_3),
+        readonlySigner(liquidity_vault_authority),
+        writable(drift_spot_market_vault),
+        readonly(drift_signer),
+        writable(liquidity_vault),
+        readonly(token_program),
+        readonly(drift_oracle),
+        readonly(drift_reward_oracle),
+        readonly(drift_reward_oracle_2),
+        writable(integration_acc_1),
+        readonly(drift_reward_spot_market),
+        readonly(drift_reward_spot_market_2),
+        readonly(mint),
+        readonly(drift_reward_mint),
+        readonly(drift_reward_mint_2),
+      ],
+      [sighash("withdraw"), index, tokenAmount, u8(1n)],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+    received = liquidity_vault.amount - vaultBefore;
+    require(received === tokenAmount, MarginfiError.DriftWithdrawFailed);
+    require(before - userScaledBalance(integration_acc_2, index) === scaled, MarginfiError.DriftScaledBalanceMismatch);
+    invoke(
+      token_program,
+      [writable(liquidity_vault), readonly(mint), writable(destination_token_account), readonlySigner(liquidity_vault_authority)],
+      [u8(12n), received, mint.decimals],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  }
+  emit<LendingAccountWithdrawEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount: received,
+    close_balance: all,
+    share_amount: { value: shares },
+  });
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  if (!deferred) {
+    // check_account_init_health_and_clear_tag: skipped in a flash loan (checked at its end).
+    const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
+    const h = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_INITIAL, false, true, t);
+    if (!flash) {
+      require(h.err === 0n, h.err);
+      require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
+      const tiers = riskTiersErr(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length);
+      require(tiers === 0n, tiers);
+      if (marginfi_account.liquidation_tagged_at !== 0n) {
+        const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_MAINTENANCE, false, false, t);
+        if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
+      }
+    }
+    updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+    writeHealthCache(marginfi_account, h, t, !flash);
+    if (hasLiabilities(marginfi_account)) {
+      const gate = cbPriceGate(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length, t);
+      require(gate === 0n, gate);
+    }
+  } else {
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+  }
+}
+
+/**
+ * Harvest a reward Drift's admin deposited into a Drift bank's user in another market (anyone): withdrawn whole into
+ * the liquidity vault authority's account for that mint, then to the global fee wallet's. Remaining accounts go to
+ * Drift's withdrawal (its oracles, spot markets and mints).
+ */
+export function driftHarvestReward(
+  bank: HasOne<HasOne<Account<Bank>, "integration_acc_2", MarginfiError.InvalidDriftUser>, "integration_acc_3", MarginfiError.InvalidDriftUserStats>,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  intermediary_token_account: Ata<Mut<TokenAccount>, "liquidity_vault_authority", "reward_mint">,
+  destination_token_account: Ata<Mut<TokenAccount>, "@fee_state.global_fee_wallet", "reward_mint">,
+  drift_state: AccountInfo,
+  integration_acc_2: Owner<Mut<DriftUser>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  integration_acc_3: Mut<AccountInfo>,
+  harvest_drift_spot_market: Owner<Mut<DriftSpotMarket>, "dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  harvest_drift_spot_market_vault: Mut<AccountInfo>,
+  drift_signer: AccountInfo,
+  reward_mint: Mint,
+  drift_program: Program<"dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH">,
+  token_program: TokenInterface,
+): void {
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_DRIFT, MarginfiError.WrongBankAssetTagForDriftOperation);
+  constraint(integration_acc_2, hasAdminDeposit(integration_acc_2, marketIndex(harvest_drift_spot_market)), MarginfiError.DriftNoAdminDeposit);
+  constraint(harvest_drift_spot_market, marketMint(harvest_drift_spot_market) !== bank.mint, MarginfiError.DriftSpotMarketMintMismatch);
+  constraint(harvest_drift_spot_market, harvest_drift_spot_market.key !== bank.integration_acc_1, MarginfiError.DriftHarvestSameMarket);
+  const bump = bank.liquidity_vault_authority_bump;
+  // Drift's Withdraw of everything (u64::MAX, reduce only).
+  invoke(
+    drift_program,
+    [
+      readonly(drift_state),
+      writable(integration_acc_2),
+      writable(integration_acc_3),
+      readonlySigner(liquidity_vault_authority),
+      writable(harvest_drift_spot_market_vault),
+      readonly(drift_signer),
+      writable(intermediary_token_account),
+      readonly(token_program),
+      ...remainingAccounts(),
+    ],
+    [sighash("withdraw"), marketIndex(harvest_drift_spot_market), u64(18446744073709551615n), u8(1n)],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  invoke(
+    token_program,
+    [writable(intermediary_token_account), readonly(reward_mint), writable(destination_token_account), readonlySigner(liquidity_vault_authority)],
+    [u8(12n), intermediary_token_account.amount, reward_mint.decimals],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+}
+
+/** Drift's merkle distributor (drift-labs/dfx-distributor): what Drift pays its users' bad debt from. */
+const MERKLE_DISTRIBUTOR_ID = pubkey("distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp");
+const ASSOCIATED_TOKEN_ID = pubkey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+/** ClaimStatus's size, which the bank's liquidity vault authority cannot pay for: the payer prefunds its rent. */
+const CLAIM_STATUS_LEN: u64 = 112n;
+
+/**
+ * Claim what Drift's merkle distributor owes a Drift bank's liquidity vault authority (its bad-debt compensation;
+ * anyone, with the proof): the authority's and the global fee wallet's token accounts created if missing, the claim
+ * status's rent prefunded, the claim made, and all of it swept to the fee wallet.
+ */
+export function driftClaimBadDebt(
+  payer: Mut<Signer>,
+  bank: HasOne<HasOne<Account<Bank>, "integration_acc_2", MarginfiError.InvalidDriftUser>, "integration_acc_3", MarginfiError.InvalidDriftUserStats>,
+  fee_state: Seeds<Account<FeeState>, ["feestate"]>,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  integration_acc_2: AccountInfo,
+  integration_acc_3: AccountInfo,
+  distributor: Owner<Mut<AccountInfo>, "distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp">,
+  claim_status: Seeds<Mut<AccountInfo>, ["ClaimStatus", "@liquidity_vault_authority", "@distributor"], never, "distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp">,
+  from: Mut<TokenAccount>,
+  claim_mint: Mint,
+  global_fee_wallet: AccountInfo,
+  // UncheckedAccounts in the original, which may be one account (its own checks refuse that).
+  claimant_token_account: Dup<Mut<AccountInfo>>,
+  destination_token_account: Dup<Mut<AccountInfo>>,
+  merkle_distributor_program: Program<"distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp">,
+  associated_token_program: Program<"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL">,
+  token_program: Program<"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA">,
+  system_program: SystemProgram,
+  amount: u64,
+  proof: Vec<Hash>,
+): void {
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_DRIFT, MarginfiError.WrongBankAssetTagForDriftOperation);
+  constraint(from, from.mint === claim_mint.key, AnchorError.ConstraintTokenMint);
+  constraint(global_fee_wallet, global_fee_wallet.key === fee_state.global_fee_wallet, MarginfiError.InvalidFeeAta);
+  constraint(
+    claimant_token_account,
+    claimant_token_account.key === findProgramAddress([liquidity_vault_authority.key, token_program.key, claim_mint.key], ASSOCIATED_TOKEN_ID),
+    MarginfiError.InvalidDriftAccount,
+  );
+  constraint(
+    destination_token_account,
+    destination_token_account.key === findProgramAddress([fee_state.global_fee_wallet, token_program.key, claim_mint.key], ASSOCIATED_TOKEN_ID),
+    MarginfiError.InvalidFeeAta,
+  );
+  // The associated token program's CreateIdempotent, for the authority's and the fee wallet's accounts.
+  invoke(
+    associated_token_program,
+    [
+      writableSigner(payer),
+      writable(claimant_token_account),
+      readonly(liquidity_vault_authority),
+      readonly(claim_mint),
+      readonly(system_program),
+      readonly(token_program),
+    ],
+    [u8(1n)],
+  );
+  invoke(
+    associated_token_program,
+    [
+      writableSigner(payer),
+      writable(destination_token_account),
+      readonly(global_fee_wallet),
+      readonly(claim_mint),
+      readonly(system_program),
+      readonly(token_program),
+    ],
+    [u8(1n)],
+  );
+  const rent = rentExempt(CLAIM_STATUS_LEN);
+  if (rent > claim_status.lamports) system_program.transfer(payer, claim_status, rent - claim_status.lamports);
+  const before = readData<u64>(claimant_token_account, 64n);
+  const bump = bank.liquidity_vault_authority_bump;
+  // The distributor's NewClaim: all unlocked, nothing locked.
+  invoke(
+    merkle_distributor_program,
+    [
+      writable(distributor),
+      writable(claim_status),
+      writable(from),
+      writable(claimant_token_account),
+      writableSigner(liquidity_vault_authority),
+      readonly(token_program),
+      readonly(system_program),
+    ],
+    [sighash("new_claim"), amount, u64(0n), proof],
+    ["liquidity_vault_auth", bank.key, bump],
+  );
+  const after = readData<u64>(claimant_token_account, 64n);
+  require(after >= before, MarginfiError.InternalLogicError);
+  const swept = after;
+  if (swept > 0n)
+    invoke(
+      token_program,
+      [writable(claimant_token_account), writable(destination_token_account), readonlySigner(liquidity_vault_authority)],
+      [u8(3n), swept],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  emit<DriftClaimBadDebtEvent>({
+    header: { signer: payer.key, marginfi_group: bank.group },
+    bank: bank.key,
+    claim_mint: claim_mint.key,
+    distributor: distributor.key,
+    claim_status: claim_status.key,
+    liquidity_vault_authority: liquidity_vault_authority.key,
+    global_fee_wallet: global_fee_wallet.key,
+    requested_amount: amount,
+    received_amount: after - before,
+    swept_amount: swept,
+  });
+}
+
+// ---- JupLend banks (instructions/juplend) ------------------------------------------------------------------------
+
+/** The Lending's prices are scaled by 10^12. */
+const JUPLEND_PRICE_ONE: u128 = 1000000000000n;
+
+/** expected_shares_for_deposit_from_rates: the amount as the liquidity layer registers it, in fTokens (down). */
+function juplendDepositShares(assets: u64, liquidityPrice: u64, tokenPrice: u64): u64 {
+  require(liquidityPrice !== 0n && tokenPrice !== 0n, MarginfiError.MathError);
+  const registered = (((u128(assets) * JUPLEND_PRICE_ONE) / u128(liquidityPrice)) * u128(liquidityPrice)) / JUPLEND_PRICE_ONE;
+  const shares = (registered * JUPLEND_PRICE_ONE) / u128(tokenPrice);
+  require(shares <= 18446744073709551615n, MarginfiError.MathError);
+  return u64(shares);
+}
+/** expected_shares_for_withdraw_from_rate: the fTokens burned for `assets` (up). */
+function juplendWithdrawShares(assets: u64, tokenPrice: u64): u64 {
+  require(tokenPrice !== 0n, MarginfiError.MathError);
+  const shares = (u128(assets) * JUPLEND_PRICE_ONE + u128(tokenPrice) - 1n) / u128(tokenPrice);
+  require(shares <= 18446744073709551615n, MarginfiError.MathError);
+  return u64(shares);
+}
+/** expected_assets_for_redeem_from_rate: the tokens `shares` fTokens redeem for (down). */
+function juplendRedeemAssets(shares: u64, tokenPrice: u64): u64 {
+  require(tokenPrice !== 0n, MarginfiError.MathError);
+  const assets = (u128(shares) * u128(tokenPrice)) / JUPLEND_PRICE_ONE;
+  require(assets <= 18446744073709551615n, MarginfiError.MathError);
+  return u64(assets);
+}
+
+/**
+ * Add a JupLend bank: its deposits go into JupLend's Lending of the bank's mint, the fTokens into the bank's fToken
+ * vault (made here); withdrawals come back through the liquidity vault authority's token account. Its balances are
+ * fTokens, priced at the feed times the Lending's token exchange price. It starts Uninitialized, until
+ * juplend_init_position's seed deposit. Governance admin only; remaining accounts: the feed, then the Lending.
+ */
+export function lendingPoolAddBankJuplend(
+  group: HasOne<Mut<MarginfiGroup>, "governance_admin", MarginfiError.Unauthorized>,
+  governance_admin: Signer,
+  fee_payer: Mut<Signer>,
+  bank_mint: Mint,
+  bank: Init<Bank>,
+  integration_acc_1: HasOne<Owner<Account<Lending>, "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9">, "f_token_mint", MarginfiError.InvalidJuplendLending>,
+  liquidity_vault_authority: Seeds<SystemAccount, ["liquidity_vault_auth", "@bank"]>,
+  liquidity_vault: Init<TokenAccount>,
+  insurance_vault_authority: Seeds<SystemAccount, ["insurance_vault_auth", "@bank"]>,
+  insurance_vault: Init<TokenAccount>,
+  fee_vault_authority: Seeds<SystemAccount, ["fee_vault_auth", "@bank"]>,
+  fee_vault: Init<TokenAccount>,
+  f_token_mint: Mint,
+  integration_acc_2: Init<TokenAccount>,
+  token_program: TokenInterface,
+  system_program: SystemProgram,
+  instruction_sysvar: Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">,
+  bank_config: JuplendConfigCompact,
+  bank_seed: u64,
+): void {
+  constraint(integration_acc_1, integration_acc_1.mint === bank_mint.key, MarginfiError.JuplendLendingMintMismatch);
+  bank.create(fee_payer, [group.key, bank_mint.key, bank_seed]);
+  const lv = liquidity_vault.create(fee_payer, ["liquidity_vault", bank.key], bank_mint, liquidity_vault_authority.key);
+  const iv = insurance_vault.create(fee_payer, ["insurance_vault", bank.key], bank_mint, insurance_vault_authority.key);
+  const fv = fee_vault.create(fee_payer, ["fee_vault", bank.key], bank_mint, fee_vault_authority.key);
+  integration_acc_2.create(fee_payer, ["f_token_vault", bank.key], f_token_mint, liquidity_vault_authority.key);
+  checkNoDurableNonce(instruction_sysvar);
+  const s = bank_config.oracle_setup;
+  require(s === OracleSetup.JuplendPythPull || s === OracleSetup.JuplendSwitchboardPull, MarginfiError.JuplendInvalidOracleSetup);
+  const t = now();
+  initBankFields(
+    bank,
+    group.key,
+    bank_mint.key,
+    bank_mint.decimals,
+    liquidity_vault.key,
+    insurance_vault.key,
+    fee_vault.key,
+    t,
+    lv,
+    liquidity_vault_authority.pdaBump,
+    iv,
+    insurance_vault_authority.pdaBump,
+    fv,
+    fee_vault_authority.pdaBump,
+    bank_seed,
+  );
+  setVenueConfig(
+    bank,
+    bank_config.oracle,
+    integration_acc_1.key,
+    bank_config.asset_weight_init.value,
+    bank_config.asset_weight_maint.value,
+    bank_config.deposit_limit,
+    s,
+    BankOperationalState.Uninitialized,
+    bank_config.risk_tier,
+    ASSET_TAG_JUPLEND,
+    bank_config.config_flags,
+    bank_config.total_asset_value_init_limit,
+    bank_config.oracle_max_age,
+    bank_config.oracle_max_confidence,
+    I80F48_ZERO,
+  );
+  bank.flags |= BANK_SEED_KNOWN;
+  if (bank_mint.tokenProgram === TOKEN_2022_ID) bank.flags |= IS_T22;
+  bank.integration_acc_1 = integration_acc_1.key;
+  bank.integration_acc_2 = integration_acc_2.key;
+  bank.integration_acc_3 = findProgramAddress([liquidity_vault_authority.key, token_program.key, bank_mint.key], ASSOCIATED_TOKEN_ID);
+  if (group.banks < 65535n) group.banks += 1n;
+  group.fee_state_cache.last_update = t;
+  validateBankConfig(bank.config);
+  const rem = remainingAccounts();
+  let err = validateOracleCount(bank, rem.length);
+  if (err === 0n) err = validateFeedAccount(bank, rem.get(0n));
+  if (err === 0n) err = validateVenueAccount(bank, rem);
+  require(err === 0n, err);
+  emit<LendingPoolBankCreateEvent>({
+    header: { signer: governance_admin.key, marginfi_group: group.key },
+    bank: bank.key,
+    mint: bank_mint.key,
+  });
+}
+
+/**
+ * Activate a JupLend bank (anyone, once): `amount` (at least 10) of the payer's tokens through the liquidity vault into
+ * JupLend, credited to no account, and the bank is Operational.
+ */
+export function juplendInitPosition(
+  fee_payer: Mut<Signer>,
+  signer_token_account: Mut<TokenAccount>,
+  bank: HasOne<
+    HasOne<
+      HasOne<HasOne<Mut<Bank>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>, "integration_acc_1", MarginfiError.InvalidJuplendLending>,
+      "integration_acc_2",
+      MarginfiError.InvalidJuplendFTokenVault
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  mint: Mint,
+  integration_acc_1: HasOne<Owner<Mut<Lending>, "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9">, "f_token_mint", MarginfiError.InvalidJuplendLending>,
+  f_token_mint: Mut<Mint>,
+  integration_acc_2: Mut<TokenAccount>,
+  lending_admin: AccountInfo,
+  supply_token_reserves_liquidity: Mut<AccountInfo>,
+  lending_supply_position_on_liquidity: Mut<AccountInfo>,
+  rate_model: AccountInfo,
+  vault: Mut<AccountInfo>,
+  liquidity: Mut<AccountInfo>,
+  liquidity_program: Address<AccountInfo, "jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC">,
+  rewards_rate_model: AccountInfo,
+  juplend_program: Address<AccountInfo, "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9">,
+  token_program: TokenInterface,
+  associated_token_program: Program<"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL">,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  constraint(signer_token_account, signer_token_account.mint === mint.key, AnchorError.ConstraintTokenMint);
+  constraint(signer_token_account, signer_token_account.owner === fee_payer.key, AnchorError.ConstraintTokenOwner);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_JUPLEND, MarginfiError.WrongBankAssetTagForJuplendOperation);
+  constraint(bank, bank.config.operational_state === BankOperationalState.Uninitialized, MarginfiError.JuplendBankAlreadyActivated);
+  constraint(
+    supply_token_reserves_liquidity,
+    supply_token_reserves_liquidity.key === integration_acc_1.token_reserves_liquidity,
+    MarginfiError.InvalidJuplendLending,
+  );
+  constraint(
+    lending_supply_position_on_liquidity,
+    lending_supply_position_on_liquidity.key === integration_acc_1.supply_position_on_liquidity,
+    MarginfiError.InvalidJuplendLending,
+  );
+  constraint(rewards_rate_model, rewards_rate_model.key === integration_acc_1.rewards_rate_model, MarginfiError.InvalidJuplendLending);
+  require(amount >= 10n, MarginfiError.JuplendInitPositionDepositInsufficient);
+  invoke(
+    token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(fee_payer)],
+    [u8(12n), amount, mint.decimals],
+  );
+  // JupLend's Deposit: the liquidity vault's tokens for fTokens into the bank's fToken vault.
+  invoke(
+    juplend_program,
+    [
+      writableSigner(liquidity_vault_authority),
+      writable(liquidity_vault),
+      writable(integration_acc_2),
+      readonly(mint),
+      readonly(lending_admin),
+      writable(integration_acc_1),
+      writable(f_token_mint),
+      writable(supply_token_reserves_liquidity),
+      writable(lending_supply_position_on_liquidity),
+      readonly(rate_model),
+      writable(vault),
+      writable(liquidity),
+      readonly(liquidity_program),
+      readonly(rewards_rate_model),
+      readonly(token_program),
+      readonly(associated_token_program),
+      readonly(system_program),
+    ],
+    [sighash("deposit"), amount],
+    ["liquidity_vault_auth", bank.key, bank.liquidity_vault_authority_bump],
+  );
+  bank.config.operational_state = BankOperationalState.Operational;
+}
+
+/**
+ * Deposit into a JupLend bank: the Lending's rate is brought up to date, the tokens go through the liquidity vault into
+ * JupLend, and the balance grows by the fTokens minted (exactly the amount's at the Lending's prices).
+ */
+export function juplendDeposit(
+  group: Mut<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "liquidity_vault", MarginfiError.InvalidLiquidityVault>,
+        "integration_acc_1",
+        MarginfiError.InvalidJuplendLending
+      >,
+      "integration_acc_2",
+      MarginfiError.InvalidJuplendFTokenVault
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  signer_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  liquidity_vault: Mut<TokenAccount>,
+  mint: Mint,
+  integration_acc_1: HasOne<Owner<Mut<Lending>, "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9">, "f_token_mint", MarginfiError.InvalidJuplendLending>,
+  f_token_mint: Mut<Mint>,
+  integration_acc_2: Mut<TokenAccount>,
+  lending_admin: AccountInfo,
+  supply_token_reserves_liquidity: Mut<AccountInfo>,
+  lending_supply_position_on_liquidity: Mut<AccountInfo>,
+  rate_model: AccountInfo,
+  vault: Mut<AccountInfo>,
+  liquidity: Mut<AccountInfo>,
+  liquidity_program: Address<AccountInfo, "jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC">,
+  rewards_rate_model: AccountInfo,
+  juplend_program: Address<AccountInfo, "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9">,
+  token_program: TokenInterface,
+  associated_token_program: Program<"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL">,
+  system_program: SystemProgram,
+  amount: u64,
+): void {
+  constraint(group, !protocolPaused(group), MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, false, false, true), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_JUPLEND, MarginfiError.WrongBankAssetTagForJuplendOperation);
+  constraint(
+    supply_token_reserves_liquidity,
+    supply_token_reserves_liquidity.key === integration_acc_1.token_reserves_liquidity,
+    MarginfiError.InvalidJuplendLending,
+  );
+  constraint(
+    lending_supply_position_on_liquidity,
+    lending_supply_position_on_liquidity.key === integration_acc_1.supply_position_on_liquidity,
+    MarginfiError.InvalidJuplendLending,
+  );
+  constraint(rewards_rate_model, rewards_rate_model.key === integration_acc_1.rewards_rate_model, MarginfiError.InvalidJuplendLending);
+  const t = now();
+  require(assetTagsCompatible(bank, marginfi_account), MarginfiError.AssetTagMismatch);
+  validateBankState(bank, FAILS_IF_PAUSED_OR_REDUCE_STATE, findBalance(marginfi_account, bank.key) >= 0n, t);
+  // JupLend's UpdateRate.
+  invoke(
+    juplend_program,
+    [writable(integration_acc_1), readonly(mint), readonly(f_token_mint), readonly(supply_token_reserves_liquidity), readonly(rewards_rate_model)],
+    [sighash("update_rate")],
+  );
+  const expected = juplendDepositShares(amount, integration_acc_1.liquidity_exchange_price, integration_acc_1.token_exchange_price);
+  const before = integration_acc_2.amount;
+  invoke(
+    token_program,
+    [writable(signer_token_account), readonly(mint), writable(liquidity_vault), readonlySigner(authority)],
+    [u8(12n), amount, mint.decimals],
+  );
+  // JupLend's Deposit: the liquidity vault's tokens for fTokens into the bank's fToken vault.
+  invoke(
+    juplend_program,
+    [
+      writableSigner(liquidity_vault_authority),
+      writable(liquidity_vault),
+      writable(integration_acc_2),
+      readonly(mint),
+      readonly(lending_admin),
+      writable(integration_acc_1),
+      writable(f_token_mint),
+      writable(supply_token_reserves_liquidity),
+      writable(lending_supply_position_on_liquidity),
+      readonly(rate_model),
+      writable(vault),
+      writable(liquidity),
+      readonly(liquidity_program),
+      readonly(rewards_rate_model),
+      readonly(token_program),
+      readonly(associated_token_program),
+      readonly(system_program),
+    ],
+    [sighash("deposit"), amount],
+    ["liquidity_vault_auth", bank.key, bank.liquidity_vault_authority_bump],
+  );
+  require(integration_acc_2.amount >= before, MarginfiError.MathError);
+  const minted = integration_acc_2.amount - before;
+  require(minted === expected, MarginfiError.JuplendDepositFailed);
+  const i = findOrCreateBalance(marginfi_account, bank, bank.key, t);
+  const shares = increaseBalance(marginfi_account, i, bank, fxFromU64(minted), INCREASE_DEPOSIT_ONLY, u64(t));
+  recordDepositInflow(bank, group, group.key, bank.key, marginfi_account.account_flags, amount, t);
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  emit<LendingAccountDepositEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount,
+    share_amount: { value: shares },
+  });
+}
+
+/**
+ * Withdraw from a JupLend bank: `amount` in tokens (the fTokens it burns, rounded up), or all of it (what the fTokens
+ * redeem for); JupLend's withdrawal into the liquidity vault authority's token account, passed on. Then the account's
+ * health as a withdrawal's.
+ */
+export function juplendWithdraw(
+  group: Account<MarginfiGroup>,
+  marginfi_account: HasOne<Mut<MarginfiAccount>, "group", MarginfiError.InvalidGroup>,
+  authority: Signer,
+  bank: HasOne<
+    HasOne<
+      HasOne<
+        HasOne<HasOne<Mut<Bank>, "group", MarginfiError.InvalidGroup>, "integration_acc_1", MarginfiError.InvalidJuplendLending>,
+        "integration_acc_2",
+        MarginfiError.InvalidJuplendFTokenVault
+      >,
+      "integration_acc_3",
+      MarginfiError.InvalidJuplendWithdrawIntermediaryAta
+    >,
+    "mint",
+    MarginfiError.InvalidMint
+  >,
+  destination_token_account: Mut<TokenAccount>,
+  liquidity_vault_authority: Seeds<Mut<SystemAccount>, ["liquidity_vault_auth", "@bank"], "@bank.liquidity_vault_authority_bump">,
+  mint: Mint,
+  integration_acc_1: HasOne<Owner<Mut<Lending>, "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9">, "f_token_mint", MarginfiError.InvalidJuplendLending>,
+  f_token_mint: Mut<Mint>,
+  integration_acc_2: Mut<TokenAccount>,
+  integration_acc_3: TokenOf<Mut<TokenAccount>, "mint", "liquidity_vault_authority", "token_program">,
+  lending_admin: AccountInfo,
+  supply_token_reserves_liquidity: Mut<AccountInfo>,
+  lending_supply_position_on_liquidity: Mut<AccountInfo>,
+  rate_model: AccountInfo,
+  vault: Mut<AccountInfo>,
+  claim_account: Mut<AccountInfo>,
+  liquidity: Mut<AccountInfo>,
+  liquidity_program: Address<AccountInfo, "jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC">,
+  rewards_rate_model: AccountInfo,
+  juplend_program: Address<AccountInfo, "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9">,
+  token_program: TokenInterface,
+  associated_token_program: Program<"ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL">,
+  system_program: SystemProgram,
+  amount: u64,
+  withdraw_all: Option<boolean>,
+): void {
+  constraint(group, !protocolPaused(group) || (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n, MarginfiError.ProtocolPaused);
+  constraint(marginfi_account, (marginfi_account.account_flags & ACCOUNT_DISABLED) === 0n, MarginfiError.AccountDisabled);
+  constraint(marginfi_account, notFrozenForAuthority(marginfi_account, authority.key), MarginfiError.AccountFrozen);
+  constraint(marginfi_account, signerAuthorized(marginfi_account, group.governance_admin, authority.key, true, true, true), MarginfiError.Unauthorized);
+  constraint(bank, bank.config.asset_tag === ASSET_TAG_JUPLEND, MarginfiError.WrongBankAssetTagForJuplendOperation);
+  constraint(
+    bank,
+    !((marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n && bank.config.asset_weight_init.value === I80F48_ZERO),
+    MarginfiError.LiquidationPremiumTooHigh,
+  );
+  constraint(
+    supply_token_reserves_liquidity,
+    supply_token_reserves_liquidity.key === integration_acc_1.token_reserves_liquidity,
+    MarginfiError.InvalidJuplendLending,
+  );
+  constraint(
+    lending_supply_position_on_liquidity,
+    lending_supply_position_on_liquidity.key === integration_acc_1.supply_position_on_liquidity,
+    MarginfiError.InvalidJuplendLending,
+  );
+  constraint(rewards_rate_model, rewards_rate_model.key === integration_acc_1.rewards_rate_model, MarginfiError.InvalidJuplendLending);
+  const all = withdraw_all !== null && withdraw_all;
+  // JupLend's UpdateRate.
+  invoke(
+    juplend_program,
+    [writable(integration_acc_1), readonly(mint), readonly(f_token_mint), readonly(supply_token_reserves_liquidity), readonly(rewards_rate_model)],
+    [sighash("update_rate")],
+  );
+  const t = now();
+  validateBankState(bank, FAILS_IN_PAUSED_STATE, !hasLiabilities(marginfi_account), t);
+  // ACCOUNT_IN_RECEIVERSHIP | ACCOUNT_IN_ORDER_EXECUTION | ACCOUNT_IN_REBALANCE
+  const deferred = (marginfi_account.account_flags & 400n) !== 0n;
+  const groupLimited = group.rate_limiter.hourly.max_outflow > 0n || group.rate_limiter.daily.max_outflow > 0n;
+  let price = I80F48_ZERO;
+  if (deferred || groupLimited) {
+    const p = lowPrice(bank, bank.key, remainingAccounts(), 0n, t, (marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n);
+    require(p.err === 0n, p.err);
+    if (deferred) require(p.v > I80F48_ZERO, MarginfiError.ZeroAssetPrice);
+    price = p.v;
+  }
+  const receivership = (marginfi_account.account_flags & ACCOUNT_IN_RECEIVERSHIP) !== 0n;
+  const i = findBalance(marginfi_account, bank.key);
+  require(i >= 0n, MarginfiError.BankAccountNotFound);
+  const rate = integration_acc_1.token_exchange_price;
+  let tokenAmount: u64 = amount;
+  let burn: u64 = 0n;
+  let shares = I80F48_ZERO;
+  if (all) {
+    const w = withdrawAll(marginfi_account, u64(i), bank, receivership);
+    shares = w.shares;
+    tokenAmount = juplendRedeemAssets(w.amount, rate);
+    burn = juplendWithdrawShares(tokenAmount, rate);
+    require(burn <= w.amount, MarginfiError.MathError);
+  } else {
+    burn = juplendWithdrawShares(amount, rate);
+    shares = decreaseBalance(marginfi_account, u64(i), bank, fxFromU64(burn), DECREASE_WITHDRAW_ONLY, u64(t));
+  }
+  recordWithdrawalOutflow(groupLimited, tokenAmount, burn, price, bank, group, group.key, bank.key, marginfi_account.account_flags, t);
+  if ((marginfi_account.account_flags & ACCOUNT_IN_DELEVERAGE) !== 0n) {
+    // check_deleverage_withdraw_limit: the day's deleveraged value, in whole dollars (wrapped to u32), under the cap.
+    const value = calcValue(fxFromU64(burn), price, bank.mint_decimals, I80F48_ZERO, false);
+    require(value.err === 0n, value.err);
+    const usd = fxToU32Wrapping(value.v);
+    const window = group.deleverage_withdraw_window_cache;
+    const today: u32 = saturatingSubI64(t, window.last_daily_reset_timestamp) >= 86400n ? 0n : window.withdrawn_today;
+    const projected: u32 = today > 4294967295n - usd ? 4294967295n : today + usd;
+    require(window.daily_limit === 0n || projected <= window.daily_limit, MarginfiError.DailyWithdrawalLimitExceeded);
+    emit<DeleverageWithdrawFlowEvent>({ group: group.key, bank: bank.key, mint: bank.mint, outflow_usd: usd, current_timestamp: t });
+  }
+  updateBankCache(bank, group, t);
+  marginfi_account.last_update = u64(t);
+  const bump = bank.liquidity_vault_authority_bump;
+  const intermediaryBefore = integration_acc_3.amount;
+  const fTokensBefore = integration_acc_2.amount;
+  let received: u64 = 0n;
+  if (!(all && tokenAmount === 0n)) {
+    // JupLend's Withdraw: fTokens from the bank's vault for tokens into the intermediary account.
+    invoke(
+      juplend_program,
+      [
+        writableSigner(liquidity_vault_authority),
+        writable(integration_acc_2),
+        writable(integration_acc_3),
+        readonly(lending_admin),
+        writable(integration_acc_1),
+        readonly(mint),
+        writable(f_token_mint),
+        writable(supply_token_reserves_liquidity),
+        writable(lending_supply_position_on_liquidity),
+        readonly(rate_model),
+        writable(vault),
+        writable(claim_account),
+        writable(liquidity),
+        readonly(liquidity_program),
+        readonly(rewards_rate_model),
+        readonly(token_program),
+        readonly(associated_token_program),
+        readonly(system_program),
+      ],
+      [sighash("withdraw"), tokenAmount],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+    require(integration_acc_3.amount >= intermediaryBefore, MarginfiError.MathError);
+    received = integration_acc_3.amount - intermediaryBefore;
+    require(received === tokenAmount, MarginfiError.JuplendWithdrawFailed);
+    require(fTokensBefore >= integration_acc_2.amount, MarginfiError.MathError);
+    require(fTokensBefore - integration_acc_2.amount === burn, MarginfiError.JuplendWithdrawFailed);
+    invoke(
+      token_program,
+      [writable(integration_acc_3), readonly(mint), writable(destination_token_account), readonlySigner(liquidity_vault_authority)],
+      [u8(12n), received, mint.decimals],
+      ["liquidity_vault_auth", bank.key, bump],
+    );
+  }
+  emit<LendingAccountWithdrawEvent>({
+    header: {
+      signer: authority.key,
+      marginfi_account: marginfi_account.key,
+      marginfi_account_authority: marginfi_account.authority,
+      marginfi_group: marginfi_account.group,
+    },
+    bank: bank.key,
+    mint: bank.mint,
+    amount: received,
+    close_balance: all,
+    share_amount: { value: shares },
+  });
+  sortBalances(marginfi_account);
+  refreshIndexerFlags(marginfi_account);
+  if (!deferred) {
+    // check_account_init_health_and_clear_tag: skipped in a flash loan (checked at its end).
+    const flash = (marginfi_account.account_flags & ACCOUNT_IN_FLASHLOAN) !== 0n;
+    const h = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_INITIAL, false, true, t);
+    if (!flash) {
+      require(h.err === 0n, h.err);
+      require(h.assets >= h.liabs, MarginfiError.RiskEngineInitRejected);
+      const tiers = riskTiersErr(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length);
+      require(tiers === 0n, tiers);
+      if (marginfi_account.liquidation_tagged_at !== 0n) {
+        const m = healthComponents(marginfi_account, group, remainingAccounts(), 0n, remainingAccounts().length, REQ_MAINTENANCE, false, false, t);
+        if (m.err === 0n && m.assets > m.liabs) marginfi_account.liquidation_tagged_at = 0n;
+      }
+    }
+    updatePremiumSnapshots(marginfi_account, group, h, u64(t), true);
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+    writeHealthCache(marginfi_account, h, t, !flash);
+    if (hasLiabilities(marginfi_account)) {
+      const gate = cbPriceGate(marginfi_account, remainingAccounts(), 0n, remainingAccounts().length, t);
+      require(gate === 0n, gate);
+    }
+  } else {
+    const p = cachePrice(bank, bank.key, remainingAccounts(), 0n, t);
+    if (p.err === 0n) updateCachePrice(bank, p.price, p.conf, p.mult, p.source_time, t, currentSlot());
+  }
 }

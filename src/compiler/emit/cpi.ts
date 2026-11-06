@@ -17,8 +17,13 @@ export abstract class CpiEmitter extends MetaplexEmitter {
       programKey = `&${programHandle}->key`;
     } else {
       const program = this.accountParam(a[0], "invoke's program");
-      if (program.kind.kind !== "program" && program.kind.kind !== "system" && program.kind.kind !== "tokenProgram")
-        this.fail(a[0], 'invoke\'s program must be a Program<"address">, UncheckedProgram, SystemProgram, token program or remaining account');
+      // Address<A, "base58"> (Anchor's `address = ID` on an UncheckedAccount): the key is that program's; the runtime
+      // refuses a CPI into an account that is not executable.
+      if (program.kind.kind !== "program" && program.kind.kind !== "system" && program.kind.kind !== "tokenProgram" && !program.constraints.address)
+        this.fail(
+          a[0],
+          'invoke\'s program must be a Program<"address">, UncheckedProgram, Address<A, "address">, SystemProgram, token program or remaining account',
+        );
       programKey = `&a_${program.name}->key`;
     }
     const hasSeeds = a.length === 4;
@@ -30,7 +35,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     const metas: string[] = [];
     // Entries after the first spread are appended at runtime, in order.
     type Spread = { kind: "spread"; mode: "asPassed" | "readonly" | "writable"; from: string; to: string };
-    const parts: ({ kind: "meta"; c: string } | Spread)[] = [];
+    const parts: ({ kind: "meta"; c: string; when?: string } | Spread)[] = [];
     for (const el of a[1].elements) {
       if (ts.isSpreadElement(el)) {
         if (!this.ix) this.fail(el, "pass the remaining accounts to a CPI from the instruction; a helper reads them one at a time with .get(i)");
@@ -56,12 +61,16 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         parts.push({ kind: "meta", c: metas[metas.length - 1]! });
         continue;
       }
-      const acct = this.accountParam(el.arguments[0], `${fn}()'s argument`);
+      // An optional account as it is (no `!`): left out of the list when it was not passed (Rust's
+      // `if let Some(a) = &self.a { accounts.push(…) }`).
+      const maybe = this.accountAt(el.arguments[0]);
+      const skipped = !!maybe?.optional && !isS && ts.isIdentifier(el.arguments[0]);
+      const acct = skipped ? maybe! : this.accountParam(el.arguments[0], `${fn}()'s argument`);
       if (isW && !isWritable(acct.kind)) this.fail(el, `"${acct.name}" is not writable here; declare it Mut<...>`);
       if (isS && acct.kind.kind !== "signer" && !hasSeeds)
         this.fail(el, `"${acct.name}" did not sign; pass signerSeeds to sign for a PDA, or declare it Signer`);
       metas.push(`{&a_${acct.name}->key, ${isW}, ${isS}}`);
-      parts.push({ kind: "meta", c: metas[metas.length - 1]! });
+      parts.push({ kind: "meta", c: metas[metas.length - 1]!, when: skipped ? `a_${acct.name} != NULL` : undefined });
     }
 
     // The CPI's account list is built in a buffer with room for one entry per instruction account.
@@ -130,9 +139,9 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     const seeds = hasSeeds && !multi ? this.signingSeeds(a[3]) : { name: "NULL", count: 0 };
     const metasName = this.tmp("metas");
     let count: string = String(metas.length);
-    if (parts.some((p) => p.kind === "spread")) {
+    if (parts.some((p) => p.kind === "spread" || p.when)) {
       // Room for every account of the instruction (ts_invoke's scratch holds TS_MAX_ACCOUNTS records).
-      const n = this.ix!.accounts.length;
+      const n = this.ix ? this.ix.accounts.length : 0;
       const cnt = this.tmp("nmetas");
       this.line(`TS_METAS_ROOM(${metasName});`);
       this.line(`uint64_t ${cnt} = 0;`);
@@ -141,7 +150,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
       this.line(`if (${total} > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the CPI lists more than ${accountLimit(this.model)} accounts");`);
       for (const p of parts) {
         if (p.kind === "meta") {
-          this.line(`${metasName}[${cnt}++] = (SolAccountMeta)${p.c};`);
+          this.line(`${p.when ? `if (${p.when}) ` : ""}${metasName}[${cnt}++] = (SolAccountMeta)${p.c};`);
           continue;
         }
         const i = this.tmp("ri");

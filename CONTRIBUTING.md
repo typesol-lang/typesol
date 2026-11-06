@@ -22,14 +22,14 @@ a constraint or an error code.
 - A language change that lets a PARTIAL port of program-examples get closer to the original: update the port
   and its row in [showcase/program-examples/README.md](showcase/program-examples/README.md).
 - `pnpm smoke` against a local validator (`scripts/localnet.sh`) for changes to CPIs, deploy or IDL tooling.
-- Changes to generated code or the runtime: measure them with [typesol/benchmarks](https://github.com/typesol/benchmarks)
+- Changes to generated code or the runtime: measure them with [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks)
   pointed at your checkout (`TYPESOL_REPO=<checkout> node run.ts` and `node official.ts`, after `pnpm build`), before
   and after, and put the difference in the pull request. When numbers move, refresh the README chart and table in the
   same change: `node scripts/readme-bench.ts <benchmarks>/results.json`.
 
 ## Versioning
 
-TypeSOL follows the organization's [versioning and release policy](https://github.com/typesol/.github/blob/main/VERSIONING.md).
+TypeSOL follows the organization's [versioning and release policy](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md).
 For the compiler, before 1.0:
 - a **minor** release (0.x → 0.y) may change the language surface (`lib/typesol.d.ts`), the account/IDL layout of
   generated programs, or error codes — always listed under "Breaking" in CHANGELOG.md;
@@ -41,7 +41,7 @@ Every change adds its entry under `## Unreleased` in CHANGELOG.md.
 
 ## Releasing
 
-The organization's [release steps](https://github.com/typesol/.github/blob/main/VERSIONING.md#releasing), for the
+The organization's [release steps](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md#releasing), for the
 compiler:
 
 1. Merge `develop` into `main` through a pull request with green CI.
@@ -49,12 +49,11 @@ compiler:
    (start a new empty `## Unreleased` above it), commit as `Release v<version>`.
 3. Tag it: `git tag -a v<version> -m "TypeSOL <version>"`, push the tag, and create the GitHub Release from the tag
    with that CHANGELOG section as notes.
-4. Publishing to npm (as `@typesol/cli`) is separate and manual: run the **release** workflow (Actions → release → Run
-   workflow) with the version. It checks out the tag, builds and tests it, checks that it matches `package.json`, and
-   publishes through npm trusted publishing (no stored token; the package trusts that workflow and its `npm`
-   environment). Tags and GitHub Releases never publish on their own. After publishing it builds the release manifest
-   (`scripts/release-manifest.ts`) and attaches it, with the previous release's sources built by both packages and
-   their diff, to the GitHub Release: create the Release (step 3) before running the workflow.
+4. Publishing to npm (as `@typesol/cli`) is separate and manual, from a maintainer's machine: check out the tag in a
+   clean clone, run `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm lint` and `pnpm test`, check that
+   `package.json` has the tag's version, then `npm publish --access public --ignore-scripts`. Tags and GitHub Releases
+   never publish on their own, and no workflow publishes. Afterwards build the release manifest
+   (`node scripts/release-manifest.ts`) and attach it to the GitHub Release by hand.
 
 ## Code style
 

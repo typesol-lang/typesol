@@ -156,16 +156,18 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "currentSlot":
       case "currentEpoch":
+      case "epochStartTimestamp":
       case "now": {
         if (args.length !== 0) this.fail(node, `${builtin}() takes no arguments`);
         // Clock { slot, epoch_start_timestamp, epoch, leader_schedule_epoch, unix_timestamp }
-        const field = builtin === "currentSlot" ? 0 : builtin === "currentEpoch" ? 2 : 4;
+        const field = builtin === "currentSlot" ? 0 : builtin === "currentEpoch" ? 2 : builtin === "epochStartTimestamp" ? 1 : 4;
         const t = this.tmp();
         if (this.ix) {
           // The Clock does not change within a transaction: an instruction reads it once, on first use.
           if (!this.hoisted.some((l) => l.includes("ts_clk_ok"))) this.hoisted.push(`  uint64_t ts_clk[5]; bool ts_clk_ok = false;`);
           this.line(`if (!ts_clk_ok) { TS_TRY(ts_read_clock(ts_clk)); ts_clk_ok = true; }`);
           if (builtin === "now") return { c: `((int64_t)ts_clk[4])`, type: I64 };
+          if (builtin === "epochStartTimestamp") return { c: `((int64_t)ts_clk[1])`, type: I64 };
           this.line(`uint64_t ${t} = ts_clk[${field}];`);
           return { c: t, type: U64 };
         }
@@ -176,6 +178,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         this.line(`uint64_t ${t};`);
         this.line(`TS_TRY(ts_clock_u64(${field}, &${t}));`);
+        if (builtin === "epochStartTimestamp") return { c: `((int64_t)${t})`, type: I64 };
         return { c: t, type: U64 };
       }
       case "pubkey": {
@@ -708,6 +711,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "initIfNeeded" && method === "createIfNeeded") return this.create(node, target, topLevel, true);
         if (target?.kind.kind === "system" && method === "transfer") return this.systemTransfer(node);
         if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, target);
+        if (target?.kind.kind === "system" && method === "createPda") return this.createPda(node);
         if (target?.kind.kind === "system" && (method === "allocate" || method === "assign")) return this.allocateOrAssign(node, target, method);
         if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
         if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
@@ -1206,6 +1210,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const targ = node.typeArguments?.[0];
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s || s.size === undefined || s.vec) this.fail(node, "loadForeign needs a fixed-size struct type: loadForeign<Pool>(account, owner)");
+    if (s.accountDiscriminator.length !== 8) this.fail(node, `${s.name}'s discriminator is shorter than 8 bytes: take it as Owner<Account<${s.name}>, "…">`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: loadForeign reads fixed layouts only`);
     if (node.arguments.length !== 2) this.fail(node, "loadForeign<T>(account, owner) takes the account and its owning program's address");
     const h = this.anyAccount(node.arguments[0], "loadForeign's account");
@@ -1234,6 +1239,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
     if (!s || s.size === undefined) this.fail(node, "loadAccount needs an account struct type: loadAccount<MyStruct>(account)");
+    if (s.accountDiscriminator.length !== 8) this.fail(node, `${s.name}'s discriminator is shorter than 8 bytes: take it as Owner<Account<${s.name}>, "…">`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: declare it as an instruction parameter (remaining accounts are read in place)`);
     if (node.arguments.length !== 1) this.fail(node, "loadAccount<T>(account) takes one remaining account or AccountInfo parameter");
     let h = this.handle(node.arguments[0]);

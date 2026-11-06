@@ -23,13 +23,22 @@ import {
   loadAccount,
   loadAccountMut,
   programId,
+  pubkey,
   readData,
   require,
   u64 as toU64,
   u8 as toU8,
 } from "typesol";
 import { ACCOUNT_IN_FLASHLOAN, EMPTY_BALANCE_THRESHOLD, ZERO_KEY, claimPremium, writeOffPremium } from "./account";
-import { BANK_SAME_ASSET_EMODE_ELIGIBLE, CIRCUIT_BREAKER_ENABLED, LIQ_CACHE_LOCKED_FLAG, PREMIUM_ACTIVE, cbPriceGateErr, saturatingSubI64 } from "./bank";
+import {
+  BANK_SAME_ASSET_EMODE_ELIGIBLE,
+  CIRCUIT_BREAKER_ENABLED,
+  LIQ_CACHE_LOCKED_FLAG,
+  PREMIUM_ACTIVE,
+  balanceDecimals,
+  cbPriceGateErr,
+  saturatingSubI64,
+} from "./bank";
 import { MarginfiError } from "./errors";
 import {
   type Fx,
@@ -61,6 +70,23 @@ import {
   feedFamily,
   fixedFeed,
   loadFeed,
+  isSolendSetup,
+  solendFeed,
+  isKaminoSetup,
+  kaminoFeed,
+  isDriftSetup,
+  driftFeed,
+  isJuplendSetup,
+  juplendFeed,
+  isFixedVenueSetup,
+  fixedVenueFeed,
+  stakedFeed,
+  isLstSetup,
+  lstFeed,
+  isScopeSetup,
+  scopeFeed,
+  isPtSetup,
+  ptFeed,
   oracleCount,
   priceAndConfidence,
   priceOfType,
@@ -126,11 +152,28 @@ export function accountsPerBank(bank: Account<Bank>): Count {
   return { err: 6047n, n: 0n };
 }
 
-/** OraclePriceFeedAdapter::try_from_bank over the bank's oracle accounts (`n` of them from `first`), as a value. */
-export function feedAt(bank: Account<Bank>, rest: RemainingAccounts, first: u64, n: u64, t: i64): Feed {
+/** prices_through_pt_emergency: an account in deleverage or a risk admin's liquidation prices PT banks through an Exponent emergency. */
+export function pricesThroughPtEmergency(acc: Account<MarginfiAccount>): boolean {
+  return (acc.account_flags & 544n) !== 0n; // ACCOUNT_IN_DELEVERAGE | ACCOUNT_IN_RISK_ADMIN_LIQUIDATION
+}
+
+/**
+ * OraclePriceFeedAdapter::try_from_bank over the bank's oracle accounts (`n` of them from `first`), as a value;
+ * `ignorePt` prices an Exponent PT bank through its vault's emergency mode (deleverage and risk-admin paths).
+ */
+export function feedAt(bank: Account<Bank>, rest: RemainingAccounts, first: u64, n: u64, t: i64, ignorePt: boolean): Feed {
   const c = oracleCount(bank, n);
   if (c !== 0n) return feedErr(c);
   if (n === 0n) return fixedFeed(bank);
+  if (isSolendSetup(bank.config.oracle_setup)) return solendFeed(bank, rest, first, t);
+  if (isKaminoSetup(bank.config.oracle_setup)) return kaminoFeed(bank, rest, first, t);
+  if (isDriftSetup(bank.config.oracle_setup)) return driftFeed(bank, rest, first, t);
+  if (isJuplendSetup(bank.config.oracle_setup)) return juplendFeed(bank, rest, first, t);
+  if (isFixedVenueSetup(bank.config.oracle_setup)) return fixedVenueFeed(bank, rest, first, t);
+  if (bank.config.oracle_setup === OracleSetup.StakedWithPythPush) return stakedFeed(bank, rest, first, t);
+  if (isLstSetup(bank.config.oracle_setup)) return lstFeed(bank, rest, first, t);
+  if (isScopeSetup(bank.config.oracle_setup)) return scopeFeed(bank, rest, first, t);
+  if (isPtSetup(bank.config.oracle_setup)) return ptFeed(bank, rest, first, t, ignorePt);
   return loadFeed(bank, rest.get(first), t);
 }
 
@@ -378,7 +421,7 @@ function initDiscount(bank: Account<Bank>, price: i128): Fx {
   if (limit === 0n) return { err: 0n, v: I80F48_ONE };
   const amount = fxTryMul(bank.total_asset_shares.value, bank.asset_share_value.value);
   if (amount.err !== 0n) return amount;
-  const deposits = calcValueChecked(amount.v, price, bank.mint_decimals, I80F48_ZERO, false);
+  const deposits = calcValueChecked(amount.v, price, balanceDecimals(bank), I80F48_ZERO, false);
   if (deposits.err !== 0n) return deposits;
   const l = fxFromU64(limit);
   if (deposits.v > l) return fxTryDiv(l, deposits.v);
@@ -406,6 +449,14 @@ export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, s
     if (req === REQ_INITIAL) return { err: 0n, value: 0n, price: 0n, premium: 0n, code: f.err === ERR_BORSH ? 0n : f.err };
     return { err: f.err === ERR_BORSH ? 6000n : f.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   }
+  // has_borrow_power: collateral a Kamino emergency stops backing borrows is worth nothing for Initial margin (the
+  // premium scratch still prices it, as for a paused bank).
+  if (f.no_borrow_power !== 0n && req === REQ_INITIAL) {
+    if (!needPremium) return { err: 0n, value: 0n, price: 0n, premium: 0n, code: 0n };
+    const p = priceOfType(f, realTime, BIAS_LOW, U32_MAX_CONFIDENCE);
+    if (p.err !== 0n) return { err: p.err, value: 0n, price: 0n, premium: 0n, code: 0n };
+    return { err: 0n, value: 0n, price: 0n, premium: p.v, code: 0n };
+  }
   let w = assetWeight(bank, req, r);
   const lower = record ? biased(f, realTime, bank.config.oracle_max_confidence, false) : priceOfType(f, realTime, BIAS_LOW, bank.config.oracle_max_confidence);
   if (lower.err !== 0n) return { err: lower.err, value: 0n, price: 0n, premium: 0n, code: 0n };
@@ -420,7 +471,7 @@ export function assetLeg(bank: Account<Bank>, f: Feed, req: u8, r: Reconciled, s
   }
   const amount = fxTryMul(shares, bank.asset_share_value.value);
   if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
-  const v = calcValue(amount.v, lower.v, bank.mint_decimals, w, true);
+  const v = calcValue(amount.v, lower.v, balanceDecimals(bank), w, true);
   if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   return { err: 0n, value: v.v, price: lower.v, premium: needPremium ? lower.v : 0n, code: 0n };
 }
@@ -436,7 +487,7 @@ export function liabilityLeg(bank: Account<Bank>, f: Feed, req: u8, shares: i128
   if (higher.err !== 0n) return { err: higher.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   const amount = fxTryMul(shares, bank.liability_share_value.value);
   if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
-  const v = calcValue(amount.v, higher.v, bank.mint_decimals, liabilityWeight(bank, req), true);
+  const v = calcValue(amount.v, higher.v, balanceDecimals(bank), liabilityWeight(bank, req), true);
   if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   return { err: 0n, value: v.v, price: higher.v, premium: 0n, code: 0n };
 }
@@ -462,7 +513,7 @@ function cachedLeg(bank: Account<Bank>, req: u8, r: Reconciled, side: u8, assets
   if (p.err !== 0n) return { err: p.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   const amount = side === 1n ? fxTryMul(assets, bank.asset_share_value.value) : fxTryMul(liabs, bank.liability_share_value.value);
   if (amount.err !== 0n) return { err: amount.err, value: 0n, price: 0n, premium: 0n, code: 0n };
-  const v = calcValue(amount.v, p.v, bank.mint_decimals, side === 1n ? assetWeight(bank, req, r) : liabilityWeight(bank, req), true);
+  const v = calcValue(amount.v, p.v, balanceDecimals(bank), side === 1n ? assetWeight(bank, req, r) : liabilityWeight(bank, req), true);
   if (v.err !== 0n) return { err: v.err, value: 0n, price: 0n, premium: 0n, code: 0n };
   return { err: 0n, value: v.v, price: p.v, premium: p.v, code: 0n };
 }
@@ -580,7 +631,7 @@ export function healthComponents(
       h.err = WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
       return h;
     }
-    const f = feedAt(bank, rest, start + at + 1n, per.n - 1n, t);
+    const f = feedAt(bank, rest, start + at + 1n, per.n - 1n, t, pricesThroughPtEmergency(acc));
     // Balance::get_side asserts the balance is not both.
     const assets = b.asset_shares.value;
     const liabs = b.liability_shares.value;
@@ -622,7 +673,7 @@ export function healthComponents(
         return h;
       }
       if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
-        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, req), true);
+        const v = calcValueChecked(total.v, leg.price, balanceDecimals(bank), liabilityWeight(bank, req), true);
         if (v.err !== 0n) {
           h.err = v.err;
           return h;
@@ -638,7 +689,7 @@ export function healthComponents(
       if (side === 1n) {
         if (leg.premium > I80F48_ZERO && countable) {
           const amount = fxTryMul(assets, bank.asset_share_value.value);
-          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, bank.mint_decimals, I80F48_ZERO, false);
+          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, balanceDecimals(bank), I80F48_ZERO, false);
           if (usd.err !== 0n) {
             h.err = usd.err;
             return h;
@@ -787,7 +838,7 @@ export function cachedHealthComponents(
         return h;
       }
       if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
-        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, req), true);
+        const v = calcValueChecked(total.v, leg.price, balanceDecimals(bank), liabilityWeight(bank, req), true);
         if (v.err !== 0n) {
           h.err = v.err;
           return h;
@@ -803,7 +854,7 @@ export function cachedHealthComponents(
       if (side === 1n) {
         if (leg.premium > I80F48_ZERO && countable) {
           const amount = fxTryMul(assets, bank.asset_share_value.value);
-          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, bank.mint_decimals, I80F48_ZERO, false);
+          const usd = amount.err !== 0n ? amount : calcValue(amount.v, leg.premium, balanceDecimals(bank), I80F48_ZERO, false);
           if (usd.err !== 0n) {
             h.err = usd.err;
             return h;
@@ -1000,10 +1051,10 @@ export function oraclesOf(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingA
 }
 
 /** fetch_asset_price_for_bank_low_bias: the spot price less its confidence interval. */
-export function lowPrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAccounts, start: u64, t: i64): Fx {
+export function lowPrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAccounts, start: u64, t: i64, ignorePt: boolean): Fx {
   const o = oraclesOf(bank, bankKey, rest, start);
   if (o.err !== 0n) return { err: o.err, v: 0n };
-  const f = feedAt(bank, rest, o.first, o.count, t);
+  const f = feedAt(bank, rest, o.first, o.count, t, ignorePt);
   if (f.err !== 0n) return { err: f.err, v: 0n };
   return priceOfType(f, true, BIAS_LOW, bank.config.oracle_max_confidence);
 }
@@ -1011,10 +1062,20 @@ export function lowPrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAc
 /** fetch_unbiased_price_for_bank_cache: the spot price and its confidence, for the bank's price cache. */
 export function cachePrice(bank: Account<Bank>, bankKey: Pubkey, rest: RemainingAccounts, start: u64, t: i64): PriceConf {
   const o = oraclesOf(bank, bankKey, rest, start);
-  if (o.err !== 0n) return { err: o.err, price: 0n, conf: 0n, source_time: 0n };
-  const f = feedAt(bank, rest, o.first, o.count, t);
-  if (f.err !== 0n) return { err: f.err, price: 0n, conf: 0n, source_time: 0n };
-  return priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+  if (o.err !== 0n) return { err: o.err, price: 0n, conf: 0n, source_time: 0n, mult: I80F48_ONE };
+  return cacheOfFeed(bank, feedAt(bank, rest, o.first, o.count, t, false));
+}
+
+/**
+ * get_price_and_confidence_for_cache over a loaded feed: the spot price and its confidence; a venue feed's are the ones
+ * read while it loaded (before its exchange rate applies), with the rate as the cache's multiplier.
+ */
+export function cacheOfFeed(bank: Account<Bank>, f: Feed): PriceConf {
+  if (f.has_raw !== 0n && f.raw_err !== 0n) return { err: f.raw_err, price: 0n, conf: 0n, source_time: 0n, mult: I80F48_ONE };
+  if (f.err !== 0n) return { err: f.err, price: 0n, conf: 0n, source_time: 0n, mult: I80F48_ONE };
+  const adjusted = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+  if (adjusted.err !== 0n || f.has_raw === 0n) return adjusted;
+  return { err: 0n, price: f.raw_price, conf: f.raw_conf, source_time: f.source_time, mult: f.mult };
 }
 
 /**
@@ -1022,11 +1083,29 @@ export function cachePrice(bank: Account<Bank>, bankKey: Pubkey, rest: Remaining
  * must price (spot) within its first tier and its long window of the breaker's references.
  */
 export function cbPriceGate(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, end: u64, t: i64): u32 {
+  return cbPriceGateHolding(acc, rest, start, end, t, NO_BANK);
+}
+
+/** No bank: what cbPriceGateHolding is given when the instruction holds none. */
+const NO_BANK = pubkey("11111111111111111111111111111111");
+/**
+ * ProgramError::AccountBorrowFailed in the original (AccountLoader::try_from cannot borrow a bank the instruction holds
+ * mutably); a custom code of that number here.
+ */
+export const ACCOUNT_BORROW_FAILED: u32 = 12n;
+
+/**
+ * run_cb_price_gate while the instruction holds `held` (a bank) mutably, as solend_withdraw does: reaching it among the
+ * accounts fails as borrowing it again does. Each bank is priced as its cache is (a venue's feed before its rate, times
+ * the rate).
+ */
+export function cbPriceGateHolding(acc: Account<MarginfiAccount>, rest: RemainingAccounts, start: u64, end: u64, t: i64, held: Pubkey): u32 {
   let at = 0n;
   for (let i = 0n; i < 16n; i++) {
     const b = acc.lending_account.balances.get(i);
     if (b.active === 0n) continue;
     if (at >= end - start) return INVALID_BANK_ACCOUNT;
+    if (rest.get(start + at).key === held) return ACCOUNT_BORROW_FAILED;
     const loadErr = loaderErr(rest.get(start + at));
     if (loadErr !== 0n) return loadErr;
     const bank = loadAccount<Bank>(rest.get(start + at));
@@ -1037,11 +1116,18 @@ export function cbPriceGate(acc: Account<MarginfiAccount>, rest: RemainingAccoun
     if (per.err !== 0n) return per.err;
     if (on) {
       if (end - start < at + per.n) return WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
-      const f = feedAt(bank, rest, start + at + 1n, per.n - 1n, t);
-      if (f.err !== 0n) return f.err;
-      const p = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
+      const p = cacheOfFeed(bank, feedAt(bank, rest, start + at + 1n, per.n - 1n, t, pricesThroughPtEmergency(acc)));
       if (p.err !== 0n) return p.err;
-      const g = cbPriceGateErr(bank, p.price, p.conf);
+      let price = p.price;
+      let conf = p.conf;
+      if (p.mult !== I80F48_ONE) {
+        const mp = fxTryMul(price, p.mult);
+        const mc = fxTryMul(conf, p.mult);
+        if (mp.err !== 0n || mc.err !== 0n) return 6062n;
+        price = mp.v;
+        conf = mc.v;
+      }
+      const g = cbPriceGateErr(bank, price, conf);
       if (g !== 0n) return g;
     }
     at += per.n;
@@ -1306,7 +1392,7 @@ export function lockLiquidationPrices(acc: Account<MarginfiAccount>, rest: Remai
     let twap = I80F48_ZERO;
     let twapConf = I80F48_ZERO;
     if (priced) {
-      const f = feedAt(bank, rest, at + 1n, per.n - 1n, t);
+      const f = feedAt(bank, rest, at + 1n, per.n - 1n, t, pricesThroughPtEmergency(acc));
       const live = priceAndConfidence(f, true, bank.config.oracle_max_confidence);
       const ema = priceAndConfidence(f, false, bank.config.oracle_max_confidence);
       rt = live.price;
@@ -1427,7 +1513,7 @@ export function taggedHealth(acc: Account<MarginfiAccount>, group: Account<Margi
       out.err = WRONG_NUMBER_OF_ORACLE_ACCOUNTS;
       return out;
     }
-    const f = feedAt(bank, rest, at + 1n, per.n - 1n, t);
+    const f = feedAt(bank, rest, at + 1n, per.n - 1n, t, false);
     const assets = b.asset_shares.value;
     const liabs = b.liability_shares.value;
     require(assets < EMPTY_BALANCE_THRESHOLD || liabs < EMPTY_BALANCE_THRESHOLD, MarginfiError.InternalLogicError);
@@ -1454,7 +1540,7 @@ export function taggedHealth(acc: Account<MarginfiAccount>, group: Account<Margi
         return out;
       }
       if (total.v > I80F48_ZERO && leg.price > I80F48_ZERO) {
-        const v = calcValueChecked(total.v, leg.price, bank.mint_decimals, liabilityWeight(bank, REQ_EQUITY), true);
+        const v = calcValueChecked(total.v, leg.price, balanceDecimals(bank), liabilityWeight(bank, REQ_EQUITY), true);
         if (v.err !== 0n) {
           out.err = v.err;
           return out;

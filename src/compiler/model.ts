@@ -381,6 +381,8 @@ export interface ProgramModel {
   events: Set<string>;
   /** Structs used as Account/Mut/Init. */
   accountStructs: Set<string>;
+  /** Account structs only taken as another program's (`Owner<Account<T>, "…">`): not in the IDL's accounts. */
+  foreignAccounts?: Set<string>;
   /** Structs passed as instruction arguments (directly, in arrays or in Vecs): their IDL layout is the fixed one. */
   argStructs: Set<string>;
   /** FixedString capacities in use, for C typedefs and IDL types. */

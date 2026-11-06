@@ -9,6 +9,8 @@ import {
   type u64,
   currentEpoch,
   currentSlot,
+  epochStartTimestamp,
+  type i64,
   require,
 } from "typesol";
 
@@ -24,6 +26,15 @@ export interface Note {
  */
 export function clock(): u64 {
   return currentSlot() * 1000n + currentEpoch();
+}
+
+function startOf(): i64 {
+  return epochStartTimestamp();
+}
+
+/** When the current epoch started (read in a helper and in the instruction). */
+export function epochStart(): i64 {
+  return startOf() * 2n - epochStartTimestamp();
 }
 
 /**

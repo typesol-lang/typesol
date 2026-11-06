@@ -31,6 +31,15 @@ describe("docs, clock, Owner/Executable, Seeds program, ProgramData (test/fixtur
     expect(u64(expectOk(await send(d.svm, payer, [ix(d, "clock", {}, [])])))).toBe(c.slot * 1000n + c.epoch);
   });
 
+  it("reads when the epoch started", async () => {
+    const payer = await fundedSigner(d.svm);
+    const c = d.svm.getClock();
+    c.epochStartTimestamp = 1_700_000_123n;
+    d.svm.setClock(c);
+    const r = expectOk(await send(d.svm, payer, [ix(d, "epoch_start", {}, [])]));
+    expect(u64(r)).toBe(1_700_000_123n);
+  });
+
   it("checks Owner (2004) and Executable (2007)", async () => {
     const payer = await fundedSigner(d.svm);
     const tokenAcct = (await generateKeyPairSigner()).address;

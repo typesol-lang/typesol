@@ -1,11 +1,85 @@
 # Changelog
 
-TypeSOL follows the organization's [versioning policy](https://github.com/typesol/.github/blob/main/VERSIONING.md)
+TypeSOL follows the organization's [versioning policy](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md)
 (compiler specifics in CONTRIBUTING.md): until 1.0, a minor version may change the language, the IDL layout or error
 codes, and says so here.
 
 ## Unreleased
 
+- Project: no scheduled or publishing automation in the repository: npm releases are published by hand from a
+  maintainer's machine (the release workflow is gone), the macOS suite runs on demand only, and Dependabot no longer
+  opens weekly pull requests.
+- Examples: Marginfi's rebalances across Kamino, Drift and JupLend banks, each leg priced at the venue's supply rate
+  (klend's curve and reward emissions at the chain's measured slot pace, Drift's curve less its insurance factor,
+  JupLend's liquidity-layer rate and Lending rewards), amounts through the venues' exchange rates, deposit room capped
+  by the venue's own. Against the binary on mainnet: 2,081 transactions (with the fixes and tests below).
+- Fixed (examples): a classic liquidation by Marginfi's risk admin flags both accounts as the original does, so their
+  Exponent PT banks are priced through a vault emergency there too.
+- New: `systemProgram.createPda(payer, account, space, owner, seeds)`, Anchor's `init` with `owner = …` on an
+  `UncheckedAccount`: another program's account at this program's PDA, created (or, over an address someone funded
+  first, topped up, allocated and assigned) before the instruction's constraints, the PDA recorded in the IDL.
+- Examples: Marginfi's I80F48 magnitudes widen to u256 once (their sum stays in u128) and a float's bit length is
+  found by halving, not bit by bit: a classic liquidation takes 7% fewer compute units (130,448 → 121,210 on the
+  test's partial liquidation; 38% under the original's).
+- Tests: a `TYPESOL_PROFILE=1` build's VM has no 1.4M compute limit and keeps every log line, so `typesol profile`
+  sees a whole Marginfi liquidation (its markers took it past both before).
+- Examples: more of Marginfi's venue paths against the binary: Kamino and Solend deposits and withdrawals of disabled,
+  frozen and paused accounts, Kamino's receivership, deleverage, group outflow limit and deleverage day's limit branches
+  and its bank's `has_one` accounts, and the risk admin deleveraging an Exponent PT through a vault emergency.
+  (`*DepositFailed` / `*WithdrawFailed` guard against a venue that moves other amounts than asked; the venues' own
+  programs never do, so they stay untested.)
+- New: an optional account in `invoke`'s list, as it is (`readonly(x)` with `x: A | null`), is left out when it was not
+  passed (Rust's `if let Some(..)` pushes).
+- Fixed: a `constraint(acct, …)` that mentions another, optional account runs when that account is missing (it was
+  skipped, so `x === null` checks never failed); only `acct` itself being optional and missing skips it. Declared
+  constraints (`HasOne` and the like) still run only when the optional accounts they name were passed.
+- Fixed (examples): Marginfi's `drift_withdraw` refuses a withdrawal from a Drift user with admin deposits when the
+  reward accounts are missing (6321), as the original does, and passes any combination of the six optional reward
+  accounts on to Drift (the port refused all but some).
+- Fixed (examples): Marginfi's `solend_init_obligation` initializes an obligation address someone funded first (Anchor's
+  `init` tops the rent up, allocates and assigns), and creates it before all its other checks, as the original does. The
+  Solend fuzz holds every transaction to the original's error code; a withdrawal with a debt, where the original fails
+  borrowing the bank (AccountBorrowFailed), must fail with the port's error 12.
+- New: `epochStartTimestamp()`, when the current epoch began (the Clock's `epoch_start_timestamp`).
+- Examples: Marginfi's pricing, every oracle setup: staked SOL (a single pool's stake per LST, before and after its
+  on-ramp), mSOL (Marinade's rate) and LSTs (an SPL or Sanctum stake pool's), Scope entries, Exponent PTs (linear to
+  par, capped by redemption, emergency mode honoured except where the original prices through it), and fixed venue
+  prices, each also inside Kamino and JupLend banks where the original has that kind. Setting a fixed venue price
+  checks the venue's account. Against the binary on mainnet: 1,936 transactions.
+- Examples: Marginfi's Drift and JupLend banks (`lending_pool_add_bank_drift`, `drift_init_user`, `drift_deposit`,
+  `drift_withdraw`, `drift_harvest_reward`, `drift_claim_bad_debt`, `lending_pool_add_bank_juplend`,
+  `juplend_init_position`, `juplend_deposit`, `juplend_withdraw`) over Drift v2, Drift's bad-debt Merkle distributor
+  and JupLend's lending, liquidity and rewards programs, and their pricing: the feed times the spot market's
+  cumulative deposit interest or the Lending's token exchange price. All 124 of Marginfi's instructions are now ported
+  (pricing fixed venue banks and venue rebalance legs still stop in the port).
+  Against the binary on mainnet: 1,798 transactions, the same IDL for all 124. The venue tests now hold a refused
+  transaction to the original's error code, not only to failing.
+- New: `Owner<Account<T>, "…">` is another program's struct account (Anchor's `Account` / `AccountLoader` of a
+  `declare_program!` type): loaded with that program as its owner (3007), `HasOne` and fields as for this program's.
+- New: such a struct may have a discriminator of 1 to 8 bytes (`/** @discriminator 0x01 */`, as Anchor's
+  `discriminator = &[1]`), its fields starting right after it.
+- Fixed (examples): Marginfi's Solend, Kamino and Drift banks load the venues' accounts as the original's
+  `AccountLoader`s do, before any constraint (a foreign account is 3007, not the bank's `has_one` error); setting a
+  venue bank's oracle checks its reserve, spot market or Lending again; a Drift scaled balance past u64 is 4102 and a
+  Drift deposit limit past I80F48 6004, as in the original. The venue tests now fuzz deposits, withdrawals, borrows,
+  repayments and the venues' rates against the original (FUZZ_SEED, FUZZ_STEPS).
+- New: an `Address<AccountInfo, "…">` parameter may be `invoke`'s program (Anchor's `address = ID` on an
+  `UncheckedAccount`; the key alone is checked, 2012).
+- Examples: Marginfi's Solend and Kamino banks (`lending_pool_add_bank_solend`, `solend_init_obligation`,
+  `solend_deposit`, `solend_withdraw`, `lending_pool_add_bank_kamino`, `kamino_init_obligation`, `kamino_deposit`,
+  `kamino_withdraw`, `propagate_kamino_market_emergency`, `kamino_harvest_reward`) over Solend's, klend's and kfarms'
+  mainnet programs, and their pricing: the Pyth or Switchboard feed times the reserve's exchange rate in the risk
+  engine, the price cache keeping the rate as its multiplier, the circuit breaker watching the multiplied price, a
+  Kamino emergency taking the collateral's Initial value. Against the binary on mainnet: 1,601 transactions, the
+  same IDL for all 114 ported instructions.
+- New: `Ata<TokenAccount, "@acct.field", "mint">`, the associated token account of a Pubkey stored in a struct
+  account; the IDL names the account, as Anchor's does for `acct.load()?.field`.
+- Fixed: an instruction that reads the Clock (`now()`, `currentSlot()`, `currentEpoch()`) in a `constraint(…)` and
+  again in its body failed to compile (the Clock cache was declared twice, or after the constraint that used it).
+- Examples: Marginfi's staked SOL (`init_staked_settings`, `edit_staked_settings`, `propagate_staked_settings`,
+  `disable_staked_oracles`, `enable_staked_oracle_onramp`, `lending_pool_add_bank_permissionless`,
+  `lending_pool_backfill_staked_bank_validator_vote_account`) and `lending_pool_configure_bank_oracle_scope`. Against
+  the binary on mainnet: 1,440 transactions, the same IDL for all 104 ported instructions.
 - New: `writeData<T>(account, offset, value)`, a little-endian write into a `Mut<AccountInfo>` of this program
   (bounds-checked); `resizeAccount(account, newSize)`, Rust's `AccountInfo::resize` (the length only, new bytes
   zeroed, no rent moved, at most 10 KiB of growth).

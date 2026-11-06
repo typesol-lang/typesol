@@ -169,7 +169,7 @@ export function marginfiPair() {
   let admin = undefined as unknown as KeyPairSigner;
   let feeWallet = undefined as unknown as Address;
   /** Send to both with the most compute a transaction may use (the original's msg! logging is costly); compare. */
-  const run = async (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing: boolean | "if-panics" = false) => {
+  const run = async (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing: boolean | "if-panics" | "borrow-failed" = false) => {
     const o = await s.both(label, payer, [BUDGET, ...ixs], watch, failing);
     if (process.env.MARGINFI_VERBOSE) console.log(`${label}: ${o.replace(/.*code: (\d+).*/, "$1")}`);
     return o;

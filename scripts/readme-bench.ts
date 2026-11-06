@@ -1,5 +1,5 @@
 /**
- * Refresh the README numbers from a four-way benchmark run (results.json of github.com/typesol/benchmarks):
+ * Refresh the README numbers from a four-way benchmark run (results.json of github.com/typesol-lang/benchmarks):
  * the summary chart (assets/readme/benchmarks-{dark,light}.svg) and the table between the bench markers in README.md.
  *
  *   node scripts/readme-bench.ts ../benchmarks/results.json
@@ -14,7 +14,7 @@ interface Results {
   generated: string;
   rounds: number;
   programs: Record<string, { cu: Record<string, Record<Impl, number>>; binaryKb: Record<Impl, number> }>;
-  /** What the run used (typesol/benchmarks records it); the column headers name the versions from here. */
+  /** What the run used (typesol-lang/benchmarks records it); the column headers name the versions from here. */
   toolchain?: { anchorLang?: string | null; pinocchio?: string | null };
 }
 type Impl = "typesol" | "pinocchio" | "native" | "anchor";

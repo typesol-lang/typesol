@@ -46,6 +46,8 @@ import {
   fxToU64Wrapping,
   fxWrappingDiv,
   fxWrappingMul,
+  fxTryDiv,
+  fxTryMul,
 } from "./i80f48";
 import { accrualChanges, calcInterestRate, milliToU32, u32ToBasis, u32ToCenti, validateInterestRateConfig } from "./interest_rate";
 import { type Bank, type BankConfig, type MarginfiGroup, type RateLimitWindow, BankOperationalState, OracleSetup, RiskTier } from "./state";
@@ -114,6 +116,44 @@ export function initBank(
   feeVaultAuthorityBump: u8,
   bankSeed: u64,
 ): void {
+  initBankFields(
+    bank,
+    group,
+    mint,
+    mintDecimals,
+    liquidityVault,
+    insuranceVault,
+    feeVault,
+    timestamp,
+    liquidityVaultBump,
+    liquidityVaultAuthorityBump,
+    insuranceVaultBump,
+    insuranceVaultAuthorityBump,
+    feeVaultBump,
+    feeVaultAuthorityBump,
+    bankSeed,
+  );
+  setConfig(bank, config);
+}
+
+/** Bank::init's fields other than the config. */
+export function initBankFields(
+  bank: Mut<Bank>,
+  group: Pubkey,
+  mint: Pubkey,
+  mintDecimals: u8,
+  liquidityVault: Pubkey,
+  insuranceVault: Pubkey,
+  feeVault: Pubkey,
+  timestamp: i64,
+  liquidityVaultBump: u8,
+  liquidityVaultAuthorityBump: u8,
+  insuranceVaultBump: u8,
+  insuranceVaultAuthorityBump: u8,
+  feeVaultBump: u8,
+  feeVaultAuthorityBump: u8,
+  bankSeed: u64,
+): void {
   bank.mint = mint;
   bank.mint_decimals = mintDecimals;
   bank.group = group;
@@ -129,11 +169,118 @@ export function initBank(
   bank.fee_vault_bump = feeVaultBump;
   bank.fee_vault_authority_bump = feeVaultAuthorityBump;
   bank.last_update = timestamp;
-  setConfig(bank, config);
   bank.flags = CLOSE_ENABLED_FLAG;
   bank.bank_seed = bankSeed;
   bank.liquidation_liquidator_fee = 0n;
   bank.liquidation_insurance_fee = 0n;
+}
+
+/**
+ * write_staked_bank's config: the staked settings' weights, limits, age and tier, a placeholder borrow side and
+ * interest curve (staked banks are never borrowed), the staked asset tag, the 0.1.4 oracle flag.
+ */
+export function setStakedConfig(bank: Mut<Bank>, init: i128, maint: i128, depositLimit: u64, riskTier: RiskTier, valueLimit: u64, maxAge: u16): void {
+  const config = bank.config;
+  config.asset_weight_init.value = init;
+  config.asset_weight_maint.value = maint;
+  config.liability_weight_init.value = 422212465065984n; // 1.5
+  config.liability_weight_maint.value = 351843720888320n; // 1.25
+  config.deposit_limit = depositLimit;
+  const ir = config.interest_rate_config;
+  ir.insurance_fee_fixed_apr.value = 0n;
+  ir.insurance_ir_fee.value = 28147497671066n; // 0.1
+  ir.protocol_fixed_fee_apr.value = 2814749767107n; // 0.01
+  ir.protocol_ir_fee.value = 0n;
+  ir.protocol_origination_fee.value = 0n;
+  ir.zero_util_rate = 0n;
+  ir.hundred_util_rate = 1234567n;
+  for (let i = 0n; i < 5n; i++) {
+    ir.points.get(i).util = i === 0n ? 12345n : 0n;
+    ir.points.get(i).rate = i === 0n ? 123456n : 0n;
+  }
+  ir.curve_type = 1n;
+  config.operational_state = BankOperationalState.Operational;
+  config.oracle_setup = OracleSetup.None;
+  config.borrow_limit = 0n;
+  config.risk_tier = riskTier;
+  config.asset_tag = BANK_ASSET_TAG_STAKED;
+  config.config_flags = 1n;
+  config.total_asset_value_init_limit = valueLimit;
+  config.oracle_max_age = maxAge;
+  config.oracle_max_confidence = 0n;
+}
+
+/**
+ * KaminoConfigCompact / SolendConfigCompact::to_bank_config: the venue bank's settings, its feed and reserve as the
+ * first two oracle keys, a placeholder borrow side and interest curve (venue banks are never borrowed).
+ */
+export function setVenueConfig(
+  bank: Mut<Bank>,
+  oracle: Pubkey,
+  reserve: Pubkey,
+  init: i128,
+  maint: i128,
+  depositLimit: u64,
+  setup: OracleSetup,
+  state: BankOperationalState,
+  riskTier: RiskTier,
+  tag: u8,
+  configFlags: u8,
+  valueLimit: u64,
+  maxAge: u16,
+  maxConfidence: u32,
+  fixedPrice: i128,
+): void {
+  const config = bank.config;
+  config.asset_weight_init.value = init;
+  config.asset_weight_maint.value = maint;
+  config.liability_weight_init.value = 422212465065984n; // 1.5
+  config.liability_weight_maint.value = 351843720888320n; // 1.25
+  config.deposit_limit = depositLimit;
+  const ir = config.interest_rate_config;
+  ir.insurance_ir_fee.value = 28147497671066n; // 0.1
+  ir.hundred_util_rate = 1234567n;
+  ir.points.get(0n).util = 12345n;
+  ir.points.get(0n).rate = 123456n;
+  ir.curve_type = 1n;
+  config.operational_state = state;
+  config.oracle_setup = setup;
+  config.oracle_keys.set(0n, oracle);
+  config.oracle_keys.set(1n, reserve);
+  config.borrow_limit = 0n;
+  config.risk_tier = riskTier;
+  config.asset_tag = tag;
+  config.config_flags = configFlags;
+  config.total_asset_value_init_limit = valueLimit;
+  config.oracle_max_age = maxAge;
+  config.oracle_max_confidence = maxConfidence;
+  config.fixed_price.value = fixedPrice;
+}
+
+/** Bank.config.asset_tag of a Drift bank, and the decimals of its balances (Drift's scaled balances). */
+export const ASSET_TAG_DRIFT: u8 = 4n;
+const DRIFT_SCALED_BALANCE_DECIMALS: u8 = 9n;
+
+/** Bank::get_balance_decimals: the decimals a balance's amount is in (9, Drift's scaled balance, for a Drift bank). */
+export function balanceDecimals(bank: Account<Bank>): u8 {
+  return bank.config.asset_tag === ASSET_TAG_DRIFT ? DRIFT_SCALED_BALANCE_DECIMALS : bank.mint_decimals;
+}
+
+/**
+ * The deposit limit against the bank's asset amount: a Drift bank's, in the mint's decimals, scaled to its balances'
+ * (scale_drift_deposit_limit; DriftMocksError::MathError, 6004, where that overflows).
+ */
+export function depositLimitFx(bank: Account<Bank>): i128 {
+  const limit = fxFromU64(bank.config.deposit_limit);
+  if (bank.config.asset_tag !== ASSET_TAG_DRIFT || bank.mint_decimals === DRIFT_SCALED_BALANCE_DECIMALS) return limit;
+  if (bank.mint_decimals < DRIFT_SCALED_BALANCE_DECIMALS) {
+    const m = fxTryMul(limit, exp10Fx(toU64(DRIFT_SCALED_BALANCE_DECIMALS - bank.mint_decimals)));
+    require(m.err === 0n, 6004n);
+    return m.v;
+  }
+  const d = fxTryDiv(limit, exp10Fx(toU64(bank.mint_decimals - DRIFT_SCALED_BALANCE_DECIMALS)));
+  require(d.err === 0n, 6004n);
+  return d.v;
 }
 
 /** BankConfig::validate: the weights, the interest curve, isolated banks' zero asset weights, the oracle age. */
@@ -503,7 +650,7 @@ export function getLiabilityShares(bank: Mut<Bank>, value: i128): i128 {
 export function changeAssetShares(bank: Mut<Bank>, shares: i128, bypassDepositLimit: boolean): void {
   const total = fxAdd(bank.total_asset_shares.value, shares);
   if (shares > I80F48_ZERO && bank.config.deposit_limit !== U64_MAX && !bypassDepositLimit)
-    require(assetAmount(bank, total) < fxFromU64(bank.config.deposit_limit), MarginfiError.BankAssetCapacityExceeded);
+    require(assetAmount(bank, total) < depositLimitFx(bank), MarginfiError.BankAssetCapacityExceeded);
   bank.total_asset_shares.value = total;
 }
 /** change_liability_shares: a positive change must leave the borrows below the borrow limit (unless bypassed). */
@@ -517,7 +664,7 @@ export function changeLiabilityShares(bank: Mut<Bank>, shares: i128, bypassBorro
 export function remainingDepositCapacity(bank: Mut<Bank>): u64 {
   if (bank.config.deposit_limit === U64_MAX) return U64_MAX;
   const current = assetAmount(bank, bank.total_asset_shares.value);
-  const limit = fxFromU64(bank.config.deposit_limit);
+  const limit = depositLimitFx(bank);
   if (current >= limit) return 0n;
   return fxToU64(fxSub(fxSub(limit, current), I80F48_ONE));
 }
@@ -705,6 +852,7 @@ export function checkUtilizationRatio(bank: Mut<Bank>): void {
 export function recordWithdrawalOutflow(
   groupLimited: boolean,
   amount: u64,
+  balanceAmount: u64,
   price: i128,
   bank: Mut<Bank>,
   group: Account<MarginfiGroup>,
@@ -752,8 +900,8 @@ export function recordWithdrawalOutflow(
   }
   if (!groupLimited) return;
   require(price > I80F48_ZERO, MarginfiError.InvalidRateLimitPrice);
-  require(bank.mint_decimals < 24n, MarginfiError.InternalLogicError);
-  const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(amount), price), exp10Fx(toU64(bank.mint_decimals))));
+  require(balanceDecimals(bank) < 24n, MarginfiError.InternalLogicError);
+  const value = fxToI64Wrapping(fxDiv(fxMul(fxFromU64(balanceAmount), price), exp10Fx(toU64(balanceDecimals(bank)))));
   if (group.rate_limiter.hourly.max_outflow > 0n)
     require(value <= windowEffectiveCapacity(group.rate_limiter.hourly, timestamp), MarginfiError.GroupHourlyRateLimitExceeded);
   if (group.rate_limiter.daily.max_outflow > 0n)
@@ -1000,16 +1148,18 @@ export function cbPriceGateErr(bank: Account<Bank>, price: i128, conf: i128): u3
 }
 
 /**
- * update_cache_price: the price an instruction priced the bank at (unbiased, its confidence, now), unless a receivership
- * locked the cache, then the circuit breaker's observation of it (the price multiplier is 1 for the setups ported).
+ * update_cache_price: the price an instruction priced the bank at (unbiased, its confidence, now) and the venue's
+ * exchange rate it is multiplied by (1 for the other banks), unless a receivership locked the cache, then the circuit
+ * breaker's observation of the multiplied price.
  */
-export function updateCachePrice(bank: Mut<Bank>, price: i128, conf: i128, sourceTime: i64, timestamp: i64, slot: u64): void {
+export function updateCachePrice(bank: Mut<Bank>, price: i128, conf: i128, mult: i128, sourceTime: i64, timestamp: i64, slot: u64): void {
   if ((bank.cache.liq_cache_flags & LIQ_CACHE_LOCKED_FLAG) !== 0n) return;
   bank.cache.last_oracle_price.value = price;
   bank.cache.last_oracle_price_confidence.value = conf;
-  bank.cache.price_multiplier.value = I80F48_ONE;
+  bank.cache.price_multiplier.value = mult;
   bank.cache.last_oracle_price_timestamp = timestamp;
-  updateCircuitBreaker(bank, timestamp, slot, price, conf, sourceTime);
+  if (mult === I80F48_ONE) updateCircuitBreaker(bank, timestamp, slot, price, conf, sourceTime);
+  else updateCircuitBreaker(bank, timestamp, slot, fxMul(price, mult), fxMul(conf, mult), sourceTime);
 }
 
 /**

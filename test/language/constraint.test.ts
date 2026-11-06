@@ -6,7 +6,7 @@ import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BN, SYSTEM_PROGRAM, compileErrors, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "../harness.js";
 
-const SOURCE = `import { type Account, type HasOne, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type u64, constraint } from "typesol";
+const SOURCE = `import { type Account, type HasOne, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type i64, type u64, constraint, currentSlot, now } from "typesol";
 
 export interface Vault { owner: Pubkey; limit: u64 }
 export enum VaultError { OverLimit = "over the limit" }
@@ -19,6 +19,13 @@ export function open(payer: Mut<Signer>, vault: Init<Vault>, systemProgram: Syst
 export function spend(vault: HasOne<Account<Vault>, "owner">, owner: Signer, amount: u64): void {
   constraint(vault, amount <= vault.limit, VaultError.OverLimit);
   constraint(owner, amount > 0n);
+}
+export interface Stamp { at: i64; slot: u64 }
+export function stamp(payer: Mut<Signer>, stamp: Init<Stamp>, systemProgram: SystemProgram, not_before: u64): void {
+  constraint(payer, currentSlot() >= not_before);
+  stamp.create(payer, ["stamp", payer.key]);
+  stamp.at = now();
+  stamp.slot = currentSlot();
 }
 `;
 
@@ -47,6 +54,25 @@ describe("constraint(account, condition, error?)", () => {
     // has_one comes before the vault's constraint (2001), and the vault's before the owner's.
     const other = await fundedSigner(d.svm);
     expect(customError(await send(d.svm, other, [spend(other, 101)]))).toBe(2001);
+  });
+
+  it("reads the Clock in a constraint and again in the body", async () => {
+    const payer = await fundedSigner(d.svm);
+    const [stamp] = await pda(d.programId, ["stamp", payer.address]);
+    const call = (notBefore: bigint) =>
+      ix(d, "stamp", { not_before: new BN(notBefore.toString()) }, [
+        { address: payer.address, signer: payer, writable: true },
+        { address: stamp, writable: true },
+        { address: SYSTEM_PROGRAM },
+      ]);
+    const clock = d.svm.getClock();
+    expect(customError(await send(d.svm, payer, [call(clock.slot + 1n)]))).toBe(2003);
+    expectOk(await send(d.svm, payer, [call(clock.slot)]));
+    const account = d.svm.getAccount(stamp);
+    if (!account.exists) throw new Error("no stamp");
+    const data = Buffer.from(account.data);
+    expect(data.readBigInt64LE(8)).toBe(clock.unixTimestamp);
+    expect(data.readBigUInt64LE(16)).toBe(clock.slot);
   });
 
   it("is refused anywhere but the start of an instruction, and needs an account parameter", () => {

@@ -51,7 +51,7 @@ In file order:
 ## Changing it
 
 - Every runtime change can move compute units or binary size. Measure it before and after with
-  [typesol/benchmarks](https://github.com/typesol/benchmarks) pointed at your checkout, and put the difference in
+  [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) pointed at your checkout, and put the difference in
   the pull request (see CONTRIBUTING).
 - A change that alters behavior (a result, an error code, a log line, account bytes) is a language change and goes
   in the CHANGELOG as one. One that only changes cost says so: "same results".

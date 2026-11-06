@@ -28,7 +28,9 @@ export class FunctionEmitter extends StatementEmitter {
     this.line(`(void)params;`);
     for (const p of h.params)
       if (p.account && p.account.kind === "account" && p.account.struct.layout !== "borsh")
-        this.line(`TSS_${p.account.struct.name} *d_${p.name} = (TSS_${p.account.struct.name} *)(a_${p.name}->data + 8);`);
+        this.line(
+          `TSS_${p.account.struct.name} *d_${p.name} = (TSS_${p.account.struct.name} *)(a_${p.name}->data + ${p.account.struct.accountDiscriminator.length});`,
+        );
     for (const stmt of h.statements) this.reporter.guard(() => this.statement(stmt));
     // A helper with a result must return one; falling off the end would leave it unset.
     const end = h.returns ? `  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${h.display} ended without returning a value");` : `  return SUCCESS;`;
@@ -67,12 +69,27 @@ export class FunctionEmitter extends StatementEmitter {
       if (a.constraints.signed) head.push(`  if (!${v}->is_signer) ${this.checkFail(a, "signer", "TS_ERR_CONSTRAINT_SIGNER", `${a.name} must sign`)};`);
       // A @layout borsh account only has to hold its smallest Borsh form (unpacking checks the rest).
       // A zero-copy (bytemuck) struct is checked as Anchor's AccountLoader checks it.
-      if (k.kind === "account")
-        head.push(
-          k.struct.idlMeta?.serialization?.startsWith("bytemuck")
-            ? `  TS_TRY(ts_check_loader_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${emptySizeC(k.struct)}));`
-            : `  TS_TRY(ts_check_program_account(${v}, params->program_id, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}));`,
-        );
+      // Owner<Account<T>, "…">: another program's account (Anchor's Account / AccountLoader of a declare_program! type),
+      // checked against that program as owner (3007), in place of this program.
+      if (k.kind === "account") {
+        const owner = a.constraints.owner ? `&co_${a.name}` : "params->program_id";
+        if (a.constraints.owner) head.push(`  static const SolPubkey co_${a.name} = {${cBytes(a.constraints.owner.bytes)}};`);
+        const n = k.struct.accountDiscriminator.length;
+        // A shorter discriminator (another program's zero-copy account): AccountLoader's checks with its length.
+        if (n !== 8)
+          head.push(
+            `  if (!ts_key_eq(&${v}->owner, ${owner})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: ${a.name} is not owned by the expected program");`,
+            `  if (${v}->data_len < ${n}) TS_FAIL(TS_ERR_DISC_NOT_FOUND, "TypeSOL: ${a.name} has no discriminator");`,
+            `  if (!ts_mem_eq(${v}->data, TS_DISC_${k.struct.name}, ${n})) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: ${a.name}: discriminator mismatch");`,
+            `  if (${v}->data_len < ${n} + ${emptySizeC(k.struct)}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: ${a.name} is too small");`,
+          );
+        else
+          head.push(
+            k.struct.idlMeta?.serialization?.startsWith("bytemuck")
+              ? `  TS_TRY(ts_check_loader_account(${v}, ${owner}, TS_DISC_${k.struct.name}, ${emptySizeC(k.struct)}));`
+              : `  TS_TRY(ts_check_program_account(${v}, ${owner}, TS_DISC_${k.struct.name}, ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}));`,
+          );
+      }
       // A token account created by this instruction is checked where it is created (create/createIfNeeded).
       if (k.kind === "token" && !k.init) head.push(`  TS_TRY(ts_check_token_account(${v}));`);
       // A mint created by this instruction is checked where it is created.
@@ -138,7 +155,7 @@ export class FunctionEmitter extends StatementEmitter {
         head.push(`  TSS_${S} *d_${a.name} = NULL;`, `  TS_TRY(ts_alloc(sizeof(TSS_${S}), (uint8_t **)&d_${a.name}));`);
         if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + 8, ${v}->data_len - 8, d_${a.name}, NULL));`);
       } else if (k.kind === "account" || k.kind === "init" || k.kind === "zeroed" || k.kind === "initIfNeeded") {
-        head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + 8);`);
+        head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + ${k.struct.accountDiscriminator.length});`);
         if (k.struct.vec) {
           head.push(`  uint64_t entry_${a.name} = ${v}->data_len;`, `  (void)entry_${a.name};`);
           if (k.kind === "account") head.push(...vecLenCheck(k.struct, v, `d_${a.name}`));
@@ -480,12 +497,15 @@ export class FunctionEmitter extends StatementEmitter {
     const end = ix.returns
       ? [`  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${ix.name} ended without returning a value");`]
       : [...this.epilogue().map((l) => `  ${l}`), `  return SUCCESS;`];
-    return [...head, ...this.hoisted, ...this.lines, ...end, `}`].join("\n");
+    // The Clock cache is declared first: a constraint (in the head) may read the Clock before the body does.
+    const clock = this.hoisted.filter((l) => l.includes("ts_clk_ok"));
+    const hoisted = this.hoisted.filter((l) => !clock.includes(l));
+    return [head[0]!, ...clock, ...head.slice(1), ...hoisted, ...this.lines, ...end, `}`].join("\n");
   }
 
   /**
    * How many statements at the start of `body` create this instruction's Init / InitIfNeeded accounts
-   * (`acct.create(…)`, `acct.createIfNeeded(…)`, alone, as a const's value or assigned). 0 when none do, or when one reads a
+   * (`acct.create(…)`, `acct.createIfNeeded(…)`, `systemProgram.createPda(…)`, alone, as a const's value or assigned). 0 when none do, or when one reads a
    * bump the constraint checks find (`acct.pdaBump` of a Seeds account), which must run first.
    */
   protected leadingCreates(ix: Instruction, body: readonly ts.Statement[]): number {
@@ -493,12 +513,13 @@ export class FunctionEmitter extends StatementEmitter {
       const a = ts.isIdentifier(e) ? ix.accounts.find((x) => x.name === e.text) : undefined;
       return !!a && (a.kind.kind === "init" || a.kind.kind === "initIfNeeded" || ((a.kind.kind === "token" || a.kind.kind === "mint") && !!a.kind.init));
     };
+    const isSystem = (e: ts.Expression) => ts.isIdentifier(e) && ix.accounts.find((x) => x.name === e.text)?.kind.kind === "system";
     const createCall = (e: ts.Expression | undefined) =>
       !!e &&
       ts.isCallExpression(e) &&
       ts.isPropertyAccessExpression(e.expression) &&
-      (e.expression.name.text === "create" || e.expression.name.text === "createIfNeeded") &&
-      isInit(e.expression.expression);
+      (((e.expression.name.text === "create" || e.expression.name.text === "createIfNeeded") && isInit(e.expression.expression)) ||
+        (e.expression.name.text === "createPda" && isSystem(e.expression.expression)));
     let n = 0;
     for (const stmt of body) {
       const e = ts.isExpressionStatement(stmt)
@@ -582,7 +603,11 @@ export class FunctionEmitter extends StatementEmitter {
         const c = this.expect(this.expr(cond, BOOL), BOOL, cond);
         const err = error ? this.errorRef(error) : { code: 2003, name: "ConstraintRaw", msg: "ConstraintRaw" };
         this.line(`if (!${c.c}) TS_FAIL(${err.code}, ${cString(`Error ${err.code} ${err.name}: ${err.msg} (${this.location(call)})`)});`);
-        const emitted = [...this.hoisted.splice(hoistMark), ...this.lines.splice(mark)];
+        // The instruction's Clock cache stays declared at its top: the body may read the Clock too.
+        const hoisted = this.hoisted.splice(hoistMark);
+        const clock = hoisted.filter((l) => l.includes("ts_clk_ok"));
+        this.hoisted.push(...clock);
+        const emitted = [...hoisted.filter((l) => !clock.includes(l)), ...this.lines.splice(mark)];
         lines.set(a.name, [...(lines.get(a.name) ?? []), ...emitted]);
       });
     }
@@ -639,8 +664,12 @@ export class FunctionEmitter extends StatementEmitter {
         }
       }
       if (k === "account") out.push(...hasOne);
-      out.push(...(raw.get(a.name) ?? []));
-      if (c.owner) {
+      // constraint(…) lines: Anchor evaluates the expression as written, so another optional account it mentions
+      // (`x === null`, or `x!`, which fails when it is missing) does not skip it; only this account being optional does.
+      const rawLines = raw.get(a.name) ?? [];
+      const rawAt = out.length - start;
+      out.push(...rawLines);
+      if (c.owner && k !== "account") {
         out.push(`  static const SolPubkey co_${a.name} = {${cBytes(c.owner.bytes)}};`);
         out.push(
           `  if (!ts_key_eq(&a_${a.name}->owner, &co_${a.name})) ${this.checkFail(a, "owner", "TS_ERR_CONSTRAINT_OWNER", `${a.name} is not owned by the expected program`)};`,
@@ -654,11 +683,18 @@ export class FunctionEmitter extends StatementEmitter {
         );
       }
       if (k !== "account") out.push(...hasOne);
-      // Constraints run only when every optional account they mention was passed.
+      // The declared constraints run only when every optional account they mention was passed.
       const lines = out.splice(start);
-      const optional = this.optionalIn(lines.join("\n"));
-      if (optional.length && lines.length) out.push(`  if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) {`, ...lines.map((l) => `  ${l}`), `  }`);
-      else out.push(...lines);
+      const guard = (part: string[], optional: string[]) => {
+        if (optional.length && part.length) out.push(`  if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) {`, ...part.map((l) => `  ${l}`), `  }`);
+        else out.push(...part);
+      };
+      const before = lines.slice(0, rawAt);
+      const after = lines.slice(rawAt + rawLines.length);
+      const declared = this.optionalIn([...before, ...after].join("\n"));
+      guard(before, declared);
+      guard(rawLines, a.optional ? [a.name] : []);
+      guard(after, declared);
     }
     return [...bumpDecls, ...out];
   }
@@ -669,13 +705,27 @@ export class FunctionEmitter extends StatementEmitter {
     const c = a.constraints;
     const k = a.kind.kind;
     const ata = c.ata!;
+    // The owner: an account parameter's key, or "@acct.field", a Pubkey field of a struct account parameter (its data
+    // was checked in the head). Anchor's IDL cannot see through `acct.load()?.field` and records the account, as here.
+    let ownerKey = `&a_${ata.owner}->key`;
+    let ownerName = ata.owner;
+    if (ata.owner.startsWith("@")) {
+      const [acct, field, ...rest] = ata.owner.slice(1).split(".");
+      const o = ix.accounts.find((x) => x.name === acct);
+      if (!o || o.kind.kind !== "account" || !field || rest.length)
+        this.reporter.fail(a.node, `Ata<…>: "${ata.owner}" must name a Pubkey field of a struct account parameter ("@config.wallet")`);
+      const f = o.kind.struct.fields.find((x) => x.name === field);
+      if (!f || f.type.kind !== "pubkey") this.reporter.fail(a.node, `Ata<…>: ${o.kind.struct.name} has no Pubkey field "${field}"`);
+      ownerKey = `&d_${acct}->${field}`;
+      ownerName = acct!;
+    }
     // With two token programs the address depends on which the mint uses: no IDL derivation, and an Ata<AccountInfo>
     // (derived here) is refused.
     const tps = ix.accounts.filter((o) => o.kind.kind === "tokenProgram");
     const tp = tps.length === 1 ? tps[0] : undefined;
     if (tp && !ix.pdas.has(a.name)) {
       ix.pdas.set(a.name, [
-        { kind: "account", path: snakeCase(ata.owner) },
+        { kind: "account", path: snakeCase(ownerName) },
         { kind: "account", path: snakeCase(tp.name) },
         { kind: "account", path: snakeCase(ata.mint) },
       ]);
@@ -686,9 +736,7 @@ export class FunctionEmitter extends StatementEmitter {
     if (k === "token" && a.kind.init) return out;
     // The address alone is not enough: legacy SPL Token lets an ATA's owner be reassigned.
     if (k === "token")
-      out.push(
-        `  if (!ts_key_eq(ts_token_owner(a_${a.name}), &a_${ata.owner}->key)) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${ata.owner}");`,
-      );
+      out.push(`  if (!ts_key_eq(ts_token_owner(a_${a.name}), ${ownerKey})) TS_FAIL(TS_ERR_TOKEN_OWNER, "TypeSOL: ${a.name} is not owned by ${ata.owner}");`);
     // The token program is the account's owner; an AccountInfo not created yet takes the instruction's token program.
     let program = `&a_${a.name}->owner`;
     if (k !== "token") {
@@ -702,7 +750,7 @@ export class FunctionEmitter extends StatementEmitter {
       program = `&a_${tp.name}->key`;
     }
     out.push(`  { SolPubkey ata_${a.name};`);
-    out.push(`    TS_TRY(ts_ata_address(&a_${ata.owner}->key, &a_${ata.mint}->key, ${program}, &ata_${a.name}));`);
+    out.push(`    TS_TRY(ts_ata_address(${ownerKey}, &a_${ata.mint}->key, ${program}, &ata_${a.name}));`);
     out.push(
       `    if (!ts_key_eq(&ata_${a.name}, &a_${a.name}->key)) TS_FAIL(TS_ERR_ASSOCIATED, "TypeSOL: ${a.name} is not the associated token account of ${ata.owner} and ${ata.mint}"); }`,
     );

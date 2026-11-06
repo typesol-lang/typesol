@@ -174,12 +174,18 @@ export function pairOf(so: string, source: string, programId: Address) {
     },
     /**
      * Send to both: the same outcome, account bytes and events. `failing`: the original panics, so only both failing is
-     * required; "if-panics": that, when the original fails without an error code (a fuzzer's input that hits a panic).
+     * required; "if-panics": that, when the original fails without an error code (a fuzzer's input that hits a panic);
+     * "borrow-failed": when the original fails without an error code, the port must fail with custom error 12 (its
+     * AccountBorrowFailed), otherwise the same outcome.
      */
-    async both(label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing: boolean | "if-panics" = false) {
+    async both(label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing: boolean | "if-panics" | "borrow-failed" = false) {
       const [a, b] = [await send(s.original, payer, ixs), await send(s.d.svm, payer, ixs)];
       s.compared++;
       const logs = (r: Result) => meta(r).logs().join("\n");
+      if (failing === "borrow-failed") {
+        failing = a instanceof FailedTransactionMetadata && !outcome(a).includes("InstructionErrorCustom");
+        if (failing) expect(outcome(b), `${label}: the port's AccountBorrowFailed\nTypeSOL:\n${logs(b)}`).toMatch(/InstructionErrorCustom.*code: 12\b/);
+      }
       if (failing === "if-panics") failing = a instanceof FailedTransactionMetadata && !outcome(a).includes("InstructionErrorCustom");
       if (failing) {
         expect(a instanceof FailedTransactionMetadata && b instanceof FailedTransactionMetadata, `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(

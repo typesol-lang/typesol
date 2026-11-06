@@ -1,8 +1,8 @@
 // Marginfi's instruction argument types (type-crate/src/types of mrgnlabs/marginfi-v2 @ c5d440f6), as the on-chain IDL
 // (test/fixtures/marginfi/marginfi.idl.json) describes them: Borsh on the wire, as Anchor decodes them.
-import { type FixedArray, type Option, type u16, type u32, type u64, type u8 } from "typesol";
+import { type FixedArray, type Option, type Pubkey, type u16, type u32, type u64, type u8 } from "typesol";
 import { type InterestRateConfigOpt } from "./events";
-import { type BankOperationalState, type RatePoint, type RiskTier, type WrappedI80F48 } from "./state";
+import { type BankOperationalState, type OracleSetup, type RatePoint, type RiskTier, type WrappedI80F48 } from "./state";
 
 /**
  * InterestRateConfigCompact
@@ -104,3 +104,84 @@ export type OrderTrigger =
   | { kind: "StopLoss"; threshold: WrappedI80F48; max_slippage: u32 }
   | { kind: "TakeProfit"; threshold: WrappedI80F48; max_slippage: u32 }
   | { kind: "Both"; stop_loss: WrappedI80F48; take_profit: WrappedI80F48; max_slippage: u32 };
+
+/** StakedSettingsConfig: the settings every staked-SOL bank of a group starts from. */
+export interface StakedSettingsConfig {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  risk_tier: RiskTier;
+}
+
+/**
+ * SolendConfigCompact: a Solend bank's settings (it never lends or earns interest, so no rate curve). The deposit limit
+ * is in the reserve's collateral tokens.
+ */
+export interface SolendConfigCompact {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  /** SolendPythPull or SolendSwitchboardPull */
+  oracle_setup: OracleSetup;
+  operational_state: BankOperationalState;
+  risk_tier: RiskTier;
+  config_flags: u8;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  /** 0 for the default (10%) */
+  oracle_max_confidence: u32;
+}
+
+/** KaminoConfigCompact: a Kamino bank's settings, as SolendConfigCompact's (the deposit limit in Kamino collateral). */
+export interface KaminoConfigCompact {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  /** KaminoPythPush or KaminoSwitchboardPull */
+  oracle_setup: OracleSetup;
+  operational_state: BankOperationalState;
+  risk_tier: RiskTier;
+  config_flags: u8;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  oracle_max_confidence: u32;
+}
+
+/** DriftConfigCompact: a Drift bank's settings, as KaminoConfigCompact's (the deposit limit in the mint's decimals). */
+export interface DriftConfigCompact {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  /** DriftPythPull or DriftSwitchboardPull */
+  oracle_setup: OracleSetup;
+  operational_state: BankOperationalState;
+  risk_tier: RiskTier;
+  config_flags: u8;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  oracle_max_confidence: u32;
+}
+
+/**
+ * JuplendConfigCompact: a JupLend bank's settings. No operational state: a JupLend bank starts Uninitialized and
+ * juplend_init_position makes it Operational. The deposit limit is in fTokens.
+ */
+export interface JuplendConfigCompact {
+  oracle: Pubkey;
+  asset_weight_init: WrappedI80F48;
+  asset_weight_maint: WrappedI80F48;
+  deposit_limit: u64;
+  /** JuplendPythPull or JuplendSwitchboardPull */
+  oracle_setup: OracleSetup;
+  risk_tier: RiskTier;
+  config_flags: u8;
+  total_asset_value_init_limit: u64;
+  oracle_max_age: u16;
+  oracle_max_confidence: u32;
+}

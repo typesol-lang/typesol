@@ -256,15 +256,16 @@ export function argIdlName(name: string, accountNames: readonly string[]): strin
 /**
  * An account struct's discriminator: Anchor's sha256("account:<Name>")[..8], or the one a `/** @discriminator … *\/` tag
  * gives (a sha256 preimage such as `account:Counter`, or 0x and 8 bytes), e.g. for an old version of a struct kept under
- * a new name for Migrate<From, To>.
+ * a new name for Migrate<From, To>; 0x and 1 to 7 bytes for another program's account (`Owner<Account<T>, "…">`).
  */
 function accountDiscriminator(decl: ts.Node, name: string, reporter: Reporter): number[] {
   const tag = ts.getJSDocTags(decl).find((t) => t.tagName.text === "discriminator");
   if (!tag) return discriminator(`account:${name}`);
   const text = (typeof tag.comment === "string" ? tag.comment : (ts.getTextOfJSDocComment(tag.comment) ?? "")).trim();
-  if (/^0x([0-9a-fA-F]{2}){8}$/.test(text)) return [...Buffer.from(text.slice(2), "hex")];
+  // 8 bytes; another program's account may have a shorter one (Solend's reserve: its version byte).
+  if (/^0x([0-9a-fA-F]{2}){1,8}$/.test(text)) return [...Buffer.from(text.slice(2), "hex")];
   if (text && !text.startsWith("0x")) return discriminator(text);
-  reporter.fail(decl, "@discriminator on an account struct needs a sha256 preimage (account:<Name>) or 0x and 8 bytes");
+  reporter.fail(decl, "@discriminator on an account struct needs a sha256 preimage (account:<Name>) or 0x and 8 bytes (1 to 8 for another program's account)");
 }
 
 export function discriminator(preimage: string): number[] {
@@ -729,6 +730,8 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   reporter.guard(() => checkRecursion([...helperNodes, ...locals.filter((l) => !inline.has(l.decl))], helperDecls, checker, reporter));
 
   const accountStructs = new Set<string>();
+  const foreignStructs = new Set<string>();
+  const ownStructs = new Set<string>();
   const argStructs = new Set<string>();
   const instructions: Instruction[] = [];
   for (const fn of functions) {
@@ -766,6 +769,16 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       }
       if (a.kind.kind === "account" || a.kind.kind === "init" || a.kind.kind === "zeroed" || a.kind.kind === "initIfNeeded") {
         accountStructs.add(a.kind.struct.name);
+        // Owner<Account<T>, "…">: another program's account, which Anchor's IDL lists among the types only.
+        if (a.kind.kind === "account" && a.constraints.owner) foreignStructs.add(a.kind.struct.name);
+        else {
+          ownStructs.add(a.kind.struct.name);
+          if (a.kind.struct.accountDiscriminator.length !== 8)
+            reporter.error(
+              a.node,
+              `${a.kind.struct.name}'s discriminator is shorter than 8 bytes: it is another program's account, Owner<Account<${a.kind.struct.name}>, "…">`,
+            );
+        }
         if (a.kind.struct.viewsOnly)
           reporter.error(
             a.node,
@@ -915,6 +928,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       constants,
       events: collectEvents([...functions, ...helperNodes], structs),
       accountStructs,
+      foreignAccounts: new Set([...foreignStructs].filter((n) => !ownStructs.has(n))),
       argStructs,
       fstrings,
       fixedVecs,
@@ -1924,7 +1938,7 @@ function analyzeInstruction(
       if (c.seeds)
         c.seeds = { ...c.seeds, names: c.seeds.names.map(at), bump: c.seeds.bump && at(c.seeds.bump), program: c.seeds.program && at(c.seeds.program) };
       if (c.closeTo) c.closeTo = sibling(c.closeTo);
-      if (c.ata) c.ata = { owner: sibling(c.ata.owner), mint: sibling(c.ata.mint) };
+      if (c.ata) c.ata = { owner: c.ata.owner.startsWith("@") ? at(c.ata.owner) : sibling(c.ata.owner), mint: sibling(c.ata.mint) };
     }
     return all;
   }
@@ -2041,8 +2055,10 @@ function analyzeInstruction(
       if (c.ata) {
         if (a.kind.kind !== "token" && a.kind.kind !== "info")
           reporter.fail(a.node, "Ata<…> applies to a TokenAccount (or an AccountInfo about to be created)");
-        for (const n of [c.ata.owner, c.ata.mint])
-          if (!accounts.some((o) => o.name === n)) reporter.fail(a.node, `Ata<…>: add an account parameter named "${n}"`);
+        // The owner may be a Pubkey field of a struct account parameter, "@acct.field" (Anchor's
+        // `associated_token::authority = acct.load()?.field`).
+        const owner = c.ata.owner.startsWith("@") ? c.ata.owner.slice(1).split(".")[0]! : c.ata.owner;
+        for (const n of [owner, c.ata.mint]) if (!accounts.some((o) => o.name === n)) reporter.fail(a.node, `Ata<…>: add an account parameter named "${n}"`);
       }
       if (c.closeTo) {
         if (a.kind.kind !== "account" || !a.kind.mut) reporter.fail(a.node, "CloseTo needs a Mut<Struct> account");
@@ -2062,7 +2078,11 @@ function analyzeInstruction(
       ...(c.seeds?.bump?.startsWith("@") ? [c.seeds.bump.slice(1).split(".")[0]!] : []),
       ...(c.closeTo ? [c.closeTo] : []),
       ...(c.ata
-        ? [c.ata.owner, c.ata.mint, ...(a.kind.kind === "token" ? [] : accounts.filter((o) => o.kind.kind === "tokenProgram").map((o) => o.name))]
+        ? [
+            c.ata.owner.startsWith("@") ? c.ata.owner.slice(1).split(".")[0]! : c.ata.owner,
+            c.ata.mint,
+            ...(a.kind.kind === "token" ? [] : accounts.filter((o) => o.kind.kind === "tokenProgram").map((o) => o.name)),
+          ]
         : []),
     ];
     for (const r of refs) {
