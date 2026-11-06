@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- Project: no scheduled or publishing automation in the repository: npm releases are published by hand from a
+  maintainer's machine (the release workflow is gone), the macOS suite runs on demand only, and Dependabot no longer
+  opens weekly pull requests.
 - Examples: Marginfi's rebalances across Kamino, Drift and JupLend banks, each leg priced at the venue's supply rate
   (klend's curve and reward emissions at the chain's measured slot pace, Drift's curve less its insurance factor,
   JupLend's liquidity-layer rate and Lending rewards), amounts through the venues' exchange rates, deposit room capped
