@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- Releases: `scripts/release-manifest.ts` builds the program-examples ports of sources up to 0.38.0 (`test/ports/`; a
+  0.38.0 tree listed only 18 programs). docs/testing.md and CONTRIBUTING describe the manifest and binary diff as attached
+  by hand.
+
 ## 0.39.0 — 2026-11-06
 
 Marginfi v2 ported in full: all 124 instructions, checked against the mainnet binary on 2,081 transactions with the

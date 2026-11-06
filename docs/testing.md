@@ -21,16 +21,17 @@ Compute-unit and binary-size comparisons with Anchor, native Rust and Pinocchio 
 
 ## Reproducing a release
 
-From the release after 0.38.0 on, each release's GitHub Release carries `manifest.json` (written by
-`scripts/release-manifest.ts` from the published package and the tag's sources; the scripts need Node 22.18 or later):
+From 0.39.0 on, each release's GitHub Release carries its manifest, `typesol-<version>-manifest.json`, attached by
+hand after the npm publish (written by `scripts/release-manifest.ts` from the tag's sources; the scripts need Node 22.18
+or later):
 
 - the compiler and toolchain versions (clang, platform-tools, Node, TypeScript, the runtime header's sha256);
 - the sha256 of the SBF binary, IDL and C that every program under `examples/` and `showcase/program-examples/` builds to;
 - the sha256 of the reference binaries the differential tests run against (`test/programs/`);
 - a hash of the test corpus.
 
-It also carries the previous release's sources built by the previous package and by this one, and their diff
-(`binary-diff.txt`). That is the check behind a changelog line such as "programs that use none of these compile to the
+It also carries `binary-diff.txt`: the previous release's sources built by the previous package and by this one,
+compared program by program. That is the check behind a changelog line such as "programs that use none of these compile to the
 same binaries". To redo it, or to compare other versions:
 
 ```sh
@@ -42,6 +43,6 @@ node scripts/release-manifest.ts --compiler /tmp/b/node_modules/@typesol/cli --s
 node scripts/release-manifest.ts --diff a.json b.json
 ```
 
-For 0.37.0 → 0.38.0 (run by hand before the manifest job existed): all 67 programs of the 0.37.0 sources build to
+For 0.37.0 → 0.38.0 (run by hand before release manifests existed): all 67 programs of the 0.37.0 sources build to
 the same binary and IDL with both packages.
 

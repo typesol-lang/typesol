@@ -53,7 +53,10 @@ compiler:
    clean clone, run `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm lint` and `pnpm test`, check that
    `package.json` has the tag's version, then `npm publish --access public --ignore-scripts`. Tags and GitHub Releases
    never publish on their own, and no workflow publishes. Afterwards build the release manifest
-   (`node scripts/release-manifest.ts`) and attach it to the GitHub Release by hand.
+   (`node scripts/release-manifest.ts --out typesol-<version>-manifest.json`) and the binary diff against the previous
+   release ([docs/testing.md](docs/testing.md#reproducing-a-release)), and attach both to the GitHub Release by hand.
+   Clean clones lack the fetch-only reference binaries (`bash scripts/fetch-programs.sh`); without them the showcase
+   tests that need them fail.
 
 ## Code style
 

@@ -94,10 +94,9 @@ const files = (dir: string): string[] => {
 
 const programs: Manifest["programs"] = {};
 const scratch = mkdtempSync(path.join(os.tmpdir(), "typesol-manifest-"));
-// The programs: examples/, and the mainnet ports and program-examples ports (showcase/program-examples up to 0.38.0, showcase/ after).
-const roots = ["examples", "showcase/program-examples", "showcase/mainnet", "showcase/program-examples"]
-  .map((d) => path.join(sourceRoot, d))
-  .filter((d) => existsSync(d));
+// The programs: examples/, and the mainnet ports and program-examples ports (examples/ and test/ports/ up to 0.38.0,
+// showcase/mainnet/ and showcase/program-examples/ after).
+const roots = ["examples", "test/ports", "showcase/mainnet", "showcase/program-examples"].map((d) => path.join(sourceRoot, d)).filter((d) => existsSync(d));
 const entries = roots.flatMap((d) => files(d)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"));
 for (const [i, entry] of entries.entries()) {
   const rel = path.relative(sourceRoot, entry);
