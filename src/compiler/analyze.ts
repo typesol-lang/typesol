@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CompileError, Reporter, type Diagnostic } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
+import { hintForTypeScript, unsupportedSyntax } from "./hints.js";
 import {
   type OptionInner,
   optionKey,
@@ -323,7 +324,9 @@ function typecheck(entry: string, files?: SourceOverrides): { program: ts.Progra
   const tsDiagnostics = userFiles.flatMap((f) => ts.getPreEmitDiagnostics(program, f));
   if (tsDiagnostics.length > 0) {
     const diagnostics: Diagnostic[] = tsDiagnostics.map((d) => {
-      const message = ts.flattenDiagnosticMessageText(d.messageText, "\n");
+      const flat = ts.flattenDiagnosticMessageText(d.messageText, "\n");
+      const hint = hintForTypeScript(d, flat, LIB_PATH);
+      const message = hint ? `${flat}\nhint: ${hint}` : flat;
       if (!d.file || d.start === undefined) return { file: entry, line: 1, column: 1, message };
       const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
       return { file: d.file.fileName, line: line + 1, column: character + 1, message, length: d.length };
@@ -533,7 +536,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
             if (d.type) pendingConstTypes.push({ def, type: d.type, imports });
           }
         } else {
-          reporter.fail(stmt, `${ts.SyntaxKind[stmt.kind]} is not supported at the top level of a TypeSOL file`);
+          reporter.fail(stmt, unsupportedSyntax(stmt.kind, "top level"));
         }
       });
     }

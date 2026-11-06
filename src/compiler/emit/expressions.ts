@@ -4,6 +4,7 @@ import { calleeName, resolveValueType } from "../analyze.js";
 import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, optionKey, sameType, typeName } from "../model.js";
 import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, type Value, cString, intLiteral, scalarStorageC, optC, valueC, vecCount } from "./shared.js";
 import { StorageEmitter } from "./storage.js";
+import { unsupportedSyntax } from "../hints.js";
 
 /**
  * Expressions: literals, operators with checked arithmetic, property reads, conditionals, text and casts.
@@ -236,7 +237,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (!v) this.fail(node, "this call does not produce a value");
       return v;
     }
-    this.fail(node, `${ts.SyntaxKind[node.kind]} is not supported in TypeSOL expressions`);
+    this.fail(node, unsupportedSyntax(node.kind, "expression"));
   }
 
   protected property(node: ts.PropertyAccessExpression): Value {

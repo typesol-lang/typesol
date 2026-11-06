@@ -203,7 +203,7 @@ const COMMANDS: Record<string, Command> = {
           } catch (e) {
             if (!(e instanceof CompileError)) throw e;
             diagnostics.push(...e.diagnostics);
-            if (!v.json) console.error(`${name}:\n${e.message}`);
+            if (!v.json) console.error(`${name}:\n${showDiagnostics(e.diagnostics)}`);
           }
         }
         if (v.json) log(JSON.stringify({ ok: !diagnostics.length, diagnostics }));
@@ -542,6 +542,38 @@ function log(s: string) {
   console.log(s);
 }
 
+/**
+ * Diagnostics for a terminal: the path relative to the working directory, the source line with the problem marked, and
+ * the rest of the message (a hint, TypeScript's details) under it. `--json` and CompileError.message keep the plain form.
+ */
+function showDiagnostics(diagnostics: Diagnostic[], sources?: Map<string, string>): string {
+  const cache = new Map<string, string[] | undefined>();
+  const linesOf = (file: string) => {
+    if (!cache.has(file)) {
+      let text = sources?.get(file);
+      if (text === undefined && existsSync(file)) text = readFileSync(file, "utf8");
+      cache.set(file, text?.split(/\r?\n/));
+    }
+    return cache.get(file);
+  };
+  return diagnostics
+    .map((d) => {
+      const rel = path.relative(process.cwd(), d.file);
+      const shown = rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : d.file;
+      const [first, ...rest] = d.message.split("\n");
+      const out = [`${shown}:${d.line}:${d.column} - error: ${first}`];
+      const src = linesOf(d.file)?.[d.line - 1];
+      if (src !== undefined) {
+        const gutter = String(d.line);
+        const width = Math.max(1, Math.min(d.length ?? 1, src.length - (d.column - 1)));
+        out.push(`  ${gutter} | ${src}`, `  ${" ".repeat(gutter.length)} | ${" ".repeat(Math.max(0, d.column - 1))}${"^".repeat(width)}`);
+      }
+      for (const r of rest) out.push(`  ${r}`);
+      return out.join("\n");
+    })
+    .join("\n\n");
+}
+
 function mustExist(file: string): string {
   if (!existsSync(file)) throw new UsageError(`${file} does not exist`);
   return file;
@@ -632,7 +664,7 @@ try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (e) {
   if (e instanceof CompileError) {
-    console.error(e.message);
+    console.error(showDiagnostics(e.diagnostics));
     console.error(`\n${e.diagnostics.length} error(s)`);
   } else console.error(`error: ${e instanceof Error ? e.message : String(e)}`);
   process.exitCode = 1;
