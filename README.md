@@ -350,7 +350,7 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Raydium AMM v4](docs/
 
 | | |
 | --- | --- |
-| [`raydium-cp-swap/`](showcase/mainnet/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
+| [`raydium-cp-swap/`](showcase/mainnet/raydium-cp-swap) | Raydium CP-Swap in full, all 21 instructions: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle, creator fees and their shares, permissioned pools, supported mints |
 | [`raydium-clmm/`](showcase/mainnet/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
 | [`jito-mev/`](showcase/mainnet/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
 | [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2 in full, all 124 instructions: I80F48 fixed-point arithmetic, zero-copy accounts, oracles (Pyth, Switchboard, staked SOL, Scope, venue exchange rates), the risk engine, liquidation and bankruptcy, flash loans, orders, rebalances, and the Solend, Kamino, Drift and JupLend banks |
