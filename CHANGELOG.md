@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+- Docs: the README's quick start ends with a first change to make and a short "where next" list (it was one long
+  paragraph); the showcase lists Marginfi v2 as complete and links every case study.
 - Editor: the plugin (`typesol/ts-plugin`) adds the same hints under TypeScript's errors in a program's files, once the
   in-process compiler has loaded, so VS Code shows what to write instead too.
 - CLI: `typesol init` names the other starters (`--template vault`, `--template escrow`) after the next steps.

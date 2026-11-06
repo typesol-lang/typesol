@@ -173,22 +173,20 @@ existing project: `npm install -D typesol@npm:@typesol/cli`.
 Deploying again upgrades the program in place. Keep `target/deploy/<name>-keypair.json`: that keypair is your
 program's address.
 
-Coming from Anchor: [docs/migrate-from-anchor.md](docs/migrate-from-anchor.md) maps every construct, `typesol port`
-starts from your program's IDL, and [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one complete Anchor
-program through the port; [docs/case-study-multisig.md](docs/case-study-multisig.md) ports coral-xyz/multisig and
-checks it against the binary deployed on mainnet (same outcomes and account bytes; 66–84% fewer compute units), and
-[docs/case-study-raydium-cp-swap.md](docs/case-study-raydium-cp-swap.md) does the same for Raydium CP-Swap's swaps and liquidity
-(pool creation included: same outcomes, account bytes and events on 70 transactions; 45–79% fewer compute units), and
-[docs/case-study-raydium-clmm.md](docs/case-study-raydium-clmm.md) for all 37 instructions of Raydium CLMM
-(pools, positions, swaps and routes, limit orders, rewards, admin: the same on 302 transactions; 33–84% fewer
-compute units), and [docs/case-study-jito-mev.md](docs/case-study-jito-mev.md) for Jito's three MEV programs (tip
-payment, tip distribution with Merkle claims, priority fee distribution: the same on 150 transactions; 58–79% fewer
-compute units, up to 95% on refused calls), and [docs/case-study-marginfi.md](docs/case-study-marginfi.md) for
-Marginfi v2 as far as it goes (administration, interest, accounts, deposits, repayments, fees, oracles, the risk
-engine, withdrawals, borrows, health pulses, liquidation records, bankruptcy, classic and receivership liquidation, deleverage, flash loans, account, group, fee state and bank administration, emissions, bank metadata, orders, rebalances, resizing, the monitor archive, staked SOL, Solend, Kamino, Drift and JupLend banks (all 124 instructions), and every oracle setup: the same on
-2,081 transactions; 16–97% fewer compute
-units, 30–40% on receiverships, 35–39% on liquidations, 17–64% on health pulses). Tests use `typesol/testing` (accounts by name, plain values; [docs/test-your-program.md](docs/test-your-program.md)). To go to
-mainnet (wallet, cost, deploy, IDL, verification), follow [docs/mainnet.md](docs/mainnet.md).
+**Your first change.** Open `programs/counter.ts`, add an instruction (say `decrement`, with
+`require(counter.count >= 1n, …)` before `counter.count -= 1n`), call it from `tests/counter.test.ts` and run `npm test`.
+If the build refuses something, the error points at the line and, for the usual first mistakes (`1` instead of `1n`,
+`console.log`, a missing import, `async`), adds a `hint:` with what to write instead; your editor shows the same.
+
+**Where next**
+- The language, every type and built-in: [docs/language.md](docs/language.md).
+- Tests with `typesol/testing` (accounts by name, plain values): [docs/test-your-program.md](docs/test-your-program.md).
+- Coming from Anchor: [docs/migrate-from-anchor.md](docs/migrate-from-anchor.md) maps every construct, and
+  `typesol port` starts from your program's IDL; [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one
+  program through the port.
+- Real programs checked against their mainnet binaries: [Showcase](#showcase-ports-checked-against-mainnet), with a
+  case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions).
+- To mainnet (wallet, cost, deploy, IDL, verification): [docs/mainnet.md](docs/mainnet.md).
 
 ## How it works
 
@@ -200,7 +198,7 @@ counter.ts ─▶ tsc typecheck ─▶ subset check ─▶ C + typesol_rt.h ─�
 1. **Typecheck.** The TypeScript compiler checks your code against [`lib/typesol.d.ts`](lib/typesol.d.ts), which
    declares every TypeSOL type and built-in.
 2. **Subset check.** TypeSOL rejects anything outside the language (floats, classes, `any`, foreign imports)
-   with a `file:line:col` diagnostic. Nothing is half-supported.
+   with a `file:line:col` diagnostic, and a hint for the usual first mistakes. Nothing is half-supported.
 3. **Lower.** Instruction bodies become C. Account validation, checked arithmetic, Borsh encoding and CPI plumbing
    come from [`runtime/typesol_rt.h`](runtime/typesol_rt.h).
 4. **Build.** The Agave platform-tools `clang` and `ld.lld` produce the `.so` (SBPF v0 by default; v1 and v2 with
@@ -343,13 +341,16 @@ Details are in [docs/testing.md](docs/testing.md).
 [`showcase/`](showcase) holds programs ported from Anchor and checked against the binaries deployed on mainnet (same
 outcomes, account bytes and events; [`showcase/test`](showcase/test)), and the ports of all 46
 [solana-developers/program-examples](showcase/program-examples/README.md).
+Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Raydium CLMM](docs/case-study-raydium-clmm.md),
+[Raydium CP-Swap](docs/case-study-raydium-cp-swap.md), [Jito MEV](docs/case-study-jito-mev.md),
+[coral-xyz/multisig](docs/case-study-multisig.md), [an Anchor escrow](docs/case-study-escrow.md).
 
 | | |
 | --- | --- |
 | [`raydium-cp-swap/`](showcase/mainnet/raydium-cp-swap) | Raydium CP-Swap's trading core: constant-product swaps, LP deposits and withdrawals, Token-2022 transfer fees, a price oracle |
 | [`raydium-clmm/`](showcase/mainnet/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
 | [`jito-mev/`](showcase/mainnet/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
-| [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2, in progress: I80F48 fixed-point arithmetic, zero-copy accounts, group and bank administration, interest, accounts, deposits, repayments, fees, Pyth and Switchboard oracles, the circuit breaker, the risk engine, withdrawals, borrows and health pulses, liquidation records, bankruptcy, classic and receivership liquidation, deleverage, flash loans, account, group, fee state and (part of) bank administration, checked against the mainnet binary; the rest of bank administration, orders, staked SOL and the integrations to come |
+| [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2 in full, all 124 instructions: I80F48 fixed-point arithmetic, zero-copy accounts, oracles (Pyth, Switchboard, staked SOL, Scope, venue exchange rates), the risk engine, liquidation and bankruptcy, flash loans, orders, rebalances, and the Solend, Kamino, Drift and JupLend banks |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status
