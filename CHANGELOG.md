@@ -15,6 +15,14 @@ codes, and says so here.
 - CLI: `typesol check --json` gives each error's hint as a `hint` field (it stays the message's last line too).
 - Fixed: `log(x)` of an Option that TypeScript narrowed to its value (after `x === null` was ruled out) generated C that
   did not compile; it logs the value now, and a possibly-null Option is refused with what to do instead.
+- Examples: showcase/mainnet/raydium-cp-swap ports all 21 of Raydium CP-Swap's instructions (was 10): `initialize_v2`,
+  `initialize_with_permission`, `collect_creator_fee`, `collect_creator_fee_permissionless`, the permission, creator
+  fee share and supported-mint accounts (create and close), and `collect_excess_lamports`. Checked against the binary
+  on mainnet today (deployed 2026-10-31; test/programs/raydium_cp_swap.so updated): 136 transactions (was 70) with
+  the same outcomes, account bytes and events, Raydium's five signing keys replaced by test keys in both so the admin
+  instructions run too, and a fuzz test (random swaps, deposits, withdrawals and fee collections in an SPL Token
+  and a Token-2022 pool); an exact-output swap for the whole vault now panics as the original does instead of failing
+  with 5100. 42–85% fewer compute units; 214,944 bytes against 749,848. docs/case-study-raydium-cp-swap.md.
 - Docs: docs/stability.md, what 1.0 will promise, what is stable already and what is still experimental, and what to
   settle first; the audit package's line counts and its list of unreviewed changes brought up to 0.40.0.
 

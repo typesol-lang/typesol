@@ -20,6 +20,9 @@ import {
 } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BN, acct, deployFile, pda, send, type Deployed } from "../../test/harness.js";
@@ -30,6 +33,16 @@ const PORT = fileURLToPath(new URL("../mainnet/raydium-cp-swap/raydium_cp_swap.t
 const TOKEN = address(token.TOKEN_PROGRAM_ADDRESS);
 const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
 const MEMO = address("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+const ATA_PROGRAM = address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const SYSTEM = address("11111111111111111111111111111111");
+/** Raydium's keys that sign the admin instructions, with how many places the original's code loads each. */
+const KEYS = {
+  admin: [address("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ"), 15],
+  permissionOwner: [address("RayqjDRsNEFuPcDE4JpEScwJvwusmHYuNZ3MgET4D7U"), 2],
+  shareOwner: [address("RayFfEhJHWToYRsr8sjVZZkdddBeYxyJazDitpdE7zJ"), 2],
+  supportOwner: [address("Rayv2LG4tFSMizZhMP8aSUYxDPjV8qJtx2NQY9RKYZy"), 2],
+  lamportsOwner: [address("RayGkhY93thaTgCv98sx1pNLgBHhJDxWUeZXp4bjmnp"), 1],
+} as const;
 
 type Result = TransactionMetadata | FailedTransactionMetadata;
 type Meta = { address: Address; signer?: KeyPairSigner; writable?: boolean };
@@ -50,13 +63,38 @@ const events = (r: Result) =>
 describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", () => {
   let d: Deployed;
   let original: LiteSVM;
+  /** Test keys in place of Raydium's (KEYS). */
+  const signers = {} as Record<keyof typeof KEYS, KeyPairSigner>;
   const cu: Record<string, [bigint, bigint]> = {};
   let eventsCompared = 0;
   let compared = 0;
   beforeAll(async () => {
-    d = await deployFile(PORT, { programId: PROGRAM });
+    // Raydium's keys are replaced by test keys in both, so the admin instructions run too: in the original, in each place
+    // its code loads a key (as four 64-bit immediates, lddw); in the port, in its source.
+    const so = Buffer.from(readFileSync(ORIGINAL));
+    const source = mkdtempSync(path.join(os.tmpdir(), "cp-swap-port-"));
+    cpSync(path.dirname(PORT), source, { recursive: true });
+    for (const [name, [raydium, sites]] of Object.entries(KEYS) as [keyof typeof KEYS, (typeof KEYS)[keyof typeof KEYS]][]) {
+      signers[name] = await generateKeyPairSigner();
+      const [from, to] = [key(raydium), key(signers[name].address)];
+      for (let c = 0; c < 4; c++) {
+        const [was, now] = [from.readBigUInt64LE(c * 8), to.readBigUInt64LE(c * 8)];
+        let patched = 0;
+        for (let i = 0; i + 16 <= so.length; i += 8)
+          if (so[i] === 0x18 && so.readUInt32LE(i + 4) === Number(was & 0xffffffffn) && so[i + 8] === 0 && so.readUInt32LE(i + 12) === Number(was >> 32n)) {
+            so.writeUInt32LE(Number(now & 0xffffffffn), i + 4);
+            so.writeUInt32LE(Number(now >> 32n), i + 12);
+            patched++;
+          }
+        expect(patched, `${name} key, part ${c}`).toBe(sites);
+      }
+      for (const f of readdirSync(source))
+        writeFileSync(path.join(source, f), readFileSync(path.join(source, f), "utf8").replaceAll(raydium, signers[name].address));
+    }
+    d = await deployFile(path.join(source, path.basename(PORT)), { programId: PROGRAM });
     original = new LiteSVM();
-    original.addProgramFromFile(PROGRAM, ORIGINAL);
+    original.addProgram(PROGRAM, new Uint8Array(so));
+    for (const s of Object.values(signers)) for (const vm of [original, d.svm]) vm.airdrop(s.address, lamports(100_000_000_000n));
     for (const vm of [original, d.svm]) {
       const clock = vm.getClock();
       clock.unixTimestamp = 1_800_000_000n;
@@ -191,6 +229,8 @@ describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", 
       creatorFee?: { rate: bigint; on: number };
       /** The observation ring at its last slot, with a cumulative price about to wrap. */
       ringAtEnd?: boolean;
+      /** The config's share of the creator fee kept by the protocol (millionths). */
+      shareRate?: bigint;
     } = {},
   ) {
     const admin = await funded();
@@ -216,7 +256,7 @@ describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", 
         key(protocolOwner.address),
         key(fundOwner.address),
         u64(opts.creatorFee?.rate ?? 0n),
-        u64(0n),
+        u64(opts.shareRate ?? 0n),
         Buffer.alloc(8 * 14),
       ]),
     );
@@ -599,12 +639,21 @@ describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", 
     extra?: "delegate";
     disabled?: boolean;
     amounts?: [bigint, bigint];
+    variant?: "initialize" | "v2" | "permission";
+    /** initialize_v2: none when undefined; initialize_with_permission: must be given. */
+    creatorFeeOn?: "BothToken" | "OnlyToken0" | "OnlyToken1";
+    /** Remaining accounts (SupportMintAssociated accounts). */
+    remaining?: Address[];
+    /** A Token-2022 mint with a permanent delegate made beforehand by `creator` (its mint authority). */
+    delegateMint?: Address;
+    creator?: KeyPairSigner;
   }) {
-    const creator = await funded();
+    const creator = opts.creator ?? (await funded());
     const config = await configWith(opts.createPoolFee ?? 0n, opts.disabled);
     let m0 = await mint(creator, opts.fee0 ? TOKEN_2022 : TOKEN, 6, opts.fee0);
     let m1 = await mint(creator, opts.fee1 || opts.extra ? TOKEN_2022 : TOKEN, 9, opts.fee1);
-    if (opts.extra === "delegate") {
+    if (opts.delegateMint) m1 = { address: opts.delegateMint, program: TOKEN_2022, decimals: 9, fee: undefined };
+    else if (opts.extra === "delegate") {
       // A Token-2022 mint with a permanent delegate: not on the pool's list.
       const m = await generateKeyPairSigner();
       const space = t22.getMintSize([{ __kind: "PermanentDelegate", delegate: creator.address }]);
@@ -629,12 +678,19 @@ describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", 
     const [vault0] = await pda(PROGRAM, ["pool_vault", poolKey, m0.address]);
     const [vault1] = await pda(PROGRAM, ["pool_vault", poolKey, m1.address]);
     const [observation] = await pda(PROGRAM, ["observation", poolKey]);
-    const [creatorLp] = await pda(address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"), [creator.address, TOKEN, lp]);
+    const [creatorLp] = await pda(ATA_PROGRAM, [creator.address, TOKEN, lp]);
     const c0 = await account(creator, m0, creator.address, 10n ** 13n);
     const c1 = await account(creator, m1, creator.address, 10n ** 13n);
     const [a0, a1] = opts.amounts ?? [1_000_000_000n, 4_000_000_000_000n];
-    const init = ix("initialize", { init_amount_0: new BN(a0.toString()), init_amount_1: new BN(a1.toString()), open_time: new BN(0) }, [
+    const variant = opts.variant ?? "initialize";
+    // initialize_with_permission: `creator` pays and signs, the pool's creator is another key.
+    const poolCreator = (await generateKeyPairSigner()).address;
+    const [permission] = await pda(PROGRAM, ["permission", creator.address]);
+    const amounts = { init_amount_0: new BN(a0.toString()), init_amount_1: new BN(a1.toString()), open_time: new BN(0) };
+    const args = variant === "initialize" ? amounts : { ...amounts, creator_fee_on: opts.creatorFeeOn === undefined ? null : { [opts.creatorFeeOn]: {} } };
+    const init = ix(variant === "v2" ? "initialize_v2" : variant === "permission" ? "initialize_with_permission" : "initialize", args, [
       { address: creator.address, signer: creator, writable: true },
+      ...(variant === "permission" ? [{ address: poolCreator }] : []),
       { address: config },
       { address: authority },
       kp && !opts.unsigned ? { address: poolKey, signer: kp, writable: true } : { address: poolKey, writable: true },
@@ -648,14 +704,26 @@ describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", 
       { address: vault1, writable: true },
       { address: FEE_ACCOUNT, writable: true },
       { address: observation, writable: true },
+      ...(variant === "permission" ? [{ address: permission }] : []),
       { address: TOKEN },
       { address: m0.program },
       { address: m1.program },
-      { address: address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL") },
-      { address: address("11111111111111111111111111111111") },
-      { address: address("SysvarRent111111111111111111111111111111111") },
+      { address: ATA_PROGRAM },
+      { address: SYSTEM },
+      ...(variant === "initialize" ? [{ address: address("SysvarRent111111111111111111111111111111111") }] : []),
+      ...(opts.remaining ?? []).map((a) => ({ address: a })),
     ]);
-    return { creator, init, watch: [poolKey, lp, vault0, vault1, observation, c0, c1, creatorLp, FEE_ACCOUNT] };
+    return {
+      creator,
+      poolCreator,
+      permission,
+      config,
+      m0,
+      m1,
+      pool: poolKey,
+      init,
+      watch: [poolKey, lp, vault0, vault1, observation, c0, c1, creatorLp, FEE_ACCOUNT],
+    };
   }
 
   it("creates pools as the original: at the PDA or a signing keypair, with a creation fee, with Token-2022 fees", async () => {
@@ -685,11 +753,387 @@ describe("showcase/mainnet/raydium-cp-swap against Raydium CP-Swap on mainnet", 
     expect(await both("initialize with too little liquidity", tiny.creator, [tiny.init], tiny.watch)).toBe(custom(6009));
   });
 
+  it("creates pools with initialize_v2 (creator fee off or on) as the original", async () => {
+    const off = await createPool({ variant: "v2" });
+    expect(await both("initialize_v2, creator fee off", off.creator, [off.init], off.watch)).toBe("ok");
+    for (const on of ["BothToken", "OnlyToken0", "OnlyToken1"] as const) {
+      const p = await createPool({ variant: "v2", creatorFeeOn: on, createPoolFee: 1_000_000n });
+      expect(await both(`initialize_v2, creator fee ${on}`, p.creator, [p.init], p.watch)).toBe("ok");
+    }
+    const x = await createPool({ variant: "v2", extra: "delegate" });
+    expect(await both("initialize_v2 with an unsupported extension", x.creator, [x.init], x.watch)).toBe(custom(6007));
+    const o = await createPool({ variant: "v2", swapOrder: true });
+    expect(await both("initialize_v2 with the mints swapped", o.creator, [o.init], o.watch)).toBe(custom(2003));
+  });
+
+  const permissionIx = (name: "create_permission_pda" | "close_permission_pda", owner: KeyPairSigner, authority: Address, permission: Address) =>
+    ix(name, {}, [
+      { address: owner.address, signer: owner, writable: true },
+      { address: authority },
+      { address: permission, writable: true },
+      { address: SYSTEM },
+    ]);
+
+  it("creates pools with a permission: only Raydium's keys grant it, the payer must hold it", async () => {
+    const p = await createPool({ variant: "permission", creatorFeeOn: "OnlyToken0" });
+    const watch = [...p.watch, p.permission, signers.permissionOwner.address, signers.admin.address];
+    expect(await both("initialize_with_permission without one", p.creator, [p.init], watch)).toBe(custom(3012));
+    const stranger = await funded();
+    expect(
+      await both("create_permission_pda by a stranger", stranger, [permissionIx("create_permission_pda", stranger, p.creator.address, p.permission)], watch),
+    ).toBe(custom(6001));
+    const owner = signers.permissionOwner;
+    expect(await both("create_permission_pda", owner, [permissionIx("create_permission_pda", owner, p.creator.address, p.permission)], watch)).toBe("ok");
+    expect(await both("create_permission_pda again", owner, [permissionIx("create_permission_pda", owner, p.creator.address, p.permission)], watch)).not.toBe(
+      "ok",
+    );
+    expect(await both("initialize_with_permission", p.creator, [p.init], watch)).toBe("ok");
+    // Another payer's permission does not do.
+    const q = await createPool({ variant: "permission", creatorFeeOn: "BothToken" });
+    const withPermission = {
+      ...q.init,
+      accounts: q.init.accounts!.map((m) => (m.address === q.permission ? { ...m, address: p.permission } : m)) as Instruction["accounts"],
+    };
+    expect(await both("initialize_with_permission with another's", q.creator, [withPermission], q.watch)).toBe(custom(2006));
+    expect(
+      await both("close_permission_pda by a stranger", stranger, [permissionIx("close_permission_pda", stranger, p.creator.address, p.permission)], watch),
+    ).toBe(custom(6001));
+    const admin = signers.admin;
+    expect(await both("close_permission_pda by the admin", admin, [permissionIx("close_permission_pda", admin, p.creator.address, p.permission)], watch)).toBe(
+      "ok",
+    );
+  });
+
+  /** collect_creator_fee (`creator` signs) or its permissionless form (`payer` signs). */
+  async function collectCreator(p: Pool, creator: Address, signer: KeyPairSigner, permissionless: boolean) {
+    const [ata0] = await pda(ATA_PROGRAM, [creator, p.m0.program, p.m0.address]);
+    const [ata1] = await pda(ATA_PROGRAM, [creator, p.m1.program, p.m1.address]);
+    const [share] = await pda(PROGRAM, ["creator_fee_share", creator, p.config]);
+    const tail: Meta[] = [
+      { address: p.vault0, writable: true },
+      { address: p.vault1, writable: true },
+      { address: p.m0.address },
+      { address: p.m1.address },
+      { address: ata0, writable: true },
+      { address: ata1, writable: true },
+      { address: p.m0.program },
+      { address: p.m1.program },
+      { address: ATA_PROGRAM },
+      { address: SYSTEM },
+    ];
+    const instruction = permissionless
+      ? ix("collect_creator_fee_permissionless", {}, [
+          { address: signer.address, signer, writable: true },
+          { address: creator },
+          { address: p.authority },
+          { address: p.pool, writable: true },
+          ...tail,
+          { address: p.config },
+          { address: share },
+        ])
+      : ix("collect_creator_fee", {}, [
+          { address: signer.address, signer, writable: true },
+          { address: p.authority },
+          { address: p.pool, writable: true },
+          { address: p.config },
+          ...tail,
+          { address: share },
+        ]);
+    return { instruction, watch: [p.pool, p.vault0, p.vault1, ata0, ata1, share, signer.address] };
+  }
+  const shareIx = (
+    name: "create_creator_fee_share" | "close_creator_fee_share",
+    owner: KeyPairSigner,
+    creator: Address,
+    config: Address,
+    share: Address,
+    rate?: bigint,
+  ) =>
+    ix(name, rate === undefined ? {} : { share_rate: new BN(rate.toString()) }, [
+      { address: owner.address, signer: owner, writable: true },
+      { address: creator },
+      { address: config },
+      { address: share, writable: true },
+      { address: SYSTEM },
+    ]);
+
+  it("pays the creator its fees less the protocol's share: the config's, or the creator's own", async () => {
+    for (const fees of [undefined, { fee0: { bps: 150, max: 1_000_000n }, fee1: { bps: 37, max: 10n ** 12n } }]) {
+      const tag = fees ? "t22 " : "";
+      const p = await pool({ creatorFee: { rate: 500n, on: 0 }, shareRate: 100_000n, ...fees });
+      const t = await trader(p);
+      const trade = async (i: number) => {
+        await both(`${tag}creator fee swap ${i}a`, t.signer, [swap("swap_base_input", p, t, true, 3_000_000n, 1n)], watchAll(p, t));
+        await both(`${tag}creator fee swap ${i}b`, t.signer, [swap("swap_base_input", p, t, false, 9_000_000_000n, 1n)], watchAll(p, t));
+      };
+      await trade(0);
+      const stranger = await funded();
+      const byStranger = await collectCreator(p, stranger.address, stranger, false);
+      expect(await both(`${tag}collect_creator_fee by a stranger`, stranger, [byStranger.instruction], byStranger.watch)).toBe(custom(2012));
+      // The pool's creator (p.admin): its token accounts are created, then paid at the config's share.
+      const c = await collectCreator(p, p.admin.address, p.admin, false);
+      expect(await both(`${tag}collect_creator_fee`, p.admin, [c.instruction], c.watch)).toBe("ok");
+      expect(await both(`${tag}collect_creator_fee with nothing owed`, p.admin, [c.instruction], c.watch)).toBe(custom(6014));
+      // The creator's own share, set by Raydium's share owner.
+      const [share] = await pda(PROGRAM, ["creator_fee_share", p.admin.address, p.config]);
+      const owner = signers.shareOwner;
+      const shareWatch = [share, owner.address];
+      expect(
+        await both(
+          `${tag}create_creator_fee_share by a stranger`,
+          stranger,
+          [shareIx("create_creator_fee_share", stranger, p.admin.address, p.config, share, 1n)],
+          shareWatch,
+        ),
+      ).toBe(custom(6001));
+      expect(
+        await both(
+          `${tag}create_creator_fee_share above 100%`,
+          owner,
+          [shareIx("create_creator_fee_share", owner, p.admin.address, p.config, share, 1_000_001n)],
+          shareWatch,
+        ),
+      ).toBe(custom(6003));
+      expect(
+        await both(
+          `${tag}create_creator_fee_share`,
+          owner,
+          [shareIx("create_creator_fee_share", owner, p.admin.address, p.config, share, 333_333n)],
+          shareWatch,
+        ),
+      ).toBe("ok");
+      await trade(1);
+      // Anyone may send it; the creator's accounts exist now.
+      const payer = await funded();
+      const pl = await collectCreator(p, p.admin.address, payer, true);
+      expect(await both(`${tag}collect_creator_fee_permissionless`, payer, [pl.instruction], pl.watch)).toBe("ok");
+      const wrong = await collectCreator(p, stranger.address, payer, true);
+      expect(await both(`${tag}collect_creator_fee_permissionless for another creator`, payer, [wrong.instruction], wrong.watch)).toBe(custom(2012));
+      expect(
+        await both(
+          `${tag}close_creator_fee_share by a stranger`,
+          stranger,
+          [shareIx("close_creator_fee_share", stranger, p.admin.address, p.config, share)],
+          shareWatch,
+        ),
+      ).toBe(custom(6001));
+      expect(
+        await both(
+          `${tag}close_creator_fee_share`,
+          signers.admin,
+          [shareIx("close_creator_fee_share", signers.admin, p.admin.address, p.config, share)],
+          [share],
+        ),
+      ).toBe("ok");
+      await trade(2);
+      expect(await both(`${tag}collect_creator_fee after the close`, p.admin, [c.instruction], c.watch)).toBe("ok");
+    }
+    // A config whose share is above 100% (written so; update_amm_config refuses it): InvalidInput.
+    const bad = await pool({ creatorFee: { rate: 500n, on: 1 }, shareRate: 1_000_001n });
+    const t = await trader(bad);
+    await both("creator fee swap (bad share)", t.signer, [swap("swap_base_input", bad, t, true, 3_000_000n, 1n)], watchAll(bad, t));
+    const c = await collectCreator(bad, bad.admin.address, bad.admin, false);
+    expect(await both("collect_creator_fee at a share above 100%", bad.admin, [c.instruction], c.watch)).toBe(custom(6003));
+  });
+
+  it("lists a Token-2022 mint for pools, by Raydium's keys only, and takes it off again", async () => {
+    const creator = await funded();
+    // A Token-2022 mint with a permanent delegate (not on the pool's list of extensions), and an SPL Token mint.
+    const m = await generateKeyPairSigner();
+    const space = t22.getMintSize([{ __kind: "PermanentDelegate", delegate: creator.address }]);
+    await setup(creator, [
+      getCreateAccountInstruction({
+        payer: creator,
+        newAccount: m,
+        lamports: original.minimumBalanceForRentExemption(BigInt(space)),
+        space,
+        programAddress: TOKEN_2022,
+      }),
+      t22.getInitializePermanentDelegateInstruction({ mint: m.address, delegate: creator.address }),
+      t22.getInitializeMint2Instruction({ mint: m.address, decimals: 9, mintAuthority: creator.address }),
+    ]);
+    const spl = await mint(creator, TOKEN, 6);
+    const support = (name: "create_support_mint_associated" | "close_support_mint_associated", owner: KeyPairSigner, mintAddress: Address, entry: Address) =>
+      ix(name, {}, [
+        { address: owner.address, signer: owner, writable: true },
+        { address: mintAddress },
+        { address: entry, writable: true },
+        { address: SYSTEM },
+      ]);
+    const [entry] = await pda(PROGRAM, ["support_mint", m.address]);
+    const [splEntry] = await pda(PROGRAM, ["support_mint", spl.address]);
+    const owner = signers.supportOwner;
+    const watch = [entry, owner.address];
+    expect(
+      await both("create_support_mint_associated by a stranger", creator, [support("create_support_mint_associated", creator, m.address, entry)], watch),
+    ).toBe(custom(6000));
+    expect(
+      await both(
+        "create_support_mint_associated for an SPL Token mint",
+        owner,
+        [support("create_support_mint_associated", owner, spl.address, splEntry)],
+        [splEntry],
+      ),
+    ).toBe(custom(6000));
+    const before = await createPool({ variant: "v2", creator, delegateMint: m.address, remaining: [entry] });
+    expect(await both("initialize_v2 before the mint is listed", creator, [before.init], before.watch)).toBe(custom(6007));
+    expect(await both("create_support_mint_associated", owner, [support("create_support_mint_associated", owner, m.address, entry)], watch)).toBe("ok");
+    expect(await both("initialize_v2 with a listed mint", creator, [before.init], before.watch)).toBe("ok");
+    const unlisted = await createPool({ variant: "v2", creator, delegateMint: m.address });
+    expect(await both("initialize_v2 without the list entry", creator, [unlisted.init], unlisted.watch)).toBe(custom(6007));
+    expect(
+      await both("close_support_mint_associated by a stranger", creator, [support("close_support_mint_associated", creator, m.address, entry)], watch),
+    ).toBe(custom(6000));
+    expect(
+      await both("close_support_mint_associated", signers.admin, [support("close_support_mint_associated", signers.admin, m.address, entry)], [entry]),
+    ).toBe("ok");
+  });
+
+  it("sweeps lamports above rent from the pool authority's token accounts and the program's accounts", async () => {
+    const p = await pool({ fee1: { bps: 37, max: 10n ** 12n } });
+    const t = await trader(p);
+    // Wrapped SOL held by the pool authority, and lamports sent to a vault, the LP mint, the pool and its observation account.
+    const wsol = await generateKeyPairSigner();
+    const NATIVE_MINT = address("So11111111111111111111111111111111111111112");
+    await setup(t.signer, [
+      getCreateAccountInstruction({
+        payer: t.signer,
+        newAccount: wsol,
+        lamports: original.minimumBalanceForRentExemption(165n) + 5_000_000n,
+        space: 165,
+        programAddress: TOKEN,
+      }),
+      token.getInitializeAccount3Instruction({ account: wsol.address, mint: NATIVE_MINT, owner: p.authority }) as Instruction,
+    ]);
+    for (const vm of vms()) for (const a of [p.vault0, p.vault1, p.lp, p.pool, p.observation, wsol.address]) vm.airdrop(a, lamports(7_777_777n));
+    const sweep = (wallet: KeyPairSigner, rest: Address[]) =>
+      ix("collect_excess_lamports", {}, [
+        { address: wallet.address, signer: wallet, writable: true },
+        { address: p.authority },
+        { address: TOKEN },
+        { address: TOKEN_2022 },
+        ...rest.map((a) => ({ address: a, writable: true })),
+      ]);
+    const watch = [p.vault0, p.vault1, p.lp, p.pool, p.observation, wsol.address, signers.lamportsOwner.address, signers.admin.address];
+    expect(await both("collect_excess_lamports by a stranger", t.signer, [sweep(t.signer, [p.pool])], watch)).toBe(custom(6001));
+    expect(await both("collect_excess_lamports: program accounts", signers.lamportsOwner, [sweep(signers.lamportsOwner, [p.pool, p.observation])], watch)).toBe(
+      "ok",
+    );
+    expect(await both("collect_excess_lamports: nothing left", signers.lamportsOwner, [sweep(signers.lamportsOwner, [p.pool])], watch)).toBe("ok");
+    // WithdrawExcessLamports from a token account of each program and from a mint; SyncNative + UnwrapLamports from wrapped SOL.
+    const [splVault, t22Vault] = p.m0.program === TOKEN ? [p.vault0, p.vault1] : [p.vault1, p.vault0];
+    const admin = signers.admin;
+    expect(await both("collect_excess_lamports: SPL Token vault", admin, [sweep(admin, [splVault])], watch)).toBe("ok");
+    expect(await both("collect_excess_lamports: Token-2022 vault", admin, [sweep(admin, [t22Vault])], watch)).toBe("ok");
+    expect(await both("collect_excess_lamports: LP mint", admin, [sweep(admin, [p.lp])], watch)).toBe("ok");
+    expect(await both("collect_excess_lamports: wrapped SOL", admin, [sweep(admin, [wsol.address])], watch)).toBe("ok");
+    // A token account the pool authority does not own: the token program refuses (OwnerMismatch).
+    const traderAccount = p.m0.program === TOKEN ? t.a0 : t.a1;
+    expect(await both("collect_excess_lamports: a trader's account", admin, [sweep(admin, [traderAccount])], [...watch, traderAccount])).toBe(custom(4));
+  });
+
+  // Random swaps both ways, deposits, withdrawals and fee collections over time, in an SPL Token pool and a pool of
+  // Token-2022 fee mints, each with the creator fee on in a random mode: the same in both. Choices and amounts come
+  // from the seed (keys are fresh each run); reproduce with FUZZ_SEED=<seed>, lengthen with CP_FUZZ_STEPS=<n>.
+  it("fuzz: random swaps, liquidity changes and fee collections behave the same", async () => {
+    const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
+    const STEPS = Number(process.env.CP_FUZZ_STEPS ?? 120);
+    let x = (SEED ^ 0x3c6ef372fe94f82bn) & 0xffff_ffff_ffff_ffffn || 1n;
+    const next = () => {
+      x ^= x >> 12n;
+      x ^= (x << 25n) & 0xffff_ffff_ffff_ffffn;
+      x ^= x >> 27n;
+      return (x * 0x2545f4914f6cdd1dn) & 0xffff_ffff_ffff_ffffn;
+    };
+    const int = (n: number) => Number(next() % BigInt(n));
+    const chance = (percent: number) => int(100) < percent;
+    /** 1 to 10^digits, spread evenly over orders of magnitude. */
+    const amount = (digits: number) => 1n + (next() % 10n ** BigInt(1 + int(digits)));
+    // The fuzz's transactions are not in the counts and compute units the case study gives.
+    const [keys, compared0, events0] = [new Set(Object.keys(cu)), compared, eventsCompared];
+    const pools = [
+      await pool({ creatorFee: { rate: BigInt(1 + int(5000)), on: int(3) }, shareRate: BigInt(int(1_000_001)) }),
+      await pool({
+        creatorFee: { rate: BigInt(1 + int(5000)), on: int(3) },
+        shareRate: BigInt(int(1_000_001)),
+        fee0: { bps: 1 + int(500), max: amount(9) },
+        fee1: { bps: 1 + int(500), max: amount(12) },
+      }),
+    ];
+    const traders = [await trader(pools[0]!, 10n ** 15n, 10n ** 18n), await trader(pools[1]!, 10n ** 15n, 10n ** 18n)];
+    const stats: Record<string, Record<string, number>> = {};
+    const count = (op: string, o: string) => {
+      const k = o === "ok" ? "ok" : (/code: (\d+)/.exec(o)?.[1] ?? "other");
+      (stats[op] ??= {})[k] = (stats[op]![k] ?? 0) + 1;
+    };
+    for (let step = 0; step < STEPS; step++) {
+      const which = int(2);
+      const [p, t] = [pools[which]!, traders[which]!];
+      const label = (what: string) => `fuzz step ${step} (seed ${SEED}, pool ${which}): ${what}`;
+      const elapsed = chance(30) ? BigInt(int(60)) : 0n;
+      for (const vm of vms()) {
+        const c = vm.getClock();
+        c.unixTimestamp += elapsed;
+        vm.setClock(c);
+      }
+      const op = int(20);
+      if (op < 10) {
+        const name = chance(60) ? "swap_base_input" : "swap_base_output";
+        const zeroForOne = chance(50);
+        const [a, b] = name === "swap_base_input" ? [amount(13), chance(15) ? amount(13) : 0n] : [chance(15) ? amount(13) : 10n ** 18n, amount(12)];
+        count(name, await both(label(`${name} ${zeroForOne ? "0→1" : "1→0"} ${a} ${b}`), t.signer, [swap(name, p, t, zeroForOne, a, b)], watchAll(p, t)));
+      } else if (op < 13) {
+        const lp = amount(11);
+        const [a, b] = chance(15) ? [amount(12), amount(14)] : [10n ** 15n, 10n ** 18n];
+        count("deposit", await both(label(`deposit ${lp} max ${a}/${b}`), t.signer, [liquidity("deposit", p, t, lp, a, b)], watchAll(p, t)));
+      } else if (op < 16) {
+        const lp = amount(11);
+        const [a, b] = chance(15) ? [amount(9), amount(12)] : [0n, 0n];
+        count("withdraw", await both(label(`withdraw ${lp} min ${a}/${b}`), t.signer, [liquidity("withdraw", p, t, lp, a, b)], watchAll(p, t)));
+      } else if (op < 18) {
+        const permissionless = chance(50);
+        const payer = permissionless ? t.signer : p.admin;
+        const c = await collectCreator(p, p.admin.address, payer, permissionless);
+        count("collect_creator_fee", await both(label(`collect_creator_fee${permissionless ? "_permissionless" : ""}`), payer, [c.instruction], c.watch));
+      } else {
+        const fund = chance(50);
+        const owner = fund ? p.fundOwner : p.protocolOwner;
+        const [r0, r1] = [await account(p.admin, p.m0, owner.address, 0n), await account(p.admin, p.m1, owner.address, 0n)];
+        const [a, b] = [chance(50) ? amount(8) : 2n ** 64n - 1n, chance(50) ? amount(11) : 2n ** 64n - 1n];
+        const instruction = ix(
+          fund ? "collect_fund_fee" : "collect_protocol_fee",
+          { amount_0_requested: new BN(a.toString()), amount_1_requested: new BN(b.toString()) },
+          [
+            { address: owner.address, signer: owner },
+            { address: p.authority },
+            { address: p.pool, writable: true },
+            { address: p.config },
+            { address: p.vault0, writable: true },
+            { address: p.vault1, writable: true },
+            { address: p.m0.address },
+            { address: p.m1.address },
+            { address: r0, writable: true },
+            { address: r1, writable: true },
+            { address: TOKEN },
+            { address: TOKEN_2022 },
+          ],
+        );
+        count(
+          fund ? "collect_fund_fee" : "collect_protocol_fee",
+          await both(label(`collect ${fund ? "fund" : "protocol"} ${a}/${b}`), owner, [instruction], [p.pool, p.vault0, p.vault1, r0, r1]),
+        );
+      }
+    }
+    console.log(`cp-swap fuzz (seed ${SEED}): ${STEPS} steps`, JSON.stringify(stats));
+    for (const k of Object.keys(cu)) if (!keys.has(k)) delete cu[k];
+    [compared, eventsCompared] = [compared0, events0];
+  });
+
   it("reports compute units side by side", () => {
     const rows = Object.entries(cu).map(([k, [o, t]]) => `${k.padEnd(40)} ${String(o).padStart(8)} ${String(t).padStart(8)}`);
     console.log(["instruction".padEnd(40) + " original  TypeSOL", ...rows].join("\n"));
     expect(rows.length).toBeGreaterThan(0);
-    expect(compared).toBe(59 + 11); // as docs/case-study-raydium-cp-swap.md says
-    expect(eventsCompared).toBe(13 + 4 + 12 + 2); // one per successful swap, deposit and withdrawal, byte for byte
+    expect(compared).toBe(136); // as docs/case-study-raydium-cp-swap.md says
+    expect(eventsCompared).toBe(13 + 4 + 12 + 2 + 13); // one per successful swap, deposit and withdrawal, byte for byte
   });
 });

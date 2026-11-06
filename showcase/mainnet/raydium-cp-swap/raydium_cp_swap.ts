@@ -1,6 +1,6 @@
 // A port of Raydium CP-Swap (raydium-io/raydium-cp-swap, programs/cp-swap, Anchor 1.0.2), Copyright Raydium, licensed
 // under the Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). Changes: rewritten in TypeSOL;
-// this file ports the trading and fee instructions (see docs/case-study-raydium-cp-swap.md for what is and is not).
+// this file ports all 21 of its instructions (see docs/case-study-raydium-cp-swap.md).
 //
 // A constant-product AMM: pools of two tokens (SPL Token or Token-2022 with the extensions it accepts) whose LP tokens
 // are minted on deposit and burned on withdrawal; swaps take a trade fee, part of which goes to the protocol and a fund.
@@ -9,7 +9,13 @@ import {
   type AccountInfo,
   type AssociatedTokenProgram,
   type Ata,
+  type CloseTo,
   type Init,
+  type InitIfNeeded,
+  type Option,
+  type Owner,
+  type RemainingAccount,
+  type RemainingAccounts,
   type MintOf,
   type TokenOf,
   type Address,
@@ -25,6 +31,7 @@ import {
   type Token2022Program,
   type u16,
   AnchorError,
+  ProgramError,
   constraint,
   currentEpoch,
   emit,
@@ -32,12 +39,15 @@ import {
   findProgramAddress,
   findProgramAddressBump,
   initAccount,
+  invoke,
   isqrt,
   loadAccount,
   log,
   now,
   programId,
   pubkey,
+  readData,
+  readonlySigner,
   remainingAccounts,
   rentExempt,
   require,
@@ -47,11 +57,24 @@ import {
   transferFeeInverse,
   transferFeeMaximum,
   u8,
+  u32,
   u64,
   u128,
+  writable,
 } from "typesol";
 import { FEE_RATE_DENOMINATOR_VALUE, curveSwapBaseInput, curveSwapBaseOutput, lpTokensToTradingTokens } from "./curve";
-import { type AmmConfig, type LpChangeEvent, type ObservationState, type PoolState, type SupportMintAssociated, type SwapEvent, ErrorCode } from "./state";
+import {
+  type AmmConfig,
+  type CreatorFeeShare,
+  type LpChangeEvent,
+  type ObservationState,
+  type Permission,
+  type PoolState,
+  type SupportMintAssociated,
+  type SwapEvent,
+  CreatorFeeOn,
+  ErrorCode,
+} from "./state";
 
 /** The admin (mainnet), the only signer of the configuration instructions. */
 const ADMIN = pubkey("GThUX1Atko4tqhN2NaiTazWSeFWMuiUvfFnyJyUghFMJ");
@@ -59,6 +82,13 @@ const TOKEN_PROGRAM_ID = pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const PROTOCOL_FEE_OWNER = pubkey("ProCXqRcXJjoUd1RNoo28bSizAA6EEqt9wURZYPDc5u");
 const FUND_FEE_OWNER = pubkey("FUNDduJTA7XcckKHKfAoEnnhuSud2JUCUZv6opWEjrBU");
 const MAX_U128 = 340282366920938463463374607431768211455n;
+const MAX_U64 = 18446744073709551615n;
+const TOKEN_2022_PROGRAM_ID = pubkey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+/** The keys besides the admin that may sign the permission, fee share, supported mint and lamport instructions. */
+const PERMISSION_OWNER = pubkey("RayqjDRsNEFuPcDE4JpEScwJvwusmHYuNZ3MgET4D7U");
+const CREATOR_FEE_SHARE_OWNER = pubkey("RayFfEhJHWToYRsr8sjVZZkdddBeYxyJazDitpdE7zJ");
+const SUPPORT_MINT_OWNER = pubkey("Rayv2LG4tFSMizZhMP8aSUYxDPjV8qJtx2NQY9RKYZy");
+const COLLECT_LAMPORTS = pubkey("RayGkhY93thaTgCv98sx1pNLgBHhJDxWUeZXp4bjmnp");
 
 // ---- pool state helpers (states/pool.rs) ------------------------------------------------------------------------
 
@@ -187,6 +217,31 @@ function toVault(
   else token2022.transferChecked(from, mint, vault, owner, amount);
 }
 
+// ---- pool creation helpers (instructions/initialize.rs) ---------------------------------------------------------
+
+/** Whether the admin listed `mint` (a SupportMintAssociated account at its PDA among the remaining accounts). */
+function listed(rest: RemainingAccounts, mint: Mint): boolean {
+  const expect = findProgramAddress(["support_mint", mint.key], programId());
+  for (let i = 0n; i < rest.length; i++) {
+    const r = rest.get(i);
+    if (r.owner !== programId() || r.key !== expect) continue;
+    const entry = loadAccount<SupportMintAssociated>(r);
+    if (entry.mint === mint.key) return true;
+  }
+  return false;
+}
+
+/**
+ * A Token-2022 mint is supported when its extensions are all ones the pool handles, or the admin listed it.
+ */
+function requireSupported(rest: RemainingAccounts, token_0_mint: Mint, token_1_mint: Mint): void {
+  const listed_0 = rest.length > 0n && listed(rest, token_0_mint);
+  const listed_1 = rest.length > 0n && listed(rest, token_1_mint);
+  const supported_0 = token_0_mint.tokenProgram === TOKEN_PROGRAM_ID || listed_0 || extensionsWithin(token_0_mint, [1n, 18n, 19n, 10n, 25n]);
+  const supported_1 = token_1_mint.tokenProgram === TOKEN_PROGRAM_ID || listed_1 || extensionsWithin(token_1_mint, [1n, 18n, 19n, 10n, 25n]);
+  require(supported_0 && supported_1, ErrorCode.NotSupportMint);
+}
+
 // ---- admin ---------------------------------------------------------------------------------------------------------
 
 /** Create a config: fee rates for the pools that use it. Admin only. */
@@ -291,36 +346,7 @@ export function initialize(
   creator_lp_token.create(creator, token_program);
   observation_state.create(creator, ["observation", pool_state.key]);
 
-  // A Token-2022 mint is supported when its extensions are all ones the pool handles, or the admin listed it
-  // (a SupportMintAssociated account among the remaining accounts).
-  const rest = remainingAccounts();
-  let listed_0 = false;
-  let listed_1 = false;
-  if (rest.length > 0n) {
-    const expect_0 = findProgramAddress(["support_mint", token_0_mint.key], programId());
-    for (let i = 0n; i < rest.length; i++) {
-      const r = rest.get(i);
-      if (r.owner !== programId() || r.key !== expect_0) continue;
-      const listed = loadAccount<SupportMintAssociated>(r);
-      if (listed.mint === token_0_mint.key) {
-        listed_0 = true;
-        break;
-      }
-    }
-    const expect_1 = findProgramAddress(["support_mint", token_1_mint.key], programId());
-    for (let i = 0n; i < rest.length; i++) {
-      const r = rest.get(i);
-      if (r.owner !== programId() || r.key !== expect_1) continue;
-      const listed = loadAccount<SupportMintAssociated>(r);
-      if (listed.mint === token_1_mint.key) {
-        listed_1 = true;
-        break;
-      }
-    }
-  }
-  const supported_0 = token_0_mint.tokenProgram === TOKEN_PROGRAM_ID || listed_0 || extensionsWithin(token_0_mint, [1n, 18n, 19n, 10n, 25n]);
-  const supported_1 = token_1_mint.tokenProgram === TOKEN_PROGRAM_ID || listed_1 || extensionsWithin(token_1_mint, [1n, 18n, 19n, 10n, 25n]);
-  require(supported_0 && supported_1, ErrorCode.NotSupportMint);
+  requireSupported(remainingAccounts(), token_0_mint, token_1_mint);
   require(!amm_config.disable_create_pool, ErrorCode.NotApproved);
   const block_timestamp = u64(now());
   const opens = open_time <= block_timestamp ? block_timestamp + 1n : open_time;
@@ -385,6 +411,215 @@ export function initialize(
   pool.recent_epoch = currentEpoch();
   pool.creator_fee_on = 0n;
   pool.enable_creator_fee = false;
+}
+
+/** The byte a CreatorFeeOn is stored as. */
+function feeOn(on: CreatorFeeOn): u8 {
+  return on === CreatorFeeOn.OnlyToken0 ? 1n : on === CreatorFeeOn.OnlyToken1 ? 2n : 0n;
+}
+
+/**
+ * initialize without the rent sysvar, choosing the creator fee: `creator_fee_on` null leaves it off, otherwise it is on
+ * and taken as it says.
+ */
+export function initializeV2(
+  creator: Mut<Signer>,
+  amm_config: Account<AmmConfig>,
+  authority: Seeds<AccountInfo, ["vault_and_lp_mint_auth_seed"]>,
+  pool_state: Mut<AccountInfo>,
+  token_0_mint: MintOf<Mint, never, never, "token_0_program">,
+  token_1_mint: MintOf<Mint, never, never, "token_1_program">,
+  lp_mint: Init<Mint>,
+  creator_token_0: TokenOf<Mut<TokenAccount>, "token_0_mint", "creator">,
+  creator_token_1: TokenOf<Mut<TokenAccount>, "token_1_mint", "creator">,
+  creator_lp_token: Ata<Init<TokenAccount>, "creator", "lp_mint">,
+  token_0_vault: Init<TokenAccount>,
+  token_1_vault: Init<TokenAccount>,
+  create_pool_fee: Address<Mut<TokenAccount>, "DNXgeM9EiiaAbaWvwjHj9fQQLAX5ZsfHyvmYUNRAdNC8">,
+  observation_state: Init<ObservationState>,
+  token_program: TokenProgram,
+  token_0_program: TokenInterface,
+  token_1_program: TokenInterface,
+  associated_token_program: AssociatedTokenProgram,
+  system_program: SystemProgram,
+  init_amount_0: u64,
+  init_amount_1: u64,
+  open_time: u64,
+  creator_fee_on: Option<CreatorFeeOn>,
+): void {
+  constraint(token_0_mint, token_0_mint.key.compare(token_1_mint.key) < 0n);
+  lp_mint.create(creator, ["pool_lp_mint", pool_state.key], 9n, authority.key, null, token_program);
+  creator_lp_token.create(creator, token_program);
+  observation_state.create(creator, ["observation", pool_state.key]);
+
+  requireSupported(remainingAccounts(), token_0_mint, token_1_mint);
+  require(!amm_config.disable_create_pool, ErrorCode.NotApproved);
+  const block_timestamp = u64(now());
+  const opens = open_time <= block_timestamp ? block_timestamp + 1n : open_time;
+
+  token_0_vault.create(creator, ["pool_vault", pool_state.key, token_0_mint.key], token_0_mint, authority.key, token_0_program);
+  token_1_vault.create(creator, ["pool_vault", pool_state.key, token_1_mint.key], token_1_mint, authority.key, token_1_program);
+
+  // The pool account: owned by the System Program until now, at its PDA or a keypair that signed.
+  require(pool_state.owner === pubkey("11111111111111111111111111111111"), ErrorCode.NotApproved);
+  const pool_bump = findProgramAddressBump(["pool", amm_config.key, token_0_mint.key, token_1_mint.key], programId());
+  if (pool_state.key !== findProgramAddress(["pool", amm_config.key, token_0_mint.key, token_1_mint.key], programId()))
+    require(pool_state.isSigner, AnchorError.RequireEqViolated);
+  const space = 637n;
+  if (pool_state.lamports === 0n)
+    system_program.createAccount(creator, pool_state, rentExempt(space), space, programId(), [
+      "pool",
+      amm_config.key,
+      token_0_mint.key,
+      token_1_mint.key,
+      pool_bump,
+    ]);
+  else {
+    let required = rentExempt(space);
+    if (required === 0n) required = 1n;
+    if (required > pool_state.lamports) system_program.transfer(creator, pool_state, required - pool_state.lamports);
+    system_program.allocate(pool_state, space, ["pool", amm_config.key, token_0_mint.key, token_1_mint.key, pool_bump]);
+    system_program.assign(pool_state, programId(), ["pool", amm_config.key, token_0_mint.key, token_1_mint.key, pool_bump]);
+  }
+  const pool = initAccount<PoolState>(pool_state);
+  observation_state.pool_id = pool_state.key;
+
+  if (init_amount_0 !== 0n) token_0_program.transferChecked(creator_token_0, token_0_mint, token_0_vault, creator, init_amount_0);
+  if (init_amount_1 !== 0n) token_1_program.transferChecked(creator_token_1, token_1_mint, token_1_vault, creator, init_amount_1);
+  const vault_0 = token_0_vault.amount;
+  const vault_1 = token_1_vault.amount;
+  require(vault_0 !== 0n && vault_1 !== 0n, ErrorCode.EmptySupply);
+  const liquidity = u64(isqrt(u128(vault_0) * u128(vault_1)));
+  log(`liquidity:${liquidity}, lock_lp_amount:100, vault_0_amount:${vault_0},vault_1_amount:${vault_1}`);
+  require(liquidity >= 100n, ErrorCode.InitLpAmountTooLess);
+  token_program.mintTo(lp_mint, creator_lp_token, authority, liquidity - 100n, ["vault_and_lp_mint_auth_seed", authority.pdaBump]);
+  // The fee to create a pool, in wrapped SOL.
+  if (amm_config.create_pool_fee !== 0n) {
+    system_program.transfer(creator, create_pool_fee, amm_config.create_pool_fee);
+    token_program.syncNative(create_pool_fee);
+  }
+  pool.auth_bump = authority.pdaBump;
+  pool.lp_supply = liquidity;
+  pool.open_time = opens;
+  pool.pool_creator = creator.key;
+  pool.amm_config = amm_config.key;
+  pool.token_0_vault = token_0_vault.key;
+  pool.token_1_vault = token_1_vault.key;
+  pool.lp_mint = lp_mint.key;
+  pool.token_0_mint = token_0_mint.key;
+  pool.token_1_mint = token_1_mint.key;
+  pool.token_0_program = token_0_mint.tokenProgram;
+  pool.token_1_program = token_1_mint.tokenProgram;
+  pool.observation_key = observation_state.key;
+  pool.lp_mint_decimals = 9n;
+  pool.mint_0_decimals = token_0_mint.decimals;
+  pool.mint_1_decimals = token_1_mint.decimals;
+  pool.recent_epoch = currentEpoch();
+  pool.creator_fee_on = creator_fee_on === null ? 0n : feeOn(creator_fee_on);
+  pool.enable_creator_fee = creator_fee_on !== null;
+}
+
+/**
+ * A pool created by a payer holding a Permission (created by Raydium), for `creator`: the payer funds it and gets the
+ * LP tokens, `creator` collects the creator fee, which is always on.
+ */
+export function initializeWithPermission(
+  payer: Mut<Signer>,
+  creator: AccountInfo,
+  amm_config: Account<AmmConfig>,
+  authority: Seeds<AccountInfo, ["vault_and_lp_mint_auth_seed"]>,
+  pool_state: Mut<AccountInfo>,
+  token_0_mint: MintOf<Mint, never, never, "token_0_program">,
+  token_1_mint: MintOf<Mint, never, never, "token_1_program">,
+  lp_mint: Init<Mint>,
+  payer_token_0: TokenOf<Mut<TokenAccount>, "token_0_mint", "payer">,
+  payer_token_1: TokenOf<Mut<TokenAccount>, "token_1_mint", "payer">,
+  payer_lp_token: Ata<Init<TokenAccount>, "payer", "lp_mint">,
+  token_0_vault: Init<TokenAccount>,
+  token_1_vault: Init<TokenAccount>,
+  create_pool_fee: Address<Mut<TokenAccount>, "DNXgeM9EiiaAbaWvwjHj9fQQLAX5ZsfHyvmYUNRAdNC8">,
+  observation_state: Init<ObservationState>,
+  permission: Seeds<Account<Permission>, ["permission", "@payer"]>,
+  token_program: TokenProgram,
+  token_0_program: TokenInterface,
+  token_1_program: TokenInterface,
+  associated_token_program: AssociatedTokenProgram,
+  system_program: SystemProgram,
+  init_amount_0: u64,
+  init_amount_1: u64,
+  open_time: u64,
+  creator_fee_on: CreatorFeeOn,
+): void {
+  constraint(token_0_mint, token_0_mint.key.compare(token_1_mint.key) < 0n);
+  lp_mint.create(payer, ["pool_lp_mint", pool_state.key], 9n, authority.key, null, token_program);
+  payer_lp_token.create(payer, token_program);
+  observation_state.create(payer, ["observation", pool_state.key]);
+
+  requireSupported(remainingAccounts(), token_0_mint, token_1_mint);
+  require(!amm_config.disable_create_pool, ErrorCode.NotApproved);
+  const block_timestamp = u64(now());
+  const opens = open_time <= block_timestamp ? block_timestamp + 1n : open_time;
+
+  token_0_vault.create(payer, ["pool_vault", pool_state.key, token_0_mint.key], token_0_mint, authority.key, token_0_program);
+  token_1_vault.create(payer, ["pool_vault", pool_state.key, token_1_mint.key], token_1_mint, authority.key, token_1_program);
+
+  // The pool account: owned by the System Program until now, at its PDA or a keypair that signed.
+  require(pool_state.owner === pubkey("11111111111111111111111111111111"), ErrorCode.NotApproved);
+  const pool_bump = findProgramAddressBump(["pool", amm_config.key, token_0_mint.key, token_1_mint.key], programId());
+  if (pool_state.key !== findProgramAddress(["pool", amm_config.key, token_0_mint.key, token_1_mint.key], programId()))
+    require(pool_state.isSigner, AnchorError.RequireEqViolated);
+  const space = 637n;
+  if (pool_state.lamports === 0n)
+    system_program.createAccount(payer, pool_state, rentExempt(space), space, programId(), [
+      "pool",
+      amm_config.key,
+      token_0_mint.key,
+      token_1_mint.key,
+      pool_bump,
+    ]);
+  else {
+    let required = rentExempt(space);
+    if (required === 0n) required = 1n;
+    if (required > pool_state.lamports) system_program.transfer(payer, pool_state, required - pool_state.lamports);
+    system_program.allocate(pool_state, space, ["pool", amm_config.key, token_0_mint.key, token_1_mint.key, pool_bump]);
+    system_program.assign(pool_state, programId(), ["pool", amm_config.key, token_0_mint.key, token_1_mint.key, pool_bump]);
+  }
+  const pool = initAccount<PoolState>(pool_state);
+  observation_state.pool_id = pool_state.key;
+
+  if (init_amount_0 !== 0n) token_0_program.transferChecked(payer_token_0, token_0_mint, token_0_vault, payer, init_amount_0);
+  if (init_amount_1 !== 0n) token_1_program.transferChecked(payer_token_1, token_1_mint, token_1_vault, payer, init_amount_1);
+  const vault_0 = token_0_vault.amount;
+  const vault_1 = token_1_vault.amount;
+  require(vault_0 !== 0n && vault_1 !== 0n, ErrorCode.EmptySupply);
+  const liquidity = u64(isqrt(u128(vault_0) * u128(vault_1)));
+  log(`liquidity:${liquidity}, lock_lp_amount:100, vault_0_amount:${vault_0},vault_1_amount:${vault_1}`);
+  require(liquidity >= 100n, ErrorCode.InitLpAmountTooLess);
+  token_program.mintTo(lp_mint, payer_lp_token, authority, liquidity - 100n, ["vault_and_lp_mint_auth_seed", authority.pdaBump]);
+  // The fee to create a pool, in wrapped SOL.
+  if (amm_config.create_pool_fee !== 0n) {
+    system_program.transfer(payer, create_pool_fee, amm_config.create_pool_fee);
+    token_program.syncNative(create_pool_fee);
+  }
+  pool.auth_bump = authority.pdaBump;
+  pool.lp_supply = liquidity;
+  pool.open_time = opens;
+  pool.pool_creator = creator.key;
+  pool.amm_config = amm_config.key;
+  pool.token_0_vault = token_0_vault.key;
+  pool.token_1_vault = token_1_vault.key;
+  pool.lp_mint = lp_mint.key;
+  pool.token_0_mint = token_0_mint.key;
+  pool.token_1_mint = token_1_mint.key;
+  pool.token_0_program = token_0_mint.tokenProgram;
+  pool.token_1_program = token_1_mint.tokenProgram;
+  pool.observation_key = observation_state.key;
+  pool.lp_mint_decimals = 9n;
+  pool.mint_0_decimals = token_0_mint.decimals;
+  pool.mint_1_decimals = token_1_mint.decimals;
+  pool.recent_epoch = currentEpoch();
+  pool.creator_fee_on = feeOn(creator_fee_on);
+  pool.enable_creator_fee = true;
 }
 
 // ---- liquidity -------------------------------------------------------------------------------------------------------
@@ -803,4 +1038,291 @@ export function collectFundFee(
     amount_1,
     signer(["vault_and_lp_mint_auth_seed", pool_state.auth_bump]),
   );
+}
+
+// ---- creator fees (instructions/collect_creator_fee*.rs, states/creator_fee_share.rs) -----------------------------
+
+/** The part of `fee` the protocol keeps at `rate` (rounded down, so the dust goes to the creator). */
+function sharedPart(fee: u64, rate: u64): u64 {
+  require(rate <= FEE_RATE_DENOMINATOR_VALUE, ErrorCode.InvalidInput);
+  return u64((u128(fee) * u128(rate)) / u128(FEE_RATE_DENOMINATOR_VALUE));
+}
+
+/** What the creator is owed after the protocol's share. */
+export interface CreatorAmounts {
+  amount_0: u64;
+  amount_1: u64;
+}
+
+/** Book the protocol's share of the creator fees and zero them (PoolState::settle_creator_fee). */
+function settleCreatorFee(pool: Mut<PoolState>, rate: u64): CreatorAmounts {
+  const shared_0 = sharedPart(pool.creator_fees_token_0, rate);
+  const shared_1 = sharedPart(pool.creator_fees_token_1, rate);
+  require(pool.protocol_fees_token_0 <= MAX_U64 - shared_0, ErrorCode.MathOverflow);
+  require(pool.protocol_fees_token_1 <= MAX_U64 - shared_1, ErrorCode.MathOverflow);
+  const amount_0 = pool.creator_fees_token_0 - shared_0;
+  const amount_1 = pool.creator_fees_token_1 - shared_1;
+  pool.protocol_fees_token_0 += shared_0;
+  pool.protocol_fees_token_1 += shared_1;
+  pool.creator_fees_token_0 = 0n;
+  pool.creator_fees_token_1 = 0n;
+  return { amount_0, amount_1 };
+}
+
+/** Pay the pool's creator its fees, less the protocol's share; the creator signs. */
+export function collectCreatorFee(
+  creator: Mut<Signer>,
+  authority: Seeds<AccountInfo, ["vault_and_lp_mint_auth_seed"]>,
+  pool_state: Mut<PoolState>,
+  amm_config: Account<AmmConfig>,
+  token_0_vault: Mut<TokenAccount>,
+  token_1_vault: Mut<TokenAccount>,
+  vault_0_mint: Mint,
+  vault_1_mint: Mint,
+  creator_token_0: Ata<InitIfNeeded<TokenAccount>, "creator", "vault_0_mint">,
+  creator_token_1: Ata<InitIfNeeded<TokenAccount>, "creator", "vault_1_mint">,
+  token_0_program: TokenInterface,
+  token_1_program: TokenInterface,
+  associated_token_program: AssociatedTokenProgram,
+  system_program: SystemProgram,
+  creator_fee_share: Seeds<AccountInfo, ["creator_fee_share", "@creator", "@amm_config"]>,
+): void {
+  // Anchor creates the creator's token accounts before it checks the other accounts.
+  creator_token_0.createIfNeeded(creator, token_0_program);
+  creator_token_1.createIfNeeded(creator, token_1_program);
+  require(creator.key === pool_state.pool_creator, AnchorError.ConstraintAddress);
+  require(amm_config.key === pool_state.amm_config, AnchorError.ConstraintAddress);
+  require(token_0_vault.key === pool_state.token_0_vault, AnchorError.ConstraintRaw);
+  require(token_1_vault.key === pool_state.token_1_vault, AnchorError.ConstraintRaw);
+  require(vault_0_mint.key === token_0_vault.mint, AnchorError.ConstraintAddress);
+  require(vault_1_mint.key === token_1_vault.mint, AnchorError.ConstraintAddress);
+  // The protocol's share: the creator's own CreatorFeeShare when it exists, else the config's.
+  let rate = amm_config.creator_fee_share_rate;
+  if (creator_fee_share.dataLen !== 0n && creator_fee_share.owner === programId()) {
+    const share = loadAccount<CreatorFeeShare>(creator_fee_share);
+    rate = share.share_rate;
+  }
+  require(pool_state.creator_fees_token_0 !== 0n || pool_state.creator_fees_token_1 !== 0n, ErrorCode.NoFeeCollect);
+  const owed = settleCreatorFee(pool_state, rate);
+  const amount_0 = owed.amount_0;
+  const amount_1 = owed.amount_1;
+  pool_state.recent_epoch = currentEpoch();
+  if (amount_0 !== 0n)
+    token_0_program.transferChecked(token_0_vault, vault_0_mint, creator_token_0, authority, amount_0, ["vault_and_lp_mint_auth_seed", authority.pdaBump]);
+  if (amount_1 !== 0n)
+    token_1_program.transferChecked(token_1_vault, vault_1_mint, creator_token_1, authority, amount_1, ["vault_and_lp_mint_auth_seed", authority.pdaBump]);
+}
+
+/** The same, sent by anyone: `payer` funds the creator's token accounts if they are missing. */
+export function collectCreatorFeePermissionless(
+  payer: Mut<Signer>,
+  creator: AccountInfo,
+  authority: Seeds<AccountInfo, ["vault_and_lp_mint_auth_seed"]>,
+  pool_state: Mut<PoolState>,
+  token_0_vault: Mut<TokenAccount>,
+  token_1_vault: Mut<TokenAccount>,
+  vault_0_mint: Mint,
+  vault_1_mint: Mint,
+  creator_token_0: Ata<InitIfNeeded<TokenAccount>, "creator", "vault_0_mint">,
+  creator_token_1: Ata<InitIfNeeded<TokenAccount>, "creator", "vault_1_mint">,
+  token_0_program: TokenInterface,
+  token_1_program: TokenInterface,
+  associated_token_program: AssociatedTokenProgram,
+  system_program: SystemProgram,
+  amm_config: Account<AmmConfig>,
+  creator_fee_share: Seeds<AccountInfo, ["creator_fee_share", "@creator", "@amm_config"]>,
+): void {
+  creator_token_0.createIfNeeded(payer, token_0_program);
+  creator_token_1.createIfNeeded(payer, token_1_program);
+  require(creator.key === pool_state.pool_creator, AnchorError.ConstraintAddress);
+  require(token_0_vault.key === pool_state.token_0_vault, AnchorError.ConstraintRaw);
+  require(token_1_vault.key === pool_state.token_1_vault, AnchorError.ConstraintRaw);
+  require(vault_0_mint.key === token_0_vault.mint, AnchorError.ConstraintAddress);
+  require(vault_1_mint.key === token_1_vault.mint, AnchorError.ConstraintAddress);
+  require(amm_config.key === pool_state.amm_config, AnchorError.ConstraintAddress);
+  // The protocol's share: the creator's own CreatorFeeShare when it exists, else the config's.
+  let rate = amm_config.creator_fee_share_rate;
+  if (creator_fee_share.dataLen !== 0n && creator_fee_share.owner === programId()) {
+    const share = loadAccount<CreatorFeeShare>(creator_fee_share);
+    rate = share.share_rate;
+  }
+  require(pool_state.creator_fees_token_0 !== 0n || pool_state.creator_fees_token_1 !== 0n, ErrorCode.NoFeeCollect);
+  const owed = settleCreatorFee(pool_state, rate);
+  const amount_0 = owed.amount_0;
+  const amount_1 = owed.amount_1;
+  pool_state.recent_epoch = currentEpoch();
+  if (amount_0 !== 0n)
+    token_0_program.transferChecked(token_0_vault, vault_0_mint, creator_token_0, authority, amount_0, ["vault_and_lp_mint_auth_seed", authority.pdaBump]);
+  if (amount_1 !== 0n)
+    token_1_program.transferChecked(token_1_vault, vault_1_mint, creator_token_1, authority, amount_1, ["vault_and_lp_mint_auth_seed", authority.pdaBump]);
+}
+
+// ---- permissions, fee shares, supported mints (instructions/admin/*.rs) --------------------------------------------
+
+/** Let `permission_authority` create pools with initialize_with_permission (Raydium's admin or permission owner). */
+export function createPermissionPda(
+  owner: Mut<Signer>,
+  permission_authority: AccountInfo,
+  permission: Init<Permission>,
+  system_program: SystemProgram,
+): void {
+  // Anchor creates the account before it checks the signer.
+  permission.create(owner, ["permission", permission_authority.key]);
+  require(owner.key === ADMIN || owner.key === PERMISSION_OWNER, ErrorCode.InvalidOwner);
+  permission.authority = permission_authority.key;
+}
+
+/** Take that permission back; the account's rent goes to the signer. */
+export function closePermissionPda(
+  owner: Mut<Signer>,
+  permission_authority: AccountInfo,
+  permission: Seeds<CloseTo<Mut<Permission>, "owner">, ["permission", "@permission_authority"]>,
+  system_program: SystemProgram,
+): void {
+  constraint(owner, owner.key === ADMIN || owner.key === PERMISSION_OWNER, ErrorCode.InvalidOwner);
+}
+
+/** Set the protocol's share of `creator`'s creator fees on `amm_config` (in millionths), in place of the config's. */
+export function createCreatorFeeShare(
+  owner: Mut<Signer>,
+  creator: AccountInfo,
+  amm_config: Account<AmmConfig>,
+  creator_fee_share: Init<CreatorFeeShare>,
+  system_program: SystemProgram,
+  share_rate: u64,
+): void {
+  const bump = creator_fee_share.create(owner, ["creator_fee_share", creator.key, amm_config.key]);
+  require(owner.key === ADMIN || owner.key === CREATOR_FEE_SHARE_OWNER, ErrorCode.InvalidOwner);
+  require(share_rate <= FEE_RATE_DENOMINATOR_VALUE, ErrorCode.InvalidInput);
+  creator_fee_share.bump = bump;
+  creator_fee_share.creator = creator.key;
+  creator_fee_share.amm_config = amm_config.key;
+  creator_fee_share.share_rate = share_rate;
+}
+
+/** Remove that share: the config's applies again. */
+export function closeCreatorFeeShare(
+  owner: Mut<Signer>,
+  creator: AccountInfo,
+  amm_config: Account<AmmConfig>,
+  creator_fee_share: Seeds<CloseTo<Mut<CreatorFeeShare>, "owner">, ["creator_fee_share", "@creator", "@amm_config"]>,
+  system_program: SystemProgram,
+): void {
+  constraint(owner, owner.key === ADMIN || owner.key === CREATOR_FEE_SHARE_OWNER, ErrorCode.InvalidOwner);
+}
+
+/** Allow a Token-2022 mint in pools whatever its extensions (Raydium's admin or mint operator). */
+export function createSupportMintAssociated(
+  owner: Mut<Signer>,
+  token_mint: Mint,
+  support_mint_associated: Init<SupportMintAssociated>,
+  system_program: SystemProgram,
+): void {
+  support_mint_associated.bump = support_mint_associated.create(owner, ["support_mint", token_mint.key]);
+  require(owner.key === ADMIN || owner.key === SUPPORT_MINT_OWNER, ErrorCode.NotApproved);
+  require(token_mint.tokenProgram === TOKEN_2022_PROGRAM_ID, ErrorCode.NotApproved);
+  support_mint_associated.mint = token_mint.key;
+}
+
+/** Withdraw that allowance; the account's rent goes to the signer. */
+export function closeSupportMintAssociated(
+  owner: Mut<Signer>,
+  token_mint: Owner<Mint, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", ErrorCode.NotApproved>,
+  support_mint_associated: Seeds<CloseTo<Mut<SupportMintAssociated>, "owner">, ["support_mint", "@token_mint"]>,
+  system_program: SystemProgram,
+): void {
+  constraint(owner, owner.key === ADMIN || owner.key === SUPPORT_MINT_OWNER, ErrorCode.NotApproved);
+}
+
+// ---- excess lamports (instructions/admin/collect_excess_lamports.rs, utils/token.rs) ------------------------------
+
+/**
+ * Whether `account` reads as a token account (StateWithExtensions::<Account>::unpack): 165 bytes, or more with the
+ * account type byte saying Account, initialized, its option tags 0 or 1. A mint or anything else does not.
+ */
+function isTokenAccount(account: RemainingAccount): boolean {
+  const len = account.dataLen;
+  if (len < 165n || len === 355n) return false;
+  if (len > 165n && readData<u8>(account, 165n) !== 2n) return false;
+  const state = readData<u8>(account, 108n);
+  if (state === 0n || state > 2n) return false;
+  return readData<u32>(account, 72n) <= 1n && readData<u32>(account, 109n) <= 1n && readData<u32>(account, 129n) <= 1n;
+}
+function tokenAmount(account: RemainingAccount): u64 {
+  return isTokenAccount(account) ? readData<u64>(account, 64n) : 0n;
+}
+
+/** A token instruction (`data`: WithdrawExcessLamports or UnwrapLamports) moving lamports from `source` to `wallet`, signed by the pool authority. */
+function lamportsOut(
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  source: RemainingAccount,
+  wallet: Mut<Signer>,
+  authority: AccountInfo,
+  seeds: SignerSeeds,
+  unwrap: u64,
+): void {
+  const legacy = source.owner === TOKEN_PROGRAM_ID;
+  if (unwrap === 0n) {
+    if (legacy) invoke(token_program, [writable(source), writable(wallet), readonlySigner(authority)], [u8(38n)], seeds);
+    else invoke(token_program_2022, [writable(source), writable(wallet), readonlySigner(authority)], [u8(38n)], seeds);
+  } else if (legacy) invoke(token_program, [writable(source), writable(wallet), readonlySigner(authority)], [u8(45n), u8(1n), unwrap], seeds);
+  else invoke(token_program_2022, [writable(source), writable(wallet), readonlySigner(authority)], [u8(45n), u8(1n), unwrap], seeds);
+}
+
+/**
+ * Move what a token account owned by the pool authority holds above its rent to `wallet`: WithdrawExcessLamports for a
+ * token account or mint; for wrapped SOL, SyncNative folds the excess into the amount and UnwrapLamports takes exactly
+ * that back out.
+ */
+function withdrawFromToken(
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+  source: RemainingAccount,
+  wallet: Mut<Signer>,
+  authority: AccountInfo,
+  seeds: SignerSeeds,
+): void {
+  const native = isTokenAccount(source) && readData<u32>(source, 109n) === 1n;
+  if (!native) {
+    lamportsOut(token_program, token_program_2022, source, wallet, authority, seeds, 0n);
+    return;
+  }
+  const before = tokenAmount(source);
+  if (source.owner === TOKEN_PROGRAM_ID) invoke(token_program, [writable(source)], [u8(17n)]);
+  else invoke(token_program_2022, [writable(source)], [u8(17n)]);
+  const after = tokenAmount(source);
+  require(after >= before, ErrorCode.LamportsCalculateError);
+  const excess = after - before;
+  if (excess === 0n) return;
+  lamportsOut(token_program, token_program_2022, source, wallet, authority, seeds, excess);
+  require(tokenAmount(source) === before, ErrorCode.LamportsCalculateError);
+}
+
+/**
+ * Sweep lamports above rent to Raydium's lamport collector: from the token accounts and mints among the remaining
+ * accounts (the pool authority's), then from this program's accounts among them.
+ */
+export function collectExcessLamports(
+  collect_lamports_wallet: Mut<Signer>,
+  authority: Seeds<AccountInfo, ["vault_and_lp_mint_auth_seed"]>,
+  token_program: TokenProgram,
+  token_program_2022: Token2022Program,
+): void {
+  constraint(collect_lamports_wallet, collect_lamports_wallet.key === COLLECT_LAMPORTS || collect_lamports_wallet.key === ADMIN, ErrorCode.InvalidOwner);
+  const rest = remainingAccounts();
+  for (let i = 0n; i < rest.length; i++) {
+    const r = rest.get(i);
+    if (r.owner === TOKEN_PROGRAM_ID || r.owner === TOKEN_2022_PROGRAM_ID) withdrawFromToken(token_program, token_program_2022, r, collect_lamports_wallet, authority, signer(["vault_and_lp_mint_auth_seed", authority.pdaBump]));
+  }
+  for (let i = 0n; i < rest.length; i++) {
+    const r = rest.get(i);
+    if (r.owner !== programId()) continue;
+    const minimum = rentExempt(r.dataLen);
+    require(r.lamports >= minimum, ProgramError.InsufficientFunds);
+    const excess = r.lamports - minimum;
+    if (excess === 0n) continue;
+    r.lamports -= excess;
+    collect_lamports_wallet.lamports += excess;
+  }
 }

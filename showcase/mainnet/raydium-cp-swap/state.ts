@@ -99,6 +99,28 @@ export interface SupportMintAssociated {
   padding: FixedArray<u64, 8>;
 }
 
+/** Lets its authority create pools with initialize_with_permission (seeds ["permission", authority]). */
+export interface Permission {
+  authority: Pubkey;
+  padding: FixedArray<u64, 30>;
+}
+
+/** The protocol's share of a creator's fees on one config, in place of the config's (seeds ["creator_fee_share", creator, amm_config]). */
+export interface CreatorFeeShare {
+  bump: u8;
+  creator: Pubkey;
+  amm_config: Pubkey;
+  share_rate: u64;
+  padding: FixedArray<u64, 8>;
+}
+
+/** Which token a pool's creator fee is taken in. */
+export enum CreatorFeeOn {
+  BothToken,
+  OnlyToken0,
+  OnlyToken1,
+}
+
 export enum ErrorCode {
   NotApproved = "Not approved",
   InvalidOwner = "Input account owner is not the program address",
