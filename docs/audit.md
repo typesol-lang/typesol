@@ -79,15 +79,15 @@ them.
   transactions, in the original and the port alike, with the same outcome, account bytes and events required after
   every step. A new seed on every run, CI's included.
 - **Ported programs**: all 46 programs of solana-developers/program-examples, run through their original tests' flows
-  and failure paths ([showcase/program-examples/README.md](https://github.com/typesol/typesol/blob/main/showcase/program-examples/README.md)).
-- **Four-way comparison**: [typesol/benchmarks](https://github.com/typesol/benchmarks) runs 17 of those programs in
+  and failure paths ([showcase/program-examples/README.md](https://github.com/typesol-lang/typesol/blob/main/showcase/program-examples/README.md)).
+- **Four-way comparison**: [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) runs 17 of those programs in
   TypeSOL, Anchor, native Rust and Pinocchio, requires the same outcome, and records how each refuses the hostile calls
   and with which error.
 
 ## Running it
 
 ```sh
-git clone https://github.com/typesol/typesol && cd typesol
+git clone https://github.com/typesol-lang/typesol && cd typesol
 pnpm install && pnpm build
 pnpm fetch:programs        # Metaplex binaries for the token-metadata, Core and Bubblegum tests
 pnpm build:twins           # the Anchor twins (Rust + Anchor 1.0.2)
@@ -100,5 +100,5 @@ way to review what a construct compiles to; `test/golden/counter.c` is a pinned 
 
 ## Contact
 
-Coordinate through a private advisory on https://github.com/typesol/typesol/security, or report findings the same way
+Coordinate through a private advisory on https://github.com/typesol-lang/typesol/security, or report findings the same way
 (SECURITY.md).

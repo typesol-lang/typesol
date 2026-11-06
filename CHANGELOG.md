@@ -1,6 +1,6 @@
 # Changelog
 
-TypeSOL follows the organization's [versioning policy](https://github.com/typesol/.github/blob/main/VERSIONING.md)
+TypeSOL follows the organization's [versioning policy](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md)
 (compiler specifics in CONTRIBUTING.md): until 1.0, a minor version may change the language, the IDL layout or error
 codes, and says so here.
 

@@ -16,7 +16,7 @@ fixed point. The port comes in parts, each checked before the next:
 | 4 | Liquidation and bankruptcy | done |
 | 5 | The rest: flash loans, administration, orders, staked SOL, the integrations | in progress: flash loans, account, group and fee state administration, bank administration (but resizing), placing, closing and executing orders, rebalances, resizing, the monitor archive, staked-SOL administration and Scope configuration, Solend, Kamino, Drift and JupLend banks, every oracle setup's pricing and venue rebalance legs done (all 124 instructions) |
 
-The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol/typesol/tree/main/showcase/mainnet/marginfi):
+The files are in [`showcase/mainnet/marginfi`](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet/marginfi):
 
 | File | Holds |
 | --- | --- |
@@ -457,9 +457,9 @@ the original lets through to its own check).
 
 ## How it is checked
 
-[`showcase/test/marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi.test.ts) loads
+[`showcase/test/marginfi.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi.test.ts) loads
 the binary dumped from mainnet on 2026-11-01 (sha256 in
-[`test/programs/SOURCES.md`](https://github.com/typesol/typesol/blob/main/test/programs/SOURCES.md)), cut where the
+[`test/programs/SOURCES.md`](https://github.com/typesol-lang/typesol/blob/main/test/programs/SOURCES.md)), cut where the
 ELF ends. The original runs in one LiteSVM and the port in another, under the same program id and with the same clock.
 For each transaction the test requires the same outcome (success, or the same error down to the code), the same
 lamports, owner and data for every account involved, and the same events byte for byte. The port's IDL must also
@@ -471,9 +471,9 @@ liability shares (a debt to accrue, repay or settle without borrowing it first),
 circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags and balances, rate limits.
 
 There are 244 transactions in that file, 174 in
-[`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
+[`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
 for the oracles, and 1,022 in
-[`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
+[`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
 
@@ -589,7 +589,7 @@ byte into both ledgers:
   fraction left, only the fraction, more than the vault holds); super-admin moves (by someone else, on the mainnet
   build).
 
-Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
+Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
 way), fees, balances across scales, clock jumps, frozen banks, circuit-breaker settings and halts, accounts opened and
 closed, deposits into SPL Token, Token-2022 and transfer-fee banks at every scale, balances closed after being written

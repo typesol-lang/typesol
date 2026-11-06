@@ -22,14 +22,14 @@ a constraint or an error code.
 - A language change that lets a PARTIAL port of program-examples get closer to the original: update the port
   and its row in [showcase/program-examples/README.md](showcase/program-examples/README.md).
 - `pnpm smoke` against a local validator (`scripts/localnet.sh`) for changes to CPIs, deploy or IDL tooling.
-- Changes to generated code or the runtime: measure them with [typesol/benchmarks](https://github.com/typesol/benchmarks)
+- Changes to generated code or the runtime: measure them with [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks)
   pointed at your checkout (`TYPESOL_REPO=<checkout> node run.ts` and `node official.ts`, after `pnpm build`), before
   and after, and put the difference in the pull request. When numbers move, refresh the README chart and table in the
   same change: `node scripts/readme-bench.ts <benchmarks>/results.json`.
 
 ## Versioning
 
-TypeSOL follows the organization's [versioning and release policy](https://github.com/typesol/.github/blob/main/VERSIONING.md).
+TypeSOL follows the organization's [versioning and release policy](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md).
 For the compiler, before 1.0:
 - a **minor** release (0.x → 0.y) may change the language surface (`lib/typesol.d.ts`), the account/IDL layout of
   generated programs, or error codes — always listed under "Breaking" in CHANGELOG.md;
@@ -41,7 +41,7 @@ Every change adds its entry under `## Unreleased` in CHANGELOG.md.
 
 ## Releasing
 
-The organization's [release steps](https://github.com/typesol/.github/blob/main/VERSIONING.md#releasing), for the
+The organization's [release steps](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md#releasing), for the
 compiler:
 
 1. Merge `develop` into `main` through a pull request with green CI.
