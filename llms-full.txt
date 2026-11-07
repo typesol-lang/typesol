@@ -504,6 +504,50 @@ instruction that takes the bump as an argument.
 | `t.tokenBalance(address)` | the amount a token account holds, or `null` when it does not exist |
 | `t.warp({ unixTimestamp?, slot?, seconds? })` | moves the Clock: to a timestamp or slot, or forward by `seconds` |
 
+## Epochs and staking
+
+LiteSVM's `warpToSlot` leaves `Clock.epoch` where it was, and its StakeHistory stays empty, so the Stake program takes
+every delegation as fully active one epoch after it was made. For a program that stakes, these helpers make epochs and
+warmup / cooldown behave as on a cluster:
+
+| Helper | Does |
+| --- | --- |
+| `warpToEpoch(svm, epoch, { secondsPerSlot? })` | moves the Clock to the first slot of `epoch` by the VM's EpochSchedule (warmup epochs included): slot, epoch, leader schedule epoch, `unixTimestamp` (+0.4 s a slot by default) and `epochStartTimestamp`; expires the blockhash. `nextEpoch(svm)` moves one epoch |
+| `new StakeCluster(svms, opts?)` | one or more LiteSVMs that get the same Clock, EpochSchedule and StakeHistory. `cluster.nextEpoch()` / `cluster.warpToEpoch(e)` end each epoch as a cluster does: the StakeHistory gets the epoch's entry (the sum of every stake account's activation at that epoch, plus `base`, the rest of the cluster), then the Clock moves on. `cluster.activation(stake)` gives a stake account's `{ effective, activating, deactivating }` now |
+| `stakeActivation(delegation, epoch, history, newRateActivationEpoch?, { math? })` | a delegation's activation at an epoch: an exact port of the Stake program's `stake_activating_and_deactivating_v2` (solana-stake-interface 4.3.0) |
+| `createVoteAccount(svm, payer, { node?, voter?, withdrawer?, commission? })` | a vote account made by the Vote program; returns its address |
+| `createStakeAccount(svm, payer, { staker, withdrawer, lamports, lockup? })` | a stake account made by the Stake program, `lamports` in all (rent-exempt minimum included) |
+| `delegateStake(svm, payer, { stake, vote, staker? })` | delegates it |
+| `readStakeAccount(svm, address)` | the account's StakeStateV2: `{ kind: "Stake", meta, stake: { delegation, creditsObserved }, stakeFlags }`, `Initialized`, `Uninitialized` or `RewardsPool`; `null` when it does not exist |
+| `readStakeHistory(svm)` / `writeStakeHistory(svms, entries)` | the StakeHistory sysvar as a `Map` of epoch → `stakeHistoryEntry(effective, activating, deactivating)` |
+
+```ts
+const cluster = new StakeCluster([original.svm, port.svm], { base: stakeHistoryEntry(1000n * SOL) });
+const vote = await createVoteAccount(original.svm, payer);
+// ... the program under test delegates a stake account
+cluster.nextEpoch(); // 9% of the cluster's effective stake may warm up per epoch: 90 SOL here
+expect(cluster.activation(stake).effective).toBe(90n * SOL);
+```
+
+- **The rest of the cluster.** `base` defaults to 400M SOL effective with nothing activating or deactivating: as on
+  mainnet, a delegation under 36M SOL warms up in one epoch. Give a smaller `effective`, or `activating` /
+  `deactivating` above 9% of it, to make warmup and cooldown take several epochs; `base` may also be a function of
+  the epoch. With `allStakeAccounts: false` only the accounts passed to `cluster.track(...)` count.
+- **One history for every VM.** The delegations are read from the first VM; the Clock and EpochSchedule of the first
+  VM are copied to the others when the cluster is made, so a differential test's two VMs see the same sysvars.
+- **No gaps.** The Stake program finds an entry by its distance from the newest one, which must be the previous
+  epoch's: a history that skips an epoch is misread. The cluster writes one entry per epoch it passes; it refuses a VM
+  whose history stops before the previous epoch. Warping a VM with stake accounts by `warpToEpoch` alone leaves the
+  history behind.
+- **Float or integer.** The Stake program in LiteSVM 1.6.1 computes warmup and cooldown with f64 (the algorithm
+  solana-stake-interface 4.3.0 keeps as the deprecated `stake_activating_and_deactivating`); Stake program 5.1
+  (SIMD-0391) uses basis-point integers. They differ by a few lamports once amounts pass 2^53 lamports (about 9M SOL).
+  `StakeCluster` uses `math: "float"` by default, so its history and `activation` match LiteSVM to the lamport;
+  `stakeActivation` uses the integer algorithm unless given `{ math: "float" }`. Both take the 9% rate from epoch 0
+  (`newRateActivationEpoch` 0, as the Stake program has it); `null` gives the original 25%.
+- **Rent.** In LiteSVM 1.6.1 the Stake program holds back the Rent sysvar's minimum for 200 bytes
+  (`svm.minimumBalanceForRentExemption(200n)`), which is less than the `rentExemptReserve` its Initialize stores.
+
 ## Accounts from a cluster
 
 To test against accounts that exist on mainnet (a mint, an oracle, another program), list them in `typesol.json` as
@@ -1202,6 +1246,8 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - `BigVec<T>` (Unreleased): SPL's `big_vec`, a list over the rest of a native account.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - Functions chosen at run time and lists of functions, closures returned from functions.
+- `typesol/testing`'s epochs and staking: `warpToEpoch`, `nextEpoch`, `StakeCluster`, `stakeActivation`, the vote and
+  stake account builders and `readStakeAccount`.
 - Tools: `typesol port`, `clone`, `profile`, `cpi`, the editor plugin, the MCP server and the agent files `init`
   writes, the SBPF v1 and v2 targets.
 

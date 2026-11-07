@@ -15,6 +15,11 @@ codes, and says so here.
 - New: `BigVec<T>`, SPL's `big_vec` for native ports (the stake pool's validator list): the last field of a `loadRaw`
   struct, sized by the account; `push`, `retain`, `slice` (`deserialize_mut_slice`), `get` / `set`, `for … of`, the list
   methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Other programs compile to the same C.
+- `typesol/testing`: epochs and staking. `warpToEpoch` / `nextEpoch` move the Clock consistently (epoch, slot, leader
+  schedule epoch, timestamps); `StakeCluster` keeps a cluster-like StakeHistory over one or more LiteSVMs, so warmup
+  and cooldown are rate-limited as on a cluster; `stakeActivation` ports the Stake program's activation math;
+  `createVoteAccount`, `createStakeAccount`, `delegateStake`, `readStakeAccount`. Checked to the lamport against the
+  Stake program in LiteSVM (docs/test-your-program.md#epochs-and-staking).
 
 ## 0.41.0 — 2026-11-07
 
