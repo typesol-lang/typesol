@@ -391,6 +391,8 @@ export interface ProgramModel {
   fixedVecs: Map<string, FieldType & { kind: "vec" }>;
   /** FixedVec types of local lists (`const ys = xs.map(…)`), filled in while emitting: C typedefs only, not the IDL. */
   localVecs: Map<string, FieldType & { kind: "vec" }>;
+  /** Structs read or written with loadBorsh / storeBorsh, filled in while emitting: their ts_bdec_ / ts_benc_ codecs. */
+  borshNative: Set<string>;
 }
 
 export function isWritable(k: ParamKind): boolean {

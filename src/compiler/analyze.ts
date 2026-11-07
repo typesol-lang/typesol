@@ -939,6 +939,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       fstrings,
       fixedVecs,
       localVecs: new Map(),
+      borshNative: new Set(),
     },
     sourceFile,
     files: programFiles(program, entryPath).map((f) => f.fileName),

@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase, structNameOf } from "../analyze.js";
-import { borshIdentical } from "./borsh.js";
+import { borshIdentical, borshNativeStructUnsupported } from "./borsh.js";
 import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
 import {
@@ -117,12 +117,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         // A built-in ProgramError: its u64 form (the index shifted into the high 32 bits), as solana_program returns it.
         if (ts.isPropertyAccessExpression(args[1]) && this.exportName(args[1].expression) === "ProgramError") {
-          const idx = PROGRAM_ERRORS.indexOf(args[1].name.text);
-          if (idx < 0) this.fail(args[1].name, `ProgramError has no ${args[1].name.text}`);
-          // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
-          const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
-          const text = typeof pre === "string" ? `${pre}${args[1].name.text}` : `Error: ${args[1].name.text} (${this.location(node)})`;
-          this.line(`if (!${cond.c}) TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)});`);
+          if (!PROGRAM_ERRORS.includes(args[1].name.text)) this.fail(args[1].name, `ProgramError has no ${args[1].name.text}`);
+          this.line(`if (!${cond.c}) ${this.programErrorFail(args[1].name.text, node)};`);
           return undefined;
         }
         const err = this.errorRef(args[1]);
@@ -665,7 +661,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "loadRaw":
       case "loadRawMut":
       case "loadForeign":
+      case "loadBorsh":
         this.fail(node, `bind ${builtin}<T>(...) to a const first: const p = ${builtin}<T>(account)`);
+      case "storeBorsh":
+        return this.storeBorsh(node);
       case "emit":
         return this.emitEvent(node);
       case "emitCpi": {
@@ -1388,6 +1387,95 @@ export abstract class CallEmitter extends ExpressionEmitter {
       else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
     }
     return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut } };
+  }
+
+  /**
+   * `const v = loadBorsh<T>(acct)`: the account's data from byte 0 decoded as Borsh into a local `T` (a copy), as
+   * `try_from_slice_unchecked` reads it: no owner check, no discriminator, trailing bytes ignored; bytes that are not
+   * a valid `T` (too short, an Option tag or bool not 0/1, an enum tag out of range) fail with BorshIoError.
+   */
+  protected loadBorsh(node: ts.CallExpression, c: string, declared: StructDef | undefined): StructDef {
+    const s = this.borshNativeStruct(node, node.typeArguments?.[0], declared, "loadBorsh");
+    if (node.arguments.length !== 1) this.fail(node, "loadBorsh<T>(account) takes one remaining account or AccountInfo parameter");
+    const h = this.borshAccount(node.arguments[0], "loadBorsh", false);
+    this.line(`TSS_${s.name} ${c}__v;`);
+    this.line(`if (ts_bdec_${s.name}(${h}->data, ${h}->data_len, &${c}__v, NULL)) ${this.programErrorFail("BorshIoError", node)};`);
+    this.line(`TSS_${s.name} *${c} = &${c}__v;`);
+    return s;
+  }
+
+  /**
+   * `storeBorsh(acct, value)`: `value` encoded as Borsh into the account's data from byte 0, as Rust's
+   * `value.serialize(&mut &mut data[..])` writes it: only the encoded bytes (the rest of the account is left as it
+   * was), BorshIoError when they do not fit. The account must be writable.
+   */
+  protected storeBorsh(node: ts.CallExpression): undefined {
+    if (node.arguments.length !== 2) this.fail(node, "storeBorsh(account, value) takes the account and the struct value to write");
+    const h = this.borshAccount(node.arguments[0], "storeBorsh", true);
+    const valueNode = node.arguments[1];
+    const targ = node.typeArguments?.[0];
+    let ptr: string;
+    let s: StructDef;
+    const inner = ts.isParenthesizedExpression(valueNode) ? valueNode.expression : valueNode;
+    if (ts.isObjectLiteralExpression(inner)) {
+      if (!targ) this.fail(valueNode, "storeBorsh needs the struct type for an object literal: storeBorsh<MyStruct>(account, { … })");
+      s = this.borshNativeStruct(node, targ, undefined, "storeBorsh");
+      const t = this.tmp("bval");
+      this.line(`TSS_${s.name} ${t};`);
+      this.writeAggregate({ lv: t, type: { kind: "struct", name: s.name }, writable: true }, inner, true);
+      ptr = `(&${t})`;
+    } else {
+      const place = this.structPlace(valueNode);
+      if (!place) this.fail(valueNode, "storeBorsh writes a struct value: a local (const pool = loadBorsh<Pool>(acct)), a struct field or an object literal");
+      const want = targ ? this.borshNativeStruct(node, targ, undefined, "storeBorsh") : undefined;
+      if (want && want.name !== place.struct) this.fail(valueNode, `expected a ${want.name}, got a ${place.struct}`);
+      s = this.borshNativeStruct(node, undefined, this.model.structs.get(place.struct), "storeBorsh");
+      ptr = place.ptr;
+    }
+    this.line(`if (ts_benc_${s.name}(${ptr}, ${h}->data, ${h}->data_len, NULL)) ${this.programErrorFail("BorshIoError", node)};`);
+    return undefined;
+  }
+
+  /** The struct loadBorsh / storeBorsh decodes or encodes: from the type argument, else the declared type. */
+  private borshNativeStruct(node: ts.Node, targ: ts.TypeNode | undefined, declared: StructDef | undefined, fn: string): StructDef {
+    let s = declared;
+    if (targ) {
+      const named = ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
+      if (!named) this.fail(targ, `${fn} needs a struct type: ${fn === "loadBorsh" ? "loadBorsh<MyStruct>(account)" : "storeBorsh<MyStruct>(account, value)"}`);
+      if (declared && declared.name !== named.name) this.fail(node, `loadBorsh<${named.name}> is bound to a ${declared.name}`);
+      s = named;
+    }
+    if (!s)
+      this.fail(
+        node,
+        `${fn} needs a struct type: ${fn === "loadBorsh" ? "const pool = loadBorsh<MyStruct>(account)" : "storeBorsh<MyStruct>(account, value)"}`,
+      );
+    const why = borshNativeStructUnsupported(s, this.model);
+    if (why) this.fail(targ ?? node, `${fn} cannot take ${s.name}: ${why}`);
+    this.model.borshNative.add(s.name);
+    return s;
+  }
+
+  /** The account loadBorsh reads or storeBorsh writes (writable: checked at run time, or Mut<AccountInfo>). */
+  private borshAccount(node: ts.Expression, fn: string, write: boolean): string {
+    const h = this.handle(node);
+    if (h) {
+      if (write) this.line(`TS_TRY(ts_check_writable(${h}));`);
+      return h;
+    }
+    const acct = this.accountParam(node, `${fn}'s account`);
+    if (acct.kind.kind !== "info") this.fail(node, `${fn} takes a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter`);
+    if (write && !isWritable(acct.kind)) this.fail(node, `${acct.name} must be Mut<AccountInfo> to write it with storeBorsh`);
+    return `a_${acct.name}`;
+  }
+
+  /** `TS_FAIL` with a built-in ProgramError (no custom code), logged as `require(…, ProgramError.X)` logs it. */
+  protected programErrorFail(name: string, node: ts.Node): string {
+    const idx = PROGRAM_ERRORS.indexOf(name);
+    // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
+    const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
+    const text = typeof pre === "string" ? `${pre}${name}` : `Error: ${name} (${this.location(node)})`;
+    return `TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)})`;
   }
 
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
