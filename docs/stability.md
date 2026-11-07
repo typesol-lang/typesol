@@ -38,6 +38,7 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - The native-program surface (0.40.0): `loadRaw` / `loadRawMut`, the instruction data readers, error code 0,
   `ProgramError`, `panic`, `PANIC_ON_OVERFLOW`, `ERROR_LOG_PREFIX` / `PROGRAM_ERROR_LOG_PREFIX`, `logBase64`,
   `createProgramAddress`.
+- `loadBorsh` / `storeBorsh` (Unreleased): a native program's Borsh accounts read into a local struct and written back.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - Functions chosen at run time and lists of functions, closures returned from functions.
 - Tools: `typesol port`, `clone`, `profile`, `cpi`, the editor plugin, the MCP server and the agent files `init`

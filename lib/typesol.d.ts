@@ -192,6 +192,20 @@ export declare function loadAccountMut<T>(account: RemainingAccount | AccountInf
  */
 export declare function loadRaw<T>(account: RemainingAccount | AccountInfo): Account<T>;
 export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
+/**
+ * A native program's Borsh account, as Rust's `try_from_slice_unchecked::<T>(&data)` reads it: the data from byte 0
+ * decoded into a local `T` (a copy; write it back with `storeBorsh`). No owner check and no discriminator; bytes after
+ * the value are ignored. Data too short for it, an Option tag or a boolean other than 0/1, or an enum tag out of range
+ * fail with `ProgramError.BorshIoError`. Bind it with const: `const pool = loadBorsh<StakePool>(stakePool)`.
+ */
+export declare function loadBorsh<T>(account: RemainingAccount | AccountInfo): T;
+/**
+ * Write `value` into the account's data from byte 0 as Borsh, as Rust's `value.serialize(&mut *data)` does: only the
+ * encoded bytes are written (an Option that became None leaves the old bytes after it as they were); an account too
+ * small for the encoding fails with `ProgramError.BorshIoError`. The account must be writable (`Mut<AccountInfo>`, or a
+ * remaining account checked at run time).
+ */
+export declare function storeBorsh<T>(account: RemainingAccount | Mut<AccountInfo>, value: T): void;
 
 /** 32 bytes of hash output (sha256 / keccak256, Merkle roots). Compare with `===`. */
 export interface Hash {

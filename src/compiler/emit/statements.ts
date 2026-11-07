@@ -1136,6 +1136,18 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded });
         continue;
       }
+      // A local decoded from an account's Borsh bytes: `const pool = loadBorsh<StakePool>(acct)` (a copy, as Rust's).
+      if (fn === "loadBorsh") {
+        if (mutable) this.fail(d, "bind loadBorsh<T>(...) with const (its fields can still be updated)");
+        const named = d.type && structNameOf(d.type, this.scope);
+        const declared = named ? this.model.structs.get(named) : undefined;
+        if (d.type && !declared) this.fail(d.type, "loadBorsh returns a struct: declare the local as one (or leave the type out)");
+        const s = this.loadBorsh(init as ts.CallExpression, c, declared);
+        this.scopes
+          .at(-1)!
+          .set(name, { c, type: { kind: "structRef", struct: s.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
+        continue;
+      }
       // A struct another program returned: `const q = returnData<Quote>(amm)` (Anchor's `get_return_data` + deserialize).
       if (fn === "returnData" && this.returnedStruct(init as ts.CallExpression)) {
         if (mutable) this.fail(d, "bind return data with const (its fields can still be updated)");

@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake
+  Pool's `StakePool`) read into a local struct and written back from byte 0, as Rust's `try_from_slice_unchecked` and
+  `serialize` do: trailing bytes ignored, the bytes after a shrunk value left as they were, invalid bytes or a value
+  that does not fit failing with `ProgramError.BorshIoError`. A straight-line decoder and encoder per struct, no heap
+  (a 611-byte `StakePool`: about 280 CU to read, 610 CU to read and write back). Programs that do not use them
+  compile to the same C as before.
+
 ## 0.41.0 — 2026-11-07
 
 TypeSOL for AI coding agents, and Raydium CP-Swap ported in full. `typesol init` writes the rules an agent needs
