@@ -40,6 +40,8 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   `createProgramAddress`.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - Functions chosen at run time and lists of functions, closures returned from functions.
+- `typesol/testing`'s epochs and staking: `warpToEpoch`, `nextEpoch`, `StakeCluster`, `stakeActivation`, the vote and
+  stake account builders and `readStakeAccount`.
 - Tools: `typesol port`, `clone`, `profile`, `cpi`, the editor plugin, the MCP server and the agent files `init`
   writes, the SBPF v1 and v2 targets.
 

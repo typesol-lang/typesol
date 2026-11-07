@@ -19,6 +19,25 @@ run prints its seed; reproduce with `FUZZ_SEED=<n>`, widen with `FUZZ_RUNS` / `F
 Compute-unit and binary-size comparisons with Anchor, native Rust and Pinocchio are in the README
 ([Numbers](../README.md#numbers)).
 
+## Epochs and staking
+
+`typesol/testing`'s `warpToEpoch`, `StakeCluster` and `stakeActivation` ([test-your-program.md](test-your-program.md#epochs-and-staking))
+are checked in `test/cli/testing-stake.test.ts` against the Stake program LiteSVM runs, the core BPF build bundled in
+LiteSVM 1.6.1 (its program data holds a 202,280-byte ELF, sha256 `c9cba7f3…cd2352a8`). The oracle is a withdrawal: from a deactivated stake account the
+program lets go of lamports − rent-exempt minimum − the stake it computes as still effective, so withdrawing exactly
+the predicted amount must succeed and one lamport more must fail.
+
+- Rate-limited warmup and cooldown over 13 epochs in two VMs: each epoch, the program's held-back stake equals
+  `cluster.activation`, merging two delegations fails while either is still activating and succeeds the epoch both are
+  fully active, and both VMs' Clock and StakeHistory bytes are equal.
+- Warmup read back at the deactivation epoch, after three rate-limited epochs, then its cooldown.
+- 25 mainnet-sized cases (stakes up to 30M SOL against 300–500M SOL effective, over two cooldown epochs): the program
+  matches the f64 algorithm to the lamport, where the integer one is a few lamports off; the case of
+  solana-stake-interface's `high_ulp_case` test is among them.
+- `stakeActivation`'s integer algorithm against hand-worked values and the Rust crate's own test cases (bootstrap
+  stake, activation and deactivation in one epoch, missing history, the rate change, u128 saturation, the one-lamport
+  minimum step).
+
 ## Reproducing a release
 
 From 0.39.0 on, each release's GitHub Release carries its manifest, `typesol-<version>-manifest.json`, attached by

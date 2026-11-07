@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- `typesol/testing`: epochs and staking. `warpToEpoch` / `nextEpoch` move the Clock consistently (epoch, slot, leader
+  schedule epoch, timestamps); `StakeCluster` keeps a cluster-like StakeHistory over one or more LiteSVMs, so warmup
+  and cooldown are rate-limited as on a cluster; `stakeActivation` ports the Stake program's activation math;
+  `createVoteAccount`, `createStakeAccount`, `delegateStake`, `readStakeAccount`. Checked to the lamport against the
+  Stake program in LiteSVM (docs/test-your-program.md#epochs-and-staking).
+
 ## 0.41.0 — 2026-11-07
 
 TypeSOL for AI coding agents, and Raydium CP-Swap ported in full. `typesol init` writes the rules an agent needs

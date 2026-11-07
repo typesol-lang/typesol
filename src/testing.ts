@@ -45,6 +45,7 @@ import { type SvmConnection, svmConnection } from "./tools/svmrpc.js";
 import { buildWorkspace, findWorkspace } from "./workspace.js";
 
 export { type SvmConnection, svmConnection };
+export * from "./testing-stake.js";
 /** Load what `typesol clone` wrote (a directory of `<address>.json` accounts and `<address>.so` programs) into a LiteSVM. */
 export { loadClonedAccounts };
 
