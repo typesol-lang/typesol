@@ -332,8 +332,10 @@ export interface List { kind: u8; items: BigVec<Item> }`;
   it("is not an account parameter or an argument", () => {
     expect(compileErrors(program(list, "", "l: Account<List>"))).toMatch(/List ends in a BigVec.*take the account as AccountInfo.*loadRaw<List>/);
     expect(compileErrors(program(list, "", "l: Mut<List>"))).toMatch(/List ends in a BigVec/);
-    expect(compileErrors(program(list, "", "l: List"))).not.toBe("");
-    expect(compileErrors(program(list, "", "xs: BigVec<u64>"))).not.toBe("");
+    expect(compileErrors(program(list, "", "l: List"))).toMatch(/List ends in a BigVec, so it is account data, not an argument/);
+    expect(compileErrors(program(list, "", "xs: BigVec<u64>"))).toMatch(/BigVec<T> is the last field of a native account's struct.*a Vec<T>/);
+    expect(compileErrors(program(`${list}\nfunction h(l: Account<List>): u64 { return l.items.length; }`, ""))).toMatch(/List ends in a BigVec/);
+    expect(compileErrors(program(list, "const x: List = { kind: 0n, items: [] as never };"))).toMatch(/cannot be a local/);
     expect(compileErrors(program(list, "const l = loadAccount<List>(remainingAccounts().get(0n));"))).toMatch(
       /List ends in a BigVec.*read it with loadRaw \/ loadRawMut/,
     );

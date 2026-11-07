@@ -117,6 +117,7 @@ const TYPE_EXPORTS = new Set([
   "FixedString",
   "FixedVec",
   "BigVec",
+  "BigVecSlice",
   "Program",
   "UncheckedProgram",
   "CpiAccount",
@@ -2414,6 +2415,14 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       reporter.fail(t, "Mut<T> takes a struct, Signer, AccountInfo, TokenAccount or Mint");
     }
   }
+  const bare = ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) ? structs.get(node.typeName.text) : undefined;
+  if (bare?.bigVec)
+    reporter.fail(
+      node,
+      `${bare.name} ends in a BigVec, so it is account data, not an argument: read it with loadRaw<${bare.name}> / loadRawMut<${bare.name}> from an AccountInfo or a remaining account`,
+    );
+  if (typesolName(node, imports) === "BigVec")
+    reporter.fail(node, "BigVec<T> is the last field of a native account's struct (read with loadRaw), not an argument; a list argument is a Vec<T>");
   reporter.fail(
     node,
     "parameter type must be an integer, boolean, Pubkey, string, or an account type (Signer, Account<T>, Mut<T>, Init<T>, AccountInfo, TokenAccount, Mint, SystemProgram, TokenProgram, Token2022Program, TokenInterface, Program<...>)",
