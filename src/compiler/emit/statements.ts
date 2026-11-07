@@ -440,13 +440,31 @@ export abstract class StatementEmitter extends CpiEmitter {
     names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void {
+    const { base, stages } = this.pipelineStages(list);
+    // A BigVec slice is lowered (and range-checked) once, here; the loop reads its length and elements from that.
+    const sliced =
+      ts.isCallExpression(base) && ts.isPropertyAccessExpression(base.expression) && base.expression.name.text === "slice" ? this.ref(base) : undefined;
+    if (sliced?.vec?.slice) this.sliceViews.set(base, sliced);
+    try {
+      this.eachElementLoop(base, stages, at, names, body);
+    } finally {
+      this.sliceViews.delete(base);
+    }
+  }
+
+  private eachElementLoop(
+    base: ts.Expression,
+    stages: ReturnType<StatementEmitter["pipelineStages"]>["stages"],
+    at: ts.Node,
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
+    body: (element: ts.Expression, index: ts.Expression) => void,
+  ): void {
     const f = ts.factory;
     const place = <T extends ts.Node>(n: T): T => {
       ts.setTextRange(n, at);
       (n as { parent?: ts.Node }).parent = at;
       return n;
     };
-    const { base, stages } = this.pipelineStages(list);
     const { index, ci } = names;
     const indexId = place(f.createIdentifier(index));
     const length = place(f.createPropertyAccessExpression(base, "length"));

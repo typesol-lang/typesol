@@ -933,6 +933,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
+    if (info.big !== undefined) {
+      const done = this.bigVecMethod(node, method, v, { stageElem, needWritable, elemPaths });
+      if (done) return done.value;
+    }
     /**
      * The growable Vecs stored after this one move by `by` bytes (+ grows, - shrinks): where they start and how many
      * bytes they take, read before the resize; references into them cannot outlive this call.
@@ -1038,6 +1042,92 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
     }
     this.fail(node, `Vecs support get, set, push, pop, clear and .length, not ${method}()`);
+  }
+
+  /**
+   * The methods a BigVec adds or changes (SPL's big_vec): `push` into the account's room, `retain`, and the refusals;
+   * undefined for the methods it shares with other lists (`set`).
+   */
+  private bigVecMethod(
+    node: ts.CallExpression,
+    method: string,
+    v: Ref,
+    h: { stageElem: (n: ts.Expression) => (el: Ref) => void; needWritable: () => void; elemPaths: () => string[] | undefined },
+  ): { value: Value | undefined } | undefined {
+    const args = node.arguments;
+    const info = v.vec!;
+    const vt = v.type as FieldType & { kind: "vec" };
+    if (method === "set") return undefined;
+    if (method === "slice")
+      this.fail(node, "use slice(start, end) right where it is read: for (const x of list.slice(a, b)), list.slice(a, b).forEach(…) or .get(i)");
+    if (info.slice) this.fail(node, `a slice has get, set, .length, for … of and the list methods; call ${method}() on the BigVec itself`);
+    switch (method) {
+      case "push": {
+        // BigVec::push: the element goes after the last one if the account has room for it, else AccountDataTooSmall.
+        if (args.length !== 1) this.fail(node, "push(value) on a BigVec takes the value (its room is the account's, never resized)");
+        h.needWritable();
+        const write = h.stageElem(args[0]!);
+        const n = this.tmp("n");
+        this.line(`uint64_t ${n} = (uint64_t)${info.len};`);
+        this.line(`if (${n} >= ${info.big}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+        this.line(`${info.len} = (uint32_t)(${n} + 1);`);
+        write(this.withFixedVec({ ...v, lv: `${info.items}[${n}]`, type: vt.elem, vec: undefined, path: undefined }));
+        return { value: undefined };
+      }
+      case "retain": {
+        // BigVec::retain: one pass, the predicate reading each element where it was; each run of kept elements moves
+        // down once (sol_memmove), when the next removal (or the end) is found. Bytes past the new end keep what they held.
+        if (args.length !== 1) this.fail(node, "retain(fn) takes one argument: (x) => keep it");
+        const cb = args[0]!;
+        if (!ts.isArrowFunction(cb) && !ts.isFunctionExpression(cb)) this.fail(cb, "pass retain an arrow function written here: xs.retain((x) => …)");
+        if (cb.parameters.length > 1) this.fail(cb.parameters[1]!, "retain's callback takes the element");
+        h.needWritable();
+        this.assertNotAliased(h.elemPaths(), node);
+        const size = info.elemSize;
+        const items = this.tmp("rt_items");
+        const n = this.tmp("rt_n");
+        const removed = this.tmp("rt_removed");
+        const dst = this.tmp("rt_dst");
+        const i = this.tmp("rt_i");
+        const move = (count: string) => `sol_memmove_(${items} + ${dst} * ${size}, ${items} + (${dst} + ${removed}) * ${size}, (${count}) * ${size});`;
+        this.line(`{`);
+        this.block(() => {
+          this.line(`uint8_t *${items} = (uint8_t *)${info.items};`);
+          this.line(`uint64_t ${n} = (uint64_t)${info.len}, ${removed} = 0, ${dst} = 0;`);
+          this.line(`for (uint64_t ${i} = 0; ${i} < ${n}; ${i}++) {`);
+          this.block(() => {
+            const f = ts.factory;
+            const place = <T extends ts.Node>(x: T): T => {
+              ts.setTextRange(x, node);
+              (x as { parent?: ts.Node }).parent = node;
+              return x;
+            };
+            const index = `__rt${this.temp++}`;
+            this.scopes.at(-1)!.set(index, { c: i, type: U64, mutable: false });
+            const list = (node.expression as ts.PropertyAccessExpression).expression;
+            const element = place(f.createCallExpression(place(f.createPropertyAccessExpression(list, "get")), undefined, [place(f.createIdentifier(index))]));
+            const closure: Closure = { node: cb, name: "retain's callback", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
+            const kept = this.expandClosure(closure, [element].slice(0, cb.parameters.length), cb);
+            if (!kept) this.fail(cb, "retain's callback returns a boolean: true keeps the element");
+            const b = this.expect(kept, BOOL, cb);
+            this.line(`if (!(${b.c})) {`);
+            this.line(`  if (${removed} > 0 && ${i} - ${removed} > ${dst}) ${move(`${i} - ${removed} - ${dst}`)}`);
+            this.line(`  ${dst} = ${i} - ${removed};`);
+            this.line(`  ${removed}++;`);
+            this.line(`}`);
+          });
+          this.line(`}`);
+          this.line(`if (${removed} > 0 && ${n} - ${removed} > ${dst}) ${move(`${n} - ${removed} - ${dst}`)}`);
+          this.line(`${info.len} = (uint32_t)(${n} - ${removed});`);
+        });
+        this.line(`}`);
+        return { value: undefined };
+      }
+      case "pop":
+      case "clear":
+        this.fail(node, `a BigVec has push and retain (as SPL's big_vec), not ${method}(): remove elements with retain((x) => …)`);
+    }
+    this.fail(node, `a BigVec supports get, set, push, retain, slice, find / findIndex and the other list methods, .length and .capacity, not ${method}()`);
   }
 
   /** sha256(...) / keccak256(...) over strings, Pubkeys, Hashes, integers (LE) and booleans. */
@@ -1360,7 +1450,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const fn = mut ? "loadRawMut" : "loadRaw";
     const targ = node.typeArguments?.[0];
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
-    if (!s || s.size === undefined || s.vec) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
+    if (!s || s.size === undefined || (s.vec && !s.bigVec)) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: ${fn} reads fixed layouts only`);
     if (node.arguments.length !== 1) this.fail(node, `${fn}<T>(account) takes one remaining account or AccountInfo parameter`);
     let h = this.handle(node.arguments[0]);
@@ -1375,6 +1465,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
     this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
+    // A BigVec's stored length must fit in the account (every element read later is then in it).
+    if (s.bigVec)
+      this.line(
+        `if ((uint64_t)((TSS_${s.name} *)(${h}->data))->${s.bigVec.name}__len > (${h}->data_len - sizeof(TSS_${s.name})) / ${s.bigVec.elemSize}) ${this.programErrorFail("AccountDataTooSmall", node)};`,
+      );
     if (mut) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
       const slot = this.claimSlots.get(node);
@@ -1492,6 +1587,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (!s || s.size === undefined) this.fail(node, "loadAccount needs an account struct type: loadAccount<MyStruct>(account)");
     if (s.accountDiscriminator.length !== 8) this.fail(node, `${s.name}'s discriminator is shorter than 8 bytes: take it as Owner<Account<${s.name}>, "…">`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: declare it as an instruction parameter (remaining accounts are read in place)`);
+    if (s.bigVec) this.fail(node, `${s.name} ends in a BigVec, a native program's list (no discriminator): read it with loadRaw / loadRawMut`);
     if (node.arguments.length !== 1) this.fail(node, "loadAccount<T>(account) takes one remaining account or AccountInfo parameter");
     let h = this.handle(node.arguments[0]);
     // An AccountInfo parameter (Anchor: AccountLoader::try_from on an UncheckedAccount). The entry checks already

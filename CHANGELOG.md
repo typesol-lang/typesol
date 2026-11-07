@@ -12,6 +12,9 @@ codes, and says so here.
   that does not fit failing with `ProgramError.BorshIoError`. A straight-line decoder and encoder per struct, no heap
   (a 611-byte `StakePool`: about 280 CU to read, 610 CU to read and write back). Programs that do not use them
   compile to the same C as before.
+- New: `BigVec<T>`, SPL's `big_vec` for native ports (the stake pool's validator list): the last field of a `loadRaw`
+  struct, sized by the account; `push`, `retain`, `slice` (`deserialize_mut_slice`), `get` / `set`, `for … of`, the list
+  methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Other programs compile to the same C.
 
 ## 0.41.0 — 2026-11-07
 

@@ -85,6 +85,10 @@ export interface Ref {
     cap?: number;
     /** A heap Vec (in a `@layout borsh` struct): `cap` is the C lvalue of its capacity, grown by ts_hvec_reserve. */
     heap?: boolean;
+    /** A BigVec (its room set by the account's size, never resized): the C expression of its capacity. */
+    big?: string;
+    /** `bigVec.slice(start, end)`: a view of some of its elements (`len` is then a value, not the stored length). */
+    slice?: boolean;
     /** Growable Vecs stored after this one move when it grows or shrinks: where its elements end, and their paths. */
     tail?: { end: string; dataEnd: string; paths: string[] };
   };

@@ -1736,6 +1736,20 @@ static inline bool ts_ix_is(const TsIx *ix, const SolPubkey *program, const uint
 extern uint64_t sol_get_stack_height(void);
 
 /*
+ * ---- BigVec (SPL's big_vec) ------------------------------------------------
+ * The memmove syscall, for BigVec::retain's block moves as the Rust does: it costs max(10, n / 250) CU, where the
+ * word loop of ts_memmove costs about n / 2 (a 1.4 MB validator list moves in a few thousand CU, not hundreds of
+ * thousands). Overlapping ranges are allowed. The "no SDK byte loops" rule is about the SDK's C loops, not this.
+ */
+extern void sol_memmove_(void *dst, const void *src, uint64_t n);
+/* A BigVec's room: a BigVec struct is only ever a loadRaw view, which sits at a TsAccount's data, right after its
+ * data_len (see TsAccount); the elements that fit in the account past the struct (its fixed fields and the length). */
+static inline __attribute__((always_inline)) uint64_t ts_bigvec_cap(const uint8_t *data, uint64_t fixed, uint64_t elem) {
+  uint64_t len = ts_ld64(data - 8);
+  return len < fixed ? 0 : (len - fixed) / elem;
+}
+
+/*
  * Did an Ed25519 precompile instruction in this transaction verify `message` signed by `signer`?
  * Reads the Instructions sysvar (data: u16 count, u16 offsets[count], then per instruction
  * u16 num_accounts, num_accounts * (u8 flags, 32-byte key), 32-byte program id, u16 data_len, data).

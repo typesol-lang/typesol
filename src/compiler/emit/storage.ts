@@ -265,7 +265,18 @@ export abstract class StorageEmitter extends AliasEmitter {
         const f = s.fields.find((x) => x.name === field);
         if (!f) this.fail(node.name, `${s.name} has no field "${field}"`);
         const r: Ref = { ...base, lv: `${base.lv}.${f.name}`, type: f.type, path: base.path && [...base.path, f.name], vec: undefined };
-        if (f.type.kind === "vec" && f.type.heap) r.vec = this.heapVec(r.lv, f.type.elem);
+        if (f.type.kind === "vec" && f.type.big) {
+          // A loadRaw view sits at the account's data, so its room is what the account holds past the struct.
+          const elemSize = s.bigVec!.elemSize;
+          r.vec = {
+            len: `${base.lv}.${f.name}__len`,
+            items: r.lv,
+            fixed: "",
+            elemSize,
+            resizable: false,
+            big: `ts_bigvec_cap((const uint8_t *)&${base.lv}, sizeof(TSS_${s.name}), ${elemSize})`,
+          };
+        } else if (f.type.kind === "vec" && f.type.heap) r.vec = this.heapVec(r.lv, f.type.elem);
         // Vecs of loaded accounts can be read and updated in place but not resized (no entry length known).
         else if (f.type.kind === "vec" && f.type.cap === undefined) {
           const k = s.vecs!.findIndex((v) => v.name === f.name);
@@ -275,6 +286,14 @@ export abstract class StorageEmitter extends AliasEmitter {
         }
         return this.withFixedVec(r);
       }
+      return undefined;
+    }
+    // bigVec.slice(start, end): a view of elements start..end-1, for for … of and the list methods.
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "slice") {
+      const cached = this.sliceViews.get(node);
+      if (cached) return cached;
+      const base = this.ref(node.expression.expression);
+      if (base?.vec?.big !== undefined && !base.vec.slice) return this.bigVecSlice(node, base);
       return undefined;
     }
     // arr.get(i) / vec.get(i)
@@ -390,6 +409,11 @@ export abstract class StorageEmitter extends AliasEmitter {
         this.fail(node, `this is a ${r.type.name}; compare .kind or read a field of the narrowed variant`);
       case "array":
       case "vec":
+        if (r.vec?.slice)
+          this.fail(
+            node,
+            "a slice is not stored: use it where it is written (for (const x of list.slice(a, b)), list.slice(a, b).forEach(…), .get(i), .length)",
+          );
         this.fail(node, "this is a list; use .get(i), .set(i, v) or .length");
       case "struct":
         this.fail(node, `this is a ${r.type.name}; read one of its fields`);
@@ -637,6 +661,26 @@ export abstract class StorageEmitter extends AliasEmitter {
   /** A heap Vec (a Vec<T> in a `@layout borsh` struct) at `lv`: `{ len, cap, items }`, grown by ts_hvec_reserve. */
   protected heapVec(lv: string, elem: FieldType): NonNullable<Ref["vec"]> {
     return { len: `${lv}.len`, items: `${lv}.items`, fixed: "", elemSize: this.fieldBytes(elem), resizable: false, heap: true };
+  }
+
+  /** Slices lowered once before a loop over them (see eachElement): the loop's length and element reads reuse them. */
+  protected sliceViews = new Map<ts.Node, Ref>();
+
+  /**
+   * `bigVec.slice(start, end)`: elements start..end-1 in place, as BigVec::deserialize_mut_slice(start, end - start)
+   * gives them. Out of range fails with ProgramError::AccountDataTooSmall, as that does (JS's slice would clamp).
+   */
+  protected bigVecSlice(node: ts.CallExpression, base: Ref): Ref {
+    const args = node.arguments;
+    if (args.length < 1 || args.length > 2) this.fail(node, "slice(start, end) takes the first element's index and the index after the last one");
+    const info = base.vec!;
+    const start = this.tmp("sl_start");
+    const end = this.tmp("sl_end");
+    this.line(`uint64_t ${start} = ${this.expect(this.expr(args[0]!, U64), U64, args[0]!).c};`);
+    this.line(`uint64_t ${end} = ${args[1] ? this.expect(this.expr(args[1], U64), U64, args[1]).c : `(uint64_t)${info.len}`};`);
+    this.line(`if (${end} > (uint64_t)${info.len} || ${start} > ${end}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+    const items = `((${fieldC((base.type as FieldType & { kind: "vec" }).elem)} *)${info.items} + ${start})`;
+    return { ...base, lv: items, path: undefined, vec: { ...info, len: `(${end} - ${start})`, items, slice: true } };
   }
 
   /** A place whose type is a FixedVec (or a heap Vec) gets its Vec view. */
