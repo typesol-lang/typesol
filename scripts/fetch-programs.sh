@@ -31,6 +31,8 @@ trimmed T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt jito_tip_payment.so
 trimmed 4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7 jito_tip_distribution.so
 trimmed Priority6weCZ5HwDn29NxLFpb7TDp2iLZ6XKc5e8d3 jito_priority_fee_distribution.so
 trimmed MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA marginfi_v2.so
+# SPL Stake Pool (showcase/mainnet/spl-stake-pool's differential test; Apache-2.0, kept).
+trimmed SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy spl_stake_pool.so
 # The lending venues Marginfi's integration banks deposit into (showcase/test/marginfi-venues.test.ts). Solend is
 # Apache-2.0 and kept; Kamino's lending and farms programs are under the Business Source License 1.1, fetched only.
 trimmed So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo solend.so
