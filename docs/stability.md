@@ -39,6 +39,7 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   `ProgramError`, `panic`, `PANIC_ON_OVERFLOW`, `ERROR_LOG_PREFIX` / `PROGRAM_ERROR_LOG_PREFIX`, `logBase64`,
   `createProgramAddress`.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
+- `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake).
 - Functions chosen at run time and lists of functions, closures returned from functions.
 - Tools: `typesol port`, `clone`, `profile`, `cpi`, the editor plugin, the MCP server and the agent files `init`
   writes, the SBPF v1 and v2 targets.

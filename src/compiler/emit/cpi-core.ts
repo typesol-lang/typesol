@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { argIdlName, fieldIdlName, snakeCase } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type IdlSeed, type IntName, isScalar, scalarSize, typeName } from "../model.js";
-import { accountLimit, MAX_SEEDS, U64, type Value, isStable, cString, scalarStorageC, optC } from "./shared.js";
+import { accountLimit, MAX_SEEDS, U64, type Value, type CpiAcct, isStable, cString, scalarStorageC, optC } from "./shared.js";
 import { CallEmitter } from "./calls.js";
 
 /** Seeds and signer seeds, the byte buffers and Borsh serialization every CPI builds on, remaining-account ranges. */
@@ -180,9 +180,14 @@ export abstract class CpiCoreEmitter extends CallEmitter {
     this.line(`TS_TRY(ts_cpi(params, ${program}, ${buf}, ${len}, ${m}, ${cnt}, ${seeds.name}, ${seeds.count}));`);
   }
 
-  protected signerSeeds(node: ts.Expression | undefined, authority: AccountParam, at: ts.Node): { name: string; count: number | string } {
+  /**
+   * The seeds a CPI is signed with, or none: then a declared authority must be a Signer. A remaining account (a
+   * CpiAcct without `param`) is left to the runtime, which refuses a signer meta for an account that did not sign.
+   */
+  protected signerSeeds(node: ts.Expression | undefined, authority: AccountParam | CpiAcct, at: ts.Node): { name: string; count: number | string } {
     if (!node) {
-      if (authority.kind.kind !== "signer") this.fail(at, "the authority must be a Signer, or pass signerSeeds for a PDA authority");
+      const declared = "c" in authority ? authority.param : authority;
+      if (declared && declared.kind.kind !== "signer") this.fail(at, "the authority must be a Signer, or pass signerSeeds for a PDA authority");
       return { name: "NULL", count: 0 };
     }
     return this.signingSeeds(node);

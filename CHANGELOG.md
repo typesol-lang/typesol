@@ -6,6 +6,16 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `programAt<P>(account)`: a remaining account (or an `AccountInfo` parameter) checked to be that program (one key
+  compare; ProgramError.IncorrectProgramId otherwise) with P's typed methods, for `StakeProgram`, `SystemProgram`,
+  `TokenProgram`, `Token2022Program`, `TokenInterface`, `AssociatedTokenProgram` and `MemoProgram`; bind it, call it
+  inline or pass it to a helper taking that program. `sysvarAt<StakeHistorySysvar>(account)` likewise.
+- Typed CPIs (System, Token / Token-2022, ATA, Memo, Stake) take remaining accounts and `AccountInfo` parameters for
+  any account, as native ports need; declared parameters keep their compile-time checks, remaining accounts are left to
+  the runtime and the called program. `returnData` takes a remaining account as the program.
+- Stake program: `split`, `merge`, `getMinimumDelegation()` (fails as solana_program's `get_minimum_delegation`),
+  `initialize(…, lockup?)`, and the lockup custodian for `authorize` / `withdraw`. Existing calls compile to the same C.
+
 ## 0.41.0 — 2026-11-07
 
 TypeSOL for AI coding agents, and Raydium CP-Swap ported in full. `typesol init` writes the rules an agent needs

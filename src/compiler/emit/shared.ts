@@ -50,6 +50,23 @@ export const HASH: ScalarType = { kind: "pubkey", hash: true };
  * A lowered expression: a side-effect-free C expression plus its type.
  * Pubkeys are `const SolPubkey *`, strings are `TS_Str` views.
  */
+/**
+ * An account a typed CPI names (`stakeProgram.split(stake, …)`): `c` is its `TsAccount *`. `param` is set for a
+ * declared account parameter, whose kind and writability are checked at compile time; a remaining account (or a
+ * local bound to one, a RemainingAccount helper parameter, a loaded struct) has none, and the called program and the
+ * runtime check what it is, that it is writable and that it signed.
+ */
+export interface CpiAcct {
+  c: string;
+  param?: AccountParam;
+}
+
+/** The program a typed CPI goes to: a declared program parameter, or what `programAt<P>(acct)` checked. */
+export interface CpiProgram {
+  c: string;
+  kind: ParamKind;
+}
+
 export interface Value {
   c: string;
   type: ValueType;

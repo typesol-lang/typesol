@@ -359,6 +359,12 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       this.fail(node.name, `a TransactionInstruction has programId, accountsLength and dataLength, not ${field}`);
     }
     const h = this.handle(node.expression);
+    // `sysvarAt<StakeHistorySysvar>(acct)`: its count and newest epoch, as on a StakeHistorySysvar parameter.
+    const sysvar = h && ts.isIdentifier(node.expression) ? this.lookup(node.expression.text)?.type : undefined;
+    if (h && sysvar?.kind === "account" && sysvar.program?.kind === "stakeHistory") {
+      if (field === "count") return { c: `ts_read_le(${h}->data, 8)`, type: U64 };
+      if (field === "latestEpoch") return { c: `(${h}->data_len >= 16 && ts_read_le(${h}->data, 8) ? ts_read_le(${h}->data + 8, 8) : 0)`, type: U64 };
+    }
     if (h) {
       switch (field) {
         case "key":

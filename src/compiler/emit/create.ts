@@ -2,7 +2,7 @@ import ts from "typescript";
 import { heapVecOf } from "../analyze.js";
 import { borshMinSize } from "./borsh.js";
 import { type AccountParam, type ScalarType, type StructDef, type ValueType, isWritable } from "../model.js";
-import { U64, U8, BOOL, PUBKEY, type Value, scalarStorageC, optC, emptySizeC } from "./shared.js";
+import { U64, U8, BOOL, PUBKEY, type Value, type CpiProgram, scalarStorageC, optC, emptySizeC } from "./shared.js";
 import { CpiCoreEmitter } from "./cpi-core.js";
 
 /** Creating accounts: `create` / `createIfNeeded` of program accounts, mints, token accounts and ATAs (with Token-2022 mint extensions), System transfers and createAccount. */
@@ -486,31 +486,35 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     const a = node.arguments;
     if (a.length !== 3 && a.length !== 4) this.fail(node, "transfer(from, to, lamports, signerSeeds?)");
     const [fromN, toN, amtN] = a;
-    const from = this.accountParam(fromN, "transfer's source");
-    if (a.length === 3 && (from.kind.kind !== "signer" || !from.kind.mut))
+    // Declared accounts are checked here; remaining accounts by the runtime (writable, and the source signed).
+    const from = this.cpiAccount(fromN, "transfer's source");
+    const fp = from.param;
+    if (fp && a.length === 3 && (fp.kind.kind !== "signer" || !fp.kind.mut))
       this.fail(fromN, "the source must be a Mut<Signer>, or a Mut<AccountInfo> PDA of this program with signerSeeds");
-    if (a.length === 4 && !isWritable(from.kind)) this.fail(fromN, "the source must be writable (Mut<...>)");
-    const to = this.accountParam(toN, "transfer's destination");
-    if (!isWritable(to.kind)) this.fail(toN, "the destination must be writable (Mut<...>)");
+    if (fp && a.length === 4 && !isWritable(fp.kind)) this.fail(fromN, "the source must be writable (Mut<...>)");
+    const to = this.cpiAccount(toN, "transfer's destination");
+    if (to.param && !isWritable(to.param.kind)) this.fail(toN, "the destination must be writable (Mut<...>)");
     const amt = this.expect(this.expr(amtN, U64), U64, amtN);
-    if (a.length === 3) this.line(`TS_TRY(ts_system_transfer(params, a_${from.name}, a_${to.name}, ${amt.c}));`);
+    if (a.length === 3) this.line(`TS_TRY(ts_system_transfer(params, ${from.c}, ${to.c}, ${amt.c}));`);
     else {
       // A system-owned PDA of this program (a SOL vault) pays.
       const s = this.signingSeeds(a[3]);
-      this.line(`TS_TRY(ts_system_transfer_signed(params, a_${from.name}, a_${to.name}, ${amt.c}, ${s.name}, ${s.count}));`);
+      this.line(`TS_TRY(ts_system_transfer_signed(params, ${from.c}, ${to.c}, ${amt.c}, ${s.name}, ${s.count}));`);
     }
     return undefined;
   }
 
   /** systemProgram.createAccount(payer, account, lamports, space, owner, signerSeeds?) */
-  protected createAccount(node: ts.CallExpression, system: AccountParam): undefined {
+  protected createAccount(node: ts.CallExpression, system: CpiProgram): undefined {
     const a = node.arguments;
     if (a.length !== 5 && a.length !== 6) this.fail(node, "createAccount(payer, account, lamports, space, owner, signerSeeds?)");
-    const payer = this.accountParam(a[0], "the payer");
-    if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0], "the payer must be a Mut<Signer>");
-    const acct = this.accountParam(a[1], "the new account");
-    if (!isWritable(acct.kind)) this.fail(a[1], "the new account must be writable (Mut<Signer> or Mut<AccountInfo>)");
-    if (acct.kind.kind !== "signer" && a.length !== 6) this.fail(a[1], "the new account must sign: a Mut<Signer> keypair, or pass signerSeeds for a PDA");
+    const payer = this.cpiAccount(a[0], "the payer");
+    const pp = payer.param;
+    if (pp && (pp.kind.kind !== "signer" || !pp.kind.mut)) this.fail(a[0], "the payer must be a Mut<Signer>");
+    const acct = this.cpiAccount(a[1], "the new account");
+    const ap = acct.param;
+    if (ap && !isWritable(ap.kind)) this.fail(a[1], "the new account must be writable (Mut<Signer> or Mut<AccountInfo>)");
+    if (ap && ap.kind.kind !== "signer" && a.length !== 6) this.fail(a[1], "the new account must sign: a Mut<Signer> keypair, or pass signerSeeds for a PDA");
     const { buf, len, put, finish } = this.byteBuffer("sys", 52, "TS_ERR_INSTRUCTION_DATA", "system instruction");
     const tag = this.tmp("tag");
     this.line(`uint32_t ${tag} = 0; /* CreateAccount */`);
@@ -521,10 +525,10 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     finish(node);
     const seeds = a.length === 6 ? this.signingSeeds(a[5]) : { name: "NULL", count: 0 };
     this.cpi(
-      `a_${system.name}`,
+      system.c,
       [
-        [`a_${payer.name}`, true, true],
-        [`a_${acct.name}`, true, true],
+        [payer.c, true, true],
+        [acct.c, true, true],
       ],
       buf,
       len,
@@ -542,29 +546,32 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
   protected createPda(node: ts.CallExpression): Value {
     const a = node.arguments;
     if (a.length !== 5) this.fail(node, "createPda(payer, account, space, owner, seeds)");
-    const payer = this.accountParam(a[0], "the payer");
-    if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0], "the payer must be a Mut<Signer>");
-    const acct = this.accountParam(a[1], "the new account");
-    if (acct.kind.kind !== "info" || !isWritable(acct.kind)) this.fail(a[1], "the new account must be a Mut<AccountInfo>");
+    const payer = this.cpiAccount(a[0], "the payer");
+    const pp = payer.param;
+    if (pp && (pp.kind.kind !== "signer" || !pp.kind.mut)) this.fail(a[0], "the payer must be a Mut<Signer>");
+    const acct = this.cpiAccount(a[1], "the new account");
+    const ap = acct.param;
+    if (ap && (ap.kind.kind !== "info" || !isWritable(ap.kind))) this.fail(a[1], "the new account must be a Mut<AccountInfo>");
     const space = this.tmp("space");
     this.line(`uint64_t ${space} = ${this.expect(this.expr(a[2], U64), U64, a[2]).c};`);
     const owner = this.tmp("owner");
     this.line(`SolPubkey ${owner} = *(${this.expect(this.expr(a[3], PUBKEY), PUBKEY, a[3]).c});`);
     const seeds = this.seeds(a[4], 1);
-    this.recordPda(acct, seeds.idl);
+    if (ap) this.recordPda(ap, seeds.idl);
     const b = this.tmp("bump");
     this.line(`uint8_t ${b};`);
-    this.line(`TS_TRY(ts_create_pda_owned(params, a_${payer.name}, a_${acct.name}, ${seeds.name}, ${seeds.count}, &${owner}, ${space}, &${b}));`);
+    this.line(`TS_TRY(ts_create_pda_owned(params, ${payer.c}, ${acct.c}, ${seeds.name}, ${seeds.count}, &${owner}, ${space}, &${b}));`);
     return { c: b, type: U8 };
   }
 
   /** systemProgram.allocate(account, space, signerSeeds?) / systemProgram.assign(account, owner, signerSeeds?). */
-  protected allocateOrAssign(node: ts.CallExpression, system: AccountParam, method: "allocate" | "assign"): undefined {
+  protected allocateOrAssign(node: ts.CallExpression, system: CpiProgram, method: "allocate" | "assign"): undefined {
     const a = node.arguments;
     if (a.length !== 2 && a.length !== 3) this.fail(node, `${method}(account, ${method === "allocate" ? "space" : "owner"}, signerSeeds?)`);
-    const acct = this.accountParam(a[0], "the account");
-    if (!isWritable(acct.kind)) this.fail(a[0], `the account must be writable (Mut<Signer> or Mut<AccountInfo>)`);
-    if (acct.kind.kind !== "signer" && a.length !== 3) this.fail(a[0], "the account must sign: a Mut<Signer> keypair, or pass signerSeeds for a PDA");
+    const acct = this.cpiAccount(a[0], "the account");
+    const ap = acct.param;
+    if (ap && !isWritable(ap.kind)) this.fail(a[0], `the account must be writable (Mut<Signer> or Mut<AccountInfo>)`);
+    if (ap && ap.kind.kind !== "signer" && a.length !== 3) this.fail(a[0], "the account must sign: a Mut<Signer> keypair, or pass signerSeeds for a PDA");
     const { buf, len, put, finish } = this.byteBuffer("sys", 36, "TS_ERR_INSTRUCTION_DATA", "system instruction");
     const tag = this.tmp("tag");
     this.line(`uint32_t ${tag} = ${method === "allocate" ? 8 : 1}; /* ${method === "allocate" ? "Allocate" : "Assign"} */`);
@@ -573,7 +580,7 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     else this.serialize(this.expect(this.expr(a[1], PUBKEY), PUBKEY, a[1]), a[1], put);
     finish(node);
     const seeds = a.length === 3 ? this.signingSeeds(a[2]) : { name: "NULL", count: 0 };
-    this.cpi(`a_${system.name}`, [[`a_${acct.name}`, true, true]], buf, len, seeds);
+    this.cpi(system.c, [[acct.c, true, true]], buf, len, seeds);
     return undefined;
   }
 }

@@ -12,7 +12,7 @@ import {
   type ValueType,
   isScalar,
 } from "../model.js";
-import { type Value, type Ref, type Local, type Closure, type FunctionChoice, isStable, cString, valueC, type EmitOptions } from "./shared.js";
+import { type Value, type Ref, type Local, type Closure, type FunctionChoice, isStable, cString, valueC, type EmitOptions, type CpiProgram } from "./shared.js";
 
 /**
  * State of one function being lowered, and the primitives every layer uses: emitting lines, temporaries,
@@ -461,13 +461,13 @@ export abstract class EmitterBase {
   protected abstract createAta(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value | undefined;
   protected abstract createToken(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value;
   protected abstract systemTransfer(node: ts.CallExpression): undefined;
-  protected abstract createAccount(node: ts.CallExpression, system: AccountParam): undefined;
+  protected abstract createAccount(node: ts.CallExpression, system: CpiProgram): undefined;
   protected abstract createPda(node: ts.CallExpression): Value;
-  protected abstract allocateOrAssign(node: ts.CallExpression, system: AccountParam, method: "allocate" | "assign"): undefined;
-  protected abstract tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
-  protected abstract ataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
-  protected abstract memoOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
-  protected abstract stakeOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
+  protected abstract allocateOrAssign(node: ts.CallExpression, system: CpiProgram, method: "allocate" | "assign"): undefined;
+  protected abstract tokenOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined;
+  protected abstract ataOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined;
+  protected abstract memoOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined;
+  protected abstract stakeOp(node: ts.CallExpression, program: CpiProgram, method: string): Value | undefined;
   protected abstract metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
   protected abstract coreOp(node: ts.CallExpression, core: AccountParam, method: string): undefined;
   protected abstract bubblegumOp(node: ts.CallExpression, bg: AccountParam, method: string): undefined;

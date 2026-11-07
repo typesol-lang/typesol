@@ -98,7 +98,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `AssociatedTokenProgram` | `create` / `createIdempotent` CPIs; `associatedTokenAddress(owner, mint, tokenProgram)` |
 | `MemoProgram` | SPL Memo v2: `memoProgram.memo(text, [signers], signerSeeds?)`; each listed account signs (a PDA of this program with its seeds) |
 | `TokenMetadataProgram` | Metaplex `createV3(...)` (CreateMetadataAccountV3), optionally with `{ creators: [{ address, verified, share }], collection: mint }` after `isMutable` (1–5 creators, shares adding up to 100; only the update authority, signing, can be `verified: true`; the collection is written unverified; `isCollection: true` makes the NFT a sized collection); `createMasterEditionV3(edition, mint, updateAuthority, mintAuthority, payer, metadata, tokenProgram, systemProgram, maxSupply \| null)`; `verifyCollection(authority, metadata, collectionMint, collectionMetadata, collectionMasterEdition, systemProgram, instructionsSysvar)` (Verify with CollectionV1); `updateMetadataAccountsV2(metadata, updateAuthority, data \| null, newUpdateAuthority \| null, primarySaleHappened \| null, isMutable \| null)` (`data` replaces the whole DataV2: `{ name, symbol, uri, sellerFeeBasisPoints, creators?, collection? }`; each null leaves that part); `burnV1(authority, metadata, edition \| null, mint, token, collectionMetadata \| null, systemProgram, instructionsSysvar, tokenProgram, amount)` (Burn: the holder signs and gets the rent back; the token account and edition close, the metadata is cleared to one byte); `metadataAddress(mint)`, `masterEditionAddress(mint)` |
-| `StakeProgram` | `initialize(stake, rentSysvar, staker, withdrawer)` (no lockup), `authorize(stake, clockSysvar, authority, newAuthority, "staker" \| "withdrawer")`, `delegate(stake, vote, clockSysvar, stakeHistorySysvar, stakeConfig, staker)`, `deactivate(stake, clockSysvar, staker)`, `withdraw(stake, to, clockSysvar, stakeHistorySysvar, withdrawer, lamports)`; the sysvar and config accounts are parameters, as in anchor-spl's stake module; authorities sign (PDAs with signerSeeds) |
+| `StakeProgram` | `initialize(stake, rentSysvar, staker, withdrawer, lockup?)` (`lockup`: `{ unixTimestamp, epoch, custodian }`, none when left out), `authorize(stake, clockSysvar, authority, newAuthority, "staker" \| "withdrawer", custodian?)`, `delegate(stake, vote, clockSysvar, stakeHistorySysvar, stakeConfig, staker)`, `split(stake, splitStake, staker, lamports)`, `deactivate(stake, clockSysvar, staker)`, `withdraw(stake, to, clockSysvar, stakeHistorySysvar, withdrawer, lamports, custodian?)`, `merge(destination, source, clockSysvar, stakeHistorySysvar, staker)`, `getMinimumDelegation()` (a CPI, then the u64 the Stake program returns; fails as solana_program's `get_minimum_delegation` does); instruction tags and account lists as solana-stake-interface's builders; the sysvar and config accounts are parameters, as in anchor-spl's stake module; authorities and the lockup custodian sign (PDAs with signerSeeds, given last) |
 | `InstructionsSysvar`, `PythPriceUpdate`, `SwitchboardFeed` | exact address (3008) / owner program + discriminator. `Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">` checks the address as Anchor's `address = sysvar::instructions::ID` on an `UncheckedAccount` does (2012, with the constraints) |
 | `InstructionsSysvar` (introspection) | `ixs.length`, `ixs.currentIndex()` (the top-level instruction being executed), `ixs.get(i)` → a `TransactionInstruction`: `programId`, `accountsLength`, `dataLength`, `accountKey(j)` / `accountIsSigner(j)` / `accountIsWritable(j)`, `readU8/U16/U32/U64/readPubkey(offset)` (little-endian), `is(program, "name")` (that program's instruction by its default Anchor discriminator, sha256("global:<name>"); an instruction with its own `@discriminator` is matched with `programId` and `readU64(0)` instead). Every read is bounds-checked (5104). It is the transaction author's data: require things of the transaction with it (a repay instruction after a flash loan), never treat it as proof |
 | `Program<"Address…">` | exact program address + executable |
@@ -212,6 +212,34 @@ When an instruction calls `x.create(payer, seeds)` or `requirePda(x, seeds, bump
 an integer literal, an argument, `acct.key` or a scalar field of an account, the IDL entry for `x` gets Anchor `pda.seeds`
 (`const` / `arg` / `account`), so Anchor and Codama clients derive the address themselves.
 
+## Programs and sysvars passed as remaining accounts
+
+A native program takes its programs and sysvars by position too. `programAt<P>(account)` checks a remaining account
+(or an `AccountInfo` parameter) is that program, once, by its key, and gives it P's typed methods:
+
+```ts
+const rest = remainingAccounts();
+const stake = programAt<StakeProgram>(rest.get(12n)); // ProgramError.IncorrectProgramId if it is another account
+stake.split(rest.get(3n), rest.get(4n), rest.get(1n), lamports, [pool.key, "withdraw", bump]);
+const minimum = stake.getMinimumDelegation();
+programAt<TokenInterface>(rest.get(10n)).mintTo(rest.get(7n), rest.get(8n), rest.get(1n), amount, seeds);
+```
+
+- P is `StakeProgram`, `SystemProgram`, `TokenProgram`, `Token2022Program`, `TokenInterface` (either token program),
+  `AssociatedTokenProgram` or `MemoProgram`. Bind it with `const`, or call a method on it directly; pass it to a helper
+  that takes that program type.
+- `sysvarAt<StakeHistorySysvar>(account)` does the same for the StakeHistory sysvar (ProgramError.InvalidArgument for
+  another account): `count`, `latestEpoch`, `has(epoch)`, `effective(epoch)` … as on a parameter.
+- Every typed CPI (System, SPL Token and Token-2022, ATA, Memo, Stake) takes, for each account, a declared parameter,
+  a remaining account (`rest.get(i)`, a local bound to one, a `RemainingAccount` helper parameter), a struct loaded
+  from one, or an `AccountInfo` parameter where a `TokenAccount` or `Mint` goes. Declared parameters keep their
+  compile-time checks (writable slots need `Mut<…>`, an authority without signerSeeds a `Signer`). A remaining account
+  is not checked by the compiler, and unlike `invoke` the typed calls add no runtime check of their own: the runtime
+  refuses a CPI that makes an account writable or a signer when the transaction did not (and no seeds sign for it),
+  and the called program checks the rest (a token account's mint and owner, a stake account's authorities).
+- The cost is the key check (four 8-byte compares) and the call itself: within a few compute units of the same call
+  written with `invoke`, which checks only the executable flag (test/integrations/native-cpi.test.ts measures it).
+
 ## Porting a native program
 
 A program written without Anchor (Raydium AMM v4, SPL programs) reads a tag byte and its arguments itself and takes its
@@ -219,6 +247,8 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
 
 - One `/** @fallback */` entry: `const data = instructionData()` gives the bytes, with `data.readU8/U16/U32/U64/U128/
   readPubkey(offset)` (little-endian, bounds-checked: 5104); `remainingAccounts()` gives the accounts by position.
+- Calls to System, Token and Stake: `programAt<P>(acct)` and the typed methods, with remaining accounts (above), not
+  hand-encoded `invoke` data.
 - Accounts without a discriminator: `loadRaw<T>(acct)` / `loadRawMut<T>(acct)` view one as a fixed-layout struct from
   byte 0 (this program's, 3007; at least the struct's size, 3003; `loadRawMut`: writable, loaded once). Make the
   original's own checks (an exact size, its error codes) before the load. Structs are packed, as `#[repr(C, packed)]`.
