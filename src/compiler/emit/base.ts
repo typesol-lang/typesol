@@ -478,6 +478,7 @@ export abstract class EmitterBase {
   protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract callChoice(choice: FunctionChoice, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
+  protected abstract programErrorFail(name: string, node: ts.Node): string;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
   protected abstract closureOf(arg: ts.Expression): Closure;
 

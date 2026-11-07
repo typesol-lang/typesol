@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `BigVec<T>`, SPL's `big_vec` for native ports (the stake pool's validator list): the last field of a `loadRaw`
+  struct, sized by the account; `push`, `retain`, `slice` (`deserialize_mut_slice`), `get` / `set`, `for … of`, the list
+  methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Other programs compile to the same C.
+
 ## 0.41.0 — 2026-11-07
 
 TypeSOL for AI coding agents, and Raydium CP-Swap ported in full. `typesol init` writes the rules an agent needs

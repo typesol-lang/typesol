@@ -142,6 +142,42 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   [Symbol.iterator](): Iterator<T>;
   readonly __capacity?: N;
 }
+/**
+ * A native program's zero-copy list over the rest of an account (SPL's `big_vec::BigVec`, the stake pool's validator
+ * list): a u32 length, then the elements back to back, in an account allocated up front. Only the last field of a
+ * struct read with `loadRaw` / `loadRawMut`; its room is the account's (`capacity`), and it is never resized. Loading
+ * checks that the stored length fits in the account (ProgramError::AccountDataTooSmall). Elements are read and
+ * written in place (structs by reference).
+ */
+export interface BigVec<T> extends ListMethods<T> {
+  readonly length: u64;
+  /** How many elements fit: (the account's size - the struct's fixed fields - 4) / size(T). */
+  readonly capacity: u64;
+  get(index: bigint): T;
+  set(index: bigint, value: T): void;
+  /** Append after the last element (BigVec::push); no room left fails with ProgramError::AccountDataTooSmall. */
+  push(value: T): void;
+  /**
+   * Keep the elements `fn` holds for, in order, moved down in place in one pass (BigVec::retain); the bytes past the new
+   * end keep what they held.
+   */
+  retain(fn: (x: T) => boolean): void;
+  /**
+   * Elements `start` to `end - 1` in place (BigVec::deserialize_mut_slice(start, end - start)), for `for … of`, the
+   * list methods, `get`, `set` and `.length` right where it is written. Unlike JS's slice it does not clamp: `end`
+   * past the length or before `start` fails with ProgramError::AccountDataTooSmall. `end` defaults to the length.
+   */
+  slice(start: bigint, end?: bigint): BigVecSlice<T>;
+  [Symbol.iterator](): Iterator<T>;
+}
+/** Some elements of a BigVec, in place: `bigVec.slice(start, end)`. */
+export interface BigVecSlice<T> extends ListMethods<T> {
+  readonly length: u64;
+  get(index: bigint): T;
+  set(index: bigint, value: T): void;
+  [Symbol.iterator](): Iterator<T>;
+}
+
 /** A FixedVec value holding these elements (`acct.owners = fixedVec([a, b])`, `{ owners: fixedVec([]) }`). */
 export declare function fixedVec<T>(items: T[]): FixedVec<T, never>;
 

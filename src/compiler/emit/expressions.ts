@@ -318,6 +318,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   protected property(node: ts.PropertyAccessExpression): Value {
     const field = node.name.text;
+    // A BigVec's room: the elements the account holds past the struct.
+    if (field === "capacity" && this.peekKind(node.expression) === "vec") {
+      const r = this.ref(node.expression);
+      if (r?.vec?.big !== undefined && !r.vec.slice) return { c: r.vec.big, type: U64 };
+    }
     if (field === "length") {
       if (this.isRemaining(node.expression)) return { c: `((uint64_t)(params->ka_num - ${this.remainingBase(node.expression)}))`, type: U64 };
       const sysvar = this.instructionsParam(node.expression);
