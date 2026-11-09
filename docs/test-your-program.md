@@ -93,8 +93,11 @@ expect(cluster.activation(stake).effective).toBe(90n * SOL);
   VM are copied to the others when the cluster is made, so a differential test's two VMs see the same sysvars.
 - **No gaps.** The Stake program finds an entry by its distance from the newest one, which must be the previous
   epoch's: a history that skips an epoch is misread. The cluster writes one entry per epoch it passes; it refuses a VM
-  whose history stops before the previous epoch. Warping a VM with stake accounts by `warpToEpoch` alone leaves the
-  history behind.
+  whose history stops before the previous epoch or has an entry for the current epoch or a later one (an epoch that
+  has not ended), and `cluster.warpToEpoch` / `nextEpoch` refuse to go on once the Clock was moved past the history
+  some other way. Warping a VM with stake accounts by `warpToEpoch` alone leaves the history behind.
+- **A new LiteSVM's slot.** Its Clock is at epoch 0 but at slot 454,464,000; the first warp moves the slot back to the
+  first slot of the epoch warped to (32 for epoch 1 by the default warmup schedule), the timestamps forward.
 - **Float or integer.** The Stake program in LiteSVM 1.6.1 computes warmup and cooldown with f64 (the algorithm
   solana-stake-interface 4.3.0 keeps as the deprecated `stake_activating_and_deactivating`); Stake program 5.1
   (SIMD-0391) uses basis-point integers. They differ by a few lamports once amounts pass 2^53 lamports (about 9M SOL).

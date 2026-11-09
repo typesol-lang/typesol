@@ -70,6 +70,8 @@ function accounts(i: Instruction, edit: (list: { address: Address; role: Account
   return { ...i, accounts: list as Instruction["accounts"] };
 }
 const truncate = (i: Instruction, n: number) => accounts(i, (l) => l.splice(n));
+/** The instruction with one more (read-only) account at the end, past every account it takes. */
+const plus = (i: Instruction, address: Address) => accounts(i, (l) => l.push({ address, role: AccountRole.READONLY }));
 const replace = (i: Instruction, at: number, address: Address) =>
   accounts(i, (l) => {
     l[at] = {
@@ -266,17 +268,18 @@ describe("stake deposits", () => {
     await d.setup(payer, [stakeDeactivate(deactivating, user)]);
     const activating = await s.userStake(user, 3n * SOL, 0);
     for (const x of [initialized, elsewhere, deactivating, activating]) await s.authorize(x, user);
-    expect(await run("inactive", initialized, 0)).not.toBe("ok");
-    expect(await run("activating", activating, 0)).not.toBe("ok");
-    expect(await run("deactivating", deactivating, 0)).not.toBe("ok");
-    expect(await run("delegated to another validator", elsewhere, 0)).not.toBe("ok");
+    // The Stake program refuses each merge (its StakeError codes, as the original reports them).
+    expect(await run("inactive", initialized, 0)).toBe(custom(6));
+    expect(await run("activating", activating, 0)).toBe(custom(6));
+    expect(await run("deactivating", deactivating, 0)).toBe(custom(5));
+    expect(await run("delegated to another validator", elsewhere, 0)).toBe(custom(6));
     // Once active, the activating one is taken.
     await s.epoch();
     expect(await run("activated", activating, 0)).toBe("ok");
     // Not handed to the deposit authority: the Stake program refuses the authorize.
     const own = await s.userStake(user, 3n * SOL, 0);
     await s.epoch();
-    expect(await run("authorities not handed over", own, 0)).not.toBe("ok");
+    expect(await run("authorities not handed over", own, 0)).toBe(builtin("MissingRequiredSignature"));
   });
 
   it("refuses validator stake accounts the pool does not take", async () => {
@@ -324,7 +327,7 @@ describe("stake deposits", () => {
       ["clock not the Clock", replace(dep, 11, STAKE_HISTORY), builtin("InvalidArgument")],
       ["wrong stake program", replace(dep, 14, SYSTEM), builtin("IncorrectProgramId")],
       ["pool not the program's", replace(dep, 0, foreign), builtin("IncorrectProgramId")],
-      ["a list as the pool", replace(dep, 0, p.list), "x"],
+      ["a list as the pool", replace(dep, 0, p.list), custom(E.InvalidState)],
       ["wrong withdraw authority", replace(dep, 3, other.withdraw), custom(E.InvalidProgramAddress)],
       ["wrong deposit authority", replace(dep, 2, other.deposit), custom(E.InvalidStakeDepositAuthority)],
       ["wrong mint", replace(dep, 10, other.mint), custom(E.WrongPoolMint)],
@@ -332,13 +335,10 @@ describe("stake deposits", () => {
       ["wrong reserve", replace(dep, 6, other.reserve), custom(E.InvalidProgramAddress)],
       ["wrong token program", replace(dep, 13, TOKEN_2022), builtin("IncorrectProgramId")],
       ["wrong fee account", replace(dep, 8, referrer), custom(E.InvalidFeeAccount)],
-      ["tokens to another mint's account", replace(dep, 7, other.managerFee), "x"],
+      // SPL Token's MintMismatch, in the mint CPI.
+      ["tokens to another mint's account", replace(dep, 7, other.managerFee), custom(3)],
     ];
-    for (const [label, i, want] of cases) {
-      const got = await d.both(`deposit stake: ${label}`, payer, [i]);
-      if (want !== "x") expect(got, label).toBe(want);
-      else expect(got, label).not.toBe("ok");
-    }
+    for (const [label, i, want] of cases) expect(await d.both(`deposit stake: ${label}`, payer, [i]), label).toBe(want);
     await damagedPoolAndList(d, payer, p, "deposit stake", dep);
     // The list in another slot, while the original holds it borrowed: reading the validator stake account's state
     // panics (silently, at get_stake_state's borrow); a CPI naming it fails before the call (AccountBorrowFailed).
@@ -356,6 +356,10 @@ describe("stake deposits", () => {
     // Another account where the StakeHistory sysvar goes: the merge names the sysvar itself, which the transaction
     // does not hold (the runtime's MissingAccount).
     expect(await d.both("deposit stake: wrong stake history", payer, [replace(dep, 12, CLOCK)])).toBe(builtin("MissingAccount"));
+    // The sysvar elsewhere in the instruction does not stand in for its slot: the runtime looks only among the CPI's accounts.
+    expect(await d.both("deposit stake: wrong stake history, the sysvar appended", payer, [plus(replace(dep, 12, p.mint), STAKE_HISTORY)])).toBe(
+      builtin("MissingAccount"),
+    );
     // A stale pool takes no deposits until it is updated.
     d.nextEpoch();
     expect(await d.both("deposit stake: stale pool", payer, [dep])).toBe(custom(E.StakeListAndPoolOutOfDate));
@@ -379,7 +383,7 @@ describe("stake deposits", () => {
     for (const z of [x, y]) await q.authorize(z, user, depositor.address);
     const dep = async (authority: Address | KeyPairSigner, stake = x) =>
       q.deposit({ stake, validator: await q.stakeOf(0), to, referrer: q.p.managerFee, authority }, undefined);
-    expect(await d.both("deposit stake: custom authority not signing", payer, [await dep(depositor.address)])).not.toBe("ok");
+    expect(await d.both("deposit stake: custom authority not signing", payer, [await dep(depositor.address)])).toBe(builtin("PrivilegeEscalation"));
     expect(await d.both("deposit stake: the PDA instead of the custom authority", payer, [await dep(await depositAuthority(q.p.pool))])).toBe(
       custom(E.InvalidStakeDepositAuthority),
     );
@@ -494,21 +498,18 @@ describe("stake withdrawals", () => {
       ["clock not the Clock", replace(wd, 10, STAKE_HISTORY), builtin("InvalidArgument")],
       ["wrong stake program", replace(wd, 12, SYSTEM), builtin("IncorrectProgramId")],
       ["pool not the program's", replace(wd, 0, foreign), builtin("IncorrectProgramId")],
-      ["a list as the pool", replace(wd, 0, p.list), "x"],
+      ["a list as the pool", replace(wd, 0, p.list), custom(E.InvalidState)],
       ["wrong mint", replace(wd, 9, other.mint), custom(E.WrongPoolMint)],
       ["wrong list", replace(wd, 1, other.list), custom(E.InvalidValidatorStakeList)],
       ["wrong withdraw authority", replace(wd, 2, other.withdraw), custom(E.InvalidProgramAddress)],
       ["wrong fee account", replace(wd, 8, tokens), custom(E.InvalidFeeAccount)],
       ["wrong token program", replace(wd, 11, TOKEN_2022), builtin("IncorrectProgramId")],
-      ["tokens of another mint", replace(wd, 7, otherTokens), "x"],
-      ["split into an existing stake account", replace(wd, 4, await s.stakeOf(1)), "x"],
-      ["another user's tokens", await s.withdraw({ from: await s.stakeOf(0), who: stranger, tokens }, 2n * SOL), "x"],
+      // SPL Token's errors in the burn CPI: InsufficientFunds (the user holds none of that mint), OwnerMismatch.
+      ["tokens of another mint", replace(wd, 7, otherTokens), custom(1)],
+      ["split into an existing stake account", replace(wd, 4, await s.stakeOf(1)), builtin("InvalidAccountData")],
+      ["another user's tokens", await s.withdraw({ from: await s.stakeOf(0), who: stranger, tokens }, 2n * SOL), custom(4)],
     ];
-    for (const [label, i, want] of cases) {
-      const got = await d.both(`withdraw stake: ${label}`, payer, [i]);
-      if (want !== "x") expect(got, label).toBe(want);
-      else expect(got, label).not.toBe("ok");
-    }
+    for (const [label, i, want] of cases) expect(await d.both(`withdraw stake: ${label}`, payer, [i]), label).toBe(want);
     await damagedPoolAndList(d, payer, p, "withdraw stake", wd);
     // The list in another slot, while the original holds it borrowed: AccountInfo::data_len panics (silently); a CPI
     // naming it fails before the call (AccountBorrowFailed).

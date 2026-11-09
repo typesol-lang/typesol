@@ -86,7 +86,10 @@ export function updateValidatorListBalance(rest: RemainingAccounts, start: u64, 
   const withdrawAuth = rest.get(1n);
   const listAcct = rest.get(2n);
   const reserve = rest.get(3n);
-  // The StakeHistory (account 5) is named by address in the Stake CPIs.
+  // The Clock (checked above) and the StakeHistory (account 5): named by address in the Stake CPIs, passed as these
+  // accounts.
+  const clock = rest.get(4n);
+  const stakeHistory = rest.get(5n);
   const epoch = currentEpoch();
 
   checkAccountOwner(poolAcct, programId());
@@ -134,18 +137,19 @@ export function updateValidatorListBalance(rest: RemainingAccounts, start: u64, 
       if (t.tag === STAKE_STATE_INITIALIZED && stakeIsUsableByPool(t, withdrawAuth.key, pool)) {
         if (noMerge) transient = transientAcct.lamports;
         else {
-          stakeMerge(stake, transientAcct, withdrawAuth, poolAcct.key, bump, reserve);
+          stakeMerge(stake, transientAcct, withdrawAuth, poolAcct.key, bump, reserve, clock, stakeHistory);
           entry.status = statusWithoutTransient(entry.status);
         }
       } else if (t.tag === STAKE_STATE_STAKE && stakeIsUsableByPool(t, withdrawAuth.key, pool)) {
         if (!noMerge) {
           if (stakeIsInactiveWithoutHistory(t, epoch)) {
-            stakeMerge(stake, transientAcct, withdrawAuth, poolAcct.key, bump, reserve);
+            stakeMerge(stake, transientAcct, withdrawAuth, poolAcct.key, bump, reserve, clock, stakeHistory);
             entry.status = statusWithoutTransient(entry.status);
           } else if (u64(entry.status) === STATUS_ACTIVE) {
             if (t.activationEpoch < epoch) {
               if (validatorBefore.tag === STAKE_STATE_STAKE) {
-                if (validatorBefore.activationEpoch < epoch) stakeMerge(stake, transientAcct, withdrawAuth, poolAcct.key, bump, validatorAcct);
+                if (validatorBefore.activationEpoch < epoch)
+                  stakeMerge(stake, transientAcct, withdrawAuth, poolAcct.key, bump, validatorAcct, clock, stakeHistory);
                 else log("Stake activating or just active, not ready to merge");
               } else
                 log(
@@ -154,7 +158,7 @@ export function updateValidatorListBalance(rest: RemainingAccounts, start: u64, 
             } else log("Transient stake not ready to be merged anywhere");
           } else if (notDeactivating(t)) {
             log("Transient stake is activating or active, deactivating.");
-            stakeDeactivate(stake, transientAcct, withdrawAuth, poolAcct.key, bump);
+            stakeDeactivate(stake, transientAcct, clock, withdrawAuth, poolAcct.key, bump);
           }
         }
         transient = transientAcct.lamports;
@@ -167,7 +171,7 @@ export function updateValidatorListBalance(rest: RemainingAccounts, start: u64, 
     const v = stakeState(validatorAcct);
     if (v.tag === STAKE_STATE_STAKE && stakeIsUsableByPool(v, withdrawAuth.key, pool)) {
       const extra = saturatingSub(saturatingSub(validatorAcct.lamports, v.delegatedStake), validatorRent);
-      if (extra > 0n) stakeWithdraw(stake, validatorAcct, withdrawAuth, poolAcct.key, bump, reserve, extra);
+      if (extra > 0n) stakeWithdraw(stake, validatorAcct, withdrawAuth, poolAcct.key, bump, reserve, clock, stakeHistory, extra);
       const status = u64(entry.status);
       require(status <= STATUS_DEACTIVATING_ALL, ProgramError.InvalidAccountData);
       if (status === STATUS_ACTIVE) active = validatorAcct.lamports;
@@ -175,13 +179,13 @@ export function updateValidatorListBalance(rest: RemainingAccounts, start: u64, 
         if (noMerge) active = validatorAcct.lamports;
         else if (stakeIsInactiveWithoutHistory(v, epoch)) {
           // Removed through the usual way: absorbed into the reserve.
-          stakeMerge(stake, validatorAcct, withdrawAuth, poolAcct.key, bump, reserve);
+          stakeMerge(stake, validatorAcct, withdrawAuth, poolAcct.key, bump, reserve, clock, stakeHistory);
           entry.status = statusWithoutValidator(entry.status);
         } else active = validatorAcct.lamports;
       } else log("Validator stake account no longer part of the pool, ignoring");
     } else if (v.tag === STAKE_STATE_INITIALIZED && stakeIsUsableByPool(v, withdrawAuth.key, pool)) {
       // Destaked during a cluster restart, or removed: either way its lamports go to the reserve.
-      stakeMerge(stake, validatorAcct, withdrawAuth, poolAcct.key, bump, reserve);
+      stakeMerge(stake, validatorAcct, withdrawAuth, poolAcct.key, bump, reserve, clock, stakeHistory);
       entry.status = u8(transient !== 0n ? STATUS_DEACTIVATING_TRANSIENT : STATUS_READY_FOR_REMOVAL);
     } else log("Validator stake account no longer part of the pool, ignoring");
 

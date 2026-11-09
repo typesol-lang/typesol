@@ -156,8 +156,19 @@ export function withdrawSol(rest: RemainingAccounts, poolTokens: u64, slippage: 
   const token = programAt<TokenInterface>(tokenProgram);
   burnTokens(token, burnFrom, mint, userAuthority, burnt);
   if (fee > 0n) transferTokens(token, burnFrom, mint, managerFee, userAuthority, fee);
-  // Its Clock and StakeHistory (accounts 8 and 9) are named by address, never read here.
-  stakeWithdraw(programAt<StakeProgram>(rest.get(10n)), reserve, withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed, destination, withdrawLamports);
+  // Its Clock and StakeHistory (accounts 8 and 9) are never read here: named by address in the Stake CPI, which gets
+  // the accounts of those slots.
+  stakeWithdraw(
+    programAt<StakeProgram>(rest.get(10n)),
+    reserve,
+    withdrawAuth,
+    poolAcct.key,
+    pool.stakeWithdrawBumpSeed,
+    destination,
+    rest.get(8n),
+    rest.get(9n),
+    withdrawLamports,
+  );
 
   require(pool.poolTokenSupply >= burnt, StakePoolError.CalculationFailure);
   pool.poolTokenSupply -= burnt;

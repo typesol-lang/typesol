@@ -13,6 +13,7 @@ import {
   instructionData,
   invoke,
   log,
+  named,
   programAt,
   pubkey,
   readonly,
@@ -107,15 +108,16 @@ export function entry(): void {
     const stake = programAt<StakeProgram>(rest.get(3n));
     stake.deactivate(rest.get(0n), rest.get(1n), rest.get(2n));
   } else if (tag === 14n) {
-    // merge(destination, source, PDA authority) with the sysvars named by address, as solana_program's stake
-    // builders name them: the runtime finds them among the transaction's accounts.
-    const stake = programAt<StakeProgram>(rest.get(3n));
+    // merge(destination, source, clock slot, history slot, PDA authority) with the sysvars named by address, as
+    // solana_program's stake builders name them, and the slots' accounts passed, as Rust's invoke_signed passes them:
+    // the runtime finds each address among those accounts only.
+    const stake = programAt<StakeProgram>(rest.get(5n));
     stake.merge(
       rest.get(0n),
       rest.get(1n),
-      pubkey("SysvarC1ock11111111111111111111111111111111"),
-      pubkey("SysvarStakeHistory1111111111111111111111111"),
-      rest.get(2n),
+      named(rest.get(2n), pubkey("SysvarC1ock11111111111111111111111111111111")),
+      named(rest.get(3n), pubkey("SysvarStakeHistory1111111111111111111111111")),
+      rest.get(4n),
       ["authority", data.readU8(1n)],
     );
   } else if (tag === 30n) {

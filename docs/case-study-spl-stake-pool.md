@@ -44,7 +44,8 @@ to the same C as before):
   methods, its loops emitted as functions of their own so they keep their registers (16 CU per entry for the pool's
   update sum, against the original's 27).
 - `programAt<P>` / `sysvarAt<S>` and typed CPIs that take remaining accounts, the Stake program's `split`, `merge`,
-  `getMinimumDelegation` and lockups, and sysvars named by address as solana_program's builders name them.
+  `getMinimumDelegation` and lockups, and `named(account, address)`: a sysvar named by address as solana_program's
+  builders name it, with the slot's account passed as Rust's `invoke_signed` passes it.
 - `NATIVE_ACCOUNT_WRITES`: account data written in place and judged by the runtime afterwards, as a native program's
   is; `epochRewards()`; `panic(null, location)` and `abort()`; local lists, the instruction data as a list and
   `invokeInstruction` in helpers (the Metaplex CPI); a ternary between accounts.
@@ -57,9 +58,9 @@ to the same C as before):
 The mainnet binary and the port run in two LiteSVMs under the same program id, with the same clock and the same
 StakeHistory written into both by one `StakeCluster`. Every transaction must give the same outcome, the same log
 lines (the "Instruction: …" lines, every message with its numbers, the error lines, panic locations) and the same
-bytes in every account it names. There are 2,092 such transactions in six files:
+bytes in every account it names. There are 2,107 such transactions in six files:
 
-- **The instructions** (`spl-stake-pool.test.ts`, `-stake`, `-rebalance`, `-metadata`; 1,391): every instruction's
+- **The instructions** (`spl-stake-pool.test.ts`, `-stake`, `-rebalance`, `-metadata`; 1,406): every instruction's
   success paths and every refusal that can be built, account by account (wrong signers, PDAs, owners, mints and
   Token-2022 extensions, sysvars, short account lists), fee limits, slippage, preferred validators, funding
   authorities, read-only and repeated accounts (the original's RefCell panics included), pools of 50 to 60 validators,
@@ -70,7 +71,9 @@ bytes in every account it names. There are 2,092 such transactions in six files:
 - **A random walk over epochs** (`spl-stake-pool-fuzz.test.ts`): validators added and removed, users depositing and
   withdrawing SOL and stake, rebalancing, updates in random chunks, fee and authority changes, rewards, slow warmup,
   and invalid inputs at a low rate (`FUZZ_SEED`, `STAKE_POOL_FUZZ_STEPS`). Five seeds of 600 steps (215 epochs, about
-  3,700 transactions) found no difference.
+  3,700 transactions) found no difference. Each run is 1,000 steps by default and requires every main kind of
+  instruction (SOL and stake deposits and withdrawals, increases, decreases, both updates, adding a validator) to
+  succeed at least once.
 
 The random walk found one: a stake withdrawal that searched the list in one pass where the original searches twice
 ran out of the default compute budget at 3,550 validators, where the original does not. The port now searches as the
@@ -85,12 +88,12 @@ CPIs are the same work in both; the port's own part is about a third of the orig
 | --- | ---: | ---: | ---: |
 | `Initialize` | 16,535 | 6,311 | 38% |
 | `DepositSol` | 16,090 | 7,090 | 44% |
-| `WithdrawSol` | 21,247 | 12,492 | 59% |
+| `WithdrawSol` | 21,247 | 12,236 | 58% |
 | `AddValidatorToPool` | 41,117 | 31,518 | 77% |
 | `RemoveValidatorFromPool` | 21,027 | 14,868 | 71% |
 | `UpdateValidatorListBalance`, 12 validators | 104,835 | 29,605 | 28% |
-| `UpdateStakePoolBalance` | 10,080 | 3,549 | 35% |
-| `CleanupRemovedValidatorEntries` | 4,847 | 938 | 19% |
+| `UpdateStakePoolBalance` | 10,080 | 3,554 | 35% |
+| `CleanupRemovedValidatorEntries` | 4,847 | 944 | 19% |
 | `DepositStake` | 86,950 | 64,353 | 74% |
 | `WithdrawStake` | 67,809 | 52,184 | 77% |
 | `IncreaseValidatorStake` | 42,088 | 33,109 | 79% |
@@ -98,10 +101,10 @@ CPIs are the same work in both; the port's own part is about a third of the orig
 | `SetFee` | 3,624 | 1,628 | 45% |
 | `UpdateTokenMetadata` (without Metaplex's part) | 10,250 | 5,285 | 52% |
 
-At 20,000 validators (huge_pool.rs, with a 1.4M CU budget): `UpdateStakePoolBalance` 547,385 against 321,992 (59%),
-the cleanup 184,870 against 101,019 (55%), `DepositStake` 611,313 against 153,300 (25%), `WithdrawStake` 783,846
-against 310,716 (40%). Within the default 200,000 the port updates a pool of 6,800 validators in 110,642 and cleans up
-19,000 in 95,869, as the original does in 190,835 and 175,720.
+At 20,000 validators (huge_pool.rs, with a 1.4M CU budget): `UpdateStakePoolBalance` 547,385 against 321,997 (59%),
+the cleanup 184,870 against 101,025 (55%), `DepositStake` 611,313 against 153,300 (25%), `WithdrawStake` 783,846
+against 310,716 (40%). Within the default 200,000 the port updates a pool of 6,800 validators in 110,647 and cleans up
+19,000 in 95,875, as the original does in 190,835 and 175,720.
 
 The binary is 202,240 bytes against the original's 338,912.
 

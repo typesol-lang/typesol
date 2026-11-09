@@ -8,7 +8,7 @@ codes, and says so here.
 
 - Examples: showcase/mainnet/spl-stake-pool, a port of SPL Stake Pool (the native program at SPoo1Ku8…, all 27
   instructions), from the tag a reproducible build proves is the mainnet binary (program@v2.1.0), checked against that
-  binary on 2,092 transactions (the original's own 221 integration tests mapped and run as differential cases, pools of
+  binary on 2,107 transactions (the original's own 221 integration tests mapped and run as differential cases, pools of
   up to 20,000 validators) and a random walk over epochs with the same outcomes, log lines and account bytes; 19–80% of
   the original's compute units (the stake CPIs are the same in both), 202,240 bytes against 338,912.
   docs/case-study-spl-stake-pool.md.
@@ -16,8 +16,10 @@ codes, and says so here.
   of its own, given the variables it uses: inside a large function it shared SBF's registers with everything held
   across it, and clang spilled its pointer and totals every step. `retain` over structs walks the elements with one
   pointer. SPL Stake Pool's UpdateStakePoolBalance sum costs 16 CU an entry (was 31; the original 27) and its cleanup's
-  retain 5 (was 11; the original 9), so both fit the default 200,000 units wherever the original does. Programs
-  without a BigVec compile to the same C.
+  retain 5 (was 11; the original 9), so both fit the default 200,000 units wherever the original does. The heap
+  buffers such a loop takes on first use (an event's, an element copied for a helper) stay declared in the function
+  it came from, so they are taken once however many times the loop runs; a loop that formats a Pubkey moves too.
+  Programs without a BigVec compile to the same C.
 - `panic(null, "src/lib.rs:105:19")` panics at a location without logging a message, for a native port whose panic
   handler writes none; `abort()` is Rust's abort on SBF (the allocator's out-of-memory error), the runtime's `abort`
   syscall: "SBF program panicked", no location.
@@ -39,20 +41,27 @@ codes, and says so here.
 - `NATIVE_ACCOUNT_WRITES` (no change in behaviour, now tested and documented): a second `loadRawMut` of one account at
   the same position is allowed with the flag (2040 without), and `loadRaw` reads what `loadRawMut`, `storeBorsh` or a
   BigVec push wrote, with or without it.
-- Stake CPIs take a sysvar or the stake config by address (a `Pubkey`) as well as an account, as solana_program's
-  stake builders name them: found by key among the instruction's accounts, MissingAccount when it was not passed.
+- New: `named(account, address)`, a Stake CPI's sysvar or stake config argument as solana_program's stake builders
+  and `invoke_signed` give it: the instruction names the address, the slot's account is the account info. The runtime
+  looks the address up among the CPI's accounts only, so a slot holding another account fails with MissingAccount, as
+  the original does, even when the sysvar is elsewhere in the transaction.
 - New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake
   Pool's `StakePool`) read into a local struct and written back from byte 0, as Rust's `try_from_slice_unchecked` and
   `serialize` do: trailing bytes ignored, the bytes after a shrunk value left as they were, invalid bytes or a value
-  that does not fit failing with `ProgramError.BorshIoError`. A straight-line decoder and encoder per struct, no heap
+  that does not fit failing with `ProgramError.BorshIoError`. Without `NATIVE_ACCOUNT_WRITES` the account written must
+  be writable (3006) and passed once (2040: not also another declared or remaining account), as the other writes
+  check. A straight-line decoder and encoder per struct, no heap
   (a 611-byte `StakePool`: about 280 CU to read, 610 CU to read and write back). Programs that do not use them
   compile to the same C as before.
 - New: `BigVec<T>`, SPL's `big_vec` for native ports (the stake pool's validator list): the last field of a `loadRaw`
   struct, sized by the account; `push`, `retain`, `slice` (`deserialize_mut_slice`), `get` / `set`, `for … of`, the list
-  methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Other programs compile to the same C.
+  methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Every access is bounded by the
+  account's room as well as the length (the capacity computed once at the load), so a length written again after the
+  load (writeData, another view, storeBorsh) never reaches past the account. Other programs compile to the same C.
 - `typesol/testing`: epochs and staking. `warpToEpoch` / `nextEpoch` move the Clock consistently (epoch, slot, leader
   schedule epoch, timestamps); `StakeCluster` keeps a cluster-like StakeHistory over one or more LiteSVMs, so warmup
-  and cooldown are rate-limited as on a cluster; `stakeActivation` ports the Stake program's activation math;
+  and cooldown are rate-limited as on a cluster (it refuses a history with a gap or an entry for an epoch that has not
+  ended, when made and at each warp); `stakeActivation` ports the Stake program's activation math;
   `createVoteAccount`, `createStakeAccount`, `delegateStake`, `readStakeAccount`. Checked to the lamport against the
   Stake program in LiteSVM (docs/test-your-program.md#epochs-and-staking).
 - New: `programAt<P>(account)`: a remaining account (or an `AccountInfo` parameter) checked to be that program (one key

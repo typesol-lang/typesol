@@ -587,7 +587,7 @@ export class Diff {
 
   /**
    * Send to both: the same outcome, the same log lines and the same bytes in every account the transaction names
-   * (programs and sysvars aside) and in `watch`. Returns the outcome.
+   * (programs and sysvars aside), in the fee payer and in `watch`. Returns the outcome.
    */
   async both(label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[] = []): Promise<string> {
     const [a, b] = [await send(this.original, payer, ixs), await send(this.port, payer, ixs)];
@@ -595,7 +595,8 @@ export class Diff {
     const logs = (res: Result) => meta(res).logs().join("\n");
     expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));
     expect(lines(b), `${label}: logs\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toEqual(lines(a));
-    const named = new Set<Address>(watch);
+    // The fee payer too: it pays the same fee in both, and an account a program wrongly debited would show there.
+    const named = new Set<Address>([payer.address, ...watch]);
     for (const i of ixs) for (const m of i.accounts ?? []) named.add(m.address);
     for (const at of named) {
       const acct = this.original.getAccount(at);

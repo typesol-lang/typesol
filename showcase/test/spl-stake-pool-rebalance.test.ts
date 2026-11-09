@@ -17,6 +17,8 @@ import {
   STAKE,
   STAKE_ACCOUNT_SIZE,
   STAKE_OFFSETS,
+  STAKE_CONFIG,
+  STAKE_HISTORY,
   STAKE_POOL_SIZE,
   SYSTEM,
   builtin,
@@ -570,7 +572,19 @@ describe("accounts in the wrong slots, and balances out of range", () => {
     await check("increase additional (merge): wrong stake history", replace(await incAddOf(v, 1, SOL, 1n, 0n), 10, v.p.mint), HISTORY);
     await check("decrease with reserve: wrong stake history", replace(await decResOf(d, v, 2, SOL, 1n), 8, v.p.mint), HISTORY);
     await check("decrease additional: wrong stake history", replace(await decAddOf(d, v, 2, SOL, 1n, 0n), 9, v.p.mint), HISTORY);
-    // DelegateStake finds them by address among all its accounts: swapped, both are there.
+    // The sysvar elsewhere in the instruction does not stand in for its slot: the runtime looks for the address only
+    // among the accounts the CPI is given, those of its slots (Rust's invoke_signed account infos).
+    const plus = (i: Instruction, address: Address) => accounts(i, (l) => l.push({ address, role: AccountRole.READONLY }));
+    const elsewhere = async (label: string, i: Instruction, slot: number, sysvar: Address) =>
+      check(`${label}, the sysvar appended`, plus(replace(i, slot, v.p.mint), sysvar), sysvar);
+    await elsewhere("increase: wrong stake history", await incOf(v, 2, SOL, 0n), 10, STAKE_HISTORY);
+    await elsewhere("increase: wrong stake config", await incOf(v, 2, SOL, 0n), 11, STAKE_CONFIG);
+    await elsewhere("increase additional: wrong stake history", await incAddOf(v, 2, SOL, 0n, 0n), 10, STAKE_HISTORY);
+    await elsewhere("increase additional: wrong stake config", await incAddOf(v, 2, SOL, 0n, 0n), 11, STAKE_CONFIG);
+    await elsewhere("increase additional (merge): wrong stake history", await incAddOf(v, 1, SOL, 1n, 0n), 10, STAKE_HISTORY);
+    await elsewhere("decrease with reserve: wrong stake history", await decResOf(d, v, 2, SOL, 1n), 8, STAKE_HISTORY);
+    await elsewhere("decrease additional: wrong stake history", await decAddOf(d, v, 2, SOL, 1n, 0n), 9, STAKE_HISTORY);
+    // DelegateStake finds them by address among its own accounts: swapped, both are there.
     const swapped = accounts(await incOf(v, 2, SOL, 7n), (l) => {
       const h = l[10]!;
       l[10] = l[11]!;
@@ -620,6 +634,19 @@ describe("accounts in the wrong slots, and balances out of range", () => {
     d.patch(v.p.list, (b) => b.writeBigUInt64LE(2n ** 64n - 1n - SOL, at(1) + 8));
     expect(await d.both("increase additional: transient lamports overflow", payer, [await incAddOf(v, 1, SOL, 1n, 0n)])).toBe(custom(E.CalculationFailure));
     d.patch(v.p.list, (b) => b.writeBigUInt64LE(transient, at(1) + 8));
+  });
+
+  it("refuses another account in UpdateValidatorListBalance's StakeHistory slot, the sysvar riding in a skipped pair", async () => {
+    // Validators 0, 1 and 2 have transient stake from this epoch: the next epoch's update merges or deactivates it,
+    // each Stake CPI naming the StakeHistory, which the runtime looks for among the CPI's accounts only.
+    d.nextEpoch();
+    const pairs = await updatePairs(d, v.p, 0, 3);
+    const other = await d.funded(1n);
+    // The fourth pair (validator 3's place) is not its accounts, so it is skipped; the StakeHistory rides in it.
+    const bad = replace(ix.updateValidatorListBalance(v.p, 0, false, [...pairs, [STAKE_HISTORY, other.address]]), 5, v.p.mint);
+    expect(await d.both("update list: wrong stake history, the sysvar in a skipped pair", payer, [bad])).toBe(builtin("MissingAccount"));
+    expect(d.lastLogs).toContain(`Instruction references an unknown account ${STAKE_HISTORY}`);
+    await update(d, payer, v.p, "after the stake history slot");
   });
 });
 

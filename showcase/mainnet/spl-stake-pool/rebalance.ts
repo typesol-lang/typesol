@@ -103,7 +103,11 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
   const transientAcct = rest.get(5n + e);
   const validatorAcct = rest.get(6n + e);
   const vote = rest.get(7n + e);
-  // The Clock (also checked above), StakeHistory and stake config are named by address in the Stake CPIs.
+  // The Clock (also checked above), StakeHistory and stake config: named by address in the Stake CPIs, passed as
+  // these accounts.
+  const clock = rest.get(8n + e);
+  const stakeHistory = rest.get(10n);
+  const stakeConfig = rest.get(11n);
   const epoch = currentEpoch();
 
   checkSystemProgram(rest.get(12n));
@@ -171,14 +175,14 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
     const ephemeralAcct = rest.get(5n);
     createEphemeralStake(system, ephemeralAcct, poolAcct.key, ephemeralSeed);
     stakeSplit(stake, reserve, withdrawAuth, poolAcct.key, bump, total, ephemeralAcct);
-    stakeDelegate(stake, ephemeralAcct, vote, withdrawAuth, poolAcct.key, bump);
+    stakeDelegate(stake, ephemeralAcct, vote, clock, stakeHistory, stakeConfig, withdrawAuth, poolAcct.key, bump);
   }
   // The account the transient stake comes from: the ephemeral stake account, or the reserve.
   const source = ephemeral ? rest.get(5n) : reserve;
   const transientBump = checkedTransientStakeBump(transientAcct.key, voteKey, poolAcct.key, transientSeed);
   if (hasTransient) {
     // The transient stake exists (activating since this epoch): the ephemeral stake joins it.
-    stakeMerge(stake, source, withdrawAuth, poolAcct.key, bump, transientAcct);
+    stakeMerge(stake, source, withdrawAuth, poolAcct.key, bump, transientAcct, clock, stakeHistory);
   } else {
     createTransientStake(system, transientAcct, voteKey, poolAcct.key, transientSeed, transientBump);
     stakeSplit(stake, source, withdrawAuth, poolAcct.key, bump, total, transientAcct);
@@ -187,7 +191,7 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
     const t = stakeState(transientAcct);
     require(t.tag !== INVALID_STAKE_STATE, ProgramError.BorshIoError);
     if (!(t.tag === STAKE_STATE_STAKE && t.activationEpoch <= epoch)) {
-      stakeDelegate(stake, transientAcct, vote, withdrawAuth, poolAcct.key, bump);
+      stakeDelegate(stake, transientAcct, vote, clock, stakeHistory, stakeConfig, withdrawAuth, poolAcct.key, bump);
     }
   }
 
@@ -229,6 +233,10 @@ export function decreaseValidatorStake(
   const reserve = rest.get(4n); // when fundRentFromReserve
   const validatorAcct = rest.get(4n + f);
   const transientAcct = rest.get(5n + o);
+  // The Clock (checked above) and, with the reserve or an ephemeral stake, the StakeHistory: named by address in the
+  // Stake CPIs, passed as these accounts. DecreaseValidatorStake (the Rent sysvar in its place) never needs it.
+  const clock = rest.get(6n + o);
+  const stakeHistory = rest.get(7n + o);
   const epoch = currentEpoch();
 
   checkSystemProgram(rest.get(8n + o));
@@ -306,11 +314,11 @@ export function decreaseValidatorStake(
       const rentNeeded = saturatingSub(stakeRent, ephemeralAcct.lamports);
       if (rentNeeded > 0n) {
         require(rentNeeded < reserve.lamports, StakePoolError.ReserveDepleted);
-        stakeWithdraw(stake, reserve, withdrawAuth, poolAcct.key, bump, ephemeralAcct, rentNeeded);
+        stakeWithdraw(stake, reserve, withdrawAuth, poolAcct.key, bump, ephemeralAcct, clock, stakeHistory, rentNeeded);
       }
     }
     stakeSplit(stake, validatorAcct, withdrawAuth, poolAcct.key, bump, lamports, ephemeralAcct);
-    stakeDeactivate(stake, ephemeralAcct, withdrawAuth, poolAcct.key, bump);
+    stakeDeactivate(stake, ephemeralAcct, clock, withdrawAuth, poolAcct.key, bump);
     splitLamports = ephemeralAcct.lamports;
   }
   // The account the transient stake comes from: the ephemeral stake account, or the validator stake account.
@@ -318,7 +326,7 @@ export function decreaseValidatorStake(
   const transientBump = checkedTransientStakeBump(transientAcct.key, voteKey, poolAcct.key, transientSeed);
   if (hasTransient) {
     // The transient stake exists (deactivating since this epoch): the ephemeral stake joins it.
-    stakeMerge(stake, source, withdrawAuth, poolAcct.key, bump, transientAcct);
+    stakeMerge(stake, source, withdrawAuth, poolAcct.key, bump, transientAcct, clock, stakeHistory);
   } else {
     createTransientStake(system, transientAcct, voteKey, poolAcct.key, transientSeed, transientBump);
     // Its rent from the reserve, unless the whole ephemeral stake moves over (and its rent with it).
@@ -327,13 +335,13 @@ export function decreaseValidatorStake(
       if (source.lamports !== splitLamports) {
         require(rentNeeded < reserve.lamports, StakePoolError.ReserveDepleted);
         if (rentNeeded > 0n) {
-          stakeWithdraw(stake, reserve, withdrawAuth, poolAcct.key, bump, transientAcct, rentNeeded);
+          stakeWithdraw(stake, reserve, withdrawAuth, poolAcct.key, bump, transientAcct, clock, stakeHistory, rentNeeded);
         }
       }
     }
     stakeSplit(stake, source, withdrawAuth, poolAcct.key, bump, splitLamports, transientAcct);
     // Split off the validator stake it is still active: deactivate it (off the ephemeral stake it is deactivating).
-    if (notDeactivating(delegatedStakeState(transientAcct))) stakeDeactivate(stake, transientAcct, withdrawAuth, poolAcct.key, bump);
+    if (notDeactivating(delegatedStakeState(transientAcct))) stakeDeactivate(stake, transientAcct, clock, withdrawAuth, poolAcct.key, bump);
   }
 
   require(lamports <= entry.activeStakeLamports, StakePoolError.CalculationFailure);

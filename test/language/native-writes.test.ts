@@ -206,6 +206,26 @@ describe("NATIVE_ACCOUNT_WRITES: views of one account", () => {
       expect(logs(r)).toContain("Program log: view 9");
     }));
 
+  it("writes an account passed twice (a view, then storeBorsh) only with the flag, the runtime judging it; 2040 without", async () => {
+    const twice = (d: Deployed) =>
+      send(native.svm, payer, [
+        {
+          programAddress: d.programId,
+          accounts: [
+            { address: counter, role: AccountRole.WRITABLE },
+            { address: counter, role: AccountRole.WRITABLE },
+          ],
+          data: new Uint8Array([2, 4, nonce++ & 0xff]),
+        },
+      ]);
+    putCounter(native, 5n);
+    const r = await twice(native);
+    expect(err(r)).toBe("ok");
+    expect(logs(r)).toContain("Program log: view 9");
+    putCounter(checked, 5n);
+    expect(customError(await twice(checked))).toBe(2040);
+  });
+
   it("reads a BigVec push through another view; two writable views of a BigVec only with the flag", async () => {
     await each(async (d) => {
       putList(d);
