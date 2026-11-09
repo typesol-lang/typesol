@@ -28,6 +28,8 @@ export abstract class EmitterBase {
   protected lines: string[] = [];
   /** Declarations placed at the top of the function (buffers reused by every pass through a loop). */
   protected hoisted: string[] = [];
+  /** Loops moved into C functions of their own (see outlinedLoop), placed before this function. */
+  protected outlinedLoops: string[] = [];
   protected indent = 1;
   protected temp = 0;
   /** Init accounts whose create() has run (top-level, in order). */
@@ -321,6 +323,7 @@ export abstract class EmitterBase {
     const saved = {
       lines: this.lines.length,
       hoisted: this.hoisted.length, // a probed helper call may hoist declarations
+      outlined: this.outlinedLoops.length,
       temp: this.temp,
       diagnostics: this.reporter.diagnostics.length,
       scopes: this.scopes.length,
@@ -337,6 +340,7 @@ export abstract class EmitterBase {
     } finally {
       this.lines.length = saved.lines;
       this.hoisted.length = saved.hoisted;
+      this.outlinedLoops.length = saved.outlined;
       this.temp = saved.temp;
       this.reporter.diagnostics.length = saved.diagnostics;
       this.scopes.length = saved.scopes;
@@ -516,7 +520,7 @@ export abstract class EmitterBase {
   protected abstract eachElement(
     list: ts.Expression,
     at: ts.Node,
-    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void; body?: ts.Node },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void;
 }

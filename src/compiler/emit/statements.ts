@@ -11,6 +11,7 @@ import {
   type Ref,
   cString,
   fixedVecC,
+  helperSignature,
   optC,
   scalarC,
   scalarStorageC,
@@ -18,6 +19,7 @@ import {
   valueC,
 } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
+import { cTokens, declaredNames, isGlobalName, parameterDecls, usedNames } from "./outline.js";
 
 /**
  * Statements: variables, assignment, control flow and return.
@@ -252,7 +254,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     const ci = this.tmp("of_i");
     const label = this.tmp("ts_continue_");
     const release = this.iterationClaims(stmt.statement);
-    this.eachElement(stmt.expression, stmt, { index, ci, next: label, alwaysNext: true, atNext: release }, (element) => {
+    this.eachElement(stmt.expression, stmt, { index, ci, next: label, alwaysNext: true, atNext: release, body: stmt.statement }, (element) => {
       // The element's declaration: the source's own name (so aliasing checks find its uses) bound to the element.
       const decl = f.createVariableDeclaration(d.name, undefined, undefined, element);
       ts.setTextRange(decl, d);
@@ -477,7 +479,7 @@ export abstract class StatementEmitter extends CpiEmitter {
   protected eachElement(
     list: ts.Expression,
     at: ts.Node,
-    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void; body?: ts.Node },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void {
     const stagesOf = this.pipelineStages(list);
@@ -489,7 +491,10 @@ export abstract class StatementEmitter extends CpiEmitter {
       ts.isCallExpression(base) && ts.isPropertyAccessExpression(base.expression) && base.expression.name.text === "slice" ? this.ref(base) : undefined;
     if (sliced?.vec?.slice) this.sliceViews.set(base, sliced);
     try {
-      this.eachElementLoop(base, stages, at, names, body);
+      // A BigVec runs to the size of its account (20,000 validators): its loops get a C function of their own.
+      const big = (sliced ?? this.probe(() => this.ref(base)))?.vec?.big !== undefined;
+      if (!big || !this.outlinedLoop(names.body, () => this.eachElementLoop(base, stages, at, names, body)))
+        this.eachElementLoop(base, stages, at, names, body);
     } finally {
       this.sliceViews.delete(base);
     }
@@ -499,7 +504,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     base: ts.Expression,
     stages: ReturnType<StatementEmitter["pipelineStages"]>["stages"],
     at: ts.Node,
-    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void; body?: ts.Node },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void {
     const f = ts.factory;
@@ -594,6 +599,124 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`}`);
     });
     this.line(`}`);
+  }
+
+  /**
+   * Run `emit` (a loop) as a C function of its own, called here: `TS_TRY(fn__loopN(params, …))`. SBF has ten
+   * registers, four of them kept across calls; a loop inside a large function shares them with every value the
+   * function holds across it, and clang spills the loop's own (the stake pool's pass over 20,000 validators paid a
+   * reload and a store per entry). A function of its own has them all. It gets the caller's variables the loop uses:
+   * by value when the loop only reads them, else through a pointer, copied in and back out when it is done (a failure
+   * returns at once, as it would here). False, with nothing emitted, when the loop cannot move: its body returns from
+   * the function, declares an account (create), or uses a variable of the caller that is not one of its locals or
+   * parameters (a claim slot, a list held in place); it then stays where it is.
+   */
+  protected outlinedLoop(body: ts.Node | undefined, emit: () => void): boolean {
+    const returns = (n: ts.Node): boolean => ts.isReturnStatement(n) || (!ts.isFunctionLike(n) && !ts.isClassLike(n) && (ts.forEachChild(n, returns) ?? false));
+    if (body && returns(body)) return false;
+    // The variables visible here, by C name (innermost first, as lookup finds them).
+    const visible = new Map<string, Local>();
+    for (const scope of [...[...this.scopes].reverse(), this.args]) for (const l of scope.values()) if (!visible.has(l.c)) visible.set(l.c, l);
+    const saved = {
+      lines: this.lines,
+      hoisted: this.hoisted,
+      indent: this.indent,
+      temp: this.temp,
+      diagnostics: this.reporter.diagnostics.length,
+      outlined: this.outlinedLoops.length,
+      seedArrays: new Map(this.seedArrays),
+      state: () => JSON.stringify([[...this.created], [...this.pendingInit], [...this.bumps]]),
+    };
+    const state = saved.state();
+    this.lines = [];
+    this.hoisted = [];
+    this.indent = 1;
+    let lines: string[];
+    let hoisted: string[];
+    try {
+      emit();
+    } finally {
+      lines = this.lines;
+      hoisted = this.hoisted;
+      this.lines = saved.lines;
+      this.hoisted = saved.hoisted;
+      this.indent = saved.indent;
+      // Seed arrays the loop declared live in its function (their positions are in its lines).
+      this.seedArrays.clear();
+      saved.seedArrays.forEach((v, k) => this.seedArrays.set(k, v));
+    }
+    const plan = saved.state() === state ? this.outlinedParams([...hoisted, ...lines].join("\n"), visible) : undefined;
+    if (!plan) {
+      this.temp = saved.temp;
+      this.reporter.diagnostics.length = saved.diagnostics;
+      this.outlinedLoops.length = saved.outlined;
+      return false;
+    }
+    const name = `${this.helper ? `fn_${this.helper.name}` : `ix_${this.ix!.name}`}__loop${this.outlinedLoops.length}`;
+    this.outlinedLoops.push(
+      [
+        `static __attribute__((noinline)) uint64_t ${name}(${["TsParams *params", ...plan.params].join(", ")}) {`,
+        ...plan.copyIn,
+        ...hoisted,
+        ...lines,
+        ...plan.copyOut,
+        `  return SUCCESS;`,
+        `}`,
+        ``,
+      ].join("\n"),
+    );
+    this.line(`TS_TRY(${name}(${["params", ...plan.args].join(", ")}));`);
+    return true;
+  }
+
+  /**
+   * The parameters a loop moved out of this function takes for the caller's variables its C uses, or undefined when
+   * it uses one that cannot be passed (or that is not a local or parameter at all).
+   */
+  private outlinedParams(c: string, visible: Map<string, Local>): { params: string[]; args: string[]; copyIn: string[]; copyOut: string[] } | undefined {
+    const toks = cTokens(c);
+    const own = declaredNames(toks);
+    const signature = this.helper ? parameterDecls(helperSignature(this.helper)) : new Map<string, string>();
+    const out = { params: [] as string[], args: [] as string[], copyIn: [] as string[], copyOut: [] as string[] };
+    for (const n of [...usedNames(toks)].sort()) {
+      if (own.has(n) || n === "params" || isGlobalName(n)) continue;
+      const param = signature.get(n);
+      if (param) {
+        out.params.push(param);
+        out.args.push(n);
+        continue;
+      }
+      if (this.ix && n.startsWith("a_") && this.accounts.has(n.slice(2))) {
+        out.params.push(`TsAccount *${n}`);
+        out.args.push(n);
+        continue;
+      }
+      const l = visible.get(n);
+      if (!l || l.closure || l.choice) return undefined;
+      const t = l.type;
+      if (
+        t.kind === "array" ||
+        t.kind === "vec" ||
+        t.kind === "remaining" ||
+        t.kind === "arrayArg" ||
+        t.kind === "optionArg" ||
+        t.kind === "signerSeeds" ||
+        t.kind === "dataEnumArg"
+      )
+        return undefined;
+      const ct = t.kind === "pubkey" ? (l.ptr ? "const SolPubkey *" : "SolPubkey") : valueC(t);
+      const decl = (name: string) => (ct.endsWith("*") ? `${ct}${name}` : `${ct} ${name}`);
+      if (!l.mutable && (ct.endsWith("*") || t.kind === "int" || t.kind === "bool" || t.kind === "enum")) {
+        out.params.push(decl(n));
+        out.args.push(n);
+        continue;
+      }
+      out.params.push(decl(`*cp_${n}`));
+      out.args.push(`&${n}`);
+      out.copyIn.push(`  ${decl(n)} = *cp_${n};`);
+      if (l.mutable) out.copyOut.push(`  *cp_${n} = ${n};`);
+    }
+    return out;
   }
 
   /**
@@ -926,6 +1049,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`/* ${res} */`);
     }
     const findDecl = method === "find" ? this.lines.length - 1 : -1;
+    // The result is the loop's to set: named in scope, so a loop moved into a function of its own gets it (outlinedLoop).
+    if (result && method !== "find") this.scopes.at(-1)!.set(`__${res}`, { c: res, type: result.type, mutable: true });
 
     const ci = this.tmp("lm_i");
     this.eachElement(list, node, { index, ci }, (element, indexId) => {

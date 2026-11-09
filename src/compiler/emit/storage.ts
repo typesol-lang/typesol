@@ -739,6 +739,8 @@ export abstract class StorageEmitter extends AliasEmitter {
     this.line(`uint64_t ${start} = ${this.expect(this.expr(args[0]!, U64), U64, args[0]!).c};`);
     this.line(`uint64_t ${end} = ${args[1] ? this.expect(this.expr(args[1], U64), U64, args[1]).c : `(uint64_t)${info.len}`};`);
     this.line(`if (${end} > (uint64_t)${info.len} || ${start} > ${end}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+    // Named in scope, so a loop over the slice moved into a function of its own is given them (see outlinedLoop).
+    for (const c of [start, end]) this.scopes.at(-1)!.set(`__${c}`, { c, type: U64, mutable: false });
     const items = `((${fieldC((base.type as FieldType & { kind: "vec" }).elem)} *)${info.items} + ${start})`;
     return { ...base, lv: items, path: undefined, vec: { ...info, len: `(${end} - ${start})`, items, slice: true } };
   }
