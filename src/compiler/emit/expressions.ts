@@ -301,7 +301,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isConditionalExpression(node)) return this.conditional(node, hint);
     if (ts.isArrayLiteralExpression(node))
       this.fail(node, "arrays are only allowed inline as seeds/CPI lists; declare local arrays with fixedArray<T, N>(fill)");
-    if (ts.isObjectLiteralExpression(node)) this.fail(node, "object literals are only allowed as the argument of emit<T>(...)");
+    if (ts.isObjectLiteralExpression(node))
+      this.fail(
+        node,
+        "an object literal needs a struct type here: give it one (const p: Point = { … }), or pass it where one is known (emit<T>(…), a helper's struct parameter, a struct field, storeBorsh<T>(…))",
+      );
     if (ts.isCallExpression(node)) {
       const h = this.handle(node);
       if (h) return { c: h, type: { kind: "account" } };

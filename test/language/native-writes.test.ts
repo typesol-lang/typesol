@@ -15,6 +15,9 @@ type Result = TransactionMetadata | FailedTransactionMetadata;
 const logs = (r: Result) => (r instanceof FailedTransactionMetadata ? r.meta() : r).logs();
 const err = (r: Result) => (r instanceof FailedTransactionMetadata ? String(r.err()) : "ok");
 const enc = getAddressEncoder();
+// The runtime refuses a changed read-only account at the end (ReadonlyDataModified; LiteSVM today), or at the write
+// under account-data direct mapping (an access violation).
+const READONLY = /ReadonlyDataModified|Access violation|ProgramFailedToComplete/;
 const FIXTURE = fileURLToPath(new URL("../fixtures/native-writes.ts", import.meta.url));
 
 describe("NATIVE_ACCOUNT_WRITES", () => {
@@ -76,7 +79,7 @@ describe("NATIVE_ACCOUNT_WRITES", () => {
   it("leaves a real change to a read-only account to the runtime", async () => {
     putCounter(native, 5n);
     const r = await call(native, 0, 2, [ro(counter)]);
-    expect(err(r)).toMatch(/ReadonlyDataModified/);
+    expect(err(r)).toMatch(READONLY);
     expect(count()).toBe(5n);
     expect(err(await call(native, 0, 2, [rw(counter)]))).toBe("ok");
     expect(count()).toBe(7n);
@@ -97,7 +100,7 @@ describe("NATIVE_ACCOUNT_WRITES", () => {
     const same = await call(native, 2, 0, [ro(counter)]);
     expect(err(same)).toBe("ok");
     expect(logs(same)).toContain("Program log: stored 5");
-    expect(err(await call(native, 2, 1, [ro(counter)]))).toMatch(/ReadonlyDataModified/);
+    expect(err(await call(native, 2, 1, [ro(counter)]))).toMatch(READONLY);
     expect(err(await call(native, 2, 1, [rw(counter)]))).toBe("ok");
     expect(count()).toBe(6n);
     putCounter(checked, 5n);
@@ -109,7 +112,7 @@ describe("NATIVE_ACCOUNT_WRITES", () => {
     const r = await call(native, 3, 0, [ro(list)]);
     expect(err(r)).toBe("ok");
     expect(logs(r)).toContain("Program log: items 1");
-    expect(err(await call(native, 3, 4, [ro(list)]))).toMatch(/ReadonlyDataModified/);
+    expect(err(await call(native, 3, 4, [ro(list)]))).toMatch(READONLY);
     const w = await call(native, 3, 4, [rw(list)]);
     expect(logs(w)).toContain("Program log: items 2");
     putList(checked);
@@ -120,7 +123,7 @@ describe("NATIVE_ACCOUNT_WRITES", () => {
     putCounter(native, 5n);
     const bump = (by: number, writable: boolean) => ix(native, "bump", { by: new BN(by) }, [{ address: counter, writable }]);
     expect(err(await send(native.svm, payer, [bump(0, false)]))).toBe("ok");
-    expect(err(await send(native.svm, payer, [bump(1, false)]))).toMatch(/ReadonlyDataModified/);
+    expect(err(await send(native.svm, payer, [bump(1, false)]))).toMatch(READONLY);
     expect(err(await send(native.svm, payer, [bump(1, true)]))).toBe("ok");
     expect(count()).toBe(6n);
   });
