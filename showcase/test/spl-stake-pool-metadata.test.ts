@@ -94,8 +94,8 @@ describe.skipIf(!existsSync(MPL_METADATA_SO))("token metadata", () => {
   });
 
   it("refuses an update before the metadata exists", async () => {
-    const got = await d.both("update before create", payer, [update()]);
-    expect(got).not.toBe("ok");
+    // Metaplex refuses the account that is not its metadata yet (its error 63).
+    expect(await d.both("update before create", payer, [update()])).toBe(custom(63));
   });
 
   it("refuses data that is not three Borsh Strings, before logging anything", async () => {
@@ -277,7 +277,7 @@ describe.skipIf(!existsSync(MPL_METADATA_SO))("token metadata", () => {
     }
     expect(await d.both("create: wrong mint", payer, [replace(c, 3, p.managerFee)])).toBe(custom(E.WrongPoolMint));
     // The metadata account must be writable for Metaplex: the CPI fails the same way in both.
-    expect(await d.both("create: metadata read-only", payer, [role(c, 5, AccountRole.READONLY)])).not.toBe("ok");
+    expect(await d.both("create: metadata read-only", payer, [role(c, 5, AccountRole.READONLY)])).toBe(builtin("PrivilegeEscalation"));
   });
 
   it("creates the metadata, signed by the withdraw authority", async () => {
@@ -285,7 +285,7 @@ describe.skipIf(!existsSync(MPL_METADATA_SO))("token metadata", () => {
     const acct = d.original.getAccount(md);
     expect(acct.exists && acct.programAddress).toBe(MPL_METADATA);
     // Once it exists, a second create fails in Metaplex.
-    expect(await d.both("create metadata again", payer, [create("Again", "AGN", "https://example.com/again.json")])).not.toBe("ok");
+    expect(await d.both("create metadata again", payer, [create("Again", "AGN", "https://example.com/again.json")])).toBe(custom(199));
   });
 
   it("updates it with any strings Metaplex takes", async () => {
@@ -294,13 +294,14 @@ describe.skipIf(!existsSync(MPL_METADATA_SO))("token metadata", () => {
     await d.ok("update metadata: unicode", payer, [update("Ŝtake ✓ 🥩", "€Ω", "https://例え.jp/ü.json")]);
     // Metaplex's limits: name 32 bytes, symbol 10, uri 200.
     await d.ok("update metadata: longest", payer, [update("n".repeat(32), "s".repeat(10), "u".repeat(200))]);
-    expect(await d.both("update metadata: name too long", payer, [update("n".repeat(33))])).not.toBe("ok");
-    expect(await d.both("update metadata: symbol too long", payer, [update("Staked SOL", "s".repeat(11))])).not.toBe("ok");
-    expect(await d.both("update metadata: uri too long", payer, [update("Staked SOL", "stSOL", `https://${"u".repeat(193)}`)])).not.toBe("ok");
+    // Metaplex's NameTooLong (11), SymbolTooLong (12), UriTooLong (13).
+    expect(await d.both("update metadata: name too long", payer, [update("n".repeat(33))])).toBe(custom(11));
+    expect(await d.both("update metadata: symbol too long", payer, [update("Staked SOL", "s".repeat(11))])).toBe(custom(12));
+    expect(await d.both("update metadata: uri too long", payer, [update("Staked SOL", "stSOL", `https://${"u".repeat(193)}`)])).toBe(custom(13));
     // Far longer than Metaplex takes: the whole data is still decoded and passed on.
-    expect(await d.both("update metadata: 700-byte uri", payer, [update("Staked SOL", "stSOL", "€".repeat(233))])).not.toBe("ok");
+    expect(await d.both("update metadata: 700-byte uri", payer, [update("Staked SOL", "stSOL", "€".repeat(233))])).toBe(custom(13));
     // About the most data a transaction (1232 bytes) can carry with these accounts.
-    expect(await d.both("update metadata: 1000-byte name", payer, [update("n".repeat(1000), "", "")])).not.toBe("ok");
+    expect(await d.both("update metadata: 1000-byte name", payer, [update("n".repeat(1000), "", "")])).toBe(custom(11));
     await d.ok("update metadata: again", payer, [update("Staked SOL 2", "stSOL2", "https://example.com/2.json")]);
   });
 

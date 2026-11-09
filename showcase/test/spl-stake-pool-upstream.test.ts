@@ -595,9 +595,9 @@ describe("vsa_remove.rs", () => {
       await d.both("deposit stake: validator being removed (deactivating)", payer, [
         ix.depositStake(v.p, { depositAuthority: v.p.deposit, stake, validatorStake: v.stakes[0]!, to: otherTokens, referrer: v.p.managerFee }),
       ]),
-    ).not.toBe("ok");
+    ).toBe(custom(E.ValidatorNotFound));
     const w = await withdrawStake(d, payer, v.p, { from: v.stakes[0]!, who: user, tokens }, 1n);
-    expect(await d.both("withdraw stake: validator being removed (deactivating)", payer, [w.i])).not.toBe("ok");
+    expect(await d.both("withdraw stake: validator being removed (deactivating)", payer, [w.i])).toBe(custom(28)); // WithdrawalTooSmall
     expect(d.validators(v.p)[0]).toMatchObject({ status: STATUS.DeactivatingAll, active: RENT_200 + MIN, transient: TEST_STAKE + 2n * RENT_200 });
     await updateAll(d, payer, v.p, "remove deactivating");
     expect(d.validators(v.p)).toEqual([]);
@@ -1014,7 +1014,7 @@ describe("withdraw.rs, withdraw_with_fee.rs, withdraw_edge_cases.rs", () => {
     await d.ok("decrease with reserve (small preferred)", payer, [await decrease(d, s.v, i, RENT_200 + MIN, 0n, "Reserve")]);
     d.nextEpoch();
     await updateAll(d, payer, s.p, "small preferred 2");
-    expect(await d.both("withdraw stake: 1 token from the small preferred validator", payer, [await withdraw(s, s.v.stakes[i]!, 1n)])).not.toBe("ok");
+    expect(await d.both("withdraw stake: 1 token from the small preferred validator", payer, [await withdraw(s, s.v.stakes[i]!, 1n)])).toBe(custom(28)); // WithdrawalTooSmall
     await d.ok("withdraw stake: from the other validator (small preferred)", payer, [await withdraw(s, s.v.stakes[0]!, s.amount / 6n)]);
   });
 });

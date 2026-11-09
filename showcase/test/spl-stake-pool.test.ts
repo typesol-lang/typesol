@@ -556,7 +556,8 @@ describe("SOL deposits and withdrawals", () => {
       expect(await d.both(`deposit sol zero (${name})`, payer, [dep(0n)])).toBe(custom(E.DepositTooSmall));
       expect(await d.both(`deposit sol 1 lamport (${name})`, payer, [dep(1n)])).toBe(custom(E.DepositTooSmall));
       expect(await d.both(`deposit sol 100 lamports (${name})`, payer, [dep(100n)])).toBe("ok");
-      expect(await d.both(`deposit sol more than held (${name})`, payer, [dep(5000n * SOL)])).not.toBe("ok");
+      // The System program's transfer: ResultWithNegativeLamports.
+      expect(await d.both(`deposit sol more than held (${name})`, payer, [dep(5000n * SOL)])).toBe(custom(1));
       const wd = (amount: bigint, minimum?: bigint, from = tokens, who = user) =>
         ix.withdrawSol(p, { transferAuthority: who, from, to: user.address }, amount, minimum);
       await d.ok(`withdraw sol (${name})`, payer, [wd(5n * SOL)]);
@@ -573,7 +574,7 @@ describe("SOL deposits and withdrawals", () => {
         await d.both(`withdraw sol past the reserve (${name})`, payer, [
           ix.withdrawSol(p, { transferAuthority: p.manager, from: p.managerFee, to: user.address }, all + 1n),
         ]),
-      ).not.toBe("ok");
+      ).toBe(custom(1)); // SPL Token's InsufficientFunds: one token more than the account holds
     });
   }
 
@@ -617,15 +618,16 @@ describe("SOL deposits and withdrawals", () => {
       ["deposit sol: wrong token program", replace(dep, 9, TOKEN_2022), builtin("IncorrectProgramId")],
       ["deposit sol: wrong system program", replace(dep, 8, STAKE), builtin("IncorrectProgramId")],
       ["deposit sol: wrong fee account", replace(dep, 5, tokens), custom(E.InvalidFeeAccount)],
-      ["deposit sol: a list as the pool", replace(dep, 0, other.list), "x"],
-      ["deposit sol: user not signing", replace(dep, 3, user.address), "x"],
+      ["deposit sol: a list as the pool", replace(dep, 0, other.list), custom(E.InvalidState)],
+      ["deposit sol: user not signing", replace(dep, 3, user.address), builtin("PrivilegeEscalation")],
       ["withdraw sol: wrong withdraw authority", replace(wd, 1, other.withdraw), custom(E.InvalidProgramAddress)],
       ["withdraw sol: wrong mint", replace(wd, 7, other.mint), custom(E.WrongPoolMint)],
       ["withdraw sol: wrong reserve", replace(wd, 4, other.reserve), custom(E.InvalidProgramAddress)],
       ["withdraw sol: wrong token program", replace(wd, 11, TOKEN_2022), builtin("IncorrectProgramId")],
       ["withdraw sol: wrong stake program", replace(wd, 10, SYSTEM), builtin("IncorrectProgramId")],
       ["withdraw sol: wrong fee account", replace(wd, 6, tokens), custom(E.InvalidFeeAccount)],
-      ["withdraw sol: another user's tokens", replace(wd, 3, referrer), "x"],
+      // SPL Token's InsufficientFunds in the burn: the referrer's account holds nothing.
+      ["withdraw sol: another user's tokens", replace(wd, 3, referrer), custom(1)],
       // stake::instruction::withdraw names the Clock and the StakeHistory by address (the processor reads neither): the
       // runtime does not find the sysvar among the accounts.
       ["withdraw sol: another account as the clock", replace(wd, 8, STAKE_HISTORY), builtin("MissingAccount")],
@@ -635,11 +637,7 @@ describe("SOL deposits and withdrawals", () => {
       ["withdraw sol: the mint as the clock, the Clock appended", plus(replace(wd, 8, p.mint), CLOCK), builtin("MissingAccount")],
       ["withdraw sol: the mint as the stake history, the sysvar appended", plus(replace(wd, 9, p.mint), STAKE_HISTORY), builtin("MissingAccount")],
     ];
-    for (const [label, i, want] of cases) {
-      const got = await d.both(label, payer, [i]);
-      if (want !== "x") expect(got, label).toBe(want);
-      else expect(got, label).not.toBe("ok");
-    }
+    for (const [label, i, want] of cases) expect(await d.both(label, payer, [i]), label).toBe(want);
     // A stale pool: deposits and withdrawals wait for the update.
     d.nextEpoch();
     expect(await d.both("deposit sol: stale pool", payer, [dep])).toBe(custom(E.StakeListAndPoolOutOfDate));
@@ -727,7 +725,7 @@ describe("validators over epochs", () => {
     expect(await run("wrong reserve", replace(await add(votes[2]!), 2, p.list))).toBe(custom(E.InvalidProgramAddress));
     expect(await run("wrong list", replace(await add(votes[2]!), 4, p.reserve))).toBe(custom(E.InvalidValidatorStakeList));
     expect(await run("wrong withdraw authority", replace(await add(votes[2]!), 3, p.reserve))).toBe(custom(E.InvalidProgramAddress));
-    expect(await run("not a vote account", ix.addValidator(p, p.staker, await stakeOf(p.mint), p.mint))).not.toBe("ok");
+    expect(await run("not a vote account", ix.addValidator(p, p.staker, await stakeOf(p.mint), p.mint))).toBe(builtin("IncorrectProgramId"));
     // DelegateStake names the StakeHistory and the stake config by address: another account in either slot fails the
     // call in the runtime (after the stake account was made and split); swapped, both are there (below).
     expect(await run("wrong stake history", replace(await add(votes[2]!), 9, p.mint))).toBe(builtin("MissingAccount"));
