@@ -293,8 +293,12 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
 - Errors as the original returns them: an error enum may start at code 0 (`/** @code 0 */`, Rust's
   `ProgramError::Custom(0)`, returned as Solana's CUSTOM_ZERO); `require(c, ProgramError.InvalidInstructionData)` for a
   built-in error; `panic(message, "program/src/lib.rs:12:5")` for a Rust panic (ProgramFailedToComplete, the runtime
-  reporting that location); `const PANIC_ON_OVERFLOW = true` makes arithmetic overflow and division by zero panic as
-  `checked_*().unwrap()` does instead of failing with 5100 / 5101.
+  reporting that location; `panic(null, "src/lib.rs:105:19")` logs no message, for an original whose panic handler
+  writes none, so only the runtime's "SBF program Panicked in src/lib.rs at 105:19" is left); `abort()` for Rust's
+  abort (the allocator's out-of-memory error: `log("Error: memory allocation failed, out of memory"); abort();`), the
+  runtime's `abort` syscall, which logs "SBF program panicked" with no location; `const PANIC_ON_OVERFLOW = true`
+  makes arithmetic overflow and division by zero panic as `checked_*().unwrap()` does instead of failing with 5100 /
+  5101.
 - Log lines as the original writes them: `const ERROR_LOG_PREFIX = "AMM error: "` and `const PROGRAM_ERROR_LOG_PREFIX =
   "Program error: "` replace the compiler's failure line with the entrypoint's (`msg!("AMM error: {}", e)`);
   `logBase64("ray_log: ", record)` logs a struct's bytes in base64 (a native `bincode` log record);

@@ -1779,6 +1779,9 @@ static inline bool ts_ix_is(const TsIx *ix, const SolPubkey *program, const uint
 }
 /* How deep in CPIs the program runs: 1 when the transaction calls it directly. */
 extern uint64_t sol_get_stack_height(void);
+/* The runtime's `abort` syscall (Rust's abort on SBF, e.g. the allocator's out-of-memory error): ProgramFailedToComplete,
+ * logged as "SBF program panicked", with no location. */
+extern __attribute__((noreturn)) void abort(void);
 
 /*
  * ---- BigVec (SPL's big_vec) ------------------------------------------------

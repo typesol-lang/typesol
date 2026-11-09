@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- `panic(null, "src/lib.rs:105:19")` panics at a location without logging a message, for a native port whose panic
+  handler writes none; `abort()` is Rust's abort on SBF (the allocator's out-of-memory error), the runtime's `abort`
+  syscall: "SBF program panicked", no location.
 - Stake CPIs take a sysvar or the stake config by address (a `Pubkey`) as well as an account, as solana_program's
   stake builders name them: found by key among the instruction's accounts, MissingAccount when it was not passed.
 - New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake

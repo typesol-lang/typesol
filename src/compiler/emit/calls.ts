@@ -138,17 +138,28 @@ export abstract class CallEmitter extends ExpressionEmitter {
           const v = ts.isIdentifier(a) ? this.model.constants.get(a.text)?.value : undefined;
           return typeof v === "string" ? v : undefined;
         };
-        if (args.length > 2 || args.some((a) => text(a) === undefined))
-          this.fail(node, 'panic() takes an optional message and an optional "file:line:column" location: string literals or string constants');
-        const msg = args.length ? text(args[0]!)! : "explicit panic";
+        // A null message: nothing logged, only the runtime's line (a native program whose panic handler logs nothing).
+        const silent = args.length > 0 && args[0]!.kind === ts.SyntaxKind.NullKeyword;
+        if (args.length > 2 || args.some((a, i) => !(i === 0 && silent) && text(a) === undefined))
+          this.fail(
+            node,
+            'panic() takes an optional message (or null to log nothing) and an optional "file:line:column" location: string literals or string constants',
+          );
+        const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
         // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
         // ported program's panic reports it, else this source line.
         const at = args.length > 1 ? text(args[1]!)! : this.location(node);
         const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
         const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
-        this.line(`sol_log(${cString(msg)});`);
+        if (msg !== undefined) this.line(`sol_log(${cString(msg)});`);
         this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
         this.line(`__builtin_unreachable();`);
+        return undefined;
+      }
+      case "abort": {
+        // Rust's abort on SBF: the runtime's `abort` syscall ("SBF program panicked", no location, nothing logged).
+        if (args.length) this.fail(node, "abort() takes no arguments; log the original's message first with log(…) where it writes one");
+        this.line(`abort();`);
         return undefined;
       }
       case "log": {
