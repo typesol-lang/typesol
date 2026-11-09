@@ -8,7 +8,7 @@ codes, and says so here.
 
 - Examples: showcase/mainnet/spl-stake-pool, a port of SPL Stake Pool (the native program at SPoo1Ku8…, all 27
   instructions), from the tag a reproducible build proves is the mainnet binary (program@v2.1.0), checked against that
-  binary on 2,092 transactions (the original's own 221 integration tests mapped and run as differential cases, pools of
+  binary on 2,107 transactions (the original's own 221 integration tests mapped and run as differential cases, pools of
   up to 20,000 validators) and a random walk over epochs with the same outcomes, log lines and account bytes; 19–80% of
   the original's compute units (the stake CPIs are the same in both), 202,240 bytes against 338,912.
   docs/case-study-spl-stake-pool.md.
