@@ -160,6 +160,7 @@ const TYPE_EXPORTS = new Set([
   "ProgramData",
   "SignerSeeds",
   "SystemAccount",
+  "EpochRewards",
 ]);
 
 /** Largest fixed array a struct may declare, and largest FixedString. */

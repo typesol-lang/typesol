@@ -29,6 +29,10 @@ codes, and says so here.
   the runtime and the called program. `returnData` takes a remaining account as the program.
 - Stake program: `split`, `merge`, `getMinimumDelegation()` (fails as solana_program's `get_minimum_delegation`),
   `initialize(…, lockup?)`, and the lockup custodian for `authorize` / `withdraw`. Existing calls compile to the same C.
+- New (language surface: `epochRewards()` and the `EpochRewards` type in lib/typesol.d.ts): the EpochRewards sysvar
+  through `sol_get_epoch_rewards_sysvar`, Rust's `EpochRewards::get()`, with no account: every field
+  (`active`, `totalRewards`, `distributedRewards`, `totalPoints`, `numPartitions`, `parentBlockhash`,
+  `distributionStartingBlockHeight`). Other programs compile to the same C.
 
 ## 0.41.0 — 2026-11-07
 

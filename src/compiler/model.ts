@@ -58,6 +58,8 @@ export type ValueType =
   | { kind: "remaining" }
   /** One instruction of the transaction (InstructionsSysvar.get(i)): a `TsIx` view into the sysvar. */
   | { kind: "txIx" }
+  /** The EpochRewards sysvar as epochRewards() read it: a `TsEpochRewards` copy. */
+  | { kind: "epochRewards" }
   /** A struct loaded from a remaining account with loadAccount / loadAccountMut. */
   | { kind: "structRef"; struct: string; writable: boolean }
   /** A data-enum place (local value, argument, or alias into account data): `TS_DE_<name> *`. */
@@ -462,6 +464,8 @@ export function typeName(t: ValueType | FieldType): string {
       return "RemainingAccounts";
     case "txIx":
       return "TransactionInstruction";
+    case "epochRewards":
+      return "EpochRewards";
     case "structRef":
       return t.struct;
   }

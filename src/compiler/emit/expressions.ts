@@ -356,6 +356,21 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (/^string$|^FixedString/.test(what)) this.fail(node, "use byteLength(s) for strings; .length is available on arrays, Vecs and remainingAccounts()");
       this.fail(node, `.length is available on arrays, Vecs, map / filter chains and remainingAccounts(), not on ${what}`);
     }
+    if (this.isEpochRewards(node.expression)) {
+      const er = this.expr(node.expression).c;
+      const fields: Record<string, Value> = {
+        distributionStartingBlockHeight: { c: `(${er}.distribution_starting_block_height)`, type: U64 },
+        numPartitions: { c: `(${er}.num_partitions)`, type: U64 },
+        parentBlockhash: { c: `(&${er}.parent_blockhash)`, type: HASH },
+        totalPoints: { c: `(${er}.total_points)`, type: { kind: "int", name: "u128" } },
+        totalRewards: { c: `(${er}.total_rewards)`, type: U64 },
+        distributedRewards: { c: `(${er}.distributed_rewards)`, type: U64 },
+        active: { c: `(${er}.active != 0)`, type: BOOL },
+      };
+      const v = Object.hasOwn(fields, field) ? fields[field] : undefined;
+      if (!v) this.fail(node.name, `EpochRewards has ${Object.keys(fields).join(", ")}, not ${field}`);
+      return v;
+    }
     if (this.isTxIx(node.expression)) {
       const ix = this.expr(node.expression);
       if (field === "programId") return { c: `(${ix.c}.program_id)`, type: PUBKEY };

@@ -365,6 +365,13 @@ export abstract class EmitterBase {
     return ts.isIdentifier(node) ? this.imports.get(node.text) : undefined;
   }
 
+  /** Whether `node` is an EpochRewards value: `epochRewards()` or a local holding one. */
+  protected isEpochRewards(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isEpochRewards(node.expression);
+    if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "epochRewards";
+    return ts.isCallExpression(node) && this.exportName(node.expression) === "epochRewards";
+  }
+
   /**
    * `acct!.field` on an optional account: the same access without `!` (using the account checks that it was passed,
    * failing with 5115 otherwise). Returns undefined for anything else.

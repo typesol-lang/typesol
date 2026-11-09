@@ -938,6 +938,26 @@ static inline uint64_t ts_last_restart_slot(uint64_t *out) {
   return SUCCESS;
 }
 
+/* EpochRewards, as the syscall writes it: Rust's #[repr(C, align(16))] struct (81 bytes of fields, 96 in memory). The
+   runtime checks the destination's 16-byte alignment, hence the attribute. */
+typedef struct __attribute__((aligned(16))) {
+  uint64_t distribution_starting_block_height;
+  uint64_t num_partitions;
+  SolPubkey parent_blockhash;
+  unsigned __int128 total_points;
+  uint64_t total_rewards;
+  uint64_t distributed_rewards;
+  uint8_t active;
+} TsEpochRewards;
+_Static_assert(sizeof(TsEpochRewards) == 96 && __builtin_offsetof(TsEpochRewards, total_points) == 48 &&
+                   __builtin_offsetof(TsEpochRewards, active) == 80,
+               "EpochRewards layout");
+uint64_t sol_get_epoch_rewards_sysvar(void *ret);
+static inline uint64_t ts_epoch_rewards(TsEpochRewards *out) {
+  if (sol_get_epoch_rewards_sysvar(out) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: epoch rewards sysvar unavailable");
+  return SUCCESS;
+}
+
 /* The general case, in integers: exactly (uint64_t)((double)per_year * threshold) as soft-float computes it (the
    conversion and the product rounded to nearest, ties to even; NaN, negative and < 1 give 0), or UINT64_MAX when that
    product is >= 2^64 (no double below 2^64 converts to UINT64_MAX: the largest is 2^64 - 2048). No soft-float routine

@@ -227,6 +227,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         else this.line(`TS_TRY(ts_epoch_schedule(${{ slotsPerEpoch: 0, epochWarmup: 2, firstNormalEpoch: 3, firstNormalSlot: 4 }[builtin]}, &${t}));`);
         return builtin === "epochWarmup" ? { c: `(${t} != 0)`, type: BOOL } : { c: t, type: U64 };
       }
+      case "epochRewards": {
+        if (args.length !== 0) this.fail(node, "epochRewards() takes no arguments");
+        // Rust's EpochRewards::get() (sol_get_epoch_rewards_sysvar): a copy of the sysvar, read where it is called.
+        const t = this.tmp("erw");
+        this.line(`TsEpochRewards ${t};`);
+        this.line(`TS_TRY(ts_epoch_rewards(&${t}));`);
+        return { c: t, type: { kind: "epochRewards" } };
+      }
       case "currentSlot":
       case "currentEpoch":
       case "epochStartTimestamp":

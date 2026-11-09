@@ -1251,7 +1251,8 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       let declared: ValueType | undefined;
-      if (d.type) {
+      if (d.type && typesolName(d.type, this.scope.imports) === "EpochRewards") declared = { kind: "epochRewards" };
+      else if (d.type) {
         declared = resolveValueType(d.type, this.scope);
         if (!declared || declared.kind === "vecArg") this.fail(d.type, "local type must be an integer, boolean, Pubkey, enum, option or string");
       }

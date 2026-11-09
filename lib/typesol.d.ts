@@ -1669,6 +1669,28 @@ export declare function firstNormalEpoch(): u64;
 export declare function firstNormalSlot(): u64;
 /** The LastRestartSlot sysvar: the last slot the cluster restarted at (0 if never). */
 export declare function lastRestartSlot(): u64;
+/** The EpochRewards sysvar, as `epochRewards()` reads it: read-only; keep it in a local (`const er = epochRewards()`). */
+export interface EpochRewards {
+  /** The block height the rewards distribution started at in the current epoch. */
+  readonly distributionStartingBlockHeight: u64;
+  /** How many partitions the distribution has (seeds the partition hasher). */
+  readonly numPartitions: u64;
+  /** The parent blockhash of the epoch's first block (seeds the partition hasher). */
+  readonly parentBlockhash: Hash;
+  /** Sum of delegated stake × credits observed over all delegations. */
+  readonly totalPoints: u128;
+  /** The rewards calculated for the epoch, in lamports. */
+  readonly totalRewards: u64;
+  /** The rewards distributed so far, in lamports. */
+  readonly distributedRewards: u64;
+  /** Whether the rewards period (calculation and distribution) is active: stake accounts are being credited. */
+  readonly active: boolean;
+}
+/**
+ * The EpochRewards sysvar through the `sol_get_epoch_rewards_sysvar` syscall, Rust's `EpochRewards::get()` (no account
+ * needed). Native programs refuse stake operations while `epochRewards().active`.
+ */
+export declare function epochRewards(): EpochRewards;
 export type CloseTo<A, Destination extends string> = A & { readonly __closeTo?: Destination };
 
 /** A program-owned account that this instruction creates as a PDA. */
