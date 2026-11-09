@@ -33,6 +33,9 @@ codes, and says so here.
   through `sol_get_epoch_rewards_sysvar`, Rust's `EpochRewards::get()`, with no account: every field
   (`active`, `totalRewards`, `distributedRewards`, `totalPoints`, `numPartitions`, `parentBlockhash`,
   `distributionStartingBlockHeight`). Other programs compile to the same C.
+- New: a struct, data-enum or `fixedArray<T, N>(fill)` literal as a helper argument (`applyFee({ denominator: 100n,
+  numerator: 3n }, amount)`, nested literals, a ternary with a literal branch, helpers in other files), built as
+  `const fee: Fee = { … }` would be; it failed with "expected a Fee". Other programs compile to the same C.
 
 ## 0.41.0 — 2026-11-07
 

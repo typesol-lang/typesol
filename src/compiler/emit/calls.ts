@@ -1981,6 +1981,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "structRef":
       case "arrayArg": {
         const want: FieldType = p.type.kind === "structRef" ? { kind: "struct", name: p.type.struct } : p.type.array;
+        const built = this.literalArg(n, want);
+        if (built) return built;
         let r = this.ref(n);
         // A narrowed Option<Struct> / Option<FixedArray> place (`c.opt !== null` before it): its value.
         if (r && r.type.kind === "option" && sameType(r.type.inner as FieldType, want)) r = this.someValue(r);
@@ -1988,6 +1990,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.snapshotPlace(r.lv, want, h, n);
       }
       case "dataEnumArg": {
+        const built = this.literalArg(n, { kind: "dataEnum", name: p.type.name });
+        if (built) return built;
         const r = this.ref(n);
         if (!r || r.type.kind !== "dataEnum" || r.type.name !== p.type.name) this.fail(n, `expected a ${p.type.name}`);
         return this.snapshotPlace(r.lv, { kind: "dataEnum", name: p.type.name }, h, n);
@@ -2002,6 +2006,29 @@ export abstract class CallEmitter extends ExpressionEmitter {
       default:
         return this.expect(this.expr(n, p.type), p.type, n);
     }
+  }
+
+  /**
+   * A struct, array or data-enum helper argument written as a literal (`f({ a: 1n, b: { c } })`, `g([1n, 2n])`, or a
+   * ternary with a literal branch): built in a local of its own, as `const x: T = { … }; f(x)` would, and passed by
+   * pointer (the helper cannot change it, and nothing else sees it). Undefined for anything else.
+   */
+  protected literalArg(n: ts.Expression, want: FieldType): string | undefined {
+    const literal = (e: ts.Expression): boolean => {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (ts.isConditionalExpression(e)) return literal(e.whenTrue) || literal(e.whenFalse);
+      if (want.kind === "array") return ts.isCallExpression(e) && this.exportName(e.expression) === "fixedArray";
+      return ts.isObjectLiteralExpression(e);
+    };
+    if (!literal(n)) return undefined;
+    if (want.kind === "struct") {
+      const s = this.model.structs.get(want.name)!;
+      if (s.size === undefined || s.vec) this.fail(n, `${s.name} has variable-size fields and cannot be built as an argument`);
+    }
+    const t = this.tmp("larg");
+    this.line(`${want.kind === "array" ? storageDecl(want, t) : `${fieldC(want)} ${t}`};`);
+    this.writeAggregate({ lv: t, type: want, writable: true }, n, true);
+    return `(&${t})`;
   }
 
   /**
