@@ -652,6 +652,19 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.outlinedLoops.length = saved.outlined;
       return false;
     }
+    // Heap buffers taken on first use stay declared in the caller, which passes each in by pointer: declared in the
+    // loop's function, every call of it would take a new one (an emit or a helper's argument copy in a loop run many
+    // times would exhaust the heap).
+    const lazy = hoisted.filter((l) => this.lazyHoists.has(l));
+    for (const l of lazy) {
+      const { name: buffer, decl } = this.lazyHoists.get(l)!;
+      this.hoisted.push(l);
+      plan.params.push(decl(`*cp_${buffer}`));
+      plan.args.push(`&${buffer}`);
+      plan.copyIn.push(`  ${decl(buffer)} = *cp_${buffer};`);
+      plan.copyOut.push(`  *cp_${buffer} = ${buffer};`);
+    }
+    hoisted = hoisted.filter((l) => !lazy.includes(l));
     const name = `${this.helper ? `fn_${this.helper.name}` : `ix_${this.ix!.name}`}__loop${this.outlinedLoops.length}`;
     this.outlinedLoops.push(
       [

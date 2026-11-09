@@ -2301,8 +2301,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const n = this.fieldBytes(type);
     // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
     const t = this.tmp("argc");
-    const decl = type.kind === "array" ? storageDecl(type, `(*${t})`) : `${fieldC(type)} *${t}`;
-    this.hoisted.push(`  ${decl} = NULL;`);
+    this.hoistLazy(t, (n) => (type.kind === "array" ? storageDecl(type, `(*${n})`) : `${fieldC(type)} *${n}`));
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
     this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
     return t;

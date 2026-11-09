@@ -5,6 +5,7 @@ import { type Address, type Instruction, type KeyPairSigner, AccountRole, addres
 import { FailedTransactionMetadata, type TransactionMetadata } from "litesvm";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { generate } from "../../src/compiler/index.js";
 import { BN, type Deployed, compileErrors, customError, deployFile, fundedSigner, ix, send } from "../harness.js";
 
 type Result = TransactionMetadata | FailedTransactionMetadata;
@@ -391,6 +392,65 @@ describe("BigVec: a length written after the load", () => {
     };
     expect(said(await call(0xffffffff, 3))).toEqual([`len ${ROOM} sum 46 get 13`]);
     expect(customError(await call(0xffffffff, 4))).toBe(5104);
+  });
+});
+
+// test/fixtures/bigvec-outlined.ts: loops moved into functions of their own, called many times from an outer loop.
+describe("BigVec loops in functions of their own", () => {
+  const FIXTURE = fileURLToPath(new URL("../fixtures/bigvec-outlined.ts", import.meta.url));
+  let d: Deployed;
+  let payer: KeyPairSigner;
+  let items: Address;
+  const ITEMS = 4;
+  beforeAll(async () => {
+    d = await deployFile(FIXTURE);
+    payer = await fundedSigner(d.svm, 10n);
+    items = (await generateKeyPairSigner()).address;
+    const data = Buffer.alloc(1 + 4 + ITEMS * 40);
+    data.writeUInt32LE(ITEMS, 1);
+    for (let i = 0; i < ITEMS; i++) {
+      data.writeBigUInt64LE(BigInt(i + 1), 5 + i * 40);
+      vote(i).copy(data, 5 + i * 40 + 8);
+    }
+    d.svm.setAccount({ address: items, lamports: 1_000_000_000n, programAddress: d.programId, executable: false, data } as never);
+  });
+  const run = (op: number, rounds: number) =>
+    send(d.svm, payer, [
+      { programAddress: COMPUTE_BUDGET, accounts: [], data: new Uint8Array([2, ...u64(1_400_000).subarray(0, 4)]) } as Instruction,
+      {
+        programAddress: d.programId,
+        accounts: [{ address: items, role: AccountRole.READONLY }],
+        data: new Uint8Array(Buffer.concat([Buffer.from([op]), u64(rounds)])),
+      } as Instruction,
+    ]);
+  const said = (r: Result) => {
+    if (r instanceof FailedTransactionMetadata) throw new Error(`failed: ${String(r.err())}\n${logs(r).slice(-5).join("\n")}`);
+    return logs(r);
+  };
+
+  it("moves each loop out, the one formatting a Pubkey too", () => {
+    const c = generate(FIXTURE).c;
+    const loops = c.split("static __attribute__((noinline)) uint64_t ix_entry__loop").slice(1);
+    expect(loops.length).toBe(3);
+    expect(loops.some((l) => l.includes("ts_base58_32"))).toBe(true);
+  });
+
+  // The 32 KiB heap held a buffer per call when the buffers were declared in the loop's function.
+  it("takes an event's buffers once, however many times its loop runs", async () => {
+    // 2,000 events: the log is truncated before the end, so only success is checked past the first ones.
+    const r = said(await run(0, 2_000));
+    expect(r.filter((l) => l.startsWith("Program data: ")).length).toBeGreaterThan(10);
+    expect(said(await run(0, 3))).toContain(`Program log: emitted 3`);
+  });
+
+  it("takes the buffer an element is copied into for a helper once, however many times its loop runs", async () => {
+    expect(said(await run(1, 2_000))).toContain(`Program log: weighed ${2_000 * (1 + 2 + 3 + 4 + ITEMS)}`);
+  });
+
+  it("formats a Pubkey in a loop of its own", async () => {
+    const r = said(await run(2, 3));
+    expect(r).toContain(`Program log: formatted ${3 * ITEMS}`);
+    expect(r.filter((l) => l.startsWith("Program log: owner ")).length).toBe(ITEMS);
   });
 });
 

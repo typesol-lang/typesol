@@ -28,6 +28,12 @@ export abstract class EmitterBase {
   protected lines: string[] = [];
   /** Declarations placed at the top of the function (buffers reused by every pass through a loop). */
   protected hoisted: string[] = [];
+  /**
+   * The hoisted declarations of heap buffers taken on first use (`T *name = NULL;`), by line: a loop moved into a
+   * function of its own leaves them in its caller and is given a pointer to each (see outlinedLoop), so the buffer is
+   * still taken once per function, not once per call of the loop's.
+   */
+  protected readonly lazyHoists = new Map<string, { name: string; decl: (name: string) => string }>();
   /** Loops moved into C functions of their own (see outlinedLoop), placed before this function. */
   protected outlinedLoops: string[] = [];
   protected indent = 1;
@@ -240,6 +246,13 @@ export abstract class EmitterBase {
 
   protected tmp(prefix = "t"): string {
     return `${prefix}${this.temp++}`;
+  }
+
+  /** Declare a heap buffer pointer at the top of the function, NULL until first use (`decl(name)` declares it). */
+  protected hoistLazy(name: string, decl: (name: string) => string): void {
+    const line = `  ${decl(name)} = NULL;`;
+    this.lazyHoists.set(line, { name, decl });
+    this.hoisted.push(line);
   }
 
   /**
