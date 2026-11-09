@@ -338,7 +338,7 @@ describe("BigVec: a length written after the load", () => {
   });
   const HOW = { view: 1, storeBorsh: 2 } as const;
   const OP = { loop: 0, get: 1, set: 2, slice: 3, retain: 4, push: 5, find: 6, tail: 7 } as const;
-  const run = async (how: number, len: number, op: number, at = 0) => {
+  const run = async (how: number, len: number, op: number, at: number | bigint = 0) => {
     fresh();
     const data = Buffer.alloc(14);
     data[0] = how;
