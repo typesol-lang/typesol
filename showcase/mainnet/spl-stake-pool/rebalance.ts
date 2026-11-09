@@ -13,14 +13,10 @@
 // "Additional" forms add to it in the epoch it was made, through an ephemeral stake account that is split off (and
 // delegated or deactivated) first, then merged into it.
 //
-// The validator list is read in place (loadRaw) and loaded for writing only at the end: the original holds it borrowed
-// mutably throughout, so a client that passes it again in another slot meets a check or a panic first (the panics are
-// ported at the original's locations, below), never the end. Where the port cannot fail as the original does:
-// - those panics log their message ("already mutably borrowed: BorrowError"), a line the original's panic handler
-//   does not write (TypeSOL's panic() always logs one);
-// - a list passed read-only: the original writes it anyway and the runtime refuses that at the instruction's end
-//   (ReadonlyDataModified); the port reaches the same point after the same CPIs and fails loading it for writing
-//   (3006, "account must be writable").
+// The validator list is loaded where the original borrows it mutably and written through its entry at the end. The
+// original holds that borrow throughout, so a client that passes the list again in another slot meets a check or a
+// panic first (the panics are ported at the original's locations, util.ts), never the end. A list passed read-only is
+// written all the same and the runtime refuses it at the end (ReadonlyDataModified), as the original's.
 import {
   type Pubkey,
   type RemainingAccount,
@@ -33,10 +29,8 @@ import {
   currentEpoch,
   findProgramAddressBump,
   loadBorsh,
-  loadRaw,
   loadRawMut,
   log,
-  panic,
   programAt,
   programId,
   pubkey,
@@ -66,11 +60,13 @@ import {
   checkValidatorList,
   checkValidatorStakeAccount,
   checkValidatorStakeAddress,
+  dataLenPanicIfTheList,
   delegatedStakeState,
   minimumDelegation,
   minimumStakeLamports,
   need,
   notDeactivating,
+  panicIfTheList,
   saturatingAdd,
   saturatingSub,
   stakeDeactivate,
@@ -120,7 +116,7 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
   checkReserveStake(pool, reserve);
   checkAccountOwner(listAcct, programId());
   checkListHeaderDecodes(listAcct);
-  const list = loadRaw<ValidatorList>(listAcct);
+  const list = loadRawMut<ValidatorList>(listAcct);
   checkListHeaderValid(listAcct);
 
   const voteKey = vote.key;
@@ -138,7 +134,7 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
     }
     checkTransientSeed(entry.transientSeedSuffix, transientSeed);
     // check_if_stake_activating: the transient stake was delegated in this epoch and is not deactivating.
-    checkNotTheList(transientAcct, listAcct);
+    panicIfTheList(transientAcct, listAcct);
     const t = delegatedStakeState(transientAcct);
     if (!notDeactivating(t) || t.activationEpoch !== epoch) {
       log(`Existing stake ${transientAcct.key} delegated to ${voteKey} not activated in epoch ${epoch}`);
@@ -197,11 +193,8 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
   }
 
   require(entry.transientStakeLamports <= U64_MAX - total, StakePoolError.CalculationFailure);
-  // The list written: loaded mutably only now (the original never gets here with the list passed twice).
-  const written = loadRawMut<ValidatorList>(listAcct);
-  const updated = written.validators.get(u64(i));
-  updated.transientStakeLamports = entry.transientStakeLamports + total;
-  updated.transientSeedSuffix = transientSeed;
+  entry.transientStakeLamports += total;
+  entry.transientSeedSuffix = transientSeed;
 }
 
 /**
@@ -247,13 +240,13 @@ export function decreaseValidatorStake(
   checkValidatorList(pool, listAcct);
   checkAccountOwner(listAcct, programId());
   checkListHeaderDecodes(listAcct);
-  const list = loadRaw<ValidatorList>(listAcct);
+  const list = loadRawMut<ValidatorList>(listAcct);
   checkListHeaderValid(listAcct);
   if (fundRentFromReserve) checkReserveStake(pool, reserve);
 
   // The validator is the one the stake account is delegated to (its owner and authorities are not checked: the
   // address is, and the Stake program checks the rest).
-  if (validatorAcct.key === listAcct.key) panic(BORROW_PANIC_MESSAGE, DATA_LEN_PANIC);
+  dataLenPanicIfTheList(validatorAcct, listAcct);
   const validatorRent = rentExempt(validatorAcct.dataLen);
   const voteKey = delegatedStakeState(validatorAcct).voter;
   const i = list.validators.findIndex((v) => v.voteAccountAddress === voteKey);
@@ -271,7 +264,7 @@ export function decreaseValidatorStake(
     }
     checkTransientSeed(entry.transientSeedSuffix, transientSeed);
     // check_if_stake_deactivating: the transient stake was deactivated in this epoch.
-    checkNotTheList(transientAcct, listAcct);
+    panicIfTheList(transientAcct, listAcct);
     if (delegatedStakeState(transientAcct).deactivationEpoch !== epoch) {
       log(`Existing stake ${transientAcct.key} delegated to ${voteKey} not deactivated in epoch ${epoch}`);
       require(false, StakePoolError.WrongStakeStake);
@@ -345,12 +338,9 @@ export function decreaseValidatorStake(
   }
 
   require(lamports <= entry.activeStakeLamports, StakePoolError.CalculationFailure);
-  // The list written: loaded mutably only now (the original never gets here with the list passed twice).
-  const written = loadRawMut<ValidatorList>(listAcct);
-  const updated = written.validators.get(u64(i));
-  updated.activeStakeLamports = entry.activeStakeLamports - lamports;
-  updated.transientStakeLamports = transientAcct.lamports;
-  updated.transientSeedSuffix = transientSeed;
+  entry.activeStakeLamports -= lamports;
+  entry.transientStakeLamports = transientAcct.lamports;
+  entry.transientSeedSuffix = transientSeed;
 }
 
 /** What both check of the pool: a pool (logged), its withdraw authority, the staker signing, updated this epoch. */
@@ -362,20 +352,6 @@ function checkPoolForRebalance(pool: StakePool, poolKey: Pubkey, withdrawAuth: P
   checkAuthorityWithdraw(pool, withdrawAuth, poolKey);
   checkStaker(pool, staker);
   require(pool.lastUpdateEpoch >= epoch, StakePoolError.StakeListAndPoolOutOfDate);
-}
-
-const BORROW_PANIC_MESSAGE = "already mutably borrowed: BorrowError";
-/** Where the original panics reading an account that is the validator list: get_stake_state's `data.borrow()`. */
-const BORROW_PANIC = "program/src/processor.rs:50:89";
-/** … and AccountInfo::data_len (solana-account-info). */
-const DATA_LEN_PANIC = "src/lib.rs:105:19";
-
-/**
- * The original holds the validator list's data borrowed mutably (RefCell) from its load to the end; reading the data of
- * an account that is the list (passed again in another slot) panics there: "already mutably borrowed".
- */
-function checkNotTheList(a: RemainingAccount, list: RemainingAccount): void {
-  if (a.key === list.key) panic(BORROW_PANIC_MESSAGE, BORROW_PANIC);
 }
 
 /** A transient stake account in use is added to only with its own seed (InvalidSeeds). */

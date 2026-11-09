@@ -38,6 +38,13 @@ export const ERROR_LOG_PREFIX = "Error: ";
 export const PROGRAM_ERROR_LOG_PREFIX = "Error: ";
 /** UpdateValidatorListBalance takes any number of validator / transient stake pairs (7 + 2N accounts). */
 export const MAX_ACCOUNTS = 255n;
+/**
+ * Account data written in place, as the original writes it: the validator list (loadRawMut) and the pool (storeBorsh)
+ * are not checked writable up front, the runtime judges at the end (a read-only account whose bytes changed fails
+ * with ReadonlyDataModified, one written with the bytes it held does not). Where the original's RefCell refuses an
+ * account passed again while the list is borrowed, the port makes the same refusal (util.ts, "The list's borrow").
+ */
+export const NATIVE_ACCOUNT_WRITES = true;
 
 /** @fallback */
 export function process(): void {

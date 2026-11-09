@@ -24,6 +24,7 @@ import {
   findProgramAddressBump,
   log,
   max,
+  panic,
   programId,
   pubkey,
   readData,
@@ -329,6 +330,31 @@ export function checkListHeaderValid(a: RemainingAccount): void {
 
 /** AccountType::ValidatorList as the header's byte. */
 export const LIST_ACCOUNT_TYPE = 2n;
+
+// ---- The list's borrow ------------------------------------------------------------------------------------------------
+//
+// The original borrows the validator list's data mutably (`validator_list_info.data.borrow_mut()`, a RefCell) and
+// holds it until it returns. With the list passed again in another slot, that AccountInfo shares the RefCell: reading
+// its data panics ("already mutably borrowed", which the original's panic handler does not log: only the runtime's
+// "SBF program Panicked in <file> at <line>:<column>" remains), and a CPI naming it fails before the call, where
+// invoke_signed borrows each account of the instruction (ProgramError::AccountBorrowFailed). The port's list is a view
+// of the same bytes, so it makes those refusals itself, where the original meets them. Accounts whose address the
+// original has checked already are never the list (its address is no PDA of the program), and are not compared.
+
+/** get_stake_state's `stake_account_info.data.borrow()` on the list: a silent panic there. */
+export function panicIfTheList(a: RemainingAccount, list: RemainingAccount): void {
+  if (a.key === list.key) panic(null, "program/src/processor.rs:50:89");
+}
+
+/** `AccountInfo::data_len()` on the list: the same, in solana-account-info. */
+export function dataLenPanicIfTheList(a: RemainingAccount, list: RemainingAccount): void {
+  if (a.key === list.key) panic(null, "src/lib.rs:105:19");
+}
+
+/** invoke / invoke_signed borrowing the list as an account of the instruction: AccountBorrowFailed. */
+export function checkNotTheList(a: RemainingAccount, list: RemainingAccount): void {
+  require(a.key !== list.key, ProgramError.AccountBorrowFailed);
+}
 
 // ---- SPL Token / Token-2022 accounts (spl-token-2022 StateWithExtensions::unpack) ---------------------------------
 

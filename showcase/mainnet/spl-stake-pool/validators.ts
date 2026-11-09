@@ -47,6 +47,7 @@ import {
   checkAuthorityWithdraw,
   checkListHeaderDecodes,
   checkListHeaderValid,
+  checkNotTheList,
   checkReserveStake,
   checkStakeProgram,
   checkStaker,
@@ -60,6 +61,7 @@ import {
   minimumReserveLamports,
   need,
   notDeactivating,
+  panicIfTheList,
   saturatingAdd,
   saturatingSub,
   stakeDeactivate,
@@ -128,11 +130,14 @@ export function addValidatorToPool(rest: RemainingAccounts, seed: u32): void {
 
   // create_stake_account: allocate and assign, signed by the stake account's own seeds (no lamports moved).
   const system = programAt<SystemProgram>(rest.get(11n));
+  checkNotTheList(stakeAcct, listAcct);
   const stakeSeeds = seed === 0n ? signer([vote.key, poolAcct.key, bump]) : signer([vote.key, poolAcct.key, seed, bump]);
   system.allocate(stakeAcct, STAKE_ACCOUNT_SPACE, stakeSeeds);
   system.assign(stakeAcct, STAKE_PROGRAM_ID, stakeSeeds);
   const bumpSeed = pool.stakeWithdrawBumpSeed;
   stakeSplit(stake, reserve, withdrawAuth, poolAcct.key, bumpSeed, required, stakeAcct);
+  // The vote account is only looked up in the list (not found, as the list is no vote account of it).
+  checkNotTheList(vote, listAcct);
   stakeDelegate(stake, stakeAcct, vote, withdrawAuth, poolAcct.key, bumpSeed);
 
   list.validators.push({
@@ -179,6 +184,7 @@ export function removeValidatorFromPool(rest: RemainingAccounts): void {
   const list = loadRawMut<ValidatorList>(listAcct);
   checkListHeaderValid(listAcct);
 
+  panicIfTheList(stakeAcct, listAcct);
   const s = delegatedStakeState(stakeAcct);
   const voteKey = s.voter;
   const i = list.validators.findIndex((v) => v.voteAccountAddress === voteKey);

@@ -44,6 +44,7 @@ import {
   checkListHeaderDecodes,
   checkListHeaderValid,
   checkMint,
+  checkNotTheList,
   checkReserveStake,
   checkStakeProgram,
   checkSysvar,
@@ -53,6 +54,7 @@ import {
   feeApply,
   mintTokens,
   need,
+  panicIfTheList,
   saturatingAdd,
   stakeMerge,
   stakeWithdraw,
@@ -102,6 +104,7 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   checkListHeaderValid(listAcct);
 
   // The validator stake account is read before it is looked up (no owner check: the merge makes that one).
+  panicIfTheList(validatorStake, listAcct);
   const before = delegatedStakeState(validatorStake);
   const lamportsBefore = validatorStake.lamports;
   const voteKey = before.voter;
@@ -126,6 +129,10 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   // signed the transaction. A signer is never a program address (off the curve), so it needs no search.
   const stake = programAt<StakeProgram>(rest.get(14n));
   const newAuthority = withdrawAuth.key;
+  // The authorities change on the user's stake account, signed by the deposit authority (a key the manager may set to
+  // anything): neither may be the list.
+  checkNotTheList(userStake, listAcct);
+  checkNotTheList(depositAuth, listAcct);
   if (depositAuth.isSigner) {
     stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "staker");
     stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "withdrawer");
@@ -179,9 +186,13 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   require(!slippage || userTokens >= minimumOut, StakePoolError.ExceededSlippage);
 
   const token = programAt<TokenInterface>(tokenProgram);
+  checkNotTheList(userPool, listAcct);
   mintTokens(token, mint, userPool, withdrawAuth, poolAcct.key, bump, userTokens);
   if (managerTokens > 0n) mintTokens(token, mint, managerFee, withdrawAuth, poolAcct.key, bump, managerTokens);
-  if (referralFee > 0n) mintTokens(token, mint, referrerFee, withdrawAuth, poolAcct.key, bump, referralFee);
+  if (referralFee > 0n) {
+    checkNotTheList(referrerFee, listAcct);
+    mintTokens(token, mint, referrerFee, withdrawAuth, poolAcct.key, bump, referralFee);
+  }
   // The lamports that did not come as stake go to the reserve.
   if (solDeposit > 0n) stakeWithdraw(stake, validatorStake, withdrawAuth, poolAcct.key, bump, reserve, solDeposit);
 

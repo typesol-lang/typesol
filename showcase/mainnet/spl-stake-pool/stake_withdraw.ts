@@ -41,11 +41,13 @@ import {
   checkListHeaderDecodes,
   checkListHeaderValid,
   checkMint,
+  checkNotTheList,
   checkStakeProgram,
   checkSysvar,
   checkTransientStakeAddress,
   checkValidatorList,
   checkValidatorStakeAddress,
+  dataLenPanicIfTheList,
   feeApply,
   managerFeeInfoProblem,
   minimumReserveLamports,
@@ -114,6 +116,7 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   require(withdrawLamports !== 0n, StakePoolError.WithdrawalTooSmall);
   require(!slippage || withdrawLamports >= minimumOut, StakePoolError.ExceededSlippage);
 
+  dataLenPanicIfTheList(splitFrom, listAcct);
   const splitFromRent = rentExempt(splitFrom.dataLen);
   const stake = programAt<StakeProgram>(rest.get(12n));
   const stakeMinimum = stake.getMinimumDelegation();
@@ -215,8 +218,11 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   }
 
   const token = programAt<TokenInterface>(tokenProgram);
+  checkNotTheList(burnFrom, listAcct);
+  checkNotTheList(userAuthority, listAcct);
   burnTokens(token, burnFrom, mint, userAuthority, burnt);
   const bump = pool.stakeWithdrawBumpSeed;
+  checkNotTheList(splitTo, listAcct);
   stakeSplit(stake, splitFrom, withdrawAuth, poolAcct.key, bump, withdrawLamports, splitTo);
   const seeds = signer([poolAcct.key, AUTHORITY_WITHDRAW, bump]);
   stake.authorize(splitTo, CLOCK_SYSVAR_ID, withdrawAuth, userStakeAuthority.key, "staker", seeds);

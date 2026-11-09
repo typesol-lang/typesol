@@ -949,6 +949,75 @@ describe("validators over epochs", () => {
   });
 });
 
+describe("the list and the pool read-only, or the list in another slot", () => {
+  let d: Diff;
+  let payer: KeyPairSigner;
+  let p: Pool;
+  let votes: Address[];
+  beforeAll(async () => {
+    d = await diff();
+    payer = await d.funded(100_000n);
+    p = await d.createPool(payer, { reserveLamports: 50n * SOL, maxValidators: 4, label: "initialize (aliases)" });
+    votes = [];
+    for (let i = 0; i < 3; i++) votes.push(await d.vote(payer));
+    for (const v of votes.slice(0, 2)) await d.ok(`add validator (aliases) ${v}`, payer, [ix.addValidator(p, p.staker, await validatorStake(v, p.pool), v)]);
+  });
+  /** Account `at` passed read-only. */
+  const readOnly = (i: Instruction, at: number) => accounts(i, (l) => (l[at] = { address: l[at]!.address, role: AccountRole.READONLY }));
+
+  it("writes a read-only list or pool all the same: the runtime refuses it at the end only if its bytes changed", async () => {
+    const add = ix.addValidator(p, p.staker, await validatorStake(votes[2]!, p.pool), votes[2]!);
+    expect(await d.both("add validator: list read-only", payer, [readOnly(add, 4)])).toBe(builtin("ReadonlyDataModified"));
+    expect(await d.both("set preferred: list read-only", payer, [readOnly(ix.setPreferredValidator(p, p.staker, "Deposit", votes[0]!), 2)])).toBe("ok");
+    expect(await d.both("cleanup: list read-only, nothing to remove", payer, [readOnly(ix.cleanupRemovedValidatorEntries(p), 1)])).toBe("ok");
+    // The pool written with the bytes it holds, or with others.
+    const referral = (percent: number) => ix.setFee(p, p.manager, { kind: "SolReferral", percent });
+    expect(await d.both("set fee: pool read-only, the same value", payer, [readOnly(referral(50), 0)])).toBe("ok");
+    expect(await d.both("set fee: pool read-only, another value", payer, [readOnly(referral(51), 0)])).toBe(builtin("ReadonlyDataModified"));
+    d.nextEpoch();
+    const pairs = await updatePairs(d, p);
+    expect(await d.both("update list: list read-only, no pairs", payer, [readOnly(ix.updateValidatorListBalance(p, 0, false, []), 2)])).toBe("ok");
+    expect(await d.both("update list: list read-only", payer, [readOnly(ix.updateValidatorListBalance(p, 0, false, pairs), 2)])).toBe(
+      builtin("ReadonlyDataModified"),
+    );
+    await d.ok("update list (aliases)", payer, [ix.updateValidatorListBalance(p, 0, false, pairs)]);
+    expect(await d.both("update pool: list read-only", payer, [readOnly(ix.updateStakePoolBalance(p), 2)])).toBe("ok");
+    const remove = ix.removeValidator(p, p.staker, pairs[1]![0], pairs[1]![1]);
+    expect(await d.both("remove validator: list read-only", payer, [readOnly(remove, 3)])).toBe(builtin("ReadonlyDataModified"));
+    // The preferred deposit validator is votes[0]: removing votes[1] writes the pool with the bytes it holds.
+    expect(await d.both("remove validator: pool read-only", payer, [readOnly(remove, 0)])).toBe("ok");
+    d.nextEpoch();
+    await d.ok("update list (aliases, removed)", payer, [ix.updateValidatorListBalance(p, 0, false, await updatePairs(d, p))]);
+    await d.ok("update pool (aliases, removed)", payer, [ix.updateStakePoolBalance(p)]);
+    expect(await d.both("cleanup: list read-only", payer, [readOnly(ix.cleanupRemovedValidatorEntries(p), 1)])).toBe(builtin("ReadonlyDataModified"));
+    await d.ok("cleanup (aliases)", payer, [ix.cleanupRemovedValidatorEntries(p)]);
+    // Initialize writes both.
+    const q = await d.poolAccounts(payer, { reserveLamports: SOL });
+    const init = ix.initialize(
+      { ...q, manager: q.manager, staker: q.staker.address },
+      { epoch: fee(1n, 100n), withdrawal: fee(1n, 1000n), deposit: fee(1n, 1000n), referral: 0, maxValidators: q.maxValidators },
+    );
+    expect(await d.both("initialize: list read-only", payer, [readOnly(init, 4)])).toBe(builtin("ReadonlyDataModified"));
+    expect(await d.both("initialize: pool read-only", payer, [readOnly(init, 0)])).toBe(builtin("ReadonlyDataModified"));
+  });
+
+  it("refuses the list in another slot where the original's borrow of it does", async () => {
+    // AddValidatorToPool looks the vote account up in the list only: the list itself, as the vote account, reaches
+    // DelegateStake, whose CPI borrows it (AccountBorrowFailed), after the stake account was made and split.
+    const asVote = ix.addValidator(p, p.staker, await validatorStake(p.list, p.pool), p.list);
+    expect(await d.both("add validator: the list as the vote account", payer, [asVote])).toBe(builtin("AccountBorrowFailed"));
+    expect(await d.both("add validator: the list as the stake account", payer, [replace(asVote, 5, p.list)])).toBe(custom(E.InvalidStakeAccountAddress));
+    // RemoveValidatorFromPool reads the stake account's state before it knows its address: a silent panic there.
+    const pairs = await updatePairs(d, p);
+    expect(await d.both("remove validator: the list as the stake account", payer, [ix.removeValidator(p, p.staker, p.list, pairs[0]![1])])).toBe(
+      builtin("ProgramFailedToComplete"),
+    );
+    expect(d.lastLogs).toContain(`Program ${PROGRAM} failed: SBF program Panicked in program/src/processor.rs at 50:89`);
+    // UpdateValidatorListBalance checks both addresses first: the list in a pair is skipped.
+    await d.ok("update list: the list in a pair", payer, [ix.updateValidatorListBalance(p, 0, false, [[p.list, p.list]])]);
+  });
+});
+
 describe("warmup and cooldown over several epochs", () => {
   let d: Diff;
   let payer: KeyPairSigner;
