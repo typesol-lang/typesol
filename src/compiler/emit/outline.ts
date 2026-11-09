@@ -76,11 +76,12 @@ export function declaredNames(toks: string[]): Set<string> {
 /**
  * Names that are the runtime's or the SDK's, never one of a function's variables: runtime functions and macros,
  * generated types and constants, helpers (`fn_…`), syscalls, other loops' functions. The emitter's own temporaries
- * with a `ts_` prefix are labels (`ts_continue_12`), which a loop declares itself.
+ * with a `ts_` prefix are labels (`ts_continue_12`, `ts_next_3`, `ts_ret_7`), which a loop declares itself; runtime
+ * functions whose names end in a number (`ts_base58_32`) are global.
  */
 export function isGlobalName(n: string): boolean {
   return (
-    /^(?:ts_(?!\w*_\d+$)|TS_|TSS_|TSE_|TSV_|TSK_|TSF_|TSW_|Ts[A-Z]|fn_|sol_|Sol[A-Z]|SOL_|__builtin_)/.test(n) ||
+    /^(?:ts_(?!(?:continue|next|ret)_\d+$)|TS_|TSS_|TSE_|TSV_|TSK_|TSF_|TSW_|Ts[A-Z]|fn_|sol_|Sol[A-Z]|SOL_|__builtin_)/.test(n) ||
     /^(?:SUCCESS|NULL|true|false|abort|bool|u?int(?:8|16|32|64)_t|__u?int128_t|size_t)$/.test(n) ||
     /^(?:fn|ix)_\w+__loop\d+$/.test(n) // a loop inside the loop, moved out first
   );
