@@ -139,3 +139,85 @@ describe("NATIVE_ACCOUNT_WRITES", () => {
     expect(compileErrors(src('export const NATIVE_ACCOUNT_WRITES = "yes";\n'))).toMatch(/NATIVE_ACCOUNT_WRITES must be true or false/);
   });
 });
+
+// Several views of one account at one position (test/fixtures/native-writes-views.ts), with the flag and without it.
+const VIEWS = fileURLToPath(new URL("../fixtures/native-writes-views.ts", import.meta.url));
+
+describe("NATIVE_ACCOUNT_WRITES: views of one account", () => {
+  let native: Deployed;
+  let checked: Deployed;
+  let payer: KeyPairSigner;
+  let counter: Address;
+  let list: Address;
+  beforeAll(async () => {
+    native = await deployFile(VIEWS);
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-native-views-"));
+    const file = path.join(dir, "checked.ts");
+    writeFileSync(file, readFileSync(VIEWS, "utf8").replace("NATIVE_ACCOUNT_WRITES = true", "NATIVE_ACCOUNT_WRITES = false"));
+    checked = await deployFile(file, { svm: native.svm });
+    payer = await fundedSigner(native.svm);
+    counter = (await generateKeyPairSigner()).address;
+    list = (await generateKeyPairSigner()).address;
+  });
+  const putCounter = (d: Deployed, count: bigint) => {
+    const data = Buffer.alloc(40);
+    Buffer.from(enc.encode(payer.address)).copy(data, 0);
+    data.writeBigUInt64LE(count, 32);
+    native.svm.setAccount({ address: counter, lamports: 10_000_000n, programAddress: d.programId, executable: false, data } as never);
+  };
+  const putList = (d: Deployed) => {
+    const data = Buffer.alloc(1 + 4 + 8 * 4); // room for 4 items, 1 stored
+    data.writeUInt32LE(1, 1);
+    data.writeBigUInt64LE(9n, 5);
+    native.svm.setAccount({ address: list, lamports: 10_000_000n, programAddress: d.programId, executable: false, data } as never);
+  };
+  let nonce = 0;
+  const call = (d: Deployed, tag: number, by: number, address: Address) =>
+    send(native.svm, payer, [
+      { programAddress: d.programId, accounts: [{ address, role: AccountRole.WRITABLE }], data: new Uint8Array([tag, by, nonce++ & 0xff]) },
+    ]);
+  const each = async (check: (d: Deployed) => Promise<void>) => {
+    await check(native);
+    await check(checked);
+  };
+
+  it("allows a second loadRawMut at the same position only with the flag", async () => {
+    putCounter(native, 5n);
+    const r = await call(native, 0, 3, counter);
+    expect(err(r)).toBe("ok");
+    expect(logs(r)).toContain("Program log: seen 8");
+    putCounter(checked, 5n);
+    expect(customError(await call(checked, 0, 3, counter))).toBe(2040);
+  });
+
+  it("reads through loadRaw what loadRawMut wrote, with or without the flag", () =>
+    each(async (d) => {
+      putCounter(d, 5n);
+      const r = await call(d, 1, 2, counter);
+      expect(err(r)).toBe("ok");
+      expect(logs(r)).toContain("Program log: read 7");
+    }));
+
+  it("sees storeBorsh's bytes through a loadRawMut view, with or without the flag", () =>
+    each(async (d) => {
+      putCounter(d, 5n);
+      const r = await call(d, 2, 4, counter);
+      expect(err(r)).toBe("ok");
+      expect(logs(r)).toContain("Program log: view 9");
+    }));
+
+  it("reads a BigVec push through another view; two writable views of a BigVec only with the flag", async () => {
+    await each(async (d) => {
+      putList(d);
+      const r = await call(d, 3, 4, list);
+      expect(err(r)).toBe("ok");
+      expect(logs(r)).toContain("Program log: items 2 last 4");
+    });
+    putList(native);
+    const r = await call(native, 4, 6, list);
+    expect(err(r)).toBe("ok");
+    expect(logs(r)).toContain("Program log: items 2 2 first 7");
+    putList(checked);
+    expect(customError(await call(checked, 4, 6, list))).toBe(2040);
+  });
+});

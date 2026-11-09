@@ -351,6 +351,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const l = this.lookup(node.expression.text);
         if (l?.type.kind === "vecArg") return { c: `((uint64_t)${l.c}.len)`, type: U64 };
       }
+      // A slice of a Vec argument or the instruction data.
+      if (this.isVecArgView(node.expression)) return { c: `((uint64_t)${this.vecArgView(node.expression)!.c}.len)`, type: U64 };
       let what = "this value";
       try {
         what = this.checker.typeToString(this.checker.getTypeAtLocation(node.expression));
@@ -654,6 +656,13 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   /** `c ? a : b` on values: only the chosen branch runs (its checks and side effects included). */
   protected conditional(node: ts.ConditionalExpression, hint?: ValueType): Value {
+    // One of two accounts: `ephemeral ? rest.get(5n) : reserve`.
+    if (this.looksLikeAccountHandle(node)) return this.accountChoice(node);
+    if (this.looksLikeAccountHandle(node.whenTrue) || this.looksLikeAccountHandle(node.whenFalse))
+      this.fail(
+        node,
+        "choose between accounts of one kind: remaining accounts (rest.get(i), a local or RemainingAccount parameter bound to one) or AccountInfo parameters",
+      );
     if (this.looksLikeStructPlace(node.whenTrue)) this.fail(node, "bind a choice between structs to a const: const o = c ? a.get(i) : b.get(i)");
     const cond = this.expect(this.expr(node.condition, BOOL), BOOL, node.condition);
     const t = this.tmp("cond");
@@ -686,7 +695,12 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     });
     this.line(`}`);
     const vt = type!;
-    if (vt.kind === "account" || vt.kind === "remaining" || vt.kind === "structRef" || vt.kind === "vecArg")
+    if (vt.kind === "account")
+      this.fail(
+        node,
+        "choose between accounts of one kind: remaining accounts (rest.get(i), a local or RemainingAccount parameter bound to one) or AccountInfo parameters",
+      );
+    if (vt.kind === "remaining" || vt.kind === "structRef" || vt.kind === "vecArg")
       this.fail(node, "choose between plain values (integers, booleans, Pubkeys, strings, options)");
     this.lines[declAt] = this.lines[declAt].replace(`/* ${t} */`, `${vt.kind === "pubkey" ? "SolPubkey" : valueC(vt)} ${t};`);
     return vt.kind === "pubkey" ? { c: `(&${t})`, type: vt } : { c: t, type: vt };

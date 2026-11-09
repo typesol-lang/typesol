@@ -6,6 +6,27 @@ codes, and says so here.
 
 ## Unreleased
 
+- `panic(null, "src/lib.rs:105:19")` panics at a location without logging a message, for a native port whose panic
+  handler writes none; `abort()` is Rust's abort on SBF (the allocator's out-of-memory error), the runtime's `abort`
+  syscall: "SBF program panicked", no location.
+- A ternary between accounts, `const source = ephemeral ? rest.get(5n) : reserve`: remaining accounts, locals and
+  `RemainingAccount` helper parameters bound to one, and `AccountInfo` parameters; only the chosen side runs, and the
+  result goes wherever a remaining account does (typed CPIs, `readData`, `loadRaw`, `loadBorsh`, helpers).
+- Local lists on the stack: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, isWritable }])`,
+  `fixedVec([])`, `FixedArray<T, N>` locals, structs and `FixedString<N>` elements (also in `fixedArray<T, N>(fill)`),
+  at most 2 KiB each (a compile error naming the size); `fixedArray(…)` written inline feeds a chain, a list method or
+  `for … of`.
+- New: `FixedVec.pushAll(items)`, a bulk append (a memcpy: about 0.01 CU a byte for 1000 bytes, against 11 for a loop
+  of `push`), 5104 when it does not fit. Declared on `Vec` as well so a Vec still passes for a FixedVec; calling it on
+  a Vec is a compile error.
+- The instruction data is a list: `for … of`, the list methods, `data.slice(start, end?)` (a view; 5104 out of range,
+  where JS would clamp) and `InstructionBytes` helper parameters.
+- `invokeInstruction` in helpers (with their `RemainingAccounts` parameter), with metas and data from local lists, a
+  `FixedArray`, the instruction data or a slice of it: a native port's instruction builder, metas naming accounts by
+  key.
+- `NATIVE_ACCOUNT_WRITES` (no change in behaviour, now tested and documented): a second `loadRawMut` of one account at
+  the same position is allowed with the flag (2040 without), and `loadRaw` reads what `loadRawMut`, `storeBorsh` or a
+  BigVec push wrote, with or without it.
 - Stake CPIs take a sysvar or the stake config by address (a `Pubkey`) as well as an account, as solana_program's
   stake builders name them: found by key among the instruction's accounts, MissingAccount when it was not passed.
 - New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake

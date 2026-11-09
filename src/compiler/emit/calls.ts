@@ -14,6 +14,7 @@ import {
   type ParamKind,
   type ScalarType,
   type StructDef,
+  type ValueType,
   isScalar,
   isWritable,
   sameType,
@@ -138,17 +139,28 @@ export abstract class CallEmitter extends ExpressionEmitter {
           const v = ts.isIdentifier(a) ? this.model.constants.get(a.text)?.value : undefined;
           return typeof v === "string" ? v : undefined;
         };
-        if (args.length > 2 || args.some((a) => text(a) === undefined))
-          this.fail(node, 'panic() takes an optional message and an optional "file:line:column" location: string literals or string constants');
-        const msg = args.length ? text(args[0]!)! : "explicit panic";
+        // A null message: nothing logged, only the runtime's line (a native program whose panic handler logs nothing).
+        const silent = args.length > 0 && args[0]!.kind === ts.SyntaxKind.NullKeyword;
+        if (args.length > 2 || args.some((a, i) => !(i === 0 && silent) && text(a) === undefined))
+          this.fail(
+            node,
+            'panic() takes an optional message (or null to log nothing) and an optional "file:line:column" location: string literals or string constants',
+          );
+        const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
         // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
         // ported program's panic reports it, else this source line.
         const at = args.length > 1 ? text(args[1]!)! : this.location(node);
         const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
         const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
-        this.line(`sol_log(${cString(msg)});`);
+        if (msg !== undefined) this.line(`sol_log(${cString(msg)});`);
         this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
         this.line(`__builtin_unreachable();`);
+        return undefined;
+      }
+      case "abort": {
+        // Rust's abort on SBF: the runtime's `abort` syscall ("SBF program panicked", no location, nothing logged).
+        if (args.length) this.fail(node, "abort() takes no arguments; log the original's message first with log(…) where it writes one");
+        this.line(`abort();`);
         return undefined;
       }
       case "log": {
@@ -735,16 +747,24 @@ export abstract class CallEmitter extends ExpressionEmitter {
       // xs.some(…) and friends on a Vec, FixedArray, FixedVec or Vec argument: a loop with the callback expanded in it.
       if (LIST_METHODS.has(method)) {
         const l = ts.isIdentifier(callee.expression) ? this.lookup(callee.expression.text) : undefined;
-        if (l?.type.kind === "vecArg" || l?.type.kind === "array" || this.isPipeline(callee.expression) || this.peekArray(callee.expression))
+        if (
+          l?.type.kind === "vecArg" ||
+          l?.type.kind === "array" ||
+          this.isPipeline(callee.expression) ||
+          this.peekArray(callee.expression) ||
+          this.isVecArgView(callee.expression) ||
+          this.isInlineArray(callee.expression)
+        )
           return this.listMethod(node, method);
       }
       // A map / filter chain is consumed by a list method, `.length` or for…of, or stored: const ys = xs.map(…).
       if (this.isPipeline(node))
         this.fail(node, `${method} builds a new list: store it (const ys = xs.${method}(…)), or use it right away with a list method, .length or for…of`);
-      // Vec<T> instruction arguments are read-only views.
-      if (ts.isIdentifier(callee.expression)) {
-        const l = this.lookup(callee.expression.text);
-        if (l?.type.kind === "vecArg") {
+      // Vec<T> instruction arguments (and the instruction data) are read-only views; slice gives another one.
+      if (this.isVecArgView(callee.expression)) {
+        if (method === "slice") return this.vecArgView(node);
+        const l = this.vecArgView(callee.expression)!;
+        {
           // Bytes (instruction data, a Vec<u8> argument): little-endian reads at a byte offset, bounds-checked (5104).
           const le: Record<string, [string, number, Value["type"]]> = {
             readU8: ["uint8_t", 1, U8],
@@ -774,7 +794,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
             const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
             return { c: `(((const TS_Str *)${l.c}.ptr)[${idx}])`, type: STRING };
           }
-          if (!isScalar(elem)) this.fail(node, `read a field of the element: ${callee.expression.text}.get(i).field`);
+          if (!isScalar(elem))
+            this.fail(node, `read a field of the element: ${ts.isIdentifier(callee.expression) ? callee.expression.text : "list"}.get(i).field`);
           const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
           const t = this.tmp("el");
           this.line(`${scalarStorageC(elem)} ${t};`);
@@ -959,6 +980,22 @@ export abstract class CallEmitter extends ExpressionEmitter {
       return { at, n };
     };
     switch (method) {
+      case "pushAll": {
+        // Every element of another list appended in one copy (a memcpy, not a loop of pushes).
+        if (info.cap === undefined || info.heap)
+          this.fail(node, "pushAll(items) appends to a FixedVec; a Vec grows one push(value) at a time (for (const x of items) list.push(x, …))");
+        if (args.length !== 1) this.fail(node, "pushAll(items) takes the list to append");
+        needWritable();
+        const src = this.bulkSource(args[0]!, vt.elem);
+        const n = this.tmp("n");
+        const k = this.tmp("k");
+        this.line(`uint64_t ${n} = ${count};`);
+        this.line(`uint64_t ${k} = ${src.count};`);
+        this.line(`if (${k} > ${info.cap} - ${n}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: pushAll() past the FixedVec's room");`);
+        this.line(`ts_memcpy_bulk((uint8_t *)${info.items} + ${n} * ${info.elemSize}, (const uint8_t *)${src.items}, ${k} * ${info.elemSize});`);
+        this.line(`${info.len} = (uint32_t)(${n} + ${k});`);
+        return undefined;
+      }
       case "set": {
         if (args.length !== 2) this.fail(node, "set(index, value) takes two arguments");
         needWritable();
@@ -1345,8 +1382,149 @@ export abstract class CallEmitter extends ExpressionEmitter {
     );
   }
 
+  /** `fixedArray<T, N>(fill)` written inline (a list method, a map / filter chain or `for … of` over it). */
+  protected isInlineArray(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isInlineArray(node.expression);
+    return ts.isCallExpression(node) && this.exportName(node.expression) === "fixedArray";
+  }
+
+  /**
+   * Whether `node` is a read-only view of a Vec argument or the instruction data, without emitting code: a local or
+   * helper parameter holding one, or `.slice(start, end?)` of such a view.
+   */
+  protected isVecArgView(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isVecArgView(node.expression);
+    if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "vecArg";
+    return (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "slice" &&
+      this.isVecArgView(node.expression.expression)
+    );
+  }
+
+  /**
+   * The view `node` names (see isVecArgView) as a `TS_VecArg` C expression. `.slice(start, end)` is elements start..end-1
+   * in place (`end` defaults to the length): unlike JS's slice it does not clamp, an `end` past the length or before
+   * `start` fails with 5104. Undefined when `node` is not such a view.
+   */
+  protected vecArgView(node: ts.Expression): { c: string; type: ValueType & { kind: "vecArg" } } | undefined {
+    if (ts.isParenthesizedExpression(node)) return this.vecArgView(node.expression);
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      return l?.type.kind === "vecArg" ? { c: l.c, type: l.type } : undefined;
+    }
+    if (!this.isVecArgView(node)) return undefined;
+    const call = node as ts.CallExpression;
+    const base = this.vecArgView((call.expression as ts.PropertyAccessExpression).expression)!;
+    if (base.type.optional) this.fail(call, "check the Option argument is not null before slicing it");
+    const elem = base.type.elem;
+    if (elem.kind === "string") this.fail(call, "slice works on lists of fixed-size elements, not on a Vec<string>");
+    if (call.arguments.length < 1 || call.arguments.length > 2)
+      this.fail(call, "slice(start, end?) takes the first element's index and the index after the last one");
+    const start = this.tmp("sl_start");
+    const end = this.tmp("sl_end");
+    this.line(`uint64_t ${start} = ${this.expect(this.expr(call.arguments[0]!, U64), U64, call.arguments[0]!).c};`);
+    this.line(`uint64_t ${end} = ${call.arguments[1] ? this.expect(this.expr(call.arguments[1], U64), U64, call.arguments[1]).c : `(uint64_t)${base.c}.len`};`);
+    this.line(`if (${end} > (uint64_t)${base.c}.len || ${start} > ${end}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: slice out of range");`);
+    const t = this.tmp("view");
+    this.line(`TS_VecArg ${t} = {${base.c}.ptr + ${start} * ${this.fieldBytes(elem)}, (uint32_t)(${end} - ${start})};`);
+    return { c: t, type: { kind: "vecArg", elem } };
+  }
+
+  /**
+   * A list's elements as one contiguous run, for a bulk copy or a CPI: a Vec argument, the instruction data or a slice
+   * of them; a Vec, FixedVec, BigVec (slice) or FixedArray in account data or a local. Undefined for anything else.
+   */
+  protected listSpan(e: ts.Expression): { items: string; count: string; elem: FieldType; view: boolean } | undefined {
+    if (this.isVecArgView(e)) {
+      const v = this.vecArgView(e)!;
+      return { items: `${v.c}.ptr`, count: `((uint64_t)${v.c}.len)`, elem: v.type.elem, view: true };
+    }
+    const r = this.ref(e);
+    if (r?.type.kind === "array") return { items: `${r.lv}`, count: `${r.type.len}ULL`, elem: r.type.elem, view: false };
+    if (r?.vec && r.type.kind === "vec") return { items: r.vec.items, count: vecCount(r.vec), elem: r.type.elem, view: false };
+    return undefined;
+  }
+
+  /** `pushAll(items)`'s source: a list of exactly `elem` (see listSpan). */
+  protected bulkSource(e: ts.Expression, elem: FieldType): { items: string; count: string } {
+    const what = `pushAll takes a list of ${typeName(elem)}: a Vec, FixedVec or FixedArray, a Vec argument, or the instruction data or a slice of it`;
+    const s = this.listSpan(e) ?? this.fail(e, what);
+    if (!sameType(s.elem, elem)) this.fail(e, what);
+    // A Vec argument's booleans and enums are checked as each is read (get, for … of), not on entry.
+    if (s.view && (elem.kind === "bool" || elem.kind === "enum"))
+      this.fail(e, "a Vec argument's booleans and enums are checked as each is read: push them one by one (for … of)");
+    return s;
+  }
+
+  /**
+   * Whether `node` names one account a choice may pick, without emitting code: a remaining account (`rest.get(i)`), a
+   * local or `RemainingAccount` helper parameter bound to one, an `AccountInfo` parameter, or a choice between those.
+   */
+  protected looksLikeAccountHandle(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.looksLikeAccountHandle(node.expression);
+    if (ts.isConditionalExpression(node)) return this.looksLikeAccountHandle(node.whenTrue) && this.looksLikeAccountHandle(node.whenFalse);
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      if (l) return l.type.kind === "account";
+      return this.accountAt(node)?.kind.kind === "info";
+    }
+    return (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "get" &&
+      this.isRemaining(node.expression.expression)
+    );
+  }
+
+  /**
+   * `c ? rest.get(5n) : reserve`: one of two accounts, chosen at run time (only the chosen side runs), as a `TsAccount *`
+   * usable wherever a remaining account is. Each side is a remaining account, a local or helper parameter bound to one,
+   * an `AccountInfo` parameter or another such choice; a `programAt` check is kept when both sides carry the same one.
+   */
+  protected accountChoice(node: ts.ConditionalExpression): Value {
+    const side = (e: ts.Expression): Value => {
+      if (ts.isParenthesizedExpression(e)) return side(e.expression);
+      if (ts.isConditionalExpression(e)) return this.accountChoice(e);
+      if (ts.isIdentifier(e)) {
+        const l = this.lookup(e.text);
+        if (l?.type.kind === "account") return { c: l.c, type: l.type };
+        const a = this.accountAt(e);
+        if (!l && a?.kind.kind === "info") return { c: `a_${this.accountParam(e, "a choice between accounts").name}`, type: { kind: "account" } };
+      }
+      const h = this.handle(e);
+      if (h) return { c: h, type: { kind: "account" } };
+      this.fail(
+        e,
+        "choose between accounts of the same kind: remaining accounts (rest.get(i), a local or RemainingAccount parameter bound to one) or AccountInfo parameters",
+      );
+    };
+    const cond = this.expect(this.expr(node.condition, BOOL), BOOL, node.condition);
+    const t = this.tmp("acct");
+    this.line(`TsAccount *${t};`);
+    this.line(`if (${cond.c}) {`);
+    let a!: Value;
+    let b!: Value;
+    this.block(() => {
+      a = side(node.whenTrue);
+      this.line(`${t} = ${a.c};`);
+    });
+    this.line(`} else {`);
+    this.block(() => {
+      b = side(node.whenFalse);
+      this.line(`${t} = ${b.c};`);
+    });
+    this.line(`}`);
+    const pa = a.type.kind === "account" ? a.type.program : undefined;
+    const pb = b.type.kind === "account" ? b.type.program : undefined;
+    const program = pa && pb && JSON.stringify(pa) === JSON.stringify(pb) ? pa : undefined;
+    return { c: t, type: { kind: "account", ...(program ? { program } : {}) } };
+  }
+
   protected handle(node: ts.Expression): string | undefined {
     if (ts.isParenthesizedExpression(node)) return this.handle(node.expression);
+    if (ts.isConditionalExpression(node) && this.looksLikeAccountHandle(node)) return this.accountChoice(node).c;
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       return l?.type.kind === "account" ? l.c : undefined;
@@ -2010,6 +2188,12 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.snapshotPlace(r.lv, { kind: "dataEnum", name: p.type.name }, h, n);
       }
       case "vecArg": {
+        // A slice of a Vec argument or the instruction data: a view of its own, passed like the list.
+        if (!ts.isIdentifier(n) && this.isVecArgView(n)) {
+          const v = this.vecArgView(n)!;
+          if (!sameType(v.type, p.type)) this.fail(n, `expected a ${typeName(p.type)}`);
+          return v.c;
+        }
         const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
         // An Option<Vec<T>> argument passes as its list once checked against null (TypeScript narrows it).
         const t = l?.type.kind === "vecArg" && l.type.optional ? { ...l.type, optional: undefined } : l?.type;

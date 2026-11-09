@@ -1779,6 +1779,9 @@ static inline bool ts_ix_is(const TsIx *ix, const SolPubkey *program, const uint
 }
 /* How deep in CPIs the program runs: 1 when the transaction calls it directly. */
 extern uint64_t sol_get_stack_height(void);
+/* The runtime's `abort` syscall (Rust's abort on SBF, e.g. the allocator's out-of-memory error): ProgramFailedToComplete,
+ * logged as "SBF program panicked", with no location. */
+extern __attribute__((noreturn)) void abort(void);
 
 /*
  * ---- BigVec (SPL's big_vec) ------------------------------------------------
@@ -1787,6 +1790,16 @@ extern uint64_t sol_get_stack_height(void);
  * thousands). Overlapping ranges are allowed. The "no SDK byte loops" rule is about the SDK's C loops, not this.
  */
 extern void sol_memmove_(void *dst, const void *src, uint64_t n);
+/* The memcpy syscall, for bulk copies of a length known only at run time (FixedVec.pushAll): max(10, n / 250) CU plus
+ * the call, against about 0.74 CU a byte for ts_memcpy's word loop over unaligned data (measured: 1000 bytes of
+ * instruction data), so copies under 32 bytes keep the loop. The ranges never overlap (a FixedVec's free slots and
+ * another list, or its own elements). */
+extern void sol_memcpy_(void *dst, const void *src, uint64_t n);
+#define TS_MEMCPY_SYSCALL_MIN 32
+static inline __attribute__((always_inline)) void ts_memcpy_bulk(void *dst, const void *src, uint64_t n) {
+  if (n >= TS_MEMCPY_SYSCALL_MIN) sol_memcpy_(dst, src, n);
+  else ts_memcpy(dst, src, n);
+}
 /* A BigVec's room: a BigVec struct is only ever a loadRaw view, which sits at a TsAccount's data, right after its
  * data_len (see TsAccount); the elements that fit in the account past the struct (its fixed fields and the length). */
 static inline __attribute__((always_inline)) uint64_t ts_bigvec_cap(const uint8_t *data, uint64_t fixed, uint64_t elem) {
