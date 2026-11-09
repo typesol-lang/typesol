@@ -23,6 +23,7 @@ import {
   type StakeClusterOptions,
   createStakeAccount,
   createVoteAccount,
+  delegateStake,
   readStakeAccount,
 } from "../../src/testing-stake.js";
 
@@ -458,6 +459,25 @@ export const ix = {
   },
 };
 
+/** Stake Authorize (StakeInstruction tag 1): hand the staker or the withdrawer of `stake` to `newAuthority`. */
+export function stakeAuthorize(stake: Address, authority: KeyPairSigner, newAuthority: Address, which: "staker" | "withdrawer"): Instruction {
+  return {
+    programAddress: STAKE,
+    accounts: [
+      { address: stake, role: AccountRole.WRITABLE },
+      { address: CLOCK, role: AccountRole.READONLY },
+      { address: authority.address, role: AccountRole.READONLY_SIGNER, signer: authority },
+    ] as Instruction["accounts"],
+    data: new Uint8Array(Buffer.concat([u32(1), key(newAuthority), u32(which === "staker" ? 0 : 1)])),
+  };
+}
+
+/** Both authorities of `stake` handed to `newAuthority`. */
+export const stakeAuthorizeBoth = (stake: Address, authority: KeyPairSigner, newAuthority: Address) => [
+  stakeAuthorize(stake, authority, newAuthority, "staker"),
+  stakeAuthorize(stake, authority, newAuthority, "withdrawer"),
+];
+
 /** A Borsh String. */
 function str(text: string) {
   const b = Buffer.from(text, "utf8");
@@ -607,6 +627,22 @@ export class Diff {
     const at = await generateKeyPairSigner();
     for (const vm of this.vms) await createStakeAccount(vm, payer, { ...opts, address: at });
     return at.address;
+  }
+
+  /** Delegate a stake account to `vote` in both (the staker signing). */
+  async delegate(payer: KeyPairSigner, stake: Address, vote: Address, staker: KeyPairSigner): Promise<void> {
+    for (const vm of this.vms) await delegateStake(vm, payer, { stake, vote, staker });
+  }
+
+  /** A stake account of `owner` (staker and withdrawer) holding `lamports` past its rent, delegated to `vote` if given. */
+  async userStake(payer: KeyPairSigner, owner: KeyPairSigner, lamportsPastRent: bigint, vote?: Address): Promise<Address> {
+    const at = await this.stakeAccount(payer, {
+      staker: owner.address,
+      withdrawer: owner.address,
+      lamports: this.original.minimumBalanceForRentExemption(STAKE_ACCOUNT_SIZE) + lamportsPastRent,
+    });
+    if (vote) await this.delegate(payer, at, vote, owner);
+    return at;
   }
 
   /** A mint of `program` (SPL Token by default), 9 decimals unless given, with Token-2022 extension initializers. */
@@ -761,6 +797,12 @@ export class Diff {
     ]);
     if (opts.depositAuthority) p.deposit = opts.depositAuthority.address;
     return p;
+  }
+
+  /** The pool's lamports and pool-token supply in the original (StakePool.total_lamports and pool_token_supply). */
+  totals(p: Pool): { lamports: bigint; supply: bigint } {
+    const data = this.data(p.pool);
+    return { lamports: data.readBigUInt64LE(258), supply: data.readBigUInt64LE(266) };
   }
 
   /** The validator list's entries in the original (vote, status, active, transient, last update epoch). */
