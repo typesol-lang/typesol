@@ -60,7 +60,8 @@ codes, and says so here.
   load (writeData, another view, storeBorsh) never reaches past the account. Other programs compile to the same C.
 - `typesol/testing`: epochs and staking. `warpToEpoch` / `nextEpoch` move the Clock consistently (epoch, slot, leader
   schedule epoch, timestamps); `StakeCluster` keeps a cluster-like StakeHistory over one or more LiteSVMs, so warmup
-  and cooldown are rate-limited as on a cluster; `stakeActivation` ports the Stake program's activation math;
+  and cooldown are rate-limited as on a cluster (it refuses a history with a gap or an entry for an epoch that has not
+  ended, when made and at each warp); `stakeActivation` ports the Stake program's activation math;
   `createVoteAccount`, `createStakeAccount`, `delegateStake`, `readStakeAccount`. Checked to the lamport against the
   Stake program in LiteSVM (docs/test-your-program.md#epochs-and-staking).
 - New: `programAt<P>(account)`: a remaining account (or an `AccountInfo` parameter) checked to be that program (one key

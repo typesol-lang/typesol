@@ -443,6 +443,7 @@ describe("StakeCluster against LiteSVM's Stake program", () => {
 
   it("writes an entry for every epoch it passes, keeps 512, and reads an existing history", async () => {
     const svm = new LiteSVM();
+    warpToEpoch(svm, 1n);
     writeStakeHistory(svm, history([[0n, e(5n, 1n, 2n)]]));
     const cluster = new StakeCluster(svm, { base: (ep) => e(1000n + ep) });
     expect(cluster.history.get(0n)).toEqual(e(5n, 1n, 2n));
@@ -459,6 +460,13 @@ describe("StakeCluster against LiteSVM's Stake program", () => {
     writeStakeHistory(gap, history([[0n, e(1n)]]));
     warpToEpoch(gap, 3n);
     expect(() => new StakeCluster(gap)).toThrow(/ends at epoch 0 but the Clock is at epoch 3/);
+    // An entry for the current epoch or a later one: an epoch that has not ended, refused too.
+    for (const at of [3n, 5n]) {
+      const ahead = new LiteSVM();
+      warpToEpoch(ahead, 3n);
+      writeStakeHistory(ahead, history([[at, e(1n)]]));
+      expect(() => new StakeCluster(ahead)).toThrow(new RegExp(`entry for epoch ${at} but the Clock is at epoch 3`));
+    }
     // Only tracked accounts count when allStakeAccounts is false.
     const payer = await generateKeyPairSigner();
     svm.airdrop(payer.address, lamports(100n * SOL));
@@ -473,6 +481,37 @@ describe("StakeCluster against LiteSVM's Stake program", () => {
         .delegations()
         .map((d) => d.stake),
     ).toEqual([10n * SOL - svm.minimumBalanceForRentExemption(200n)]);
+  });
+});
+
+describe("StakeCluster.warpToEpoch", () => {
+  it("refuses a Clock moved past the history outside the cluster (epochs left without an entry)", () => {
+    const svm = new LiteSVM();
+    const cluster = new StakeCluster(svm, { base: (ep) => e(1000n + ep) });
+    cluster.nextEpoch();
+    expect([...cluster.history.keys()]).toEqual([0n]);
+    // The plain warpToEpoch moves the Clock only: epochs 1 and 2 would have no entry.
+    warpToEpoch(svm, 3n);
+    expect(() => cluster.nextEpoch()).toThrow(/ends at epoch 0 but the Clock is at epoch 3/);
+    expect(() => cluster.warpToEpoch(5n)).toThrow(/ends at epoch 0 but the Clock is at epoch 3/);
+    expect([...cluster.history.keys()]).toEqual([0n]);
+    expect(cluster.epoch).toBe(3n);
+  });
+
+  it("from a new LiteSVM, moves the slot back to the epoch's first slot on the first warp, the time forward", () => {
+    const svm = new LiteSVM();
+    const before = svm.getClock();
+    expect([before.epoch, before.slot]).toEqual([0n, 454_464_000n]);
+    const cluster = new StakeCluster(svm);
+    cluster.nextEpoch();
+    const after = svm.getClock();
+    expect(after.epoch).toBe(1n);
+    expect(after.slot).toBe(firstSlotInEpoch(svm.getEpochSchedule(), 1n)); // 32: the warmup schedule's
+    expect(after.slot < before.slot).toBe(true);
+    expect(after.unixTimestamp > before.unixTimestamp).toBe(true);
+    // From then on, each warp moves the slot forward.
+    cluster.nextEpoch();
+    expect(svm.getClock().slot > after.slot).toBe(true);
   });
 });
 

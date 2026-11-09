@@ -432,11 +432,16 @@ export class StakeCluster {
     const first = this.svms[0]!;
     this.entries = readStakeHistory(first);
     const clock = first.getClock();
-    // The Stake program finds an entry by its distance from the newest one, which must be the previous epoch's.
-    const newest = [...this.entries.keys()].reduce((a, b) => (b > a ? b : a), -1n);
+    // The Stake program finds an entry by its distance from the newest one, which must be the previous epoch's: an
+    // older one leaves a gap, one for this epoch or later is an epoch that has not ended.
+    const newest = this.newestEntry();
     if (newest >= 0n && newest < clock.epoch - 1n)
       throw new Error(
         `StakeCluster: the StakeHistory ends at epoch ${newest} but the Clock is at epoch ${clock.epoch}; entries up to ${clock.epoch - 1n} are needed`,
+      );
+    if (newest >= clock.epoch)
+      throw new Error(
+        `StakeCluster: the StakeHistory has an entry for epoch ${newest} but the Clock is at epoch ${clock.epoch}; its newest entry must be epoch ${clock.epoch - 1n}'s (an epoch that ended)`,
       );
     const schedule = first.getEpochSchedule();
     for (const svm of this.svms.slice(1)) {
@@ -502,9 +507,21 @@ export class StakeCluster {
     return epoch;
   }
 
-  /** End epochs one by one (an entry for each, none skipped) up to `epoch`, then move every VM to its first slot. */
+  /**
+   * End epochs one by one (an entry for each, none skipped) up to `epoch`, then move every VM to its first slot. The
+   * history must still end at the epoch before the Clock's (or be empty): a Clock moved past it some other way (the
+   * plain `warpToEpoch`, `setClock`) would leave epochs without an entry, which the Stake program misreads, so that is
+   * refused. A new LiteSVM's Clock is at epoch 0 but at slot 454,464,000, so the first warp from one moves the slot back
+   * (to the first slot of `epoch` by the EpochSchedule); the timestamps still move forward.
+   */
   warpToEpoch(epoch: bigint): void {
     const first = this.svms[0]!;
+    const now = first.getClock().epoch;
+    const newest = this.newestEntry();
+    if (newest >= 0n && newest !== now - 1n)
+      throw new Error(
+        `StakeCluster.warpToEpoch: the StakeHistory ends at epoch ${newest} but the Clock is at epoch ${now} (moved outside the cluster?); its newest entry must be epoch ${now - 1n}'s`,
+      );
     const clock = clockAtEpoch(first, epoch, this.opts);
     if (!clock) return;
     for (let e = first.getClock().epoch; e < epoch; e++) {
@@ -513,6 +530,11 @@ export class StakeCluster {
     }
     writeStakeHistory(this.svms, this.entries);
     for (const svm of this.svms) applyClock(svm, clock);
+  }
+
+  /** The newest epoch with an entry, or -1 for an empty history. */
+  private newestEntry(): bigint {
+    return [...this.entries.keys()].reduce((a, b) => (b > a ? b : a), -1n);
   }
 
   private rateEpoch(): bigint | null {
