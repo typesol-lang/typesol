@@ -25,11 +25,11 @@ import {
   type RemainingAccounts,
   type u8,
   ProgramError,
+  abort,
   findProgramAddress,
   instructionData,
   loadBorsh,
   log,
-  panic,
   programId,
   pubkey,
   require,
@@ -140,7 +140,11 @@ function borshStringEnd(rest: RemainingAccounts, at: u64, k: u64): u64 {
     // The Strings before this one hold their bytes (all of the data since the tag, but their lengths).
     const held = at - 1n - 4n * k;
     const allocated = len < BORSH_FIRST_ALLOCATION ? len : BORSH_FIRST_ALLOCATION;
-    if (held + allocated > decodeHeapLeft(rest)) panic("Error: memory allocation failed, out of memory");
+    if (held + allocated > decodeHeapLeft(rest)) {
+      // The allocator's error handler: this line, then Rust's abort (the runtime's "SBF program panicked").
+      log("Error: memory allocation failed, out of memory");
+      abort();
+    }
     require(false, ProgramError.BorshIoError);
   }
   require(isUtf8(start, start + len), ProgramError.BorshIoError);
