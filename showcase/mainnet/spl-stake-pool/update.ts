@@ -227,10 +227,11 @@ export function updateStakePoolBalance(rest: RemainingAccounts): void {
   let total = saturatingSub(reserve.lamports, minimumReserveLamports(rentExempt(reserve.dataLen)));
   for (const v of list.validators) {
     require(v.lastUpdateEpoch >= epoch, StakePoolError.StakeListOutOfDate);
-    // stake_lamports(): active + transient, then the running total, each checked.
-    require(v.activeStakeLamports <= U64_MAX - v.transientStakeLamports, StakePoolError.CalculationFailure);
+    // stake_lamports(): active + transient, then the running total, each checked. Each check is written as `b <= MAX
+    // - a` before `a + b`: the same comparison as the addition's own overflow check, which clang then drops.
+    require(v.transientStakeLamports <= U64_MAX - v.activeStakeLamports, StakePoolError.CalculationFailure);
     const lamports = v.activeStakeLamports + v.transientStakeLamports;
-    require(total <= U64_MAX - lamports, StakePoolError.CalculationFailure);
+    require(lamports <= U64_MAX - total, StakePoolError.CalculationFailure);
     total += lamports;
   }
   const reward = saturatingSub(total, previousLamports);
