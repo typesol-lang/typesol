@@ -210,6 +210,23 @@ export interface RemainingSlice extends Iterable<CpiAccount> {
 export declare function remainingAccounts(): RemainingAccounts;
 
 /**
+ * A remaining account (or an AccountInfo parameter) as a typed program: `const stake = programAt<StakeProgram>(rest.get(12n))`,
+ * then `stake.split(…)`, `token.mintTo(…)`, `system.transfer(…)` as on a declared program parameter, and passed to
+ * helpers that take that program type. Its key is checked once, here (ProgramError.IncorrectProgramId otherwise;
+ * TokenInterface: either token program). The typed methods take remaining accounts as well as declared ones: the
+ * compiler checks declared parameters (writable, signer), the called program and the runtime check remaining accounts.
+ */
+export declare function programAt<
+  P extends StakeProgram | SystemProgram | TokenProgram | Token2022Program | TokenInterface | AssociatedTokenProgram | MemoProgram,
+>(account: RemainingAccount | AccountInfo): P;
+/**
+ * A remaining account (or an AccountInfo parameter) as a sysvar read in place: `sysvarAt<StakeHistorySysvar>(acct)`,
+ * bound to a const, then `.count`, `.latestEpoch`, `.effective(epoch)` …. Its key is checked once, here (ProgramError.InvalidArgument
+ * otherwise, as solana_program's `Sysvar::from_account_info`).
+ */
+export declare function sysvarAt<S extends StakeHistorySysvar>(account: RemainingAccount | AccountInfo): S;
+
+/**
  * Read a struct of this program from a remaining account or an `AccountInfo` parameter (Anchor's
  * `AccountLoader::try_from` on an `UncheckedAccount`): owner, discriminator and size are checked.
  * `loadAccountMut` also requires it to be writable, not aliased by another writable account, and not already loaded
@@ -397,12 +414,23 @@ export interface MemoProgram extends AccountMeta {
 /**
  * The native Stake program (`Stake1111…`). Its address is checked. The sysvar and config accounts it reads are
  * passed in, as anchor-spl's stake module does (`SysvarRent…`, `SysvarC1ock…`, `SysvarStakeHistory…`,
- * `StakeConfig…`). Each authority signs: a wallet, or a PDA of this program with `signerSeeds`.
+ * `StakeConfig…`). Each authority signs: a wallet, or a PDA of this program with `signerSeeds`. The instructions and
+ * their accounts are solana-stake-interface's (`StakeInstruction`, bincode with a u32 tag). Every account may also be
+ * a remaining account (then the Stake program and the runtime check that it is writable and signed where it must).
  */
 export interface StakeProgram extends AccountMeta {
   readonly __stake_program: void;
-  /** Initialize a stake account (created with 200 bytes, owned by the Stake program), with no lockup. */
-  initialize(stake: AccountMeta, rentSysvar: AccountMeta, staker: Pubkey, withdrawer: Pubkey): void;
+  /**
+   * Initialize a stake account (created with 200 bytes, owned by the Stake program), with no lockup or with `lockup`:
+   * no withdrawal before `unixTimestamp` and `epoch` unless `custodian` signs.
+   */
+  initialize(
+    stake: AccountMeta,
+    rentSysvar: AccountMeta,
+    staker: Pubkey,
+    withdrawer: Pubkey,
+    lockup?: { unixTimestamp: i64; epoch: u64; custodian: Pubkey },
+  ): void;
   /** Hand the staker or the withdrawer authority to `newAuthority`. */
   authorize(
     stake: AccountMeta,
@@ -410,6 +438,16 @@ export interface StakeProgram extends AccountMeta {
     authority: AccountMeta,
     newAuthority: Pubkey,
     which: "staker" | "withdrawer",
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** The same, with the lockup custodian signing (to change the withdrawer while a lockup is in force). */
+  authorize(
+    stake: AccountMeta,
+    clockSysvar: AccountMeta,
+    authority: AccountMeta,
+    newAuthority: Pubkey,
+    which: "staker" | "withdrawer",
+    custodian: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
   delegate(
@@ -421,6 +459,8 @@ export interface StakeProgram extends AccountMeta {
     staker: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  /** Move `lamports` (and their share of the stake) into `splitStake`: 200 bytes, owned by the Stake program, uninitialized. */
+  split(stake: AccountMeta, splitStake: AccountMeta, staker: AccountMeta, lamports: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   deactivate(stake: AccountMeta, clockSysvar: AccountMeta, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   withdraw(
     stake: AccountMeta,
@@ -431,11 +471,38 @@ export interface StakeProgram extends AccountMeta {
     lamports: u64,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  /** The same, with the lockup custodian signing (to withdraw while a lockup is in force). */
+  withdraw(
+    stake: AccountMeta,
+    to: AccountMeta,
+    clockSysvar: AccountMeta,
+    stakeHistorySysvar: AccountMeta,
+    withdrawer: AccountMeta,
+    lamports: u64,
+    custodian: AccountMeta,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** Merge `source` into `destination` (same authorities and lockup, compatible states); `source` is drained. */
+  merge(
+    destination: AccountMeta,
+    source: AccountMeta,
+    clockSysvar: AccountMeta,
+    stakeHistorySysvar: AccountMeta,
+    staker: AccountMeta,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /**
+   * The cluster's minimum delegation in lamports: a GetMinimumDelegation CPI and the u64 the Stake program returns
+   * (solana_program's `stake::tools::get_minimum_delegation`, failing as it does: InvalidInstructionData without
+   * return data or with another size, IncorrectProgramId when another program returned it).
+   */
+  getMinimumDelegation(): u64;
 }
 
 /**
  * The StakeHistory sysvar (`SysvarStakeHistory…`), read as an account: the cluster's stake per recent epoch (up to
- * 512, newest first), as the Stake program uses it for warmup and cooldown. The address is checked.
+ * 512, newest first), as the Stake program uses it for warmup and cooldown. The address is checked. A remaining
+ * account becomes one with `sysvarAt<StakeHistorySysvar>(acct)`.
  */
 export interface StakeHistorySysvar extends AccountMeta {
   readonly __stake_history: void;
@@ -468,21 +535,21 @@ export interface SlotHashesSysvar extends AccountMeta {
 export interface AssociatedTokenProgram extends AccountMeta {
   readonly __ata_program: void;
   create(
-    payer: Mut<Signer>,
+    payer: Mut<Signer> | RemainingAccount,
     ata: AccountMeta,
     owner: AccountMeta,
     mint: AccountMeta,
-    systemProgram: SystemProgram,
-    tokenProgram: TokenProgram | Token2022Program | TokenInterface,
+    systemProgram: SystemProgram | RemainingAccount,
+    tokenProgram: TokenProgram | Token2022Program | TokenInterface | RemainingAccount,
   ): void;
   /** Like create, but succeeds if the account already exists. */
   createIdempotent(
-    payer: Mut<Signer>,
+    payer: Mut<Signer> | RemainingAccount,
     ata: AccountMeta,
     owner: AccountMeta,
     mint: AccountMeta,
-    systemProgram: SystemProgram,
-    tokenProgram: TokenProgram | Token2022Program | TokenInterface,
+    systemProgram: SystemProgram | RemainingAccount,
+    tokenProgram: TokenProgram | Token2022Program | TokenInterface | RemainingAccount,
   ): void;
 }
 /** The associated token account address of `owner` for `mint` under `tokenProgram`. */
@@ -1710,14 +1777,21 @@ export interface SystemProgram extends AccountMeta {
    * Create `account` with `space` bytes owned by `owner`, funded by `payer`. The new account signs: a
    * `Mut<Signer>` keypair, or a PDA of this program when you pass its `signerSeeds` (with the bump).
    */
-  createAccount(payer: Mut<Signer>, account: AccountMeta, lamports: u64, space: u64, owner: Pubkey, signerSeeds?: Seed[] | SignerSeeds): void;
+  createAccount(
+    payer: Mut<Signer> | RemainingAccount,
+    account: AccountMeta,
+    lamports: u64,
+    space: u64,
+    owner: Pubkey,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
   /**
    * Anchor's `init` with `seeds`, `space` and `owner = …` on an `UncheckedAccount`: `account` must be the PDA of this
    * program for `seeds` (no bump; 2006 otherwise); it is created with `space` bytes owned by `owner`, or, when someone
    * already funded the address, topped up to rent, allocated and assigned. Returns the bump. Among the creates a body
    * starts with, it runs before the other accounts' constraints, as Anchor's `init` does.
    */
-  createPda(payer: Mut<Signer>, account: Mut<AccountInfo>, space: u64, owner: Pubkey, seeds: Seed[]): u8;
+  createPda(payer: Mut<Signer> | RemainingAccount, account: Mut<AccountInfo> | RemainingAccount, space: u64, owner: Pubkey, seeds: Seed[]): u8;
   /** System Allocate: give `account` `space` bytes of data. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
   allocate(account: AccountMeta, space: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** System Assign: make `owner` the account's owner. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
@@ -1725,32 +1799,39 @@ export interface SystemProgram extends AccountMeta {
 }
 
 /**
+ * A token account or mint argument of a token CPI: a `TokenAccount` / `Mint` parameter (checked on entry), an
+ * `AccountInfo` parameter, or a remaining account (the token program checks those).
+ */
+type TokenAccountArg = TokenAccount | AccountInfo | RemainingAccount;
+type MintArg = Mint | AccountInfo | RemainingAccount;
+
+/**
  * Token program operations. Pass `signerSeeds` (including the bump) when `authority` is a PDA of this program.
  * Prefer transferChecked: Token-2022 mints with extensions (transfer fees, hooks) require it.
  */
 interface TokenOps {
-  transfer(from: TokenAccount, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  transferChecked(from: TokenAccount, mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  transfer(from: TokenAccountArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  transferChecked(from: TokenAccountArg, mint: MintArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** `mint`: a Mut<Mint>, or a mint this instruction created and initialized (Mut<Signer> / Mut<AccountInfo>). */
   /** `to`: a Mut<TokenAccount>, or a Mut<AccountInfo> token account this instruction created (e.g. with `ata.create`). */
-  mintTo(mint: Mint | AccountMeta, to: TokenAccount | AccountInfo, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  burn(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  mintTo(mint: MintArg | AccountMeta, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  burn(from: TokenAccountArg, mint: MintArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Close a token account (empty), or under Token-2022 a mint with no supply left (its MintCloseAuthority signs). */
-  closeAccount(account: TokenAccount | Mint, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  closeAccount(account: TokenAccountArg | MintArg, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Let `delegate` move up to `amount` from `source`. */
-  approve(source: TokenAccount, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  revoke(source: TokenAccount, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  approve(source: TokenAccountArg, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  revoke(source: TokenAccountArg, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** The checked forms read the decimals from `mint`; Token-2022 mints with some extensions require them. */
-  approveChecked(source: TokenAccount, mint: Mint, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  mintToChecked(mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  burnChecked(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  approveChecked(source: TokenAccountArg, mint: MintArg, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  mintToChecked(mint: MintArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  burnChecked(from: TokenAccountArg, mint: MintArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Change or remove (null) an authority of a mint or token account: `AuthorityType.MintTokens`, …. */
   setAuthority(target: AccountMeta, currentAuthority: AccountMeta, authorityType: u8, newAuthority: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
   /** `account`: a Mut<TokenAccount>, or (freezeAccount) a Mut<AccountInfo> token account this instruction created. */
-  freezeAccount(account: TokenAccount | AccountInfo, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
-  thawAccount(account: TokenAccount, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  freezeAccount(account: TokenAccountArg, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  thawAccount(account: TokenAccountArg, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Update a wrapped-SOL account's amount after lamports were sent to it. */
-  syncNative(account: TokenAccount): void;
+  syncNative(account: TokenAccountArg): void;
   /** Initialize a mint created with systemProgram.createAccount (InitializeMint2: no rent sysvar needed). */
   initializeMint2(mint: AccountMeta, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): void;
   /** Initialize a token account created with systemProgram.createAccount (InitializeAccount3). */
@@ -1831,9 +1912,9 @@ interface Token2022Ops {
   updateInterestRate(mint: AccountMeta, rateAuthority: AccountMeta, rate: i16, signerSeeds?: Seed[] | SignerSeeds): void;
   /** TransferFee TransferCheckedWithFee: `fee` must be the fee Token-2022 computes for `amount`; decimals are the mint's. */
   transferCheckedWithFee(
-    from: TokenAccount,
-    mint: Mint,
-    to: TokenAccount,
+    from: TokenAccountArg,
+    mint: MintArg,
+    to: TokenAccountArg,
     authority: AccountMeta,
     amount: u64,
     fee: u64,
@@ -1842,7 +1923,7 @@ interface Token2022Ops {
   /** TransferFee HarvestWithheldTokensToMint: move withheld fees from the given token accounts (passed on writable as they were passed) to the mint. */
   harvestWithheldTokensToMint(mint: AccountMeta, sources: RemainingAccounts | RemainingSlice): void;
   /** TransferFee WithdrawWithheldTokensFromMint: the fees held by the mint to `destination`. */
-  withdrawWithheldTokensFromMint(mint: AccountMeta, destination: TokenAccount, withdrawAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  withdrawWithheldTokensFromMint(mint: AccountMeta, destination: TokenAccountArg, withdrawAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** TransferFee SetTransferFee: takes effect two epochs later. */
   setTransferFee(mint: AccountMeta, configAuthority: AccountMeta, basisPoints: u16, maximumFee: u64, signerSeeds?: Seed[] | SignerSeeds): void;
 

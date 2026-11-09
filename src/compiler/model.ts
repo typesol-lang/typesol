@@ -49,8 +49,11 @@ export type ValueType =
   | { kind: "optionArg"; option: FieldType & { kind: "option" } }
   /** A Solana `SignerSeeds` helper parameter: the seeds of one PDA signature, built with signer([...]). */
   | { kind: "signerSeeds" }
-  /** An extra account from remainingAccounts(): `SolAccountInfo *`. */
-  | { kind: "account" }
+  /**
+   * An extra account from remainingAccounts(): `SolAccountInfo *`. `program`: what `programAt<P>(acct)` /
+   * `sysvarAt<S>(acct)` checked it is (its typed methods then apply).
+   */
+  | { kind: "account"; program?: ParamKind }
   /** The remainingAccounts() list itself. */
   | { kind: "remaining" }
   /** One instruction of the transaction (InstructionsSysvar.get(i)): a `TsIx` view into the sysvar. */

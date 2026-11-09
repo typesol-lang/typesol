@@ -1,23 +1,24 @@
 import ts from "typescript";
-import { type AccountParam, type ValueType, isWritable } from "../model.js";
-import { U64, U8, BOOL, PUBKEY, STRING, cBytes, optC } from "./shared.js";
+import { type ValueType, isWritable } from "../model.js";
+import { U64, U8, I64, BOOL, PUBKEY, STRING, type CpiAcct, type CpiProgram, type Value, cBytes, cString, optC } from "./shared.js";
 import { CreateEmitter } from "./create.js";
 
 /** SPL Token and Token-2022 instructions (`tokenProgram.transfer(…)` and the rest) and the ATA program's. */
 export abstract class TokenEmitter extends CreateEmitter {
-  protected tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
+  protected tokenOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined {
     const a = node.arguments;
-    const p = `a_${program.name}`;
-    // `created`: also a Mut<AccountInfo> token account this instruction created (an associated token account).
-    const want = (n: ts.Expression, kind: "token" | "mint", mut: boolean, what: string, created = false) => {
-      const acct = this.accountParam(n, what);
-      if (created && acct.kind.kind === "info" && isWritable(acct.kind)) return acct;
-      if (acct.kind.kind !== kind || (mut && !(acct.kind as { mut: boolean }).mut))
-        this.fail(
-          n,
-          `${what} must be a ${mut ? "Mut<" : ""}${kind === "token" ? "TokenAccount" : "Mint"}${mut ? ">" : ""}${created ? ", or a Mut<AccountInfo> token account this instruction created" : ""}`,
-        );
-      return acct;
+    const p = program.c;
+    // A TokenAccount / Mint parameter, or an AccountInfo one (a token account this instruction created, an account a
+    // native port takes unchecked) or a remaining account: the token program checks those.
+    const want = (n: ts.Expression, kind: "token" | "mint", mut: boolean, what: string): CpiAcct => {
+      const x = this.cpiAccount(n, what);
+      const acct = x.param;
+      if (!acct || (acct.kind.kind === "info" && (!mut || isWritable(acct.kind)))) return x;
+      if (acct.kind.kind !== kind || (mut && !(acct.kind as { mut: boolean }).mut)) {
+        const type = kind === "token" ? "TokenAccount" : "Mint";
+        this.fail(n, `${what} must be a ${mut ? `Mut<${type}> or a Mut<AccountInfo>` : `${type} or an AccountInfo`}`);
+      }
+      return x;
     };
     const arity = (fixed: number) => {
       if (a.length !== fixed && a.length !== fixed + 1) this.fail(node, `${method} takes ${fixed} arguments plus optional signerSeeds`);
@@ -28,10 +29,10 @@ export abstract class TokenEmitter extends CreateEmitter {
         arity(4);
         const from = want(a[0], "token", true, "the source");
         const to = want(a[1], "token", true, "the destination");
-        const auth = this.accountParam(a[2], "the authority");
+        const auth = this.cpiAccount(a[2], "the authority");
         const amt = amount(a[3]);
         const s = this.signerSeeds(a[4], auth, a[2]);
-        this.line(`TS_TRY(ts_token_transfer(params, ${p}, a_${from.name}, a_${to.name}, a_${auth.name}, ${amt}, ${s.name}, ${s.count}));`);
+        this.line(`TS_TRY(ts_token_transfer(params, ${p}, ${from.c}, ${to.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
       case "transferChecked": {
@@ -39,35 +40,34 @@ export abstract class TokenEmitter extends CreateEmitter {
         const from = want(a[0], "token", true, "the source");
         const mint = want(a[1], "mint", false, "the mint");
         const to = want(a[2], "token", true, "the destination");
-        const auth = this.accountParam(a[3], "the authority");
+        const auth = this.cpiAccount(a[3], "the authority");
         const amt = amount(a[4]);
         const s = this.signerSeeds(a[5], auth, a[3]);
-        this.line(
-          `TS_TRY(ts_token_transfer_checked(params, ${p}, a_${from.name}, a_${mint.name}, a_${to.name}, a_${auth.name}, ${amt}, ${s.name}, ${s.count}));`,
-        );
+        this.line(`TS_TRY(ts_token_transfer_checked(params, ${p}, ${from.c}, ${mint.c}, ${to.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
       case "mintTo": {
         arity(4);
         // A Mut<Mint>, or a mint created and initialized earlier in this instruction (Mut<Signer> / Mut<AccountInfo>).
-        const mint = this.accountParam(a[0], "the mint");
-        if (!isWritable(mint.kind) || (mint.kind.kind !== "mint" && mint.kind.kind !== "signer" && mint.kind.kind !== "info"))
+        const mint = this.cpiAccount(a[0], "the mint");
+        const mp = mint.param;
+        if (mp && (!isWritable(mp.kind) || (mp.kind.kind !== "mint" && mp.kind.kind !== "signer" && mp.kind.kind !== "info")))
           this.fail(a[0], "the mint must be a Mut<Mint>, or a Mut<Signer> / Mut<AccountInfo> mint this instruction created");
-        const to = want(a[1], "token", true, "the destination", true);
-        const auth = this.accountParam(a[2], "the mint authority");
+        const to = want(a[1], "token", true, "the destination");
+        const auth = this.cpiAccount(a[2], "the mint authority");
         const amt = amount(a[3]);
         const s = this.signerSeeds(a[4], auth, a[2]);
-        this.line(`TS_TRY(ts_token_mint_to(params, ${p}, a_${mint.name}, a_${to.name}, a_${auth.name}, ${amt}, ${s.name}, ${s.count}));`);
+        this.line(`TS_TRY(ts_token_mint_to(params, ${p}, ${mint.c}, ${to.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
       case "burn": {
         arity(4);
         const from = want(a[0], "token", true, "the burned account");
         const mint = want(a[1], "mint", true, "the mint");
-        const auth = this.accountParam(a[2], "the authority");
+        const auth = this.cpiAccount(a[2], "the authority");
         const amt = amount(a[3]);
         const s = this.signerSeeds(a[4], auth, a[2]);
-        this.line(`TS_TRY(ts_token_burn(params, ${p}, a_${from.name}, a_${mint.name}, a_${auth.name}, ${amt}, ${s.name}, ${s.count}));`);
+        this.line(`TS_TRY(ts_token_burn(params, ${p}, ${from.c}, ${mint.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
       case "initializeMetadata": {
@@ -75,42 +75,38 @@ export abstract class TokenEmitter extends CreateEmitter {
           this.fail(node, "metadata lives in Token-2022 mints; use Token2022Program or TokenInterface");
         if (a.length !== 6 && a.length !== 7) this.fail(node, "initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri, signerSeeds?)");
         // The mint may have been created and initialized earlier in this instruction (a Mut<Signer> or Mut<AccountInfo>).
-        const mint = this.accountParam(a[0], "the mint");
-        if (!isWritable(mint.kind)) this.fail(a[0], "the mint must be writable (Mut<...>)");
-        const ua = this.accountParam(a[1], "the update authority");
-        const ma = this.accountParam(a[2], "the mint authority");
+        const mint = this.cpiAccount(a[0], "the mint");
+        if (mint.param && !isWritable(mint.param.kind)) this.fail(a[0], "the mint must be writable (Mut<...>)");
+        const ua = this.cpiAccount(a[1], "the update authority");
+        const ma = this.cpiAccount(a[2], "the mint authority");
         const [nm, sym, uri] = [a[3], a[4], a[5]].map((n) => this.expect(this.expr(n, STRING), STRING, n).c);
         const s = this.signerSeeds(a[6], ma, a[2]);
-        this.line(`TS_TRY(ts_t22_init_metadata(params, ${p}, a_${mint.name}, a_${ua.name}, a_${ma.name}, ${nm}, ${sym}, ${uri}, ${s.name}, ${s.count}));`);
+        this.line(`TS_TRY(ts_t22_init_metadata(params, ${p}, ${mint.c}, ${ua.c}, ${ma.c}, ${nm}, ${sym}, ${uri}, ${s.name}, ${s.count}));`);
         return undefined;
       }
       case "closeAccount": {
         arity(3);
         // A token account, or (Token-2022, with a MintCloseAuthority and no supply left) a mint.
-        const acct = this.accountParam(a[0], "the closed account");
-        if (!((acct.kind.kind === "token" || acct.kind.kind === "mint") && (acct.kind as { mut: boolean }).mut))
-          this.fail(a[0], "the closed account must be a Mut<TokenAccount> or a Mut<Mint>");
-        const dest = this.accountParam(a[1], "the destination");
-        if (!isWritable(dest.kind)) this.fail(a[1], "the destination must be writable (Mut<...>)");
-        const auth = this.accountParam(a[2], "the authority");
+        const acct = this.cpiAccount(a[0], "the closed account");
+        const k = acct.param?.kind;
+        if (k && !(((k.kind === "token" || k.kind === "mint") && k.mut) || (k.kind === "info" && k.mut)))
+          this.fail(a[0], "the closed account must be a Mut<TokenAccount>, a Mut<Mint> or a Mut<AccountInfo>");
+        const dest = this.cpiAccount(a[1], "the destination");
+        if (dest.param && !isWritable(dest.param.kind)) this.fail(a[1], "the destination must be writable (Mut<...>)");
+        const auth = this.cpiAccount(a[2], "the authority");
         const s = this.signerSeeds(a[3], auth, a[2]);
-        this.line(`TS_TRY(ts_token_close(params, ${p}, a_${acct.name}, a_${dest.name}, a_${auth.name}, ${s.name}, ${s.count}));`);
+        this.line(`TS_TRY(ts_token_close(params, ${p}, ${acct.c}, ${dest.c}, ${auth.c}, ${s.name}, ${s.count}));`);
         return undefined;
       }
     }
     // The remaining SPL Token instructions share one shape: a tag, a few fixed fields, and fixed account metas.
     const anyAcct = (n: ts.Expression, what: string, mut: boolean) => {
-      const acct = this.accountParam(n, what);
-      if (mut && !isWritable(acct.kind)) this.fail(n, `${what} must be writable (Mut<...>)`);
+      const acct = this.cpiAccount(n, what);
+      if (mut && acct.param && !isWritable(acct.param.kind)) this.fail(n, `${what} must be writable (Mut<...>)`);
       return acct;
     };
     type Put = (src: string, n: string, bytes?: number) => void;
-    const simple = (
-      tag: number,
-      fields: ((put: Put) => void)[],
-      metas: [AccountParam, boolean, boolean][],
-      seeds: { name: string; count: number | string },
-    ) => {
+    const simple = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
       const { buf, len, put, finish } = this.byteBuffer("tok", 128, "TS_ERR_INSTRUCTION_DATA", "token instruction");
       const t = this.tmp("tag");
       this.line(`uint8_t ${t} = ${tag};`);
@@ -119,7 +115,7 @@ export abstract class TokenEmitter extends CreateEmitter {
       finish(node);
       this.cpi(
         p,
-        metas.map(([acc, w, sg]) => [`a_${acc.name}`, w, sg]),
+        metas.map(([acc, w, sg]) => [acc.c, w, sg]),
         buf,
         len,
         seeds,
@@ -129,7 +125,7 @@ export abstract class TokenEmitter extends CreateEmitter {
     const optKey: ValueType = { kind: "option", inner: PUBKEY };
     const U16: ValueType = { kind: "int", name: "u16" };
     const I16: ValueType = { kind: "int", name: "i16" };
-    const decimals = (mint: AccountParam) => (put: Put) => put(`&a_${mint.name}->data[44]`, "1", 1);
+    const decimals = (mint: CpiAcct) => (put: Put) => put(`&${mint.c}->data[44]`, "1", 1);
     const byte = (k: number) => (put: Put) => {
       const t = this.tmp("b");
       this.line(`uint8_t ${t} = ${k};`);
@@ -155,12 +151,7 @@ export abstract class TokenEmitter extends CreateEmitter {
     };
     const none = { name: "NULL", count: 0 };
     // The Token Group interface (spl-token-group-interface), which Token-2022 implements: 8-byte discriminators.
-    const grouped = (
-      disc: number[],
-      fields: ((put: Put) => void)[],
-      metas: [AccountParam, boolean, boolean][],
-      seeds: { name: string; count: number | string },
-    ) => {
+    const grouped = (disc: number[], fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
       const { buf, len, put, finish } = this.byteBuffer("grp", 96, "TS_ERR_INSTRUCTION_DATA", "token group instruction");
       const d = this.tmp("disc");
       this.line(`static const uint8_t ${d}[8] = {${disc.join(", ")}};`);
@@ -169,7 +160,7 @@ export abstract class TokenEmitter extends CreateEmitter {
       finish(node);
       this.cpi(
         p,
-        metas.map(([acc, w, sg]) => [`a_${acc.name}`, w, sg]),
+        metas.map(([acc, w, sg]) => [acc.c, w, sg]),
         buf,
         len,
         seeds,
@@ -182,7 +173,7 @@ export abstract class TokenEmitter extends CreateEmitter {
           this.fail(node, "initializeTokenGroup(group, mint, mintAuthority, updateAuthority | null, maxSize, signerSeeds?)");
         const group = anyAcct(a[0], "the group", true);
         const mint = anyAcct(a[1], "the mint", false);
-        const auth = this.accountParam(a[2], "the mint authority");
+        const auth = this.cpiAccount(a[2], "the mint authority");
         grouped(
           [121, 113, 108, 39, 54, 51, 0, 4],
           [nonZeroKey(a[3]), value(a[4], U64)],
@@ -201,9 +192,9 @@ export abstract class TokenEmitter extends CreateEmitter {
           this.fail(node, "initializeGroupMember(member, memberMint, memberMintAuthority, group, groupUpdateAuthority, signerSeeds?)");
         const member = anyAcct(a[0], "the member", true);
         const memberMint = anyAcct(a[1], "the member mint", false);
-        const mintAuth = this.accountParam(a[2], "the member mint's authority");
+        const mintAuth = this.cpiAccount(a[2], "the member mint's authority");
         const group = anyAcct(a[3], "the group", true);
-        const groupAuth = this.accountParam(a[4], "the group's update authority");
+        const groupAuth = this.cpiAccount(a[4], "the group's update authority");
         grouped(
           [152, 32, 222, 176, 223, 237, 116, 134],
           [],
@@ -222,7 +213,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         token2022Only();
         if (a.length !== 3 && a.length !== 4) this.fail(node, "updateGroupMaxSize(group, updateAuthority, maxSize, signerSeeds?)");
         const group = anyAcct(a[0], "the group", true);
-        const auth = this.accountParam(a[1], "the update authority");
+        const auth = this.cpiAccount(a[1], "the update authority");
         grouped(
           [108, 37, 171, 143, 248, 30, 18, 110],
           [value(a[2], U64)],
@@ -238,7 +229,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         token2022Only();
         if (a.length !== 3 && a.length !== 4) this.fail(node, "updateGroupAuthority(group, updateAuthority, next | null, signerSeeds?)");
         const group = anyAcct(a[0], "the group", true);
-        const auth = this.accountParam(a[1], "the update authority");
+        const auth = this.cpiAccount(a[1], "the update authority");
         grouped(
           [161, 105, 88, 1, 237, 221, 216, 203],
           [nonZeroKey(a[2])],
@@ -317,7 +308,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         token2022Only();
         if (a.length !== 3 && a.length !== 4) this.fail(node, "updateDefaultAccountState(mint, freezeAuthority, frozen, signerSeeds?)");
         const mint = anyAcct(a[0], "the mint", true);
-        const auth = this.accountParam(a[1], "the freeze authority");
+        const auth = this.cpiAccount(a[1], "the freeze authority");
         const frozen = this.expect(this.expr(a[2], BOOL), BOOL, a[2]);
         const st = this.tmp("st");
         this.line(`uint8_t ${st} = (${frozen.c}) ? 2 : 1;`);
@@ -337,7 +328,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         token2022Only();
         if (a.length !== 2 && a.length !== 3) this.fail(node, `${method}(account, owner, signerSeeds?)`);
         const acct = anyAcct(a[0], "the token account", true);
-        const owner = this.accountParam(a[1], "the owner");
+        const owner = this.cpiAccount(a[1], "the owner");
         simple(
           30,
           [byte(method === "enableRequiredMemoTransfers" ? 0 : 1)],
@@ -353,7 +344,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         token2022Only();
         if (a.length !== 3 && a.length !== 4) this.fail(node, "updateTransferHook(mint, authority, programId | null, signerSeeds?)");
         const mint = anyAcct(a[0], "the mint", true);
-        const auth = this.accountParam(a[1], "the transfer hook authority");
+        const auth = this.cpiAccount(a[1], "the transfer hook authority");
         simple(
           36,
           [byte(1), nonZeroKey(a[2])],
@@ -369,7 +360,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         token2022Only();
         if (a.length !== 3 && a.length !== 4) this.fail(node, "updateInterestRate(mint, rateAuthority, rate, signerSeeds?)");
         const mint = anyAcct(a[0], "the mint", true);
-        const auth = this.accountParam(a[1], "the rate authority");
+        const auth = this.cpiAccount(a[1], "the rate authority");
         simple(
           33,
           [byte(1), value(a[2], I16)],
@@ -387,11 +378,11 @@ export abstract class TokenEmitter extends CreateEmitter {
         const from = want(a[0], "token", true, "the source");
         const mint = want(a[1], "mint", false, "the mint");
         const to = want(a[2], "token", true, "the destination");
-        const auth = this.accountParam(a[3], "the authority");
+        const auth = this.cpiAccount(a[3], "the authority");
         // The decimals are the mint's own (checked when the mint was), as transferChecked does.
         const dec = (put: Put) => {
           const t = this.tmp("dec");
-          this.line(`uint8_t ${t} = a_${mint.name}->data[44];`);
+          this.line(`uint8_t ${t} = ${mint.c}->data[44];`);
           put(`&${t}`, "1", 1);
         };
         simple(
@@ -418,7 +409,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         byte(4)(put);
         finish(node);
         // The sources go as they were passed (Token-2022 skips any it cannot harvest from).
-        this.cpi(p, [[`a_${mint.name}`, true, false]], buf, len, none, { ...range, asPassed: true });
+        this.cpi(p, [[mint.c, true, false]], buf, len, none, { ...range, asPassed: true });
         return undefined;
       }
       case "withdrawWithheldTokensFromMint": {
@@ -426,7 +417,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         if (a.length !== 3 && a.length !== 4) this.fail(node, "withdrawWithheldTokensFromMint(mint, destination, authority, signerSeeds?)");
         const mint = anyAcct(a[0], "the mint", true);
         const dest = want(a[1], "token", true, "the destination");
-        const auth = this.accountParam(a[2], "the withdraw authority");
+        const auth = this.cpiAccount(a[2], "the withdraw authority");
         simple(
           26,
           [byte(2)],
@@ -443,7 +434,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         token2022Only();
         if (a.length !== 4 && a.length !== 5) this.fail(node, "setTransferFee(mint, configAuthority, basisPoints, maximumFee, signerSeeds?)");
         const mint = anyAcct(a[0], "the mint", true);
-        const auth = this.accountParam(a[1], "the config authority");
+        const auth = this.cpiAccount(a[1], "the config authority");
         const bps = (put: Put) => {
           const v = this.expect(this.expr(a[2], U16), U16, a[2]);
           this.line(`if (${v.c} > 10000) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: transfer fee above 10000 basis points");`);
@@ -481,7 +472,7 @@ export abstract class TokenEmitter extends CreateEmitter {
           emitMetadata: "faa6b4fa0d0cb846",
         }[method];
         const mint = anyAcct(a[0], "the mint", method !== "emitMetadata");
-        const auth = method === "emitMetadata" ? undefined : this.accountParam(a[1], "the update authority");
+        const auth = method === "emitMetadata" ? undefined : this.cpiAccount(a[1], "the update authority");
         const { buf, len, put, finish } = this.byteBuffer("tmd", 1232, "TS_ERR_INSTRUCTION_DATA", "token metadata instruction");
         const d = this.tmp("disc");
         this.line(`static const uint8_t ${d}[8] = ${cBytes([...Buffer.from(disc, "hex")])};`);
@@ -521,10 +512,10 @@ export abstract class TokenEmitter extends CreateEmitter {
           p,
           auth
             ? [
-                [`a_${mint.name}`, true, false],
-                [`a_${auth.name}`, false, true],
+                [mint.c, true, false],
+                [auth.c, false, true],
               ]
-            : [[`a_${mint.name}`, false, false]],
+            : [[mint.c, false, false]],
           buf,
           len,
           seeds,
@@ -534,8 +525,8 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "approve": {
         arity(4);
         const src = want(a[0], "token", true, "the source");
-        const delegate = this.accountParam(a[1], "the delegate");
-        const owner = this.accountParam(a[2], "the owner");
+        const delegate = this.cpiAccount(a[1], "the delegate");
+        const owner = this.cpiAccount(a[2], "the owner");
         const s = this.signerSeeds(a[4], owner, a[2]);
         const amt = value(a[3], U64);
         simple(
@@ -555,8 +546,8 @@ export abstract class TokenEmitter extends CreateEmitter {
         arity(5);
         const src = want(a[0], "token", true, "the source");
         const mint = want(a[1], "mint", false, "the mint");
-        const delegate = this.accountParam(a[2], "the delegate");
-        const owner = this.accountParam(a[3], "the owner");
+        const delegate = this.cpiAccount(a[2], "the delegate");
+        const owner = this.cpiAccount(a[3], "the owner");
         const s = this.signerSeeds(a[5], owner, a[3]);
         simple(
           13,
@@ -574,8 +565,8 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "mintToChecked": {
         arity(4);
         const mint = want(a[0], "mint", true, "the mint");
-        const to = want(a[1], "token", true, "the destination", true);
-        const auth = this.accountParam(a[2], "the mint authority");
+        const to = want(a[1], "token", true, "the destination");
+        const auth = this.cpiAccount(a[2], "the mint authority");
         const s = this.signerSeeds(a[4], auth, a[2]);
         simple(
           14,
@@ -593,7 +584,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         arity(4);
         const from = want(a[0], "token", true, "the burned account");
         const mint = want(a[1], "mint", true, "the mint");
-        const auth = this.accountParam(a[2], "the authority");
+        const auth = this.cpiAccount(a[2], "the authority");
         const s = this.signerSeeds(a[4], auth, a[2]);
         simple(
           15,
@@ -610,7 +601,7 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "revoke": {
         arity(2);
         const src = want(a[0], "token", true, "the source");
-        const owner = this.accountParam(a[1], "the owner");
+        const owner = this.cpiAccount(a[1], "the owner");
         simple(
           5,
           [],
@@ -625,7 +616,7 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "setAuthority": {
         arity(4);
         const target = anyAcct(a[0], "the mint or token account", true);
-        const current = this.accountParam(a[1], "the current authority");
+        const current = this.cpiAccount(a[1], "the current authority");
         this.model.options.set("pubkey", PUBKEY);
         const s = this.signerSeeds(a[4], current, a[1]);
         simple(
@@ -642,9 +633,9 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "freezeAccount":
       case "thawAccount": {
         arity(3);
-        const acct = want(a[0], "token", true, "the token account", true);
-        const mint = this.accountParam(a[1], "the mint");
-        const auth = this.accountParam(a[2], "the freeze authority");
+        const acct = want(a[0], "token", true, "the token account");
+        const mint = this.cpiAccount(a[1], "the mint");
+        const auth = this.cpiAccount(a[2], "the freeze authority");
         simple(
           method === "freezeAccount" ? 10 : 11,
           [],
@@ -673,7 +664,7 @@ export abstract class TokenEmitter extends CreateEmitter {
       case "initializeAccount3": {
         if (a.length !== 3) this.fail(node, "initializeAccount3(account, mint, owner)");
         const acct = anyAcct(a[0], "the token account", true);
-        const mint = this.accountParam(a[1], "the mint");
+        const mint = this.cpiAccount(a[1], "the mint");
         simple(
           18,
           [value(a[2], PUBKEY)],
@@ -692,42 +683,40 @@ export abstract class TokenEmitter extends CreateEmitter {
     );
   }
 
-  protected ataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
+  protected ataOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined {
     if (method !== "create" && method !== "createIdempotent") this.fail(node.expression, "the Associated Token program supports create and createIdempotent");
     const a = node.arguments;
     if (a.length !== 6) this.fail(node, `${method}(payer, ata, owner, mint, systemProgram, tokenProgram) takes six accounts`);
-    const payer = this.accountParam(a[0], "the payer");
-    if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(a[0], "the payer must be a Mut<Signer>");
-    const ata = this.accountParam(a[1], "the token account");
-    if (!isWritable(ata.kind)) this.fail(a[1], "the token account must be Mut<AccountInfo>");
+    const payer = this.cpiAccount(a[0], "the payer");
+    if (payer.param && (payer.param.kind.kind !== "signer" || !payer.param.kind.mut)) this.fail(a[0], "the payer must be a Mut<Signer>");
+    const ata = this.cpiAccount(a[1], "the token account");
+    if (ata.param && !isWritable(ata.param.kind)) this.fail(a[1], "the token account must be Mut<AccountInfo>");
     const [owner, mint, sys, tp] = [a[2], a[3], a[4], a[5]].map((n, i) =>
-      this.accountParam(n, ["the owner", "the mint", "the system program", "the token program"][i]),
+      this.cpiAccount(n, ["the owner", "the mint", "the system program", "the token program"][i]),
     );
-    if (sys.kind.kind !== "system") this.fail(a[4], "pass the SystemProgram parameter");
-    if (tp.kind.kind !== "tokenProgram") this.fail(a[5], "pass a token program parameter");
-    this.line(
-      `TS_TRY(ts_ata_create(params, a_${program.name}, a_${payer.name}, a_${ata.name}, a_${owner.name}, a_${mint.name}, a_${sys.name}, a_${tp.name}, ${method === "createIdempotent"}));`,
-    );
+    if (sys.param && sys.param.kind.kind !== "system") this.fail(a[4], "pass the SystemProgram parameter");
+    if (tp.param && tp.param.kind.kind !== "tokenProgram") this.fail(a[5], "pass a token program parameter");
+    this.line(`TS_TRY(ts_ata_create(params, ${program.c}, ${payer.c}, ${ata.c}, ${owner.c}, ${mint.c}, ${sys.c}, ${tp.c}, ${method === "createIdempotent"}));`);
     return undefined;
   }
 
   /** memoProgram.memo(text, signers?, signerSeeds?): SPL Memo v2, the UTF-8 text as data, each signer a signing account. */
-  protected memoOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
+  protected memoOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined {
     if (method !== "memo") this.fail(node.expression, "the Memo program has memo(text, signers?, signerSeeds?)");
     const a = node.arguments;
     if (a.length < 1 || a.length > 3) this.fail(node, "memo(text, signers?, signerSeeds?)");
     const text = this.expect(this.expr(a[0], STRING), STRING, a[0]);
     const list = a[1];
     if (list && !ts.isArrayLiteralExpression(list)) this.fail(list, "the signers are a list of accounts: [authority, …]");
-    const signers = list ? (list as ts.ArrayLiteralExpression).elements.map((e) => this.accountParam(e, "a memo signer")) : [];
+    const signers = list ? (list as ts.ArrayLiteralExpression).elements.map((e) => this.cpiAccount(e, "a memo signer")) : [];
     const t = this.tmp("memo");
     this.line(`TS_Str ${t} = ${text.c};`);
     const seeds = a[2] ? this.signingSeeds(a[2]) : { name: "NULL", count: 0 };
-    if (!signers.length) this.line(`TS_TRY(ts_cpi(params, a_${program.name}, (uint8_t *)${t}.ptr, ${t}.len, NULL, 0, ${seeds.name}, ${seeds.count}));`);
+    if (!signers.length) this.line(`TS_TRY(ts_cpi(params, ${program.c}, (uint8_t *)${t}.ptr, ${t}.len, NULL, 0, ${seeds.name}, ${seeds.count}));`);
     else
       this.cpi(
-        `a_${program.name}`,
-        signers.map((s) => [`a_${s.name}`, false, true]),
+        program.c,
+        signers.map((s) => [s.c, false, true]),
         `(uint8_t *)${t}.ptr`,
         `${t}.len`,
         seeds,
@@ -736,19 +725,20 @@ export abstract class TokenEmitter extends CreateEmitter {
   }
 
   /**
-   * The Stake program (bincode: a u32 instruction tag): initialize, authorize, delegate, deactivate and withdraw, with
-   * the sysvar and config accounts it reads passed in, as anchor-spl's stake module does. Each authority signs (a PDA of
-   * this program with `signerSeeds`).
+   * The Stake program (bincode: a u32 instruction tag, as solana-stake-interface's StakeInstruction numbers them):
+   * initialize, authorize, delegate, split, deactivate, withdraw, merge and getMinimumDelegation, with the account
+   * metas of its instruction builders and the sysvar and config accounts it reads passed in. Each authority signs (a
+   * PDA of this program with `signerSeeds`).
    */
-  protected stakeOp(node: ts.CallExpression, program: AccountParam, method: string): undefined {
+  protected stakeOp(node: ts.CallExpression, program: CpiProgram, method: string): Value | undefined {
     const a = node.arguments;
     type Put = (src: string, n: string, bytes?: number) => void;
     const acct = (i: number, what: string, mut = false) => {
-      const x = this.accountParam(a[i]!, what);
-      if (mut && !isWritable(x.kind)) this.fail(a[i]!, `${what} must be writable (Mut<...>)`);
+      const x = this.cpiAccount(a[i]!, what);
+      if (mut && x.param && !isWritable(x.param.kind)) this.fail(a[i]!, `${what} must be writable (Mut<...>)`);
       return x;
     };
-    const send = (tag: number, fields: ((put: Put) => void)[], metas: [AccountParam, boolean, boolean][], seeds: { name: string; count: number | string }) => {
+    const send = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
       const { buf, len, put, finish } = this.byteBuffer("stk", 116, "TS_ERR_INSTRUCTION_DATA", "stake instruction");
       const t = this.tmp("tag");
       this.line(`uint32_t ${t} = ${tag};`);
@@ -756,8 +746,8 @@ export abstract class TokenEmitter extends CreateEmitter {
       for (const f of fields) f(put);
       finish(node);
       this.cpi(
-        `a_${program.name}`,
-        metas.map(([x, w, sg]) => [`a_${x.name}`, w, sg]),
+        program.c,
+        metas.map(([x, w, sg]) => [x.c, w, sg]),
         buf,
         len,
         seeds,
@@ -772,13 +762,28 @@ export abstract class TokenEmitter extends CreateEmitter {
     const arity = (n: number, usage: string) => {
       if (a.length !== n && a.length !== n + 1) this.fail(node, usage);
     };
+    // signerSeeds, or an account (a lockup custodian) in the optional slot before it.
+    const isSeeds = (n: ts.Expression | undefined) =>
+      !!n &&
+      (ts.isArrayLiteralExpression(n) ||
+        (ts.isIdentifier(n) && this.lookup(n.text)?.type.kind === "signerSeeds") ||
+        (ts.isCallExpression(n) && this.exportName(n.expression) === "signer"));
+    /** The optional custodian at `i` (then the seeds at i + 1), or the seeds there. */
+    const custodianAt = (i: number): { custodian?: ts.Expression; seeds?: ts.Expression } =>
+      a[i] && !isSeeds(a[i]) ? { custodian: a[i], seeds: a[i + 1] } : { seeds: a[i] };
+    /** The lockup custodian signs too: a Signer, or a PDA of this program covered by the seeds. */
+    const custodian = (n: ts.Expression, seeds: ts.Expression | undefined): [CpiAcct, boolean, boolean] => {
+      const x = this.cpiAccount(n, "the lockup custodian");
+      if (!seeds && x.param && x.param.kind.kind !== "signer") this.fail(n, "the custodian must be a Signer, or pass signerSeeds for a PDA custodian");
+      return [x, false, true];
+    };
     switch (method) {
       case "initialize": {
-        // Authorized { staker, withdrawer }, Lockup { unix_timestamp, epoch, custodian }: no lockup.
-        if (a.length !== 4) this.fail(node, "initialize(stake, rentSysvar, staker, withdrawer)");
+        // Authorized { staker, withdrawer }, Lockup { unix_timestamp, epoch, custodian }: none, or the one given.
+        if (a.length !== 4 && a.length !== 5) this.fail(node, "initialize(stake, rentSysvar, staker, withdrawer, lockup?)");
         send(
           0,
-          [value(a[2]!, PUBKEY), value(a[3]!, PUBKEY), zeros(48)],
+          [value(a[2]!, PUBKEY), value(a[3]!, PUBKEY), a[4] ? (put) => this.stakeLockup(a[4]!, put) : zeros(48)],
           [
             [acct(0, "the stake account", true), true, false],
             [acct(1, "the Rent sysvar"), false, false],
@@ -791,10 +796,13 @@ export abstract class TokenEmitter extends CreateEmitter {
         return undefined;
       }
       case "authorize": {
-        arity(5, 'authorize(stake, clockSysvar, authority, newAuthority, "staker" | "withdrawer", signerSeeds?)');
+        const usage = 'authorize(stake, clockSysvar, authority, newAuthority, "staker" | "withdrawer", custodian?, signerSeeds?)';
+        if (a.length < 5 || a.length > 7) this.fail(node, usage);
         const kind = a[4]!;
         const i = ts.isStringLiteral(kind) ? ["staker", "withdrawer"].indexOf(kind.text) : -1;
         if (i < 0) this.fail(kind, 'the authority to change is "staker" or "withdrawer"');
+        const opt = custodianAt(5);
+        if (a.length === 7 && !opt.custodian) this.fail(a[5]!, usage);
         const auth = acct(2, "the authority");
         const k = this.tmp("which");
         send(
@@ -804,8 +812,9 @@ export abstract class TokenEmitter extends CreateEmitter {
             [acct(0, "the stake account", true), true, false],
             [acct(1, "the Clock sysvar"), false, false],
             [auth, false, true],
+            ...(opt.custodian ? [custodian(opt.custodian, opt.seeds)] : []),
           ],
-          this.signerSeeds(a[5], auth, a[2]!),
+          this.signerSeeds(opt.seeds, auth, a[2]!),
         );
         return undefined;
       }
@@ -827,6 +836,21 @@ export abstract class TokenEmitter extends CreateEmitter {
         );
         return undefined;
       }
+      case "split": {
+        arity(4, "split(stake, splitStake, authority, lamports, signerSeeds?)");
+        const auth = acct(2, "the staker");
+        send(
+          3,
+          [value(a[3]!, U64)],
+          [
+            [acct(0, "the stake account", true), true, false],
+            [acct(1, "the split stake account", true), true, false],
+            [auth, false, true],
+          ],
+          this.signerSeeds(a[4], auth, a[2]!),
+        );
+        return undefined;
+      }
       case "deactivate": {
         arity(3, "deactivate(stake, clockSysvar, staker, signerSeeds?)");
         const staker = acct(2, "the staker");
@@ -843,7 +867,10 @@ export abstract class TokenEmitter extends CreateEmitter {
         return undefined;
       }
       case "withdraw": {
-        arity(6, "withdraw(stake, to, clockSysvar, stakeHistorySysvar, withdrawer, lamports, signerSeeds?)");
+        const usage = "withdraw(stake, to, clockSysvar, stakeHistorySysvar, withdrawer, lamports, custodian?, signerSeeds?)";
+        if (a.length < 6 || a.length > 8) this.fail(node, usage);
+        const opt = custodianAt(6);
+        if (a.length === 8 && !opt.custodian) this.fail(a[6]!, usage);
         const withdrawer = acct(4, "the withdrawer");
         send(
           4,
@@ -854,12 +881,73 @@ export abstract class TokenEmitter extends CreateEmitter {
             [acct(2, "the Clock sysvar"), false, false],
             [acct(3, "the StakeHistory sysvar"), false, false],
             [withdrawer, false, true],
+            ...(opt.custodian ? [custodian(opt.custodian, opt.seeds)] : []),
           ],
-          this.signerSeeds(a[6], withdrawer, a[4]!),
+          this.signerSeeds(opt.seeds, withdrawer, a[4]!),
         );
         return undefined;
       }
+      case "merge": {
+        arity(5, "merge(destination, source, clockSysvar, stakeHistorySysvar, staker, signerSeeds?)");
+        const staker = acct(4, "the staker");
+        send(
+          7,
+          [],
+          [
+            [acct(0, "the destination stake account", true), true, false],
+            [acct(1, "the source stake account", true), true, false],
+            [acct(2, "the Clock sysvar"), false, false],
+            [acct(3, "the StakeHistory sysvar"), false, false],
+            [staker, false, true],
+          ],
+          this.signerSeeds(a[5], staker, a[4]!),
+        );
+        return undefined;
+      }
+      case "getMinimumDelegation": {
+        // GetMinimumDelegation (no accounts), then the u64 the Stake program returns, read as
+        // solana_program::stake::tools::get_minimum_delegation reads it (and fails as it does).
+        if (a.length) this.fail(node, "getMinimumDelegation() takes no arguments");
+        const t = this.tmp("tag");
+        const out = this.tmp("mindel");
+        const from = this.tmp("from");
+        const n = this.tmp("n");
+        const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
+        const fail = (code: number, name: string, why: string) =>
+          `TS_FAIL(((uint64_t)${code}) << 32, ${cString(typeof pre === "string" ? `${pre}${name}` : `TypeSOL: ${why}`)})`;
+        this.line(`uint32_t ${t} = 13;`);
+        this.line(`TS_TRY(ts_cpi(params, ${program.c}, (uint8_t *)&${t}, 4, NULL, 0, NULL, 0));`);
+        this.line(`uint64_t ${out} = 0;`);
+        this.line(`SolPubkey ${from};`);
+        this.line(`uint64_t ${n} = sol_get_return_data((uint8_t *)&${out}, 8, &${from});`);
+        this.line(`if (${n} == 0) ${fail(3, "InvalidInstructionData", "no minimum delegation returned")};`);
+        this.line(`if (!ts_key_eq(&${from}, &${program.c}->key)) ${fail(7, "IncorrectProgramId", "return data not from the Stake program")};`);
+        this.line(`if (${n} != 8) ${fail(3, "InvalidInstructionData", "the minimum delegation is not a u64")};`);
+        return { c: out, type: U64 };
+      }
     }
-    this.fail(node.expression, `the Stake program supports initialize, authorize, delegate, deactivate and withdraw, not ${method}`);
+    this.fail(
+      node.expression,
+      `the Stake program supports initialize, authorize, delegate, split, deactivate, withdraw, merge and getMinimumDelegation, not ${method}`,
+    );
+  }
+
+  /** A stake Lockup { unix_timestamp: i64, epoch: u64, custodian: Pubkey } from `{ unixTimestamp, epoch, custodian }`. */
+  protected stakeLockup(n: ts.Expression, put: (src: string, n: string, bytes?: number) => void): void {
+    if (!ts.isObjectLiteralExpression(n)) this.fail(n, "the lockup is written { unixTimestamp, epoch, custodian }");
+    const props = this.literalProps(n, ["unixTimestamp", "epoch", "custodian"], "the lockup");
+    for (const f of ["unixTimestamp", "epoch", "custodian"]) if (!props.has(f)) this.fail(n, `the lockup needs ${f} (unixTimestamp, epoch, custodian)`);
+    // Evaluated in source order (as JS does), laid out in the Lockup's.
+    const types: Record<string, ValueType> = { unixTimestamp: I64, epoch: U64, custodian: PUBKEY };
+    const held = new Map<string, string>();
+    for (const [k, e] of props) {
+      const v = this.expect(this.expr(e, types[k]), types[k], e);
+      const t = this.tmp("lk");
+      this.line(k === "custodian" ? `SolPubkey ${t} = *(${v.c});` : `${k === "epoch" ? "uint64_t" : "int64_t"} ${t} = ${v.c};`);
+      held.set(k, t);
+    }
+    put(`&${held.get("unixTimestamp")}`, "8", 8);
+    put(`&${held.get("epoch")}`, "8", 8);
+    put(`&${held.get("custodian")}`, "32", 32);
   }
 }

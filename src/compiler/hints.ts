@@ -56,6 +56,11 @@ export function hintForTypeScript(d: ts.Diagnostic, message: string, libPath: st
       return "async is not supported: an instruction runs start to finish within one call; remove async";
     case 2540: // Cannot assign to 'x' because it is a read-only property.
       return "to change an account, take it as Mut<T> (Mut<Signer> for a signer whose lamports change)";
+    case 2344: // Type 'TokenAccount' does not satisfy the constraint 'StakeProgram | SystemProgram | …'.
+      if (/\bprogramAt\s*</.test(line))
+        return "programAt<P> takes a program: StakeProgram, SystemProgram, TokenProgram, Token2022Program, TokenInterface, AssociatedTokenProgram or MemoProgram (sysvarAt<StakeHistorySysvar> for the sysvar); read other accounts with loadRaw / loadAccount";
+      if (/\bsysvarAt\s*</.test(line)) return "sysvarAt<S> takes StakeHistorySysvar; programs go through programAt<P>";
+      return undefined;
     default:
       return undefined;
   }

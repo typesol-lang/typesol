@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase, structNameOf } from "../analyze.js";
+import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase, structNameOf, typesolName } from "../analyze.js";
 import { borshIdentical, borshNativeStructUnsupported } from "./borsh.js";
 import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
@@ -11,6 +11,7 @@ import {
   type FieldType,
   type Helper,
   type IntName,
+  type ParamKind,
   type ScalarType,
   type StructDef,
   isScalar,
@@ -31,6 +32,8 @@ import {
   HASH,
   type Value,
   type Ref,
+  type CpiAcct,
+  type CpiProgram,
   cBytes,
   cString,
   scalarC,
@@ -679,6 +682,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "returnData":
         return this.returnData(node);
+      case "programAt":
+      case "sysvarAt":
+        return this.programAt(node, builtin);
       case "instructionData":
         this.fail(node, "bind the data to a local first: const data = instructionData()");
       case "fixedArray":
@@ -821,6 +827,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const right = this.expect(this.expr(args[0], left.type), left.type, args[0]);
         return { c: `ts_key_eq(${this.settle(left, mark).c}, ${right.c})`, type: BOOL };
       }
+      const at = this.programAtValue(callee.expression);
+      if (at) return this.programAtMethod(node, at, method);
       if (this.accountAt(callee.expression)) {
         const target = this.accountAt(callee.expression);
         // Program accounts used through their methods (systemProgram.transfer, tokenProgram.*…) may be optional.
@@ -835,23 +843,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "migrate" && method === "migrate") return this.migrate(node, target, topLevel);
         if (target?.kind.kind === "initIfNeeded" && method === "createIfNeeded") return this.create(node, target, topLevel, true);
         if (target?.kind.kind === "system" && method === "transfer") return this.systemTransfer(node);
-        if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, target);
+        if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, this.programParam(target));
         if (target?.kind.kind === "system" && method === "createPda") return this.createPda(node);
-        if (target?.kind.kind === "system" && (method === "allocate" || method === "assign")) return this.allocateOrAssign(node, target, method);
-        if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
-        if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
-        if (target?.kind.kind === "memoProgram") return this.memoOp(node, target, method);
-        if (target?.kind.kind === "stakeHistory") {
-          const fields: Record<string, number> = { has: 0, effective: 1, activating: 2, deactivating: 3 };
-          if (!(method in fields)) this.fail(callee.name, "StakeHistorySysvar has has(epoch), effective(epoch), activating(epoch) and deactivating(epoch)");
-          if (args.length !== 1) this.fail(node, `${method}(epoch) takes the epoch`);
-          const epoch = this.expect(this.expr(args[0]!, U64), U64, args[0]!);
-          const f = this.tmp("shf");
-          const v = this.tmp("shv");
-          this.line(`bool ${f};`);
-          this.line(`uint64_t ${v} = ts_stake_history(a_${target.name}, ${epoch.c}, ${Math.max(1, fields[method]!)}, &${f});`);
-          return method === "has" ? { c: f, type: BOOL } : { c: v, type: U64 };
-        }
+        if (target?.kind.kind === "system" && (method === "allocate" || method === "assign"))
+          return this.allocateOrAssign(node, this.programParam(target), method);
+        if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, this.programParam(target), method);
+        if (target?.kind.kind === "ataProgram") return this.ataOp(node, this.programParam(target), method);
+        if (target?.kind.kind === "memoProgram") return this.memoOp(node, this.programParam(target), method);
+        if (target?.kind.kind === "stakeHistory") return this.stakeHistoryRead(node, `a_${target.name}`, method);
         if (target?.kind.kind === "sbRandomness") {
           if (method !== "value" && method !== "valueU64") this.fail(callee.name, "SwitchboardRandomness has value() and valueU64()");
           if (args.length) this.fail(node, `${method}() takes no arguments`);
@@ -860,7 +859,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`TS_TRY(ts_sb_randomness_value(a_${target.name}, &${t}));`);
           return method === "value" ? { c: `((const SolPubkey *)${t})`, type: HASH } : { c: `ts_read_le(${t}, 8)`, type: U64 };
         }
-        if (target?.kind.kind === "stakeProgram") return this.stakeOp(node, target, method);
+        if (target?.kind.kind === "stakeProgram") return this.stakeOp(node, this.programParam(target), method);
         if (target?.kind.kind === "metadataProgram") return this.metadataOp(node, target, method);
         // Each Metaplex CPI in its own C block: its data buffer's stack slot is reused by the next one.
         if (target?.kind.kind === "coreProgram" || target?.kind.kind === "bubblegumProgram") {
@@ -1367,6 +1366,125 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return `a_${this.accountParam(node, what).name}`;
   }
 
+  /**
+   * An account argument of a typed CPI: a declared account parameter (`param`, its kind and writability checked by
+   * the caller), or a remaining account, a local bound to one, a RemainingAccount helper parameter or a loaded struct
+   * (no compile-time checks: the called program and the runtime check them).
+   */
+  protected cpiAccount(node: ts.Expression, what: string): CpiAcct {
+    const h = this.handle(node);
+    if (h) return { c: h };
+    const loaded = ts.isIdentifier(node) ? this.lookup(node.text)?.loaded : undefined;
+    if (loaded) return { c: loaded.handle };
+    const param = this.accountParam(node, what);
+    return { c: `a_${param.name}`, param };
+  }
+
+  /** A declared program parameter as the program of a typed CPI. */
+  protected programParam(a: AccountParam): CpiProgram {
+    return { c: `a_${a.name}`, kind: a.kind };
+  }
+
+  /**
+   * `programAt<P>(acct)` / `sysvarAt<S>(acct)`: the account (a remaining account or an AccountInfo parameter) checked
+   * to be that program or sysvar by its key, once, then usable with P's typed methods. A wrong program fails with
+   * ProgramError.IncorrectProgramId and a wrong sysvar with ProgramError.InvalidArgument, as solana_program's checks do.
+   */
+  protected programAt(node: ts.CallExpression, fn: "programAt" | "sysvarAt"): Value {
+    const programs: Record<string, [ParamKind, string | undefined, string]> = {
+      StakeProgram: [{ kind: "stakeProgram" }, "TS_STAKE_PROGRAM_ID", "the Stake program"],
+      SystemProgram: [{ kind: "system" }, "TS_SYSTEM_PROGRAM_ID", "the System Program"],
+      TokenProgram: [{ kind: "tokenProgram", flavor: "token" }, "TS_TOKEN_PROGRAM_ID", "the Token program"],
+      Token2022Program: [{ kind: "tokenProgram", flavor: "token2022" }, "TS_TOKEN_2022_PROGRAM_ID", "the Token-2022 program"],
+      TokenInterface: [{ kind: "tokenProgram", flavor: "tokenInterface" }, undefined, "a token program"],
+      AssociatedTokenProgram: [{ kind: "ataProgram" }, "TS_ATA_PROGRAM_ID", "the Associated Token program"],
+      MemoProgram: [{ kind: "memoProgram" }, "TS_MEMO_PROGRAM_ID", "the Memo program"],
+    };
+    const sysvars: typeof programs = { StakeHistorySysvar: [{ kind: "stakeHistory" }, "TS_STAKE_HISTORY_ID", "the StakeHistory sysvar"] };
+    const table = fn === "programAt" ? programs : sysvars;
+    const targ = node.typeArguments?.[0];
+    const name = targ && typesolName(targ, this.scope.imports);
+    const entry = name ? table[name] : undefined;
+    if (!entry)
+      this.fail(
+        targ ?? node,
+        fn === "programAt" ? `programAt<P>(account): P is one of ${Object.keys(programs).join(", ")}` : "sysvarAt<S>(account): S is StakeHistorySysvar",
+      );
+    if (node.arguments.length !== 1) this.fail(node, `${fn}<${name}>(account) takes one remaining account or AccountInfo parameter`);
+    const arg = node.arguments[0]!;
+    let h = this.handle(arg);
+    if (!h) {
+      const acct = this.accountParam(arg, `${fn}'s account`);
+      if (acct.kind.kind !== "info")
+        this.fail(arg, `pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter; a declared parameter can be typed ${name} itself`);
+      h = `a_${acct.name}`;
+    }
+    const [kind, id, what] = entry;
+    const err = PROGRAM_ERRORS.indexOf(fn === "programAt" ? "IncorrectProgramId" : "InvalidArgument");
+    // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: logged as a native entrypoint logs the error.
+    const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
+    const text = typeof pre === "string" ? `${pre}${PROGRAM_ERRORS[err]}` : `TypeSOL: not ${what}`;
+    const bad = id ? `!ts_key_eq(&${h}->key, &${id})` : `!ts_is_token_program(&${h}->key)`;
+    this.line(`if (${bad}) TS_FAIL(((uint64_t)${err + 2}) << 32, ${cString(text)});`);
+    if (kind.kind === "stakeHistory") this.line(`if (${h}->data_len < 8) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: not the StakeHistory sysvar's data");`);
+    return { c: h, type: { kind: "account", program: kind } };
+  }
+
+  /** A value `programAt` / `sysvarAt` checked (a local bound to one, or the call itself), as the program it is. */
+  protected programAtValue(node: ts.Expression): CpiProgram | undefined {
+    if (ts.isParenthesizedExpression(node)) return this.programAtValue(node.expression);
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      return l?.type.kind === "account" && l.type.program ? { c: l.c, kind: l.type.program } : undefined;
+    }
+    if (!ts.isCallExpression(node)) return undefined;
+    const fn = this.exportName(node.expression);
+    if (fn !== "programAt" && fn !== "sysvarAt") return undefined;
+    const v = this.programAt(node, fn);
+    return { c: v.c, kind: (v.type as { program: ParamKind }).program };
+  }
+
+  /** `stake.split(…)` on a programAt value: the same typed methods as on a declared program parameter. */
+  protected programAtMethod(node: ts.CallExpression, at: CpiProgram, method: string): Value | undefined {
+    switch (at.kind.kind) {
+      case "system":
+        if (method === "transfer") return this.systemTransfer(node);
+        if (method === "createAccount") return this.createAccount(node, at);
+        if (method === "createPda") return this.createPda(node);
+        if (method === "allocate" || method === "assign") return this.allocateOrAssign(node, at, method);
+        this.fail(node.expression, `the System Program has transfer, createAccount, createPda, allocate and assign, not ${method}`);
+      case "tokenProgram":
+        return this.tokenOp(node, at, method);
+      case "ataProgram":
+        return this.ataOp(node, at, method);
+      case "memoProgram":
+        return this.memoOp(node, at, method);
+      case "stakeProgram":
+        return this.stakeOp(node, at, method);
+      case "stakeHistory":
+        return this.stakeHistoryRead(node, at.c, method);
+    }
+    this.fail(node.expression, `unsupported call: ${method}`);
+  }
+
+  /** StakeHistorySysvar's has / effective / activating / deactivating(epoch), on the sysvar account `h`. */
+  protected stakeHistoryRead(node: ts.CallExpression, h: string, method: string): Value {
+    const args = node.arguments;
+    const fields: Record<string, number> = { has: 0, effective: 1, activating: 2, deactivating: 3 };
+    if (!(method in fields))
+      this.fail(
+        (node.expression as ts.PropertyAccessExpression).name,
+        "StakeHistorySysvar has has(epoch), effective(epoch), activating(epoch) and deactivating(epoch)",
+      );
+    if (args.length !== 1) this.fail(node, `${method}(epoch) takes the epoch`);
+    const epoch = this.expect(this.expr(args[0]!, U64), U64, args[0]!);
+    const f = this.tmp("shf");
+    const v = this.tmp("shv");
+    this.line(`bool ${f};`);
+    this.line(`uint64_t ${v} = ts_stake_history(${h}, ${epoch.c}, ${Math.max(1, fields[method]!)}, &${f});`);
+    return method === "has" ? { c: f, type: BOOL } : { c: v, type: U64 };
+  }
+
   /** `readData<T>(account, offset)`: a bounds-checked little-endian read of any account's data. */
   protected readData(node: ts.CallExpression): Value {
     const targ = node.typeArguments?.[0];
@@ -1832,6 +1950,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (want.mut && !l.loaded.mut) this.fail(n, `${h.name}() takes ${p.name} as Mut<${l.loaded.struct}>: load it with loadAccountMut`);
         return l.loaded.handle;
       }
+      // A program or sysvar programAt / sysvarAt checked: as that kind of account.
+      const at = this.programAtValue(n);
+      if (at) {
+        const why = accountMismatch(at.kind, p.account);
+        if (why) this.fail(n, `${h.name}() takes ${p.name} as ${why}`);
+        return at.c;
+      }
       const acct = this.accountParam(n, `${h.name}()'s ${p.name}`);
       const why = accountMismatch(acct.kind, p.account);
       if (why) this.fail(n, `${h.name}() takes ${p.name} as ${why}`);
@@ -1962,27 +2087,27 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const t = targ && resolveScalarType(targ, this.scope);
     if (!t) this.fail(node, "returnData needs an explicit type: returnData<u64>(program)");
     if (node.arguments.length !== 1) this.fail(node, "returnData<T>(program) takes the program that returned it");
-    const program = this.accountParam(node.arguments[0], "returnData's program");
+    const program = this.anyAccount(node.arguments[0], "returnData's program");
     const out = this.tmp("rd");
     if (t.kind === "pubkey") {
       this.line(`SolPubkey ${out};`);
-      this.line(`TS_TRY(ts_return_data(a_${program.name}, (uint8_t *)&${out}, 32));`);
+      this.line(`TS_TRY(ts_return_data(${program}, (uint8_t *)&${out}, 32));`);
       return { c: `(&${out})`, type: t };
     }
     if (t.kind === "bool") {
       this.line(`uint8_t ${out};`);
-      this.line(`TS_TRY(ts_return_data(a_${program.name}, &${out}, 1));`);
+      this.line(`TS_TRY(ts_return_data(${program}, &${out}, 1));`);
       this.line(`if (${out} > 1) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid bool return data");`);
       return { c: `(${out} == 1)`, type: BOOL };
     }
     if (t.kind === "enum") {
       this.line(`uint8_t ${out};`);
-      this.line(`TS_TRY(ts_return_data(a_${program.name}, &${out}, 1));`);
+      this.line(`TS_TRY(ts_return_data(${program}, &${out}, 1));`);
       this.line(`if (${out} >= ${this.model.enums.get(t.name)!.variants.length}) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid enum return data");`);
       return { c: out, type: t };
     }
     this.line(`${INT_INFO[t.name].c} ${out};`);
-    this.line(`TS_TRY(ts_return_data(a_${program.name}, (uint8_t *)&${out}, ${INT_INFO[t.name].bytes}));`);
+    this.line(`TS_TRY(ts_return_data(${program}, (uint8_t *)&${out}, ${INT_INFO[t.name].bytes}));`);
     return { c: out, type: t };
   }
 }
