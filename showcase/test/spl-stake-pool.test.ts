@@ -933,6 +933,10 @@ describe("validators over epochs", () => {
     // Validator 5 is being removed: its active transient stake is deactivated instead.
     d.patch(q.list, (b) => (b[9 + 73 * 5 + 40] = 3));
     await d.ok("update list (transient, no merge)", payer, [ix.updateValidatorListBalance(q, 0, true, await updatePairs(d, q))]);
+    // The merges name the StakeHistory by address: another account in its slot fails the first of them (validator 0's
+    // initialized transient stake into the reserve).
+    const wrongHistory = replace(ix.updateValidatorListBalance(q, 0, false, await updatePairs(d, q)), 5, q.mint);
+    expect(await d.both("update list (transient): wrong stake history", payer, [wrongHistory])).toBe(builtin("MissingAccount"));
     await d.ok("update list (transient)", payer, [ix.updateValidatorListBalance(q, 0, false, await updatePairs(d, q))]);
     await d.ok("update pool (transient)", payer, [ix.updateStakePoolBalance(q)]);
     d.nextEpoch();
