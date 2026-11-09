@@ -38,18 +38,18 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - The native-program surface (0.40.0): `loadRaw` / `loadRawMut`, the instruction data readers, error code 0,
   `ProgramError`, `panic`, `PANIC_ON_OVERFLOW`, `ERROR_LOG_PREFIX` / `PROGRAM_ERROR_LOG_PREFIX`, `logBase64`,
   `createProgramAddress`.
-- `loadBorsh` / `storeBorsh` (Unreleased): a native program's Borsh accounts read into a local struct and written back.
-- `BigVec<T>` (Unreleased): SPL's `big_vec`, a list over the rest of a native account.
-- `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (Unreleased).
+- `loadBorsh` / `storeBorsh` (0.42.0): a native program's Borsh accounts read into a local struct and written back.
+- `BigVec<T>` (0.42.0): SPL's `big_vec`, a list over the rest of a native account.
+- `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
 - Local `FixedVec` / `FixedArray` lists of structs, `FixedVec.pushAll`, the instruction data as a list (`slice`,
-  `InstructionBytes` helper parameters), `invokeInstruction` in helpers (Unreleased).
-- `epochRewards()` and `EpochRewards` (Unreleased): the EpochRewards sysvar through its syscall.
-- `NATIVE_ACCOUNT_WRITES` (Unreleased): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
+  `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0).
+- `epochRewards()` and `EpochRewards` (0.42.0): the EpochRewards sysvar through its syscall.
+- `NATIVE_ACCOUNT_WRITES` (0.42.0): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
   (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside
   "the checks stay" promise above: it only applies to programs that declare it.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake); a ternary
-  between remaining accounts and `AccountInfo` parameters (Unreleased).
+  between remaining accounts and `AccountInfo` parameters (0.42.0).
 - Functions chosen at run time and lists of functions, closures returned from functions.
 - `typesol/testing`'s epochs and staking: `warpToEpoch`, `nextEpoch`, `StakeCluster`, `stakeActivation`, the vote and
   stake account builders and `readStakeAccount`.

@@ -6,6 +6,15 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.42.0 — 2026-11-09
+
+SPL Stake Pool ported in full, the native program behind most liquid staking tokens, from the tag a reproducible build
+proves is the mainnet binary, and checked against that binary on 2,107 transactions and a fuzz over epochs. The
+compiler gained what it needed: Borsh accounts without a discriminator, `BigVec<T>`, typed CPIs on remaining accounts
+(`programAt`, `sysvarAt`, `named`), the Stake program's split, merge and minimum delegation, native account writes,
+the EpochRewards sysvar, local lists and the instruction data as a list; `typesol/testing` gained epochs and staking.
+Every program that uses none of the new features compiles to the same binary as in 0.41.0.
+
 - Examples: showcase/mainnet/spl-stake-pool, a port of SPL Stake Pool (the native program at SPoo1Ku8…, all 27
   instructions), from the tag a reproducible build proves is the mainnet binary (program@v2.1.0), checked against that
   binary on 2,107 transactions (the original's own 221 integration tests mapped and run as differential cases, pools of
