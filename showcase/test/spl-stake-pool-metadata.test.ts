@@ -2,12 +2,15 @@
 // the pool token's Metaplex metadata, CreateTokenMetadata (17) and UpdateTokenMetadata (18). Both VMs also run Metaplex
 // Token Metadata (test/programs/mpl_token_metadata.so), so each transaction's outcome, logs (Metaplex's lines among
 // them) and the bytes of every account it names (the metadata account and the payer's lamports included) must agree.
+// Metaplex is fetched by scripts/fetch-programs.sh (not kept in the repository); without it the file is skipped.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole } from "@solana/kit";
+import { existsSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { send } from "../../test/harness.js";
 import {
   Diff,
   MPL_METADATA,
+  MPL_METADATA_SO,
   type Pool,
   PROGRAM,
   STAKE_POOL_SIZE,
@@ -92,7 +95,7 @@ async function bothAborting(d: Diff, label: string, payer: KeyPairSigner, i: Ins
 /** The same accounts with other data. */
 const withData = (i: Instruction, data: Buffer): Instruction => ({ ...i, data: new Uint8Array(data) });
 
-describe("token metadata", () => {
+describe.skipIf(!existsSync(MPL_METADATA_SO))("token metadata", () => {
   let d: Diff;
   let payer: KeyPairSigner;
   /** Pays for the metadata account (not the fee payer, so that its signature can be left out). */
@@ -343,7 +346,7 @@ function metaplexUnits(logs: string): bigint {
   return m ? BigInt(m[1]!) : 0n;
 }
 
-describe("compute units", () => {
+describe.skipIf(!existsSync(MPL_METADATA_SO))("compute units", () => {
   it("reports compute units", () => {
     const all: Record<string, [bigint, bigint]> = {};
     let compared = 0;
