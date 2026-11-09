@@ -1342,7 +1342,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           const h = /^\(\(TSS_\w+ \*\)\((\w+)->data \+ 8\)\)$/.exec(t.c)?.[1];
           if (h) loaded = { handle: h, struct: t.type.struct, mut: fn === "loadAccountMut" };
         }
-        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded });
+        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded, ...(t.bigCap ? { bigCap: t.bigCap } : {}) });
         continue;
       }
       // A local decoded from an account's Borsh bytes: `const pool = loadBorsh<StakePool>(acct)` (a copy, as Rust's).

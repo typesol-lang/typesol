@@ -51,7 +51,9 @@ codes, and says so here.
   compile to the same C as before.
 - New: `BigVec<T>`, SPL's `big_vec` for native ports (the stake pool's validator list): the last field of a `loadRaw`
   struct, sized by the account; `push`, `retain`, `slice` (`deserialize_mut_slice`), `get` / `set`, `for … of`, the list
-  methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Other programs compile to the same C.
+  methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Every access is bounded by the
+  account's room as well as the length (the capacity computed once at the load), so a length written again after the
+  load (writeData, another view, storeBorsh) never reaches past the account. Other programs compile to the same C.
 - `typesol/testing`: epochs and staking. `warpToEpoch` / `nextEpoch` move the Clock consistently (epoch, slot, leader
   schedule epoch, timestamps); `StakeCluster` keeps a cluster-like StakeHistory over one or more LiteSVMs, so warmup
   and cooldown are rate-limited as on a cluster; `stakeActivation` ports the Stake program's activation math;

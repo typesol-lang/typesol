@@ -222,7 +222,8 @@ export abstract class StorageEmitter extends AliasEmitter {
       // An Option<struct> instruction argument: read like an Option<struct> field.
       if (l && l.type.kind === "optionArg") return { lv: l.c, type: l.type.option, writable: false };
       // A struct loaded from a remaining account.
-      if (l && l.type.kind === "structRef") return { lv: `(*${l.c})`, type: { kind: "struct", name: l.type.struct }, writable: l.type.writable };
+      if (l && l.type.kind === "structRef")
+        return { lv: `(*${l.c})`, type: { kind: "struct", name: l.type.struct }, writable: l.type.writable, ...(l.bigCap ? { bigCap: l.bigCap } : {}) };
       if (l && l.type.kind === "enumRef") return { lv: `(*${l.c})`, type: { kind: "dataEnum", name: l.type.name }, writable: l.type.writable };
       return undefined;
     }
@@ -332,7 +333,8 @@ export abstract class StorageEmitter extends AliasEmitter {
             fixed: "",
             elemSize,
             resizable: false,
-            big: `ts_bigvec_cap((const uint8_t *)&${base.lv}, sizeof(TSS_${s.name}), ${elemSize})`,
+            // Computed once at the load for a view bound to a local; for one used in place, here.
+            big: base.bigCap ?? `ts_bigvec_cap((const uint8_t *)&${base.lv}, sizeof(TSS_${s.name}), ${elemSize})`,
           };
         } else if (f.type.kind === "vec" && f.type.heap) r.vec = this.heapVec(r.lv, f.type.elem);
         // Vecs of loaded accounts can be read and updated in place but not resized (no entry length known).
@@ -737,8 +739,8 @@ export abstract class StorageEmitter extends AliasEmitter {
     const start = this.tmp("sl_start");
     const end = this.tmp("sl_end");
     this.line(`uint64_t ${start} = ${this.expect(this.expr(args[0]!, U64), U64, args[0]!).c};`);
-    this.line(`uint64_t ${end} = ${args[1] ? this.expect(this.expr(args[1], U64), U64, args[1]).c : `(uint64_t)${info.len}`};`);
-    this.line(`if (${end} > (uint64_t)${info.len} || ${start} > ${end}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+    this.line(`uint64_t ${end} = ${args[1] ? this.expect(this.expr(args[1], U64), U64, args[1]).c : vecCount(info)};`);
+    this.line(`if (${end} > ${vecCount(info)} || ${start} > ${end}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
     // Named in scope, so a loop over the slice moved into a function of its own is given them (see outlinedLoop).
     for (const c of [start, end]) this.scopes.at(-1)!.set(`__${c}`, { c, type: U64, mutable: false });
     const items = `((${fieldC((base.type as FieldType & { kind: "vec" }).elem)} *)${info.items} + ${start})`;

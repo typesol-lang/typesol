@@ -310,6 +310,90 @@ describe("BigVec", () => {
   });
 });
 
+// test/fixtures/bigvec-overwrite.ts: the length written again after the load (a second view, storeBorsh, writeData).
+describe("BigVec: a length written after the load", () => {
+  let d: Deployed;
+  let payer: KeyPairSigner;
+  let nums: Address;
+  // Room for 4 u64 elements and 3 bytes more (not a fifth element), 4 of them in use.
+  const ROOM = 4;
+  const fresh = () => {
+    const data = Buffer.alloc(1 + 4 + ROOM * 8 + 3, 0xee);
+    data[0] = 1;
+    data.writeUInt32LE(ROOM, 1);
+    for (let i = 0; i < ROOM; i++) data.writeBigUInt64LE(BigInt(10 + i), 5 + i * 8);
+    d.svm.setAccount({ address: nums, lamports: 1_000_000_000n, programAddress: d.programId, executable: false, data } as never);
+    return data;
+  };
+  const bytes = () => {
+    const a = d.svm.getAccount(nums);
+    if (!a.exists) throw new Error("gone");
+    return Buffer.from(a.data);
+  };
+  beforeAll(async () => {
+    d = await deployFile(fileURLToPath(new URL("../fixtures/bigvec-overwrite.ts", import.meta.url)));
+    payer = await fundedSigner(d.svm, 10n);
+    nums = (await generateKeyPairSigner()).address;
+  });
+  const HOW = { view: 1, storeBorsh: 2 } as const;
+  const OP = { loop: 0, get: 1, set: 2, slice: 3, retain: 4, push: 5, find: 6, tail: 7 } as const;
+  const run = async (how: number, len: number, op: number, at = 0) => {
+    fresh();
+    const data = Buffer.alloc(14);
+    data[0] = how;
+    data.writeUInt32LE(len, 1);
+    data[5] = op;
+    data.writeBigUInt64LE(BigInt(at), 6);
+    return send(d.svm, payer, [
+      { programAddress: d.programId, accounts: [{ address: nums, role: AccountRole.WRITABLE }], data: new Uint8Array(data) } as Instruction,
+    ]);
+  };
+  const said = (r: Result) => {
+    if (r instanceof FailedTransactionMetadata) throw new Error(`failed: ${String(r.err())}\n${logs(r).join("\n")}`);
+    return logs(r)
+      .filter((l) => l.startsWith("Program log: ") && !l.startsWith("Program log: Instruction"))
+      .map((l) => l.slice(13));
+  };
+
+  for (const [name, how] of Object.entries(HOW))
+    it(`stays within the account's room after ${name} writes a length past it`, async () => {
+      for (const len of [ROOM + 1, 1_000_000, 0xffffffff]) {
+        // Every read and loop sees the elements the account holds, no more.
+        expect(said(await run(how, len, OP.loop))).toEqual([`len ${ROOM} cap ${ROOM} sum ${10 + 11 + 12 + 13} n ${ROOM}`]);
+        expect(said(await run(how, len, OP.get, ROOM - 1))).toEqual([`get 13`]);
+        expect(customError(await run(how, len, OP.get, ROOM))).toBe(5104);
+        expect(customError(await run(how, len, OP.set, ROOM))).toBe(5104);
+        expect(said(await run(how, len, OP.find, 13))).toEqual([`index 3 has true`]);
+        expect(said(await run(how, len, OP.find, 0xeeeeeeeeeeeeeeeen))).toEqual([`index -1 has false`]);
+        expect(said(await run(how, len, OP.slice, ROOM))).toEqual([`slice ${ROOM} sum 46`]);
+        expect(said(await run(how, len, OP.tail, 1))).toEqual([`tail ${ROOM - 1}`]);
+        // A slice past the room fails as one past the length does (deserialize_mut_slice's check).
+        expect(err(await run(how, len, OP.slice, ROOM + 1))).toMatch(/AccountDataTooSmall/);
+        expect(err(await run(how, len, OP.tail, ROOM + 1))).toMatch(/AccountDataTooSmall/);
+        // push finds no room; retain goes over the elements in the room and writes the length it kept.
+        expect(err(await run(how, len, OP.push))).toMatch(/AccountDataTooSmall/);
+        const before = fresh();
+        expect(said(await run(how, len, OP.retain))).toEqual([`retained 2`]);
+        const after = bytes();
+        expect(after.readUInt32LE(1)).toBe(2);
+        expect([after.readBigUInt64LE(5), after.readBigUInt64LE(13)]).toEqual([10n, 12n]);
+        expect(after.subarray(5 + ROOM * 8)).toEqual(before.subarray(5 + ROOM * 8)); // past the room: untouched
+      }
+      // A smaller length is read as written.
+      expect(said(await run(how, 2, OP.loop))).toEqual([`len 2 cap ${ROOM} sum 21 n 2`]);
+      expect(customError(await run(how, 2, OP.get, 2))).toBe(5104);
+    });
+
+  it("stays within the account's room after writeData writes a length past it", async () => {
+    const call = (len: number, at: number) => {
+      fresh();
+      return send(d.svm, payer, [ix(d, "via_write_data", { len, at: new BN(at) }, [{ address: nums, writable: true }])]);
+    };
+    expect(said(await call(0xffffffff, 3))).toEqual([`len ${ROOM} sum 46 get 13`]);
+    expect(customError(await call(0xffffffff, 4))).toBe(5104);
+  });
+});
+
 describe("BigVec compile errors", () => {
   const program = (decls: string, body: string, params = "") => `
 import { type AccountInfo, type Account, type BigVec, type Vec, type FixedArray, type Mut, type Pubkey, type u8, type u32, type u64, loadRaw, loadRawMut, loadAccount, remainingAccounts } from "typesol";

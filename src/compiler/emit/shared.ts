@@ -81,6 +81,8 @@ export interface Value {
   stringLiteral?: string;
   /** The `null` literal; becomes an empty option once the expected Option type is known. */
   isNull?: boolean;
+  /** A loadRaw view of a struct ending in a BigVec: the C local holding its capacity, computed once at the load. */
+  bigCap?: string;
 }
 
 /** A storage location: account data, a nested field, an array element, or a local array. */
@@ -90,6 +92,8 @@ export interface Ref {
   writable: boolean;
   /** Owning account, for diagnostics and IDL seed paths. */
   account?: AccountParam;
+  /** A loadRaw view of a struct ending in a BigVec, bound to a local: the C local holding its capacity. */
+  bigCap?: string;
   /** Field path from the account root, when it is a plain chain of fields. */
   path?: string[];
   /** For a Vec: the u32 length lvalue, the fixed-part size expression, and whether it may be resized here. */
@@ -145,6 +149,8 @@ export interface Local {
   loaded?: { handle: string; struct: string; mut: boolean };
   /** A struct value this function holds itself (a literal, or what a helper returned): never account data. */
   owned?: boolean;
+  /** A loadRaw view of a struct ending in a BigVec: the C local holding its capacity, computed at the load. */
+  bigCap?: string;
 }
 
 /** A closure and the scopes it was declared in (its free names resolve there, wherever it is called). */
@@ -421,7 +427,12 @@ export function fixedVecC(t: FieldType & { kind: "vec" }): string {
   return `TSF_${fixedVecName(t)}`;
 }
 
-/** The element count of a Vec place to read: a FixedVec's stored length is clamped to its capacity. */
+/**
+ * The element count of a Vec place to read: a FixedVec's stored length is clamped to its capacity, and so is a
+ * BigVec's, to the room its account holds (the length is checked at the load, but the account's bytes may be written
+ * again after it: writeData, storeBorsh, another view). A BigVec slice's length is in range already.
+ */
 export function vecCount(v: NonNullable<Ref["vec"]>): string {
+  if (v.big !== undefined && !v.slice) return `((uint64_t)${v.len} < ${v.big} ? (uint64_t)${v.len} : ${v.big})`;
   return v.cap === undefined || v.heap ? `((uint64_t)${v.len})` : `((uint64_t)(${v.len} < ${v.cap} ? ${v.len} : ${v.cap}))`;
 }

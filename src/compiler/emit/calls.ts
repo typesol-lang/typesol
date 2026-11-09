@@ -1140,7 +1140,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`{`);
         this.block(() => {
           this.line(`uint8_t *${items} = (uint8_t *)${info.items};`);
-          this.line(`uint64_t ${n} = (uint64_t)${info.len}, ${removed} = 0, ${dst} = 0;`);
+          this.line(`uint64_t ${n} = ${vecCount(info)}, ${removed} = 0, ${dst} = 0;`);
           this.line(`for (uint64_t ${i} = 0; ${i} < ${n}; ${i}++) {`);
           this.block(() => {
             const f = ts.factory;
@@ -1193,7 +1193,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`{`);
     this.block(() => {
       this.line(`uint8_t *${items} = (uint8_t *)${info.items};`);
-      this.line(`uint8_t *${end} = ${items} + (uint64_t)${info.len} * ${size}, *${run} = ${items}, *${dst} = ${items};`);
+      this.line(`uint8_t *${end} = ${items} + ${vecCount(info)} * ${size}, *${run} = ${items}, *${dst} = ${items};`);
       this.line(`for (uint8_t *${p} = ${items}; ${p} < ${end}; ${p} += ${size}) {`);
       this.block(() => {
         const el = this.tmp("rt_el");
@@ -1829,11 +1829,16 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
     this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
-    // A BigVec's stored length must fit in the account (every element read later is then in it).
-    if (s.bigVec)
-      this.line(
-        `if ((uint64_t)((TSS_${s.name} *)(${h}->data))->${s.bigVec.name}__len > (${h}->data_len - sizeof(TSS_${s.name})) / ${s.bigVec.elemSize}) ${this.programErrorFail("AccountDataTooSmall", node)};`,
-      );
+    // A BigVec's stored length must fit in the account. Its capacity is kept in a local: every access is clamped to it
+    // (the length may be written again after this), without a division each time.
+    let bigCap: string | undefined;
+    if (s.bigVec) {
+      bigCap = this.tmp("bv_cap");
+      this.line(`uint64_t ${bigCap} = (${h}->data_len - sizeof(TSS_${s.name})) / ${s.bigVec.elemSize};`);
+      this.line(`if ((uint64_t)((TSS_${s.name} *)(${h}->data))->${s.bigVec.name}__len > ${bigCap}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+      // Named in scope, so a loop moved into a function of its own is given it (see outlinedLoop).
+      this.scopes.at(-1)!.set(`__${bigCap}`, { c: bigCap, type: U64, mutable: false });
+    }
     // NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
     // instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
     // gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
@@ -1848,7 +1853,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         );
       else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
     }
-    return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut } };
+    return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut }, ...(bigCap ? { bigCap } : {}) };
   }
 
   /**
