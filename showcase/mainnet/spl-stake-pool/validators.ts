@@ -39,7 +39,6 @@ import {
   STATUS_READY_FOR_REMOVAL,
 } from "./state.js";
 import {
-  AUTHORITY_WITHDRAW,
   CLOCK_SYSVAR_ID,
   MAX_VALIDATORS_IN_POOL,
   RENT_SYSVAR_ID,
@@ -57,16 +56,18 @@ import {
   checkValidatorList,
   checkValidatorStakeAddress,
   delegatedStakeState,
-  minimumDelegation,
+  poolMinimumDelegation,
   minimumReserveLamports,
   need,
   notDeactivating,
   saturatingAdd,
   saturatingSub,
   stakeDeactivate,
+  stakeDelegate,
+  stakeSplit,
   stakeIsUsableByPool,
   stakeState,
-  validatorStakeAddress,
+  validatorStakeAddressAt,
   validatorStakeBump,
 } from "./util.js";
 
@@ -114,11 +115,11 @@ export function addValidatorToPool(rest: RemainingAccounts, seed: u32): void {
   require(list.validators.findIndex((v) => v.voteAccountAddress === vote.key) < 0n, StakePoolError.ValidatorAlreadyAdded);
 
   const bump = validatorStakeBump(vote.key, poolAcct.key, seed);
-  require(validatorStakeAddress(vote.key, poolAcct.key, seed) === stakeAcct.key, StakePoolError.InvalidStakeAccountAddress);
+  require(validatorStakeAddressAt(vote.key, poolAcct.key, seed, bump) === stakeAcct.key, StakePoolError.InvalidStakeAccountAddress);
 
   // Fund it with the minimum delegation plus its rent, from the reserve, which must stay rent-exempt.
   const stake = programAt<StakeProgram>(rest.get(12n));
-  const required = saturatingAdd(minimumDelegation(stake.getMinimumDelegation()), rentExempt(STAKE_ACCOUNT_SPACE));
+  const required = saturatingAdd(poolMinimumDelegation(stake), rentExempt(STAKE_ACCOUNT_SPACE));
   const reserveMinimum = minimumReserveLamports(rentExempt(reserve.dataLen));
   const reserveLamports = reserve.lamports;
   if (saturatingSub(reserveLamports, required) < reserveMinimum) {
@@ -132,9 +133,9 @@ export function addValidatorToPool(rest: RemainingAccounts, seed: u32): void {
   const stakeSeeds = seed === 0n ? signer([vote.key, poolAcct.key, bump]) : signer([vote.key, poolAcct.key, seed, bump]);
   system.allocate(stakeAcct, STAKE_ACCOUNT_SPACE, stakeSeeds);
   system.assign(stakeAcct, STAKE_PROGRAM_ID, stakeSeeds);
-  const authority = signer([poolAcct.key, AUTHORITY_WITHDRAW, pool.stakeWithdrawBumpSeed]);
-  stake.split(reserve, stakeAcct, withdrawAuth, required, authority);
-  stake.delegate(stakeAcct, vote, clock, history, stakeConfig, withdrawAuth, authority);
+  const bumpSeed = pool.stakeWithdrawBumpSeed;
+  stakeSplit(stake, reserve, withdrawAuth, poolAcct.key, bumpSeed, required, stakeAcct);
+  stakeDelegate(stake, stakeAcct, vote, clock, history, stakeConfig, withdrawAuth, poolAcct.key, bumpSeed);
 
   list.validators.push({
     activeStakeLamports: required,

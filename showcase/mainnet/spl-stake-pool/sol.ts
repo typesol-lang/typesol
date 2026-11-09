@@ -25,9 +25,9 @@ import {
 import { StakePoolError } from "./errors.js";
 import { type StakePool, AccountType } from "./state.js";
 import {
-  AUTHORITY_WITHDRAW,
   U64_MAX,
   UNPACK_OK,
+  burnTokens,
   calcLamportsWithdrawAmount,
   calcPoolTokensForDeposit,
   calcReferralFee,
@@ -46,7 +46,9 @@ import {
   need,
   saturatingAdd,
   saturatingSub,
+  stakeWithdraw,
   toU64,
+  transferTokens,
 } from "./util.js";
 
 /**
@@ -154,13 +156,19 @@ export function withdrawSol(rest: RemainingAccounts, poolTokens: u64, slippage: 
   }
 
   const token = programAt<TokenInterface>(tokenProgram);
-  token.burn(burnFrom, mint, userAuthority, burnt);
-  if (fee > 0n) token.transferChecked(burnFrom, mint, managerFee, userAuthority, fee);
-  programAt<StakeProgram>(rest.get(10n)).withdraw(reserve, destination, clock, history, withdrawAuth, withdrawLamports, [
+  burnTokens(token, burnFrom, mint, userAuthority, burnt);
+  if (fee > 0n) transferTokens(token, burnFrom, mint, managerFee, userAuthority, fee);
+  stakeWithdraw(
+    programAt<StakeProgram>(rest.get(10n)),
+    reserve,
+    withdrawAuth,
     poolAcct.key,
-    AUTHORITY_WITHDRAW,
     pool.stakeWithdrawBumpSeed,
-  ]);
+    destination,
+    clock,
+    history,
+    withdrawLamports,
+  );
 
   require(pool.poolTokenSupply >= burnt, StakePoolError.CalculationFailure);
   pool.poolTokenSupply -= burnt;

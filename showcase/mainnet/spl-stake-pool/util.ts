@@ -150,6 +150,12 @@ export function validatorStakeBump(vote: Pubkey, pool: Pubkey, seed: u32): u8 {
   return findProgramAddressBump([vote, pool, seed], programId());
 }
 
+/** The validator stake address for a bump found already (create_program_address: one hash, not a search). */
+export function validatorStakeAddressAt(vote: Pubkey, pool: Pubkey, seed: u32, bump: u8): Pubkey {
+  if (seed === 0n) return createProgramAddress([vote, pool, bump], programId())!;
+  return createProgramAddress([vote, pool, seed, bump], programId())!;
+}
+
 /** find_transient_stake_program_address: ["transient", vote, pool, seed as 8 bytes LE]. */
 export function transientStakeAddress(vote: Pubkey, pool: Pubkey, seed: u64): Pubkey {
   return findProgramAddress([TRANSIENT_STAKE_SEED_PREFIX, vote, pool, seed], programId());
@@ -791,6 +797,58 @@ export function stakeWithdraw(
   lamports: u64,
 ): void {
   stake.withdraw(source, destination, clock, history, authority, lamports, [poolKey, AUTHORITY_WITHDRAW, bump]);
+}
+
+/** Processor::stake_split: Split `lamports` of `source` into `destination`, signed by the withdraw authority. */
+export function stakeSplit(
+  stake: StakeProgram,
+  source: RemainingAccount,
+  authority: RemainingAccount,
+  poolKey: Pubkey,
+  bump: u8,
+  lamports: u64,
+  destination: RemainingAccount,
+): void {
+  stake.split(source, destination, authority, lamports, [poolKey, AUTHORITY_WITHDRAW, bump]);
+}
+
+/** Processor::stake_delegate: DelegateStake of `account` to `vote`, signed by the withdraw authority. */
+export function stakeDelegate(
+  stake: StakeProgram,
+  account: RemainingAccount,
+  vote: RemainingAccount,
+  clock: RemainingAccount,
+  history: RemainingAccount,
+  config: RemainingAccount,
+  authority: RemainingAccount,
+  poolKey: Pubkey,
+  bump: u8,
+): void {
+  stake.delegate(account, vote, clock, history, config, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
+}
+
+/** stake::tools::get_minimum_delegation, then minimum_delegation: the most of it and MINIMUM_ACTIVE_STAKE. */
+export function poolMinimumDelegation(stake: StakeProgram): u64 {
+  return minimumDelegation(stake.getMinimumDelegation());
+}
+
+// ---- Token CPIs the user signs ------------------------------------------------------------------------------------
+
+/** Processor::token_burn: Burn (tag 8) `amount` from `from`, the user's transfer authority signing. */
+export function burnTokens(token: TokenInterface, from: RemainingAccount, mint: RemainingAccount, authority: RemainingAccount, amount: u64): void {
+  token.burn(from, mint, authority, amount);
+}
+
+/** Processor::token_transfer: TransferChecked (tag 12) with the mint's decimals, the user's authority signing. */
+export function transferTokens(
+  token: TokenInterface,
+  from: RemainingAccount,
+  mint: RemainingAccount,
+  to: RemainingAccount,
+  authority: RemainingAccount,
+  amount: u64,
+): void {
+  token.transferChecked(from, mint, to, authority, amount);
 }
 
 // ---- Status changes (PodStakeStatus) -------------------------------------------------------------------------------
