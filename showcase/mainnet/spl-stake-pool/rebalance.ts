@@ -21,6 +21,9 @@
 // - a StakeHistory or stake config account that is not the sysvar fails the original's CPI in the runtime
 //   (MissingAccount, "Instruction references an unknown account"), which a program cannot reproduce: the port fails
 //   just before that CPI with NotEnoughAccountKeys (checkStakeHistory below).
+// - a list passed read-only: the original writes it anyway and the runtime refuses that at the instruction's end
+//   (ReadonlyDataModified); the port reaches the same point after the same CPIs and fails loading it for writing
+//   (3006, "account must be writable").
 import {
   type Pubkey,
   type RemainingAccount,

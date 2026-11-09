@@ -5,6 +5,7 @@
 // (spl-stake-pool-helpers.ts) runs both programs side by side; every transaction must have the same outcome, the same
 // log lines and the same bytes in every account it names. The outcomes are checked too, so each path is really reached.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, lamports } from "@solana/kit";
+import { LiteSVM } from "litesvm";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   CLOCK,
@@ -71,6 +72,10 @@ const replace = (i: Instruction, at: number, address: Address) =>
     l[at] = { address, role: role === AccountRole.READONLY_SIGNER ? AccountRole.READONLY : role === AccountRole.WRITABLE_SIGNER ? AccountRole.WRITABLE : role };
   });
 
+/** The rent of a 200-byte stake account, and the pool's minimum delegation (read from the first validator added). */
+const RENT_200 = new LiteSVM().minimumBalanceForRentExemption(STAKE_ACCOUNT_SIZE);
+let MIN = 0n;
+
 /** A pool, its validators (vote, validator stake), and the epoch moved on and updated so their stake is active. */
 interface Validators {
   p: Pool;
@@ -86,6 +91,8 @@ async function poolWithValidators(d: Diff, payer: KeyPairSigner, n: number, rese
     const seed = seeds ? i % 3 : 0;
     const s = await validatorStake(v, p.pool, seed);
     await d.ok(`add validator (${label} ${i})`, payer, [ix.addValidator(p, p.staker, s, v, seed)]);
+    // A validator is added with the pool's minimum delegation and a stake account's rent.
+    if (i === 0) MIN = d.validators(p)[0]!.active - RENT_200;
     votes.push(v);
     stakes.push(s);
   }
@@ -256,10 +263,6 @@ describe("IncreaseValidatorStake and IncreaseAdditionalValidatorStake", () => {
     expect(await d.both("decrease: validator removed", payer, [await decResOf(d, v, 1, SOL, 9n)])).toBe(custom(E.ValidatorNotFound));
   });
 });
-
-/** RENT_200, MIN: the rent of a 200-byte stake account and the pool's minimum delegation, as the VMs have them. */
-let RENT_200 = 0n;
-let MIN = 0n;
 
 const decResOf = async (d: Diff, v: Validators, i: number, amount: bigint, seed: bigint) =>
   ix.decreaseValidatorStakeWithReserve(v.p, v.p.staker, v.stakes[i]!, await transientStake(v.votes[i]!, v.p.pool, seed), amount, seed);
@@ -620,6 +623,22 @@ describe("accounts in the wrong slots, and balances out of range", () => {
     restore();
   });
 
+  it("fails at the end with a list passed read-only, after the same CPIs", async () => {
+    // The original writes the list in place and the runtime refuses that at the instruction's end
+    // (ReadonlyDataModified); TypeSOL does not write an account the transaction passed read-only (3006, logged).
+    const ro = (i: Instruction) => accounts(i, (l) => (l[3] = { address: l[3]!.address, role: AccountRole.READONLY }));
+    for (const [label, i] of [
+      ["increase: list read-only", ro(await incOf(v, 3, SOL, 9n))],
+      ["decrease with reserve: list read-only", ro(await decResOf(d, v, 3, SOL, 9n))],
+    ] as const) {
+      const { original, port } = await sendBoth(d, payer, [i]);
+      expect(original.outcome, label).toBe(builtin("ReadonlyDataModified"));
+      expect(port.outcome, label).toBe(custom(3006));
+      expect(port.lines.slice(0, -2), label).toEqual(original.lines.slice(0, -1));
+      expect(port.lines.at(-2), label).toBe("Program log: TypeSOL: account must be writable");
+    }
+  });
+
   it("fails with CalculationFailure where the list's balances would overflow", async () => {
     const at = (i: number) => 9 + 73 * i;
     // Active lamports recorded under the amount decreased (the account holds more): after the CPIs.
@@ -664,21 +683,6 @@ describe("compute units", () => {
       expect(b, `${name}: TypeSOL ${b} vs original ${a}`).toBeLessThan(a);
     }
     console.log(`${compared} transactions compared`);
+    expect(compared).toBeGreaterThan(300);
   });
 });
-
-// The rent and minimum delegation the VMs use, before any test runs.
-beforeAll(async () => {
-  const d = await Diff.create();
-  RENT_200 = d.original.minimumBalanceForRentExemption(STAKE_ACCOUNT_SIZE);
-  MIN = await minimumDelegation(d);
-});
-
-/** The pool's minimum delegation: max(the Stake program's, 1_000_000), read from a validator added with it. */
-async function minimumDelegation(d: Diff): Promise<bigint> {
-  const payer = await d.funded(100n);
-  const p = await d.createPool(payer, { reserveLamports: 10n * SOL, maxValidators: 1, label: "initialize (minimum)" });
-  const vote = await d.vote(payer);
-  await d.ok("add validator (minimum)", payer, [ix.addValidator(p, p.staker, await validatorStake(vote, p.pool), vote)]);
-  return d.validators(p)[0]!.active - d.original.minimumBalanceForRentExemption(STAKE_ACCOUNT_SIZE);
-}
