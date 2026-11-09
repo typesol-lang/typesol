@@ -23,7 +23,6 @@ import {
   log,
   programAt,
   programId,
-  pubkey,
   readData,
   require,
   signer,
@@ -108,12 +107,10 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   const before = delegatedStakeState(validatorStake);
   const lamportsBefore = validatorStake.lamports;
   const voteKey = before.voter;
-  if (pool.preferredDepositValidatorVoteAddress !== null) {
-    const preferred = pool.preferredDepositValidatorVoteAddress!;
-    if (preferred !== voteKey) {
-      log(`Incorrect deposit address, expected ${preferred}, received ${voteKey}`);
-      require(false, StakePoolError.IncorrectDepositVoteAddress);
-    }
+  const preferred = pool.preferredDepositValidatorVoteAddress;
+  if (preferred !== null && preferred !== voteKey) {
+    log(`Incorrect deposit address, expected ${preferred}, received ${voteKey}`);
+    require(false, StakePoolError.IncorrectDepositVoteAddress);
   }
   const i = list.validators.findIndex((v) => v.voteAccountAddress === voteKey);
   require(i >= 0n, StakePoolError.ValidatorNotFound);

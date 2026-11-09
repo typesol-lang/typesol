@@ -33,7 +33,6 @@ import {
   log,
   programAt,
   programId,
-  pubkey,
   rentExempt,
   require,
   signer,
@@ -175,7 +174,7 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
     stakeDelegate(stake, ephemeralAcct, vote, withdrawAuth, poolAcct.key, bump);
   }
   // The account the transient stake comes from: the ephemeral stake account, or the reserve.
-  const source = rest.get(ephemeral ? 5n : 4n);
+  const source = ephemeral ? rest.get(5n) : reserve;
   const transientBump = checkedTransientStakeBump(transientAcct.key, voteKey, poolAcct.key, transientSeed);
   if (hasTransient) {
     // The transient stake exists (activating since this epoch): the ephemeral stake joins it.
@@ -315,7 +314,7 @@ export function decreaseValidatorStake(
     splitLamports = ephemeralAcct.lamports;
   }
   // The account the transient stake comes from: the ephemeral stake account, or the validator stake account.
-  const source = rest.get(ephemeral ? 5n + f : 4n + f);
+  const source = ephemeral ? rest.get(5n + f) : validatorAcct;
   const transientBump = checkedTransientStakeBump(transientAcct.key, voteKey, poolAcct.key, transientSeed);
   if (hasTransient) {
     // The transient stake exists (deactivating since this epoch): the ephemeral stake joins it.

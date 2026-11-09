@@ -10,7 +10,6 @@ import {
   type RemainingAccounts,
   type StakeProgram,
   type SystemProgram,
-  type Pubkey,
   type u32,
   ProgramError,
   currentEpoch,
@@ -240,16 +239,16 @@ export function cleanupRemovedValidatorEntries(rest: RemainingAccounts): void {
   list.validators.retain((v) => !(u64(v.status) === STATUS_READY_FOR_REMOVAL && v.activeStakeLamports === 0n && v.transientStakeLamports === 0n));
   if (poolAcct.isWritable) {
     log("Checking preferred validators");
-    if (pool.preferredDepositValidatorVoteAddress !== null) {
-      const deposit: Pubkey = pool.preferredDepositValidatorVoteAddress!;
+    const deposit = pool.preferredDepositValidatorVoteAddress;
+    if (deposit !== null) {
       const i = list.validators.findIndex((v) => v.voteAccountAddress === deposit);
       if (i < 0n || u64(list.validators.get(u64(i)).status) !== STATUS_ACTIVE) {
         log(`Preferred deposit validator ${deposit} not found or not active, resetting`);
         pool.preferredDepositValidatorVoteAddress = null;
       }
     }
-    if (pool.preferredWithdrawValidatorVoteAddress !== null) {
-      const withdraw: Pubkey = pool.preferredWithdrawValidatorVoteAddress!;
+    const withdraw = pool.preferredWithdrawValidatorVoteAddress;
+    if (withdraw !== null) {
       const i = list.validators.findIndex((v) => v.voteAccountAddress === withdraw);
       if (i < 0n || u64(list.validators.get(u64(i)).status) !== STATUS_ACTIVE) {
         log(`Preferred withdrawal validator ${withdraw} not found or not active, resetting`);

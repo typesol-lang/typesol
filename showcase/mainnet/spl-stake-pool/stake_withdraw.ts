@@ -160,9 +160,9 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   } else {
     require(s.tag === STAKE_STATE_STAKE, StakePoolError.WrongStakeStake);
     const voteKey = s.voter;
-    if (pool.preferredWithdrawValidatorVoteAddress !== null) {
+    const preferred = pool.preferredWithdrawValidatorVoteAddress;
+    if (preferred !== null) {
       // Defensive: the preferred validator may have been removed.
-      const preferred = pool.preferredWithdrawValidatorVoteAddress!;
       const p = list.validators.findIndex((v) => v.voteAccountAddress === preferred);
       if (p >= 0n) {
         const preferredActive = list.validators.get(u64(p)).activeStakeLamports;

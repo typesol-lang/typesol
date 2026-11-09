@@ -11,7 +11,8 @@
 //
 // The instructions live by subject: admin.ts (Initialize, the setters, SetPreferredValidator), validators.ts (adding,
 // removing and cleaning up validators), update.ts (the per-epoch updates), sol.ts (SOL deposits and withdrawals),
-// and the files the later parts fill: rebalance.ts, stake_deposit.ts, stake_withdraw.ts, metadata.ts.
+// rebalance.ts (moving stake between the reserve and the validators), stake_deposit.ts and stake_withdraw.ts (stake
+// accounts in and out), metadata.ts (the pool token's Metaplex metadata).
 import { ProgramError, instructionData, log, remainingAccounts, require, u64 } from "typesol";
 import { addValidatorToPool, cleanupRemovedValidatorEntries, removeValidatorFromPool } from "./validators.js";
 import { initialize, setFee, setFundingAuthority, setManager, setPreferredValidator, setStaker } from "./admin.js";
@@ -22,7 +23,6 @@ import { depositStake } from "./stake_deposit.js";
 import { withdrawStake } from "./stake_withdraw.js";
 import { createTokenMetadata, updateTokenMetadata } from "./metadata.js";
 import { DEFAULT_PUBKEY } from "./util.js";
-import { type Fee } from "./state.js";
 
 /** The entrypoint's failure line, `msg!(error.to_str::<StakePoolError>())`: "Error: " and the error's text. */
 export const ERROR_LOG_PREFIX = "Error: ";
@@ -50,11 +50,15 @@ export function process(): void {
   if (tag === 0n) {
     // Initialize { fee, withdrawal_fee, deposit_fee: Fee (denominator, numerator), referral_fee: u8, max_validators: u32 }
     require(n === 54n, ProgramError.BorshIoError);
-    const epochFee: Fee = { denominator: data.readU64(1n), numerator: data.readU64(9n) };
-    const withdrawalFee: Fee = { denominator: data.readU64(17n), numerator: data.readU64(25n) };
-    const depositFee: Fee = { denominator: data.readU64(33n), numerator: data.readU64(41n) };
     log("Instruction: Initialize stake pool");
-    initialize(rest, epochFee, withdrawalFee, depositFee, data.readU8(49n), data.readU32(50n));
+    initialize(
+      rest,
+      { denominator: data.readU64(1n), numerator: data.readU64(9n) },
+      { denominator: data.readU64(17n), numerator: data.readU64(25n) },
+      { denominator: data.readU64(33n), numerator: data.readU64(41n) },
+      data.readU8(49n),
+      data.readU32(50n),
+    );
     return;
   }
   if (tag === 1n) {

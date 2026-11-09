@@ -1031,6 +1031,15 @@ describe("the list and the pool read-only, or the list in another slot", () => {
       builtin("ProgramFailedToComplete"),
     );
     expect(d.lastLogs).toContain(`Program ${PROGRAM} failed: SBF program Panicked in program/src/processor.rs at 50:89`);
+    // A list cannot live at a program address (whoever made it signed for its address), but moved to one, as a test
+    // can: the stake account's address check passes, and the System CPI that allocates it borrows the list.
+    const q = await d.createPool(payer, { reserveLamports: 10n * SOL, maxValidators: 2, label: "initialize (moved list)" });
+    const at = await validatorStake(votes[2]!, q.pool);
+    d.move(q.list, at);
+    d.patch(q.pool, (b) => key(at).copy(b, 98));
+    expect(await d.both("add validator: the list at the stake account's address", payer, [ix.addValidator({ ...q, list: at }, q.staker, at, votes[2]!)])).toBe(
+      builtin("AccountBorrowFailed"),
+    );
     // UpdateValidatorListBalance checks both addresses first: the list in a pair is skipped.
     await d.ok("update list: the list in a pair", payer, [ix.updateValidatorListBalance(p, 0, false, [[p.list, p.list]])]);
   });

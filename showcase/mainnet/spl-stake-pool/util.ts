@@ -286,8 +286,8 @@ export function checkMint(pool: StakePool, a: RemainingAccount): u8 {
  * (NotEnoughAccountKeys when it is missing) must be it, signing.
  */
 export function checkSolDepositAuthority(pool: StakePool, rest: RemainingAccounts, index: u64): void {
-  if (pool.solDepositAuthority === null) return;
-  const auth: Pubkey = pool.solDepositAuthority!;
+  const auth = pool.solDepositAuthority;
+  if (auth === null) return;
   need(rest, index + 1n);
   const a = rest.get(index);
   if (auth !== a.key) {
@@ -302,8 +302,8 @@ export function checkSolDepositAuthority(pool: StakePool, rest: RemainingAccount
 
 /** check_sol_withdraw_authority: the same for SOL withdrawals (no log for another key). */
 export function checkSolWithdrawAuthority(pool: StakePool, rest: RemainingAccounts, index: u64): void {
-  if (pool.solWithdrawAuthority === null) return;
-  const auth: Pubkey = pool.solWithdrawAuthority!;
+  const auth = pool.solWithdrawAuthority;
+  if (auth === null) return;
   need(rest, index + 1n);
   const a = rest.get(index);
   require(auth === a.key, StakePoolError.InvalidSolWithdrawAuthority);
