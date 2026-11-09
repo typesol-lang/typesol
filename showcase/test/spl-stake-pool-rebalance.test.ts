@@ -21,8 +21,6 @@ import {
   SYSTEM,
   builtin,
   custom,
-  lines,
-  outcome,
   ephemeralStake,
   ix,
   key,
@@ -31,7 +29,6 @@ import {
   updatePairs,
   validatorStake,
 } from "./spl-stake-pool-helpers.js";
-import { send } from "../../test/harness.js";
 import { stakeHistoryEntry } from "../../src/testing-stake.js";
 
 /** StakePoolError codes. */
@@ -510,17 +507,6 @@ describe("a pool of 52 validators", () => {
   });
 });
 
-/**
- * Where the port cannot fail exactly as the original does (see rebalance.ts): both are sent, and the outcomes and log
- * lines are returned for the test to compare as far as they agree. No account changes in either (both fail).
- */
-async function sendBoth(d: Diff, payer: KeyPairSigner, ixs: Instruction[]) {
-  const a = await send(d.original, payer, ixs);
-  const b = await send(d.port, payer, ixs);
-  d.compared++;
-  return { original: { outcome: outcome(a), lines: lines(a) }, port: { outcome: outcome(b), lines: lines(b) } };
-}
-
 describe("accounts in the wrong slots, and balances out of range", () => {
   let d: Diff;
   let payer: KeyPairSigner;
@@ -535,18 +521,10 @@ describe("accounts in the wrong slots, and balances out of range", () => {
   });
 
   it("panics where the original finds the validator list passed again (its data is borrowed)", async () => {
-    // The port panics at the original's location; it logs the panic message the original's panic handler does not.
-    const message = "Program log: already mutably borrowed: BorrowError";
+    // "already mutably borrowed": the original's panic handler logs no message, only the runtime's location.
     const check = async (label: string, i: Instruction, at: string) => {
-      const { original, port } = await sendBoth(d, payer, [i]);
-      expect(original.outcome, label).toBe(builtin("ProgramFailedToComplete"));
-      expect(port.outcome, label).toBe(original.outcome);
-      expect(original.lines.at(-1), label).toBe(`Program ${PROGRAM} failed: SBF program Panicked in ${at}`);
-      expect(
-        port.lines.filter((l) => l !== message),
-        label,
-      ).toEqual(original.lines);
-      expect(port.lines.length, label).toBe(original.lines.length + 1);
+      expect(await d.both(label, payer, [i]), label).toBe(builtin("ProgramFailedToComplete"));
+      expect(d.lastLogs, label).toContain(`Program ${PROGRAM} failed: SBF program Panicked in ${at}`);
     };
     // Decrease: AccountInfo::data_len of the validator stake account, before anything else reads it.
     await check("decrease: validator stake is the list", replace(await decResOf(d, v, 1, SOL, 1n), 5, v.p.list), "src/lib.rs at 105:19");
@@ -578,16 +556,11 @@ describe("accounts in the wrong slots, and balances out of range", () => {
   });
 
   it("refuses a StakeHistory or stake config account that is not the sysvar, at the CPI that names it", async () => {
-    // The original's CPI names the sysvar by address and the runtime does not find it among the accounts
-    // (MissingAccount, logged by the runtime); the port fails at the same point with NotEnoughAccountKeys.
+    // The Stake instructions name the sysvar by address and the runtime does not find it among the accounts
+    // (MissingAccount, logged by the runtime), in both.
     const check = async (label: string, i: Instruction, missing: string) => {
-      const { original, port } = await sendBoth(d, payer, [i]);
-      expect(original.outcome, label).toBe(builtin("MissingAccount"));
-      expect(port.outcome, label).toBe(builtin("NotEnoughAccountKeys"));
-      const at = original.lines.indexOf(`Instruction references an unknown account ${missing}`);
-      expect(at, label).toBeGreaterThan(0);
-      expect(port.lines.slice(0, at), label).toEqual(original.lines.slice(0, at));
-      expect(port.lines[at], label).toBe("Program log: Error: NotEnoughAccountKeys");
+      expect(await d.both(label, payer, [i])).toBe(builtin("MissingAccount"));
+      expect(d.lastLogs, label).toContain(`Instruction references an unknown account ${missing}`);
     };
     const HISTORY = "SysvarStakeHistory1111111111111111111111111";
     const CONFIG = "StakeConfig11111111111111111111111111111111";
@@ -624,19 +597,15 @@ describe("accounts in the wrong slots, and balances out of range", () => {
   });
 
   it("fails at the end with a list passed read-only, after the same CPIs", async () => {
-    // The original writes the list in place and the runtime refuses that at the instruction's end
-    // (ReadonlyDataModified); TypeSOL does not write an account the transaction passed read-only (3006, logged).
+    // The list is written in place and the runtime refuses that at the instruction's end (ReadonlyDataModified).
     const ro = (i: Instruction) => accounts(i, (l) => (l[3] = { address: l[3]!.address, role: AccountRole.READONLY }));
     for (const [label, i] of [
       ["increase: list read-only", ro(await incOf(v, 3, SOL, 9n))],
+      ["increase additional: list read-only", ro(await incAddOf(v, 3, SOL, 9n, 3n))],
       ["decrease with reserve: list read-only", ro(await decResOf(d, v, 3, SOL, 9n))],
-    ] as const) {
-      const { original, port } = await sendBoth(d, payer, [i]);
-      expect(original.outcome, label).toBe(builtin("ReadonlyDataModified"));
-      expect(port.outcome, label).toBe(custom(3006));
-      expect(port.lines.slice(0, -2), label).toEqual(original.lines.slice(0, -1));
-      expect(port.lines.at(-2), label).toBe("Program log: TypeSOL: account must be writable");
-    }
+      ["decrease additional: list read-only", ro(await decAddOf(d, v, 3, SOL, 9n, 3n))],
+    ] as const)
+      expect(await d.both(label, payer, [i]), label).toBe(builtin("ReadonlyDataModified"));
   });
 
   it("fails with CalculationFailure where the list's balances would overflow", async () => {

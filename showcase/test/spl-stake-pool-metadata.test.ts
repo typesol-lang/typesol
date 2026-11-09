@@ -6,7 +6,6 @@
 import { type Address, type Instruction, type KeyPairSigner, AccountRole } from "@solana/kit";
 import { existsSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
-import { send } from "../../test/harness.js";
 import {
   Diff,
   MPL_METADATA,
@@ -20,9 +19,7 @@ import {
   builtin,
   custom,
   ix,
-  lines,
   metadataAddress,
-  outcome,
   u8,
   u32,
 } from "./spl-stake-pool-helpers.js";
@@ -73,25 +70,6 @@ const role = (i: Instruction, at: number, r: AccountRole) =>
     const signs = r === AccountRole.READONLY_SIGNER || r === AccountRole.WRITABLE_SIGNER;
     l[at] = { address: l[at]!.address, role: r, ...(signs && l[at]!.signer ? { signer: l[at]!.signer } : {}) };
   });
-/**
- * both() for a transaction the original aborts on (Rust's out-of-memory handler: the `abort` syscall, "SBF program
- * panicked"): TypeSOL has no abort, so its panic() ends in sol_panic_, whose last line also names a source location.
- * Everything else must agree: the outcome, every other log line, and every account named.
- */
-async function bothAborting(d: Diff, label: string, payer: KeyPairSigner, i: Instruction): Promise<string> {
-  const [a, b] = [await send(d.original, payer, [i]), await send(d.port, payer, [i])];
-  d.compared++;
-  expect(outcome(b), label).toBe(outcome(a));
-  expect(outcome(a), label).toBe(builtin("ProgramFailedToComplete"));
-  const la = lines(a);
-  const lb = lines(b);
-  expect(la.at(-1), label).toBe(`Program ${PROGRAM} failed: SBF program panicked`);
-  expect(lb.at(-1), label).toMatch(new RegExp(`^Program ${PROGRAM} failed: SBF program Panicked in metadata\\.ts at \\d+:0$`));
-  expect(lb.slice(0, -1), label).toEqual(la.slice(0, -1));
-  for (const m of i.accounts ?? []) expect(d.bytes(d.port, m.address), `${label}: ${m.address}`).toBe(d.bytes(d.original, m.address));
-  return outcome(a);
-}
-
 /** The same accounts with other data. */
 const withData = (i: Instruction, data: Buffer): Instruction => ({ ...i, data: new Uint8Array(data) });
 
@@ -190,8 +168,16 @@ describe.skipIf(!existsSync(MPL_METADATA_SO))("token metadata", () => {
     ];
     for (const [label, i, args, want] of cases) {
       const sent = withData(i, Buffer.concat([u8(label.startsWith("create") ? 17 : 18), args]));
-      if (want === builtin("BorshIoError")) expect(await d.both(label, payer, [sent]), label).toBe(want);
-      else expect(await bothAborting(d, label, payer, sent), label).toBe(want);
+      expect(await d.both(label, payer, [sent]), label).toBe(want);
+      // Out of memory: the allocator's line, then Rust's abort, which names no location.
+      if (want !== builtin("BorshIoError"))
+        expect(
+          d.lastLogs
+            .split("\n")
+            .filter((l) => !/ consumed \d+ of \d+ compute units$/.test(l))
+            .slice(-2),
+          label,
+        ).toEqual(["Program log: Error: memory allocation failed, out of memory", `Program ${PROGRAM} failed: SBF program panicked`]);
     }
   });
 

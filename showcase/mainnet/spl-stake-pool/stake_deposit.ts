@@ -23,7 +23,6 @@ import {
   log,
   programAt,
   programId,
-  pubkey,
   readData,
   require,
   signer,
@@ -36,7 +35,6 @@ import { type StakePool, type ValidatorList, AccountType, STAKE_DELEGATED, STATU
 import {
   AUTHORITY_DEPOSIT,
   CLOCK_SYSVAR_ID,
-  STAKE_HISTORY_SYSVAR_ID,
   U64_MAX,
   calcPoolTokensForDeposit,
   calcReferralFee,
@@ -45,6 +43,7 @@ import {
   checkListHeaderDecodes,
   checkListHeaderValid,
   checkMint,
+  checkNotTheList,
   checkReserveStake,
   checkStakeProgram,
   checkSysvar,
@@ -54,6 +53,7 @@ import {
   feeApply,
   mintTokens,
   need,
+  panicIfTheList,
   saturatingAdd,
   stakeMerge,
   stakeWithdraw,
@@ -80,8 +80,7 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   const managerFee = rest.get(8n);
   const referrerFee = rest.get(9n);
   const mint = rest.get(10n);
-  const clock = rest.get(11n);
-  const history = rest.get(12n);
+  // The Clock and StakeHistory (accounts 11 and 12) are named by address in the Stake CPIs.
   const tokenProgram = rest.get(13n);
 
   checkStakeProgram(rest.get(14n));
@@ -104,15 +103,14 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   checkListHeaderValid(listAcct);
 
   // The validator stake account is read before it is looked up (no owner check: the merge makes that one).
+  panicIfTheList(validatorStake, listAcct);
   const before = delegatedStakeState(validatorStake);
   const lamportsBefore = validatorStake.lamports;
   const voteKey = before.voter;
-  if (pool.preferredDepositValidatorVoteAddress !== null) {
-    const preferred = pool.preferredDepositValidatorVoteAddress!;
-    if (preferred !== voteKey) {
-      log(`Incorrect deposit address, expected ${preferred}, received ${voteKey}`);
-      require(false, StakePoolError.IncorrectDepositVoteAddress);
-    }
+  const preferred = pool.preferredDepositValidatorVoteAddress;
+  if (preferred !== null && preferred !== voteKey) {
+    log(`Incorrect deposit address, expected ${preferred}, received ${voteKey}`);
+    require(false, StakePoolError.IncorrectDepositVoteAddress);
   }
   const i = list.validators.findIndex((v) => v.voteAccountAddress === voteKey);
   require(i >= 0n, StakePoolError.ValidatorNotFound);
@@ -128,9 +126,13 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   // signed the transaction. A signer is never a program address (off the curve), so it needs no search.
   const stake = programAt<StakeProgram>(rest.get(14n));
   const newAuthority = withdrawAuth.key;
+  // The authorities change on the user's stake account, signed by the deposit authority (a key the manager may set to
+  // anything): neither may be the list.
+  checkNotTheList(userStake, listAcct);
+  checkNotTheList(depositAuth, listAcct);
   if (depositAuth.isSigner) {
-    stake.authorize(userStake, clock, depositAuth, newAuthority, "staker");
-    stake.authorize(userStake, clock, depositAuth, newAuthority, "withdrawer");
+    stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "staker");
+    stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "withdrawer");
   } else {
     // find_deposit_authority_program_address: the first bump from 255 down that gives an address.
     let depositBump: u8 = 255n;
@@ -141,19 +143,15 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
     }
     if (address === depositAuth.key) {
       const seeds = signer([poolAcct.key, AUTHORITY_DEPOSIT, depositBump]);
-      stake.authorize(userStake, clock, depositAuth, newAuthority, "staker", seeds);
-      stake.authorize(userStake, clock, depositAuth, newAuthority, "withdrawer", seeds);
+      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "staker", seeds);
+      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "withdrawer", seeds);
     } else {
-      stake.authorize(userStake, clock, depositAuth, newAuthority, "staker");
-      stake.authorize(userStake, clock, depositAuth, newAuthority, "withdrawer");
+      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "staker");
+      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "withdrawer");
     }
   }
-  // stake::instruction::merge names the StakeHistory sysvar by its address, not the account given: with another account
-  // in its place the runtime refuses the call (MissingAccount, "Instruction references an unknown account"). A typed
-  // call names the account given, which the Stake program would accept; refused here, at the same point.
-  require(history.key === STAKE_HISTORY_SYSVAR_ID, ProgramError.InvalidArgument);
   const bump = pool.stakeWithdrawBumpSeed;
-  stakeMerge(stake, userStake, withdrawAuth, poolAcct.key, bump, validatorStake, clock, history);
+  stakeMerge(stake, userStake, withdrawAuth, poolAcct.key, bump, validatorStake);
 
   // A merged account is still delegated: only its stake is read again.
   const stakeAfter = readData<u64>(validatorStake, STAKE_DELEGATED);
@@ -185,11 +183,15 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   require(!slippage || userTokens >= minimumOut, StakePoolError.ExceededSlippage);
 
   const token = programAt<TokenInterface>(tokenProgram);
+  checkNotTheList(userPool, listAcct);
   mintTokens(token, mint, userPool, withdrawAuth, poolAcct.key, bump, userTokens);
   if (managerTokens > 0n) mintTokens(token, mint, managerFee, withdrawAuth, poolAcct.key, bump, managerTokens);
-  if (referralFee > 0n) mintTokens(token, mint, referrerFee, withdrawAuth, poolAcct.key, bump, referralFee);
+  if (referralFee > 0n) {
+    checkNotTheList(referrerFee, listAcct);
+    mintTokens(token, mint, referrerFee, withdrawAuth, poolAcct.key, bump, referralFee);
+  }
   // The lamports that did not come as stake go to the reserve.
-  if (solDeposit > 0n) stakeWithdraw(stake, validatorStake, withdrawAuth, poolAcct.key, bump, reserve, clock, history, solDeposit);
+  if (solDeposit > 0n) stakeWithdraw(stake, validatorStake, withdrawAuth, poolAcct.key, bump, reserve, solDeposit);
 
   require(pool.poolTokenSupply <= U64_MAX - newPoolTokens, StakePoolError.CalculationFailure);
   pool.poolTokenSupply += newPoolTokens;

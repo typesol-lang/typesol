@@ -8,6 +8,7 @@
 // DepositSol, WithdrawSol (and the slippage forms), Redelegate, and the instruction decoding of every tag.
 import * as t22 from "@solana-program/token-2022";
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner, lamports } from "@solana/kit";
+import { EpochRewards } from "litesvm";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   CLOCK,
@@ -17,6 +18,7 @@ import {
   SOL,
   STAKE,
   STAKE_ACCOUNT_SIZE,
+  STAKE_HISTORY,
   STAKE_OFFSETS,
   STAKE_POOL_SIZE,
   SYSTEM,
@@ -74,6 +76,7 @@ const E = {
   UnsupportedFeeAccountExtension: 38,
   ExceededSlippage: 39,
   IncorrectMintDecimals: 40,
+  EpochRewardDistributionInProgress: 43,
   TooManyValidatorsInPool: 44,
 } as const;
 
@@ -620,6 +623,10 @@ describe("SOL deposits and withdrawals", () => {
       ["withdraw sol: wrong stake program", replace(wd, 10, SYSTEM), builtin("IncorrectProgramId")],
       ["withdraw sol: wrong fee account", replace(wd, 6, tokens), custom(E.InvalidFeeAccount)],
       ["withdraw sol: another user's tokens", replace(wd, 3, referrer), "x"],
+      // stake::instruction::withdraw names the Clock and the StakeHistory by address (the processor reads neither): the
+      // runtime does not find the sysvar among the accounts.
+      ["withdraw sol: another account as the clock", replace(wd, 8, STAKE_HISTORY), builtin("MissingAccount")],
+      ["withdraw sol: another account as the stake history", replace(wd, 9, CLOCK), builtin("MissingAccount")],
     ];
     for (const [label, i, want] of cases) {
       const got = await d.both(label, payer, [i]);
@@ -714,6 +721,10 @@ describe("validators over epochs", () => {
     expect(await run("wrong list", replace(await add(votes[2]!), 4, p.reserve))).toBe(custom(E.InvalidValidatorStakeList));
     expect(await run("wrong withdraw authority", replace(await add(votes[2]!), 3, p.reserve))).toBe(custom(E.InvalidProgramAddress));
     expect(await run("not a vote account", ix.addValidator(p, p.staker, await stakeOf(p.mint), p.mint))).not.toBe("ok");
+    // DelegateStake names the StakeHistory and the stake config by address: another account in either slot fails the
+    // call in the runtime (after the stake account was made and split); swapped, both are there (below).
+    expect(await run("wrong stake history", replace(await add(votes[2]!), 9, p.mint))).toBe(builtin("MissingAccount"));
+    expect(await run("wrong stake config", replace(await add(votes[2]!), 10, p.mint))).toBe(builtin("MissingAccount"));
     // A reserve that cannot fund another validator and keep its rent.
     const poor = await d.createPool(payer, { reserveLamports: SOL / 1000n, label: "initialize (poor)" });
     expect(
@@ -725,7 +736,13 @@ describe("validators over epochs", () => {
     expect(
       await d.both("add validator: list full", payer, [ix.addValidator(small, small.staker, await validatorStake(votes[3]!, small.pool), votes[3]!)]),
     ).toBe(builtin("AccountDataTooSmall"));
-    for (const v of [votes[2]!, votes[3]!]) await d.ok(`add validator ${v}`, payer, [await add(v)]);
+    const swapped = accounts(await add(votes[2]!), (l) => {
+      const h = l[9]!;
+      l[9] = l[10]!;
+      l[10] = h;
+    });
+    await d.ok("add validator: stake history and config swapped", payer, [swapped]);
+    await d.ok(`add validator ${votes[3]!}`, payer, [await add(votes[3]!)]);
   });
 
   it("sets and clears preferred validators", async () => {
@@ -754,8 +771,24 @@ describe("validators over epochs", () => {
     expect(await d.both("add validator: stale pool", payer, [ix.addValidator(p, p.staker, await stakeOf(votes[4]!), votes[4]!)])).toBe(
       custom(E.StakeListAndPoolOutOfDate),
     );
-    // Only the first half of the list, then the rest (start index 2).
+    // While the cluster distributes epoch rewards (EpochRewards active), the list is not updated: after the pool's
+    // checks, before anything else.
     const pairs = await updatePairs(d, p);
+    const inactive = d.original.getEpochRewards();
+    expect(inactive.active).toBe(false);
+    for (const vm of d.vms) vm.setEpochRewards(new EpochRewards(100n, 4n, inactive.parentBlockhash, 10n ** 20n, 5n * SOL, SOL, true));
+    expect(await d.both("update list: rewards distributed", payer, [ix.updateValidatorListBalance(p, 0, false, pairs)])).toBe(
+      custom(E.EpochRewardDistributionInProgress),
+    );
+    expect(d.lastLogs).toContain("Program log: Error: Epoch reward distribution is currently in progress, stakes are still being updated");
+    expect(
+      await d.both("update list: rewards distributed, odd accounts", payer, [accounts(ix.updateValidatorListBalance(p, 0, false, pairs), (l) => l.pop())]),
+    ).toBe(custom(E.EpochRewardDistributionInProgress));
+    expect(await d.both("update list: rewards distributed, wrong reserve", payer, [replace(ix.updateValidatorListBalance(p, 0, false, []), 3, p.pool)])).toBe(
+      custom(E.InvalidProgramAddress),
+    );
+    for (const vm of d.vms) vm.setEpochRewards(inactive);
+    // Only the first half of the list, then the rest (start index 2).
     await d.ok("update list first half", payer, [ix.updateValidatorListBalance(p, 0, false, pairs.slice(0, 2))]);
     expect(await d.both("update pool after half", payer, [ix.updateStakePoolBalance(p)])).toBe(custom(E.StakeListOutOfDate));
     await d.ok("update list second half", payer, [ix.updateValidatorListBalance(p, 2, false, pairs.slice(2))]);
@@ -763,6 +796,13 @@ describe("validators over epochs", () => {
     // Rewards: lamports sent to a validator stake account are withdrawn into the reserve and counted.
     d.nextEpoch();
     for (const vm of d.vms) vm.airdrop(pairs[0]![0], lamports(3n * SOL));
+    // The extra lamports are withdrawn with stake::instruction::withdraw, which names the StakeHistory by address.
+    const wrongHistory = replace(ix.updateValidatorListBalance(p, 0, false, pairs), 5, p.mint);
+    expect(await d.both("update list: wrong stake history", payer, [wrongHistory])).toBe(builtin("MissingAccount"));
+    // no_merge still withdraws them; with no pairs there is no Stake CPI, and the account is never used.
+    const noMerge = replace(ix.updateValidatorListBalance(p, 0, true, pairs), 5, p.mint);
+    expect(await d.both("update list: wrong stake history, no merge", payer, [noMerge])).toBe(builtin("MissingAccount"));
+    await d.ok("update list: wrong stake history, no pairs", payer, [replace(ix.updateValidatorListBalance(p, 0, false, []), 5, p.mint)]);
     await update("rewards");
     // Pairs that are not the entries' are skipped (an address mismatch is logged); odd counts and ranges past the end refused.
     d.nextEpoch();
@@ -893,6 +933,10 @@ describe("validators over epochs", () => {
     // Validator 5 is being removed: its active transient stake is deactivated instead.
     d.patch(q.list, (b) => (b[9 + 73 * 5 + 40] = 3));
     await d.ok("update list (transient, no merge)", payer, [ix.updateValidatorListBalance(q, 0, true, await updatePairs(d, q))]);
+    // The merges name the StakeHistory by address: another account in its slot fails the first of them (validator 0's
+    // initialized transient stake into the reserve).
+    const wrongHistory = replace(ix.updateValidatorListBalance(q, 0, false, await updatePairs(d, q)), 5, q.mint);
+    expect(await d.both("update list (transient): wrong stake history", payer, [wrongHistory])).toBe(builtin("MissingAccount"));
     await d.ok("update list (transient)", payer, [ix.updateValidatorListBalance(q, 0, false, await updatePairs(d, q))]);
     await d.ok("update pool (transient)", payer, [ix.updateStakePoolBalance(q)]);
     d.nextEpoch();
@@ -924,6 +968,84 @@ describe("validators over epochs", () => {
       expect(
         await d.both(`update list: bad status (no merge ${noMerge})`, payer, [ix.updateValidatorListBalance(r, 0, noMerge, await updatePairs(d, r))]),
       ).toBe(builtin("InvalidAccountData"));
+  });
+});
+
+describe("the list and the pool read-only, or the list in another slot", () => {
+  let d: Diff;
+  let payer: KeyPairSigner;
+  let p: Pool;
+  let votes: Address[];
+  beforeAll(async () => {
+    d = await diff();
+    payer = await d.funded(100_000n);
+    p = await d.createPool(payer, { reserveLamports: 50n * SOL, maxValidators: 4, label: "initialize (aliases)" });
+    votes = [];
+    for (let i = 0; i < 3; i++) votes.push(await d.vote(payer));
+    for (const v of votes.slice(0, 2)) await d.ok(`add validator (aliases) ${v}`, payer, [ix.addValidator(p, p.staker, await validatorStake(v, p.pool), v)]);
+  });
+  /** Account `at` passed read-only. */
+  const readOnly = (i: Instruction, at: number) => accounts(i, (l) => (l[at] = { address: l[at]!.address, role: AccountRole.READONLY }));
+
+  it("writes a read-only list or pool all the same: the runtime refuses it at the end only if its bytes changed", async () => {
+    const add = ix.addValidator(p, p.staker, await validatorStake(votes[2]!, p.pool), votes[2]!);
+    expect(await d.both("add validator: list read-only", payer, [readOnly(add, 4)])).toBe(builtin("ReadonlyDataModified"));
+    expect(await d.both("set preferred: list read-only", payer, [readOnly(ix.setPreferredValidator(p, p.staker, "Deposit", votes[0]!), 2)])).toBe("ok");
+    expect(await d.both("cleanup: list read-only, nothing to remove", payer, [readOnly(ix.cleanupRemovedValidatorEntries(p), 1)])).toBe("ok");
+    // The pool written with the bytes it holds, or with others.
+    const referral = (percent: number) => ix.setFee(p, p.manager, { kind: "SolReferral", percent });
+    expect(await d.both("set fee: pool read-only, the same value", payer, [readOnly(referral(50), 0)])).toBe("ok");
+    expect(await d.both("set fee: pool read-only, another value", payer, [readOnly(referral(51), 0)])).toBe(builtin("ReadonlyDataModified"));
+    d.nextEpoch();
+    const pairs = await updatePairs(d, p);
+    expect(await d.both("update list: list read-only, no pairs", payer, [readOnly(ix.updateValidatorListBalance(p, 0, false, []), 2)])).toBe("ok");
+    expect(await d.both("update list: list read-only", payer, [readOnly(ix.updateValidatorListBalance(p, 0, false, pairs), 2)])).toBe(
+      builtin("ReadonlyDataModified"),
+    );
+    await d.ok("update list (aliases)", payer, [ix.updateValidatorListBalance(p, 0, false, pairs)]);
+    expect(await d.both("update pool: list read-only", payer, [readOnly(ix.updateStakePoolBalance(p), 2)])).toBe("ok");
+    const remove = ix.removeValidator(p, p.staker, pairs[1]![0], pairs[1]![1]);
+    expect(await d.both("remove validator: list read-only", payer, [readOnly(remove, 3)])).toBe(builtin("ReadonlyDataModified"));
+    // The preferred deposit validator is votes[0]: removing votes[1] writes the pool with the bytes it holds.
+    expect(await d.both("remove validator: pool read-only", payer, [readOnly(remove, 0)])).toBe("ok");
+    d.nextEpoch();
+    await d.ok("update list (aliases, removed)", payer, [ix.updateValidatorListBalance(p, 0, false, await updatePairs(d, p))]);
+    await d.ok("update pool (aliases, removed)", payer, [ix.updateStakePoolBalance(p)]);
+    expect(await d.both("cleanup: list read-only", payer, [readOnly(ix.cleanupRemovedValidatorEntries(p), 1)])).toBe(builtin("ReadonlyDataModified"));
+    await d.ok("cleanup (aliases)", payer, [ix.cleanupRemovedValidatorEntries(p)]);
+    // Initialize writes both.
+    const q = await d.poolAccounts(payer, { reserveLamports: SOL });
+    const init = ix.initialize(
+      { ...q, manager: q.manager, staker: q.staker.address },
+      { epoch: fee(1n, 100n), withdrawal: fee(1n, 1000n), deposit: fee(1n, 1000n), referral: 0, maxValidators: q.maxValidators },
+    );
+    expect(await d.both("initialize: list read-only", payer, [readOnly(init, 4)])).toBe(builtin("ReadonlyDataModified"));
+    expect(await d.both("initialize: pool read-only", payer, [readOnly(init, 0)])).toBe(builtin("ReadonlyDataModified"));
+  });
+
+  it("refuses the list in another slot where the original's borrow of it does", async () => {
+    // AddValidatorToPool looks the vote account up in the list only: the list itself, as the vote account, reaches
+    // DelegateStake, whose CPI borrows it (AccountBorrowFailed), after the stake account was made and split.
+    const asVote = ix.addValidator(p, p.staker, await validatorStake(p.list, p.pool), p.list);
+    expect(await d.both("add validator: the list as the vote account", payer, [asVote])).toBe(builtin("AccountBorrowFailed"));
+    expect(await d.both("add validator: the list as the stake account", payer, [replace(asVote, 5, p.list)])).toBe(custom(E.InvalidStakeAccountAddress));
+    // RemoveValidatorFromPool reads the stake account's state before it knows its address: a silent panic there.
+    const pairs = await updatePairs(d, p);
+    expect(await d.both("remove validator: the list as the stake account", payer, [ix.removeValidator(p, p.staker, p.list, pairs[0]![1])])).toBe(
+      builtin("ProgramFailedToComplete"),
+    );
+    expect(d.lastLogs).toContain(`Program ${PROGRAM} failed: SBF program Panicked in program/src/processor.rs at 50:89`);
+    // A list cannot live at a program address (whoever made it signed for its address), but moved to one, as a test
+    // can: the stake account's address check passes, and the System CPI that allocates it borrows the list.
+    const q = await d.createPool(payer, { reserveLamports: 10n * SOL, maxValidators: 2, label: "initialize (moved list)" });
+    const at = await validatorStake(votes[2]!, q.pool);
+    d.move(q.list, at);
+    d.patch(q.pool, (b) => key(at).copy(b, 98));
+    expect(await d.both("add validator: the list at the stake account's address", payer, [ix.addValidator({ ...q, list: at }, q.staker, at, votes[2]!)])).toBe(
+      builtin("AccountBorrowFailed"),
+    );
+    // UpdateValidatorListBalance checks both addresses first: the list in a pair is skipped.
+    await d.ok("update list: the list in a pair", payer, [ix.updateValidatorListBalance(p, 0, false, [[p.list, p.list]])]);
   });
 });
 

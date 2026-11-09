@@ -11,8 +11,9 @@
 //
 // The instructions live by subject: admin.ts (Initialize, the setters, SetPreferredValidator), validators.ts (adding,
 // removing and cleaning up validators), update.ts (the per-epoch updates), sol.ts (SOL deposits and withdrawals),
-// and the files the later parts fill: rebalance.ts, stake_deposit.ts, stake_withdraw.ts, metadata.ts.
-import { type FixedVec, ProgramError, fixedArray, instructionData, invokeInstruction, log, remainingAccounts, require, u8, u64 } from "typesol";
+// rebalance.ts (moving stake between the reserve and the validators), stake_deposit.ts and stake_withdraw.ts (stake
+// accounts in and out), metadata.ts (the pool token's Metaplex metadata).
+import { ProgramError, instructionData, log, remainingAccounts, require, u64 } from "typesol";
 import { addValidatorToPool, cleanupRemovedValidatorEntries, removeValidatorFromPool } from "./validators.js";
 import { initialize, setFee, setFundingAuthority, setManager, setPreferredValidator, setStaker } from "./admin.js";
 import { updateStakePoolBalance, updateValidatorListBalance } from "./update.js";
@@ -20,17 +21,8 @@ import { depositSol, withdrawSol } from "./sol.js";
 import { decreaseValidatorStake, increaseValidatorStake } from "./rebalance.js";
 import { depositStake } from "./stake_deposit.js";
 import { withdrawStake } from "./stake_withdraw.js";
-import {
-  type InstructionMeta,
-  CREATE_METADATA_ACCOUNT_V3,
-  MPL_TOKEN_METADATA_ID,
-  UPDATE_METADATA_ACCOUNT_V2,
-  createTokenMetadata,
-  metadataCpiAccount,
-  updateTokenMetadata,
-} from "./metadata.js";
-import { AUTHORITY_WITHDRAW, DEFAULT_PUBKEY } from "./util.js";
-import { type Fee } from "./state.js";
+import { createTokenMetadata, updateTokenMetadata } from "./metadata.js";
+import { DEFAULT_PUBKEY } from "./util.js";
 
 /** The entrypoint's failure line, `msg!(error.to_str::<StakePoolError>())`: "Error: " and the error's text. */
 export const ERROR_LOG_PREFIX = "Error: ";
@@ -38,6 +30,13 @@ export const ERROR_LOG_PREFIX = "Error: ";
 export const PROGRAM_ERROR_LOG_PREFIX = "Error: ";
 /** UpdateValidatorListBalance takes any number of validator / transient stake pairs (7 + 2N accounts). */
 export const MAX_ACCOUNTS = 255n;
+/**
+ * Account data written in place, as the original writes it: the validator list (loadRawMut) and the pool (storeBorsh)
+ * are not checked writable up front, the runtime judges at the end (a read-only account whose bytes changed fails
+ * with ReadonlyDataModified, one written with the bytes it held does not). Where the original's RefCell refuses an
+ * account passed again while the list is borrowed, the port makes the same refusal (util.ts, "The list's borrow").
+ */
+export const NATIVE_ACCOUNT_WRITES = true;
 
 /** @fallback */
 export function process(): void {
@@ -51,11 +50,15 @@ export function process(): void {
   if (tag === 0n) {
     // Initialize { fee, withdrawal_fee, deposit_fee: Fee (denominator, numerator), referral_fee: u8, max_validators: u32 }
     require(n === 54n, ProgramError.BorshIoError);
-    const epochFee: Fee = { denominator: data.readU64(1n), numerator: data.readU64(9n) };
-    const withdrawalFee: Fee = { denominator: data.readU64(17n), numerator: data.readU64(25n) };
-    const depositFee: Fee = { denominator: data.readU64(33n), numerator: data.readU64(41n) };
     log("Instruction: Initialize stake pool");
-    initialize(rest, epochFee, withdrawalFee, depositFee, data.readU8(49n), data.readU32(50n));
+    initialize(
+      rest,
+      { denominator: data.readU64(1n), numerator: data.readU64(9n) },
+      { denominator: data.readU64(17n), numerator: data.readU64(25n) },
+      { denominator: data.readU64(33n), numerator: data.readU64(41n) },
+      data.readU8(49n),
+      data.readU32(50n),
+    );
     return;
   }
   if (tag === 1n) {
@@ -175,45 +178,9 @@ export function process(): void {
   }
   if (tag === 17n || tag === 18n) {
     // CreateTokenMetadata / UpdateTokenMetadata { name, symbol, uri }: Borsh Strings, decoded (and the line logged)
-    // with the checks in metadata.ts. The Metaplex instruction is built and invoked here: invokeInstruction runs only
-    // in the instruction itself, and a list cannot be handed to a helper to fill.
-    const create = tag === 17n;
-    const bump = create ? createTokenMetadata(rest) : updateTokenMetadata(rest);
-    // Its data: Metaplex's tag (and the update's Some(DataV2)), our bytes from the name on, then DataV2's
-    // seller_fee_basis_points 0 and creators, collection and uses None, then for CreateMetadataAccountV3 is_mutable
-    // true and collection_details None, for UpdateMetadataAccountV2 update_authority and primary_sale_happened None
-    // and is_mutable Some(true). Room for any instruction a transaction (1232 bytes) carries, and those 10 bytes.
-    const head = fixedArray<u8, 1>(create ? CREATE_METADATA_ACCOUNT_V3 : UPDATE_METADATA_ACCOUNT_V2);
-    const cpiData: FixedVec<u8, 1248> = head.map((b) => b);
-    if (!create) cpiData.push(1n);
-    // Eight bytes a step, then the rest.
-    let at = 1n;
-    for (; n - at >= 8n; at += 8n) {
-      const word = data.readU64(at);
-      cpiData.push(u8(word & 0xffn));
-      cpiData.push(u8((word >> 8n) & 0xffn));
-      cpiData.push(u8((word >> 16n) & 0xffn));
-      cpiData.push(u8((word >> 24n) & 0xffn));
-      cpiData.push(u8((word >> 32n) & 0xffn));
-      cpiData.push(u8((word >> 40n) & 0xffn));
-      cpiData.push(u8((word >> 48n) & 0xffn));
-      cpiData.push(u8(word >> 56n));
-    }
-    for (; at < n; at++) cpiData.push(data.get(at));
-    for (let k = 0n; k < 5n; k++) cpiData.push(0n);
-    if (create) {
-      cpiData.push(1n);
-      cpiData.push(0n);
-    } else {
-      cpiData.push(0n);
-      cpiData.push(0n);
-      cpiData.push(1n);
-      cpiData.push(1n);
-    }
-    // Its accounts: six for the create, two for the update.
-    const slots = fixedArray<u8, 6>(0n);
-    const metas: FixedVec<InstructionMeta, 6> = slots.filter((s, i) => create || i < 2n).map((s, i): InstructionMeta => metadataCpiAccount(rest, create, i));
-    invokeInstruction(MPL_TOKEN_METADATA_ID, metas, cpiData, rest, [rest.get(0n).key, AUTHORITY_WITHDRAW, bump]);
+    // with the checks in metadata.ts, which then invokes Metaplex.
+    if (tag === 17n) createTokenMetadata(rest);
+    else updateTokenMetadata(rest);
     return;
   }
   if (tag === 19n || tag === 20n) {

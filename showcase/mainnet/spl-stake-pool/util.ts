@@ -24,6 +24,7 @@ import {
   findProgramAddressBump,
   log,
   max,
+  panic,
   programId,
   pubkey,
   readData,
@@ -285,8 +286,8 @@ export function checkMint(pool: StakePool, a: RemainingAccount): u8 {
  * (NotEnoughAccountKeys when it is missing) must be it, signing.
  */
 export function checkSolDepositAuthority(pool: StakePool, rest: RemainingAccounts, index: u64): void {
-  if (pool.solDepositAuthority === null) return;
-  const auth: Pubkey = pool.solDepositAuthority!;
+  const auth = pool.solDepositAuthority;
+  if (auth === null) return;
   need(rest, index + 1n);
   const a = rest.get(index);
   if (auth !== a.key) {
@@ -301,8 +302,8 @@ export function checkSolDepositAuthority(pool: StakePool, rest: RemainingAccount
 
 /** check_sol_withdraw_authority: the same for SOL withdrawals (no log for another key). */
 export function checkSolWithdrawAuthority(pool: StakePool, rest: RemainingAccounts, index: u64): void {
-  if (pool.solWithdrawAuthority === null) return;
-  const auth: Pubkey = pool.solWithdrawAuthority!;
+  const auth = pool.solWithdrawAuthority;
+  if (auth === null) return;
   need(rest, index + 1n);
   const a = rest.get(index);
   require(auth === a.key, StakePoolError.InvalidSolWithdrawAuthority);
@@ -329,6 +330,31 @@ export function checkListHeaderValid(a: RemainingAccount): void {
 
 /** AccountType::ValidatorList as the header's byte. */
 export const LIST_ACCOUNT_TYPE = 2n;
+
+// ---- The list's borrow ------------------------------------------------------------------------------------------------
+//
+// The original borrows the validator list's data mutably (`validator_list_info.data.borrow_mut()`, a RefCell) and
+// holds it until it returns. With the list passed again in another slot, that AccountInfo shares the RefCell: reading
+// its data panics ("already mutably borrowed", which the original's panic handler does not log: only the runtime's
+// "SBF program Panicked in <file> at <line>:<column>" remains), and a CPI naming it fails before the call, where
+// invoke_signed borrows each account of the instruction (ProgramError::AccountBorrowFailed). The port's list is a view
+// of the same bytes, so it makes those refusals itself, where the original meets them. Accounts whose address the
+// original has checked already are never the list (its address is no PDA of the program), and are not compared.
+
+/** get_stake_state's `stake_account_info.data.borrow()` on the list: a silent panic there. */
+export function panicIfTheList(a: RemainingAccount, list: RemainingAccount): void {
+  if (a.key === list.key) panic(null, "program/src/processor.rs:50:89");
+}
+
+/** `AccountInfo::data_len()` on the list: the same, in solana-account-info. */
+export function dataLenPanicIfTheList(a: RemainingAccount, list: RemainingAccount): void {
+  if (a.key === list.key) panic(null, "src/lib.rs:105:19");
+}
+
+/** invoke / invoke_signed borrowing the list as an account of the instruction: AccountBorrowFailed. */
+export function checkNotTheList(a: RemainingAccount, list: RemainingAccount): void {
+  require(a.key !== list.key, ProgramError.AccountBorrowFailed);
+}
 
 // ---- SPL Token / Token-2022 accounts (spl-token-2022 StateWithExtensions::unpack) ---------------------------------
 
@@ -760,6 +786,11 @@ export function mintTokens(
   token.mintTo(mint, to, authority, amount, [poolKey, AUTHORITY_WITHDRAW, bump]);
 }
 
+// The Stake instructions are built as solana_program's builders build them (stake::instruction::merge, withdraw,
+// deactivate_stake, delegate_stake), which name the Clock, the StakeHistory sysvar and the stake config by their
+// addresses: the runtime finds each among the instruction's accounts by key, and refuses the call when the transaction
+// did not pass it (MissingAccount, "Instruction references an unknown account"), whatever is in its slot.
+
 /** Processor::stake_merge: Merge `source` into `destination`, signed by the withdraw authority. */
 export function stakeMerge(
   stake: StakeProgram,
@@ -768,22 +799,13 @@ export function stakeMerge(
   poolKey: Pubkey,
   bump: u8,
   destination: RemainingAccount,
-  clock: RemainingAccount,
-  history: RemainingAccount,
 ): void {
-  stake.merge(destination, source, clock, history, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
+  stake.merge(destination, source, CLOCK_SYSVAR_ID, STAKE_HISTORY_SYSVAR_ID, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
 }
 
 /** Processor::stake_deactivate, signed by the withdraw authority. */
-export function stakeDeactivate(
-  stake: StakeProgram,
-  account: RemainingAccount,
-  clock: RemainingAccount,
-  authority: RemainingAccount,
-  poolKey: Pubkey,
-  bump: u8,
-): void {
-  stake.deactivate(account, clock, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
+export function stakeDeactivate(stake: StakeProgram, account: RemainingAccount, authority: RemainingAccount, poolKey: Pubkey, bump: u8): void {
+  stake.deactivate(account, CLOCK_SYSVAR_ID, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
 }
 
 /** Processor::stake_withdraw: Withdraw `lamports` from `source` to `destination` (no custodian). */
@@ -794,11 +816,9 @@ export function stakeWithdraw(
   poolKey: Pubkey,
   bump: u8,
   destination: RemainingAccount,
-  clock: RemainingAccount,
-  history: RemainingAccount,
   lamports: u64,
 ): void {
-  stake.withdraw(source, destination, clock, history, authority, lamports, [poolKey, AUTHORITY_WITHDRAW, bump]);
+  stake.withdraw(source, destination, CLOCK_SYSVAR_ID, STAKE_HISTORY_SYSVAR_ID, authority, lamports, [poolKey, AUTHORITY_WITHDRAW, bump]);
 }
 
 /** Processor::stake_split: Split `lamports` of `source` into `destination`, signed by the withdraw authority. */
@@ -819,14 +839,11 @@ export function stakeDelegate(
   stake: StakeProgram,
   account: RemainingAccount,
   vote: RemainingAccount,
-  clock: RemainingAccount,
-  history: RemainingAccount,
-  config: RemainingAccount,
   authority: RemainingAccount,
   poolKey: Pubkey,
   bump: u8,
 ): void {
-  stake.delegate(account, vote, clock, history, config, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
+  stake.delegate(account, vote, CLOCK_SYSVAR_ID, STAKE_HISTORY_SYSVAR_ID, STAKE_CONFIG_ID, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
 }
 
 /** stake::tools::get_minimum_delegation, then minimum_delegation: the most of it and MINIMUM_ACTIVE_STAKE. */

@@ -41,11 +41,13 @@ import {
   checkListHeaderDecodes,
   checkListHeaderValid,
   checkMint,
+  checkNotTheList,
   checkStakeProgram,
   checkSysvar,
   checkTransientStakeAddress,
   checkValidatorList,
   checkValidatorStakeAddress,
+  dataLenPanicIfTheList,
   feeApply,
   managerFeeInfoProblem,
   minimumReserveLamports,
@@ -85,7 +87,6 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   const burnFrom = rest.get(7n);
   const managerFee = rest.get(8n);
   const mint = rest.get(9n);
-  const clock = rest.get(10n);
   const tokenProgram = rest.get(11n);
 
   checkStakeProgram(rest.get(12n));
@@ -115,6 +116,7 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   require(withdrawLamports !== 0n, StakePoolError.WithdrawalTooSmall);
   require(!slippage || withdrawLamports >= minimumOut, StakePoolError.ExceededSlippage);
 
+  dataLenPanicIfTheList(splitFrom, listAcct);
   const splitFromRent = rentExempt(splitFrom.dataLen);
   const stake = programAt<StakeProgram>(rest.get(12n));
   const stakeMinimum = stake.getMinimumDelegation();
@@ -158,9 +160,9 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   } else {
     require(s.tag === STAKE_STATE_STAKE, StakePoolError.WrongStakeStake);
     const voteKey = s.voter;
-    if (pool.preferredWithdrawValidatorVoteAddress !== null) {
+    const preferred = pool.preferredWithdrawValidatorVoteAddress;
+    if (preferred !== null) {
       // Defensive: the preferred validator may have been removed.
-      const preferred = pool.preferredWithdrawValidatorVoteAddress!;
       const p = list.validators.findIndex((v) => v.voteAccountAddress === preferred);
       if (p >= 0n) {
         const preferredActive = list.validators.get(u64(p)).activeStakeLamports;
@@ -216,12 +218,15 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   }
 
   const token = programAt<TokenInterface>(tokenProgram);
+  checkNotTheList(burnFrom, listAcct);
+  checkNotTheList(userAuthority, listAcct);
   burnTokens(token, burnFrom, mint, userAuthority, burnt);
   const bump = pool.stakeWithdrawBumpSeed;
+  checkNotTheList(splitTo, listAcct);
   stakeSplit(stake, splitFrom, withdrawAuth, poolAcct.key, bump, withdrawLamports, splitTo);
   const seeds = signer([poolAcct.key, AUTHORITY_WITHDRAW, bump]);
-  stake.authorize(splitTo, clock, withdrawAuth, userStakeAuthority.key, "staker", seeds);
-  stake.authorize(splitTo, clock, withdrawAuth, userStakeAuthority.key, "withdrawer", seeds);
+  stake.authorize(splitTo, CLOCK_SYSVAR_ID, withdrawAuth, userStakeAuthority.key, "staker", seeds);
+  stake.authorize(splitTo, CLOCK_SYSVAR_ID, withdrawAuth, userStakeAuthority.key, "withdrawer", seeds);
   if (fee > 0n) transferTokens(token, burnFrom, mint, managerFee, userAuthority, fee);
 
   require(pool.poolTokenSupply >= burnt, StakePoolError.CalculationFailure);

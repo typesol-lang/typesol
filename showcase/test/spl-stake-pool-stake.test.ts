@@ -26,7 +26,6 @@ import {
   fee,
   ix,
   key,
-  outcome,
   stakeAuthorizeBoth,
   transientStake,
   u32,
@@ -34,7 +33,6 @@ import {
   validatorStake,
   withdrawAuthority,
 } from "./spl-stake-pool-helpers.js";
-import { send } from "../../test/harness.js";
 
 /** StakePoolError codes. */
 const E = {
@@ -80,6 +78,9 @@ const replace = (i: Instruction, at: number, address: Address) =>
         l[at]!.role === AccountRole.READONLY_SIGNER ? AccountRole.READONLY : l[at]!.role === AccountRole.WRITABLE_SIGNER ? AccountRole.WRITABLE : l[at]!.role,
     };
   });
+
+/** Account `at` passed read-only. */
+const readOnly = (i: Instruction, at: number) => accounts(i, (l) => (l[at] = { address: l[at]!.address, role: AccountRole.READONLY }));
 
 /** Stake Deactivate (StakeInstruction tag 5), the staker signing. */
 function stakeDeactivate(stake: Address, staker: KeyPairSigner): Instruction {
@@ -339,17 +340,22 @@ describe("stake deposits", () => {
       else expect(got, label).not.toBe("ok");
     }
     await damagedPoolAndList(d, payer, p, "deposit stake", dep);
-    // Another account where the StakeHistory sysvar goes: the original's merge names the sysvar itself, which the
-    // transaction does not hold (the runtime's MissingAccount); the port refuses it at the same point (InvalidArgument).
-    const wrongHistory = replace(dep, 12, CLOCK);
-    for (const [vm, want] of [
-      [d.original, builtin("MissingAccount")],
-      [d.port, builtin("InvalidArgument")],
-    ] as const) {
-      const before = [stake, p.pool, p.list].map((a) => d.bytes(vm, a));
-      expect(outcome(await send(vm, payer, [wrongHistory]))).toBe(want);
-      expect([stake, p.pool, p.list].map((a) => d.bytes(vm, a))).toEqual(before);
-    }
+    // The list in another slot, while the original holds it borrowed: reading the validator stake account's state
+    // panics (silently, at get_stake_state's borrow); a CPI naming it fails before the call (AccountBorrowFailed).
+    expect(await d.both("deposit stake: the list as the validator stake", payer, [replace(dep, 5, p.list)])).toBe(builtin("ProgramFailedToComplete"));
+    expect(d.lastLogs).toContain(`Program ${PROGRAM} failed: SBF program Panicked in program/src/processor.rs at 50:89`);
+    expect(await d.both("deposit stake: the list as the user's stake", payer, [replace(dep, 4, p.list)])).toBe(builtin("AccountBorrowFailed"));
+    expect(await d.both("deposit stake: the list as the user's tokens", payer, [replace(dep, 7, p.list)])).toBe(builtin("AccountBorrowFailed"));
+    expect(await d.both("deposit stake: the list as the referrer's tokens", payer, [replace(dep, 9, p.list)])).toBe(builtin("AccountBorrowFailed"));
+    // The stake deposit authority may be any key the manager sets, the list's too.
+    await d.ok("set stake deposit authority: the list", payer, [ix.setFundingAuthority(p, p.manager, "StakeDeposit", p.list)]);
+    expect(await d.both("deposit stake: the list as the deposit authority", payer, [replace(dep, 2, p.list)])).toBe(builtin("AccountBorrowFailed"));
+    await d.ok("set stake deposit authority: back to the PDA", payer, [ix.setFundingAuthority(p, p.manager, "StakeDeposit", null)]);
+    // A list passed read-only is written all the same: the runtime refuses it at the end.
+    expect(await d.both("deposit stake: list read-only", payer, [readOnly(dep, 1)])).toBe(builtin("ReadonlyDataModified"));
+    // Another account where the StakeHistory sysvar goes: the merge names the sysvar itself, which the transaction
+    // does not hold (the runtime's MissingAccount).
+    expect(await d.both("deposit stake: wrong stake history", payer, [replace(dep, 12, CLOCK)])).toBe(builtin("MissingAccount"));
     // A stale pool takes no deposits until it is updated.
     d.nextEpoch();
     expect(await d.both("deposit stake: stale pool", payer, [dep])).toBe(custom(E.StakeListAndPoolOutOfDate));
@@ -504,6 +510,16 @@ describe("stake withdrawals", () => {
       else expect(got, label).not.toBe("ok");
     }
     await damagedPoolAndList(d, payer, p, "withdraw stake", wd);
+    // The list in another slot, while the original holds it borrowed: AccountInfo::data_len panics (silently); a CPI
+    // naming it fails before the call (AccountBorrowFailed).
+    expect(await d.both("withdraw stake: split from the list", payer, [replace(wd, 3, p.list)])).toBe(builtin("ProgramFailedToComplete"));
+    expect(d.lastLogs).toContain(`Program ${PROGRAM} failed: SBF program Panicked in src/lib.rs at 105:19`);
+    expect(await d.both("withdraw stake: split into the list", payer, [replace(wd, 4, p.list)])).toBe(builtin("AccountBorrowFailed"));
+    expect(await d.both("withdraw stake: burn from the list", payer, [replace(wd, 7, p.list)])).toBe(builtin("AccountBorrowFailed"));
+    expect(await d.both("withdraw stake: the list as the transfer authority", payer, [replace(wd, 6, p.list)])).toBe(builtin("AccountBorrowFailed"));
+    expect(await d.both("withdraw stake: list read-only", payer, [readOnly(wd, 1)])).toBe(builtin("ReadonlyDataModified"));
+    // The new authority is only a key the split stake account is handed to.
+    expect(await d.both("withdraw stake: the list as the new authority", payer, [replace(wd, 5, p.list)])).toBe("ok");
     d.nextEpoch();
     expect(await d.both("withdraw stake: stale pool", payer, [wd])).toBe(custom(E.StakeListAndPoolOutOfDate));
     await s.update();

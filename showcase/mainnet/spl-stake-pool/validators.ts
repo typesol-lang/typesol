@@ -10,7 +10,6 @@ import {
   type RemainingAccounts,
   type StakeProgram,
   type SystemProgram,
-  type Pubkey,
   type u32,
   ProgramError,
   currentEpoch,
@@ -47,6 +46,7 @@ import {
   checkAuthorityWithdraw,
   checkListHeaderDecodes,
   checkListHeaderValid,
+  checkNotTheList,
   checkReserveStake,
   checkStakeProgram,
   checkStaker,
@@ -60,6 +60,7 @@ import {
   minimumReserveLamports,
   need,
   notDeactivating,
+  panicIfTheList,
   saturatingAdd,
   saturatingSub,
   stakeDeactivate,
@@ -89,9 +90,7 @@ export function addValidatorToPool(rest: RemainingAccounts, seed: u32): void {
   const listAcct = rest.get(4n);
   const stakeAcct = rest.get(5n);
   const vote = rest.get(6n);
-  const clock = rest.get(8n);
-  const history = rest.get(9n);
-  const stakeConfig = rest.get(10n);
+  // The Clock, StakeHistory and stake config (accounts 8 to 10) are named by address in the Stake CPIs.
   const epoch = currentEpoch();
 
   checkSystemProgram(rest.get(11n));
@@ -130,12 +129,15 @@ export function addValidatorToPool(rest: RemainingAccounts, seed: u32): void {
 
   // create_stake_account: allocate and assign, signed by the stake account's own seeds (no lamports moved).
   const system = programAt<SystemProgram>(rest.get(11n));
+  checkNotTheList(stakeAcct, listAcct);
   const stakeSeeds = seed === 0n ? signer([vote.key, poolAcct.key, bump]) : signer([vote.key, poolAcct.key, seed, bump]);
   system.allocate(stakeAcct, STAKE_ACCOUNT_SPACE, stakeSeeds);
   system.assign(stakeAcct, STAKE_PROGRAM_ID, stakeSeeds);
   const bumpSeed = pool.stakeWithdrawBumpSeed;
   stakeSplit(stake, reserve, withdrawAuth, poolAcct.key, bumpSeed, required, stakeAcct);
-  stakeDelegate(stake, stakeAcct, vote, clock, history, stakeConfig, withdrawAuth, poolAcct.key, bumpSeed);
+  // The vote account is only looked up in the list (not found, as the list is no vote account of it).
+  checkNotTheList(vote, listAcct);
+  stakeDelegate(stake, stakeAcct, vote, withdrawAuth, poolAcct.key, bumpSeed);
 
   list.validators.push({
     activeStakeLamports: required,
@@ -163,7 +165,6 @@ export function removeValidatorFromPool(rest: RemainingAccounts): void {
   const listAcct = rest.get(3n);
   const stakeAcct = rest.get(4n);
   const transientAcct = rest.get(5n);
-  const clock = rest.get(6n);
   const epoch = currentEpoch();
 
   checkStakeProgram(rest.get(7n));
@@ -182,6 +183,7 @@ export function removeValidatorFromPool(rest: RemainingAccounts): void {
   const list = loadRawMut<ValidatorList>(listAcct);
   checkListHeaderValid(listAcct);
 
+  panicIfTheList(stakeAcct, listAcct);
   const s = delegatedStakeState(stakeAcct);
   const voteKey = s.voter;
   const i = list.validators.findIndex((v) => v.voteAccountAddress === voteKey);
@@ -202,11 +204,11 @@ export function removeValidatorFromPool(rest: RemainingAccounts): void {
     checkTransientStakeAddress(poolAcct.key, transientAcct.key, voteKey, entry.transientSeedSuffix);
     const t = stakeState(transientAcct);
     if (t.tag === STAKE_STATE_STAKE && stakeIsUsableByPool(t, withdrawAuth.key, pool) && notDeactivating(t))
-      stakeDeactivate(stake, transientAcct, clock, withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
+      stakeDeactivate(stake, transientAcct, withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
     newStatus = u8(STATUS_DEACTIVATING_ALL);
   }
   // A stake force-deactivated already (deactivate-delinquent) is not deactivated again.
-  if (notDeactivating(s)) stakeDeactivate(stake, stakeAcct, clock, withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
+  if (notDeactivating(s)) stakeDeactivate(stake, stakeAcct, withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
   entry.status = newStatus;
 
   const preferredDeposit = pool.preferredDepositValidatorVoteAddress;
@@ -237,16 +239,16 @@ export function cleanupRemovedValidatorEntries(rest: RemainingAccounts): void {
   list.validators.retain((v) => !(u64(v.status) === STATUS_READY_FOR_REMOVAL && v.activeStakeLamports === 0n && v.transientStakeLamports === 0n));
   if (poolAcct.isWritable) {
     log("Checking preferred validators");
-    if (pool.preferredDepositValidatorVoteAddress !== null) {
-      const deposit: Pubkey = pool.preferredDepositValidatorVoteAddress!;
+    const deposit = pool.preferredDepositValidatorVoteAddress;
+    if (deposit !== null) {
       const i = list.validators.findIndex((v) => v.voteAccountAddress === deposit);
       if (i < 0n || u64(list.validators.get(u64(i)).status) !== STATUS_ACTIVE) {
         log(`Preferred deposit validator ${deposit} not found or not active, resetting`);
         pool.preferredDepositValidatorVoteAddress = null;
       }
     }
-    if (pool.preferredWithdrawValidatorVoteAddress !== null) {
-      const withdraw: Pubkey = pool.preferredWithdrawValidatorVoteAddress!;
+    const withdraw = pool.preferredWithdrawValidatorVoteAddress;
+    if (withdraw !== null) {
       const i = list.validators.findIndex((v) => v.voteAccountAddress === withdraw);
       if (i < 0n || u64(list.validators.get(u64(i)).status) !== STATUS_ACTIVE) {
         log(`Preferred withdrawal validator ${withdraw} not found or not active, resetting`);
