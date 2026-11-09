@@ -29,6 +29,21 @@ codes, and says so here.
   the runtime and the called program. `returnData` takes a remaining account as the program.
 - Stake program: `split`, `merge`, `getMinimumDelegation()` (fails as solana_program's `get_minimum_delegation`),
   `initialize(…, lockup?)`, and the lockup custodian for `authorize` / `withdraw`. Existing calls compile to the same C.
+- New (language surface: `epochRewards()` and the `EpochRewards` type in lib/typesol.d.ts): the EpochRewards sysvar
+  through `sol_get_epoch_rewards_sysvar`, Rust's `EpochRewards::get()`, with no account: every field
+  (`active`, `totalRewards`, `distributedRewards`, `totalPoints`, `numPartitions`, `parentBlockhash`,
+  `distributionStartingBlockHeight`). Other programs compile to the same C.
+- New: a struct, data-enum or `fixedArray<T, N>(fill)` literal as a helper argument (`applyFee({ denominator: 100n,
+  numerator: 3n }, amount)`, nested literals, a ternary with a literal branch, helpers in other files), built as
+  `const fee: Fee = { … }` would be; it failed with "expected a Fee". Other programs compile to the same C.
+- Fixed: an `Option<Pubkey>` (or `Option<Hash>`) in a template string or `+` was refused ("only strings, integers,
+  booleans and Pubkeys can be joined into text") even after `x !== null`; it joins as the base58, or `null` when
+  empty, as JS prints it (as Options of integers and booleans already did). Other programs compile to the same C.
+- New: `export const NATIVE_ACCOUNT_WRITES = true` (opt-in, for native ports): `loadRawMut`, `storeBorsh` and BigVec
+  writes skip the up-front writability check (3006) and the one-claim-per-account refusal (2040) and take a plain
+  `AccountInfo`; the runtime reports a changed read-only account (`ReadonlyDataModified`), and an account passed twice
+  is two views of one buffer, as in a native program. Lamports, `loadAccountMut`, CPIs and `Mut<…>` checks unchanged;
+  see docs/language.md#porting-a-native-program for the trade-off. Programs without it compile to the same C.
 
 ## 0.41.0 — 2026-11-07
 

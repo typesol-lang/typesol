@@ -40,6 +40,10 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   `createProgramAddress`.
 - `loadBorsh` / `storeBorsh` (Unreleased): a native program's Borsh accounts read into a local struct and written back.
 - `BigVec<T>` (Unreleased): SPL's `big_vec`, a list over the rest of a native account.
+- `epochRewards()` and `EpochRewards` (Unreleased): the EpochRewards sysvar through its syscall.
+- `NATIVE_ACCOUNT_WRITES` (Unreleased): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
+  (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside
+  "the checks stay" promise above: it only applies to programs that declare it.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake).
 - Functions chosen at run time and lists of functions, closures returned from functions.

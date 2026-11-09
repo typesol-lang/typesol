@@ -366,6 +366,23 @@ export abstract class EmitterBase {
   }
 
   /**
+   * `const NATIVE_ACCOUNT_WRITES = true`: loadRawMut, storeBorsh and BigVec writes follow a native program, which
+   * writes data in place and leaves writability to the runtime (ReadonlyDataModified when a read-only account's data
+   * changed) and lets one account be viewed twice. Without it they check writability (3006) and claim the account
+   * once (2040) up front.
+   */
+  protected nativeAccountWrites(): boolean {
+    return this.model.constants.get("NATIVE_ACCOUNT_WRITES")?.value === true;
+  }
+
+  /** Whether `node` is an EpochRewards value: `epochRewards()` or a local holding one. */
+  protected isEpochRewards(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isEpochRewards(node.expression);
+    if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "epochRewards";
+    return ts.isCallExpression(node) && this.exportName(node.expression) === "epochRewards";
+  }
+
+  /**
    * `acct!.field` on an optional account: the same access without `!` (using the account checks that it was passed,
    * failing with 5115 otherwise). Returns undefined for anything else.
    */

@@ -227,6 +227,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         else this.line(`TS_TRY(ts_epoch_schedule(${{ slotsPerEpoch: 0, epochWarmup: 2, firstNormalEpoch: 3, firstNormalSlot: 4 }[builtin]}, &${t}));`);
         return builtin === "epochWarmup" ? { c: `(${t} != 0)`, type: BOOL } : { c: t, type: U64 };
       }
+      case "epochRewards": {
+        if (args.length !== 0) this.fail(node, "epochRewards() takes no arguments");
+        // Rust's EpochRewards::get() (sol_get_epoch_rewards_sysvar): a copy of the sysvar, read where it is called.
+        const t = this.tmp("erw");
+        this.line(`TsEpochRewards ${t};`);
+        this.line(`TS_TRY(ts_epoch_rewards(&${t}));`);
+        return { c: t, type: { kind: "epochRewards" } };
+      }
       case "currentSlot":
       case "currentEpoch":
       case "epochStartTimestamp":
@@ -1576,7 +1584,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (!h) {
       const acct = this.accountParam(node.arguments[0], "the account");
       if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
-      if (mut && !isWritable(acct.kind)) this.fail(node.arguments[0], `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut`);
+      if (mut && !isWritable(acct.kind) && !this.nativeAccountWrites())
+        this.fail(
+          node.arguments[0],
+          `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+        );
       if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
       h = `a_${acct.name}`;
       param = this.ix.accounts.indexOf(acct);
@@ -1588,7 +1600,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
       this.line(
         `if ((uint64_t)((TSS_${s.name} *)(${h}->data))->${s.bigVec.name}__len > (${h}->data_len - sizeof(TSS_${s.name})) / ${s.bigVec.elemSize}) ${this.programErrorFail("AccountDataTooSmall", node)};`,
       );
-    if (mut) {
+    // NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
+    // instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
+    // gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
+    if (mut && !this.nativeAccountWrites()) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
       const slot = this.claimSlots.get(node);
       if (slot)
@@ -1672,13 +1687,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
   /** The account loadBorsh reads or storeBorsh writes (writable: checked at run time, or Mut<AccountInfo>). */
   private borshAccount(node: ts.Expression, fn: string, write: boolean): string {
     const h = this.handle(node);
+    // NATIVE_ACCOUNT_WRITES: written as Rust's serialize writes it, the runtime judging writability afterwards.
+    const native = this.nativeAccountWrites();
     if (h) {
-      if (write) this.line(`TS_TRY(ts_check_writable(${h}));`);
+      if (write && !native) this.line(`TS_TRY(ts_check_writable(${h}));`);
       return h;
     }
     const acct = this.accountParam(node, `${fn}'s account`);
     if (acct.kind.kind !== "info") this.fail(node, `${fn} takes a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter`);
-    if (write && !isWritable(acct.kind)) this.fail(node, `${acct.name} must be Mut<AccountInfo> to write it with storeBorsh`);
+    if (write && !isWritable(acct.kind) && !native)
+      this.fail(
+        node,
+        `${acct.name} must be Mut<AccountInfo> to write it with storeBorsh (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+      );
     return `a_${acct.name}`;
   }
 
@@ -1973,6 +1994,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "structRef":
       case "arrayArg": {
         const want: FieldType = p.type.kind === "structRef" ? { kind: "struct", name: p.type.struct } : p.type.array;
+        const built = this.literalArg(n, want);
+        if (built) return built;
         let r = this.ref(n);
         // A narrowed Option<Struct> / Option<FixedArray> place (`c.opt !== null` before it): its value.
         if (r && r.type.kind === "option" && sameType(r.type.inner as FieldType, want)) r = this.someValue(r);
@@ -1980,6 +2003,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.snapshotPlace(r.lv, want, h, n);
       }
       case "dataEnumArg": {
+        const built = this.literalArg(n, { kind: "dataEnum", name: p.type.name });
+        if (built) return built;
         const r = this.ref(n);
         if (!r || r.type.kind !== "dataEnum" || r.type.name !== p.type.name) this.fail(n, `expected a ${p.type.name}`);
         return this.snapshotPlace(r.lv, { kind: "dataEnum", name: p.type.name }, h, n);
@@ -1994,6 +2019,29 @@ export abstract class CallEmitter extends ExpressionEmitter {
       default:
         return this.expect(this.expr(n, p.type), p.type, n);
     }
+  }
+
+  /**
+   * A struct, array or data-enum helper argument written as a literal (`f({ a: 1n, b: { c } })`, `g([1n, 2n])`, or a
+   * ternary with a literal branch): built in a local of its own, as `const x: T = { … }; f(x)` would, and passed by
+   * pointer (the helper cannot change it, and nothing else sees it). Undefined for anything else.
+   */
+  protected literalArg(n: ts.Expression, want: FieldType): string | undefined {
+    const literal = (e: ts.Expression): boolean => {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (ts.isConditionalExpression(e)) return literal(e.whenTrue) || literal(e.whenFalse);
+      if (want.kind === "array") return ts.isCallExpression(e) && this.exportName(e.expression) === "fixedArray";
+      return ts.isObjectLiteralExpression(e);
+    };
+    if (!literal(n)) return undefined;
+    if (want.kind === "struct") {
+      const s = this.model.structs.get(want.name)!;
+      if (s.size === undefined || s.vec) this.fail(n, `${s.name} has variable-size fields and cannot be built as an argument`);
+    }
+    const t = this.tmp("larg");
+    this.line(`${want.kind === "array" ? storageDecl(want, t) : `${fieldC(want)} ${t}`};`);
+    this.writeAggregate({ lv: t, type: want, writable: true }, n, true);
+    return `(&${t})`;
   }
 
   /**

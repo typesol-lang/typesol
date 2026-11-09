@@ -212,6 +212,8 @@ export function valueC(t: ValueType): string {
       return "TsAccount *";
     case "txIx":
       return "TsIx";
+    case "epochRewards":
+      return "TsEpochRewards";
     case "structRef":
       return `TSS_${t.struct} *`;
     case "enumRef":

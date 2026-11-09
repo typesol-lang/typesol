@@ -54,6 +54,10 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     if (typeof panicFlag.value !== "boolean") reporter.error(analysis.sourceFile, "PANIC_ON_OVERFLOW must be true or false");
     else if (panicFlag.value) out.push(`#define TS_PANIC_ON_OVERFLOW 1`);
   }
+  // `const NATIVE_ACCOUNT_WRITES = true`: loadRawMut / storeBorsh / BigVec writes leave writability and aliasing to the
+  // runtime, as a native program does (read by the emitter; nothing to define in C).
+  const nativeWrites = model.constants.get("NATIVE_ACCOUNT_WRITES");
+  if (nativeWrites && typeof nativeWrites.value !== "boolean") reporter.error(analysis.sourceFile, "NATIVE_ACCOUNT_WRITES must be true or false");
   // An error with code 0 must not return 0 (success): see ts_fail.
   if ([...model.errorEnums.values()].some((m) => [...m.values()].some((e) => e.code === 0))) out.push(`#define TS_CUSTOM_ZERO 1`);
   out.push(`#include "typesol_rt.h"`, "");
