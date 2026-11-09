@@ -185,7 +185,7 @@ export declare function programAt<
 >(account: RemainingAccount | AccountInfo): P;
 /**
  * A remaining account (or an AccountInfo parameter) as a sysvar read in place: `sysvarAt<StakeHistorySysvar>(acct)`,
- * then `.count`, `.latestEpoch`, `.effective(epoch)` …. Its key is checked once, here (ProgramError.InvalidArgument
+ * bound to a const, then `.count`, `.latestEpoch`, `.effective(epoch)` …. Its key is checked once, here (ProgramError.InvalidArgument
  * otherwise, as solana_program's `Sysvar::from_account_info`).
  */
 export declare function sysvarAt<S extends StakeHistorySysvar>(account: RemainingAccount | AccountInfo): S;

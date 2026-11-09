@@ -592,9 +592,12 @@ describe("programAt compile errors", () => {
   const errors = (body: string) => compileErrors(head + body);
 
   it("names the program types it takes", () => {
-    // TypeScript refuses other types; without a type argument the compiler says which it takes.
-    expect(errors(`export function f(): void { const p = programAt<TokenAccount>(remainingAccounts().get(0n)); }`)).toMatch(
-      /Type 'TokenAccount' does not satisfy the constraint 'StakeProgram \| SystemProgram \| TokenProgram/,
+    // TypeScript refuses other types (with a hint); without a type argument the compiler says which it takes.
+    const wrong = errors(`export function f(): void { const p = programAt<TokenAccount>(remainingAccounts().get(0n)); }`);
+    expect(wrong).toMatch(/Type 'TokenAccount' does not satisfy the constraint 'StakeProgram \| SystemProgram \| TokenProgram/);
+    expect(wrong).toMatch(/hint: programAt<P> takes a program: StakeProgram, SystemProgram, TokenProgram, .* read other accounts with loadRaw \/ loadAccount/);
+    expect(errors(`export function f(): void { const p = sysvarAt<StakeProgram>(remainingAccounts().get(0n)); }`)).toMatch(
+      /hint: sysvarAt<S> takes StakeHistorySysvar; programs go through programAt<P>/,
     );
     expect(errors(`export function f(): void { const p = programAt(remainingAccounts().get(0n)); }`)).toMatch(
       /programAt<P>\(account\): P is one of StakeProgram, SystemProgram, TokenProgram, Token2022Program, TokenInterface, AssociatedTokenProgram, MemoProgram/,

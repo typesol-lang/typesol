@@ -229,7 +229,8 @@ programAt<TokenInterface>(rest.get(10n)).mintTo(rest.get(7n), rest.get(8n), rest
   `AssociatedTokenProgram` or `MemoProgram`. Bind it with `const`, or call a method on it directly; pass it to a helper
   that takes that program type.
 - `sysvarAt<StakeHistorySysvar>(account)` does the same for the StakeHistory sysvar (ProgramError.InvalidArgument for
-  another account): `count`, `latestEpoch`, `has(epoch)`, `effective(epoch)` … as on a parameter.
+  another account): `count`, `latestEpoch`, `has(epoch)`, `effective(epoch)` … as on a parameter (read its fields
+  through a `const` bound to it; methods also work on the call itself).
 - Every typed CPI (System, SPL Token and Token-2022, ATA, Memo, Stake) takes, for each account, a declared parameter,
   a remaining account (`rest.get(i)`, a local bound to one, a `RemainingAccount` helper parameter), a struct loaded
   from one, or an `AccountInfo` parameter where a `TokenAccount` or `Mint` goes. Declared parameters keep their
