@@ -17,6 +17,7 @@ import {
   SOL,
   STAKE,
   STAKE_ACCOUNT_SIZE,
+  STAKE_HISTORY,
   STAKE_OFFSETS,
   STAKE_POOL_SIZE,
   SYSTEM,
@@ -620,6 +621,10 @@ describe("SOL deposits and withdrawals", () => {
       ["withdraw sol: wrong stake program", replace(wd, 10, SYSTEM), builtin("IncorrectProgramId")],
       ["withdraw sol: wrong fee account", replace(wd, 6, tokens), custom(E.InvalidFeeAccount)],
       ["withdraw sol: another user's tokens", replace(wd, 3, referrer), "x"],
+      // stake::instruction::withdraw names the Clock and the StakeHistory by address (the processor reads neither): the
+      // runtime does not find the sysvar among the accounts.
+      ["withdraw sol: another account as the clock", replace(wd, 8, STAKE_HISTORY), builtin("MissingAccount")],
+      ["withdraw sol: another account as the stake history", replace(wd, 9, CLOCK), builtin("MissingAccount")],
     ];
     for (const [label, i, want] of cases) {
       const got = await d.both(label, payer, [i]);
@@ -714,6 +719,10 @@ describe("validators over epochs", () => {
     expect(await run("wrong list", replace(await add(votes[2]!), 4, p.reserve))).toBe(custom(E.InvalidValidatorStakeList));
     expect(await run("wrong withdraw authority", replace(await add(votes[2]!), 3, p.reserve))).toBe(custom(E.InvalidProgramAddress));
     expect(await run("not a vote account", ix.addValidator(p, p.staker, await stakeOf(p.mint), p.mint))).not.toBe("ok");
+    // DelegateStake names the StakeHistory and the stake config by address: another account in either slot fails the
+    // call in the runtime (after the stake account was made and split); swapped, both are there (below).
+    expect(await run("wrong stake history", replace(await add(votes[2]!), 9, p.mint))).toBe(builtin("MissingAccount"));
+    expect(await run("wrong stake config", replace(await add(votes[2]!), 10, p.mint))).toBe(builtin("MissingAccount"));
     // A reserve that cannot fund another validator and keep its rent.
     const poor = await d.createPool(payer, { reserveLamports: SOL / 1000n, label: "initialize (poor)" });
     expect(
@@ -725,7 +734,13 @@ describe("validators over epochs", () => {
     expect(
       await d.both("add validator: list full", payer, [ix.addValidator(small, small.staker, await validatorStake(votes[3]!, small.pool), votes[3]!)]),
     ).toBe(builtin("AccountDataTooSmall"));
-    for (const v of [votes[2]!, votes[3]!]) await d.ok(`add validator ${v}`, payer, [await add(v)]);
+    const swapped = accounts(await add(votes[2]!), (l) => {
+      const h = l[9]!;
+      l[9] = l[10]!;
+      l[10] = h;
+    });
+    await d.ok("add validator: stake history and config swapped", payer, [swapped]);
+    await d.ok(`add validator ${votes[3]!}`, payer, [await add(votes[3]!)]);
   });
 
   it("sets and clears preferred validators", async () => {
@@ -763,6 +778,13 @@ describe("validators over epochs", () => {
     // Rewards: lamports sent to a validator stake account are withdrawn into the reserve and counted.
     d.nextEpoch();
     for (const vm of d.vms) vm.airdrop(pairs[0]![0], lamports(3n * SOL));
+    // The extra lamports are withdrawn with stake::instruction::withdraw, which names the StakeHistory by address.
+    const wrongHistory = replace(ix.updateValidatorListBalance(p, 0, false, pairs), 5, p.mint);
+    expect(await d.both("update list: wrong stake history", payer, [wrongHistory])).toBe(builtin("MissingAccount"));
+    // no_merge still withdraws them; with no pairs there is no Stake CPI, and the account is never used.
+    const noMerge = replace(ix.updateValidatorListBalance(p, 0, true, pairs), 5, p.mint);
+    expect(await d.both("update list: wrong stake history, no merge", payer, [noMerge])).toBe(builtin("MissingAccount"));
+    await d.ok("update list: wrong stake history, no pairs", payer, [replace(ix.updateValidatorListBalance(p, 0, false, []), 5, p.mint)]);
     await update("rewards");
     // Pairs that are not the entries' are skipped (an address mismatch is logged); odd counts and ranges past the end refused.
     d.nextEpoch();

@@ -85,7 +85,6 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   const burnFrom = rest.get(7n);
   const managerFee = rest.get(8n);
   const mint = rest.get(9n);
-  const clock = rest.get(10n);
   const tokenProgram = rest.get(11n);
 
   checkStakeProgram(rest.get(12n));
@@ -220,8 +219,8 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   const bump = pool.stakeWithdrawBumpSeed;
   stakeSplit(stake, splitFrom, withdrawAuth, poolAcct.key, bump, withdrawLamports, splitTo);
   const seeds = signer([poolAcct.key, AUTHORITY_WITHDRAW, bump]);
-  stake.authorize(splitTo, clock, withdrawAuth, userStakeAuthority.key, "staker", seeds);
-  stake.authorize(splitTo, clock, withdrawAuth, userStakeAuthority.key, "withdrawer", seeds);
+  stake.authorize(splitTo, CLOCK_SYSVAR_ID, withdrawAuth, userStakeAuthority.key, "staker", seeds);
+  stake.authorize(splitTo, CLOCK_SYSVAR_ID, withdrawAuth, userStakeAuthority.key, "withdrawer", seeds);
   if (fee > 0n) transferTokens(token, burnFrom, mint, managerFee, userAuthority, fee);
 
   require(pool.poolTokenSupply >= burnt, StakePoolError.CalculationFailure);

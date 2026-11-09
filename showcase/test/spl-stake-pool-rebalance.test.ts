@@ -578,16 +578,11 @@ describe("accounts in the wrong slots, and balances out of range", () => {
   });
 
   it("refuses a StakeHistory or stake config account that is not the sysvar, at the CPI that names it", async () => {
-    // The original's CPI names the sysvar by address and the runtime does not find it among the accounts
-    // (MissingAccount, logged by the runtime); the port fails at the same point with NotEnoughAccountKeys.
+    // The Stake instructions name the sysvar by address and the runtime does not find it among the accounts
+    // (MissingAccount, logged by the runtime), in both.
     const check = async (label: string, i: Instruction, missing: string) => {
-      const { original, port } = await sendBoth(d, payer, [i]);
-      expect(original.outcome, label).toBe(builtin("MissingAccount"));
-      expect(port.outcome, label).toBe(builtin("NotEnoughAccountKeys"));
-      const at = original.lines.indexOf(`Instruction references an unknown account ${missing}`);
-      expect(at, label).toBeGreaterThan(0);
-      expect(port.lines.slice(0, at), label).toEqual(original.lines.slice(0, at));
-      expect(port.lines[at], label).toBe("Program log: Error: NotEnoughAccountKeys");
+      expect(await d.both(label, payer, [i])).toBe(builtin("MissingAccount"));
+      expect(d.lastLogs, label).toContain(`Instruction references an unknown account ${missing}`);
     };
     const HISTORY = "SysvarStakeHistory1111111111111111111111111";
     const CONFIG = "StakeConfig11111111111111111111111111111111";

@@ -26,7 +26,6 @@ import {
   fee,
   ix,
   key,
-  outcome,
   stakeAuthorizeBoth,
   transientStake,
   u32,
@@ -34,7 +33,6 @@ import {
   validatorStake,
   withdrawAuthority,
 } from "./spl-stake-pool-helpers.js";
-import { send } from "../../test/harness.js";
 
 /** StakePoolError codes. */
 const E = {
@@ -339,17 +337,9 @@ describe("stake deposits", () => {
       else expect(got, label).not.toBe("ok");
     }
     await damagedPoolAndList(d, payer, p, "deposit stake", dep);
-    // Another account where the StakeHistory sysvar goes: the original's merge names the sysvar itself, which the
-    // transaction does not hold (the runtime's MissingAccount); the port refuses it at the same point (InvalidArgument).
-    const wrongHistory = replace(dep, 12, CLOCK);
-    for (const [vm, want] of [
-      [d.original, builtin("MissingAccount")],
-      [d.port, builtin("InvalidArgument")],
-    ] as const) {
-      const before = [stake, p.pool, p.list].map((a) => d.bytes(vm, a));
-      expect(outcome(await send(vm, payer, [wrongHistory]))).toBe(want);
-      expect([stake, p.pool, p.list].map((a) => d.bytes(vm, a))).toEqual(before);
-    }
+    // Another account where the StakeHistory sysvar goes: the merge names the sysvar itself, which the transaction
+    // does not hold (the runtime's MissingAccount).
+    expect(await d.both("deposit stake: wrong stake history", payer, [replace(dep, 12, CLOCK)])).toBe(builtin("MissingAccount"));
     // A stale pool takes no deposits until it is updated.
     d.nextEpoch();
     expect(await d.both("deposit stake: stale pool", payer, [dep])).toBe(custom(E.StakeListAndPoolOutOfDate));
