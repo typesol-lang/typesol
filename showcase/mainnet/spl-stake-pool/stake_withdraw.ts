@@ -132,16 +132,20 @@ export function withdrawStake(rest: RemainingAccounts, poolTokens: u64, slippage
   const tolerance = saturatingAdd(required, perToken);
 
   // Whether an active validator has more than the minimum (and the tolerance) on its validator stake account, or on
-  // its transient stake account: one pass for both, stopping once both are known.
+  // its transient stake account: two searches, as the original's, each stopping at the first one found (the lamports
+  // compared before the status is read).
   let hasActive = false;
-  let hasTransient = false;
-  for (const v of list.validators) {
-    if (u64(v.status) === STATUS_ACTIVE) {
-      if (v.activeStakeLamports > tolerance) hasActive = true;
-      if (v.transientStakeLamports > tolerance) hasTransient = true;
-      if (hasActive && hasTransient) break;
+  for (const v of list.validators)
+    if (v.activeStakeLamports > tolerance && u64(v.status) === STATUS_ACTIVE) {
+      hasActive = true;
+      break;
     }
-  }
+  let hasTransient = false;
+  for (const v of list.validators)
+    if (v.transientStakeLamports > tolerance && u64(v.status) === STATUS_ACTIVE) {
+      hasTransient = true;
+      break;
+    }
 
   let source = SOURCE_RESERVE;
   let index: u64 = 0n;

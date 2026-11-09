@@ -51,25 +51,38 @@ Where program-test does what LiteSVM does not, the scenario is adapted, not drop
 | 20,000: UpdateStakePoolBalance | 547,385 | 621,981 | 114% |
 | 20,000: CleanupRemovedValidatorEntries | 184,870 | 221,014 | 120% |
 | 20,000: DepositStake (last validator) | 606,813 | 152,012 | 25% |
-| 20,000: WithdrawStake (last validator) | 785,346 | 910,998 | 116% |
+| 20,000: WithdrawStake (last validator) | 783,846 | 450,679 | 57% |
 | 3,000: UpdateValidatorListBalance (4) | 46,055 | 12,280 | 27% |
 | 3,000: UpdateStakePoolBalance | 88,235 | 94,831 | 107% |
 | 3,000: CleanupRemovedValidatorEntries | 31,720 | 33,864 | 107% |
 | 3,000: DepositStake | 150,665 | 67,725 | 45% |
-| 3,000: WithdrawStake | 177,699 | 180,842 | 102% |
+| 3,000: WithdrawStake | 171,699 | 110,530 | 64% |
 | 3,000: RemoveValidatorFromPool (first / middle / last) | 26,883 / 61,383 / 101,856 | 16,112 / 28,288 / 41,779 | 60% / 46% / 41% |
 | 3,000: AddValidatorToPool (last entry) | 125,092 | 47,165 | 38% |
 | 3,000: IncreaseValidatorStake (last) | 127,561 | 58,074 | 46% |
 | 3,000: SetPreferredValidator (last) | 84,818 | 25,582 | 30% |
 | 3,000: CleanupRemovedValidatorEntries (all removed) | 43,720 | 42,864 | 98% |
+| 3,550: WithdrawStake (regression: the port's must fit 200,000) | 191,499 | 121,530 | 63% |
 
 (The UpdateValidatorListBalance and AddValidatorToPool rows vary by a few thousand units from run to run: the vote
 accounts are new keys each run, and so are the bump searches of their stake addresses.)
 
-The instructions that go through the whole list (UpdateStakePoolBalance's sum, CleanupRemovedValidatorEntries' retain,
-WithdrawStake's search for stake to give) cost the port about 31, 11 and 43 units an entry, against the original's 27, 9
-and 36. At upstream's sizes both fit their budgets; with the 1,400,000 units clients ask for, every instruction fits at
-the pool's maximum of 20,000 validators.
+The instructions that go through the whole list without doing anything else per entry (UpdateStakePoolBalance's sum,
+CleanupRemovedValidatorEntries' retain) cost the port about 31 and 11 units an entry, against the original's 27 and 9.
+At upstream's sizes both fit their budgets. With no compute-unit request (200,000 units), the original still fits
+where the port no longer does between about 6,400 and 7,100 validators for UpdateStakePoolBalance (checked at 6,800)
+and between about 18,100 and 20,000 for the cleanup (checked at 19,000); with the 1,400,000 units clients ask for,
+every instruction fits at the pool's maximum of 20,000 validators. The per-entry cost is the compiler's BigVec loop
+(`for … of`, `retain`), not the port's logic: the port's sum keeps the original's three checks an entry, and the u128
+and two-pass forms of it tried cost the same or more. These are not test cases (they would fail); to see one, set
+`MAX` in the huge_pool `describe` to `6_800` and run `update [6800]`.
+
+WithdrawStake was another, in the port's own logic: it looked for validators with stake to give in one pass that only
+stopped once it had found both active and transient stake, the original in two searches that each stop at the first.
+At 3,550 validators the original's withdrawal takes about 191,000 units and the port's ran out of the 200,000. The
+port now searches as the original does (`stake_withdraw.ts`). The regression case withdraws at 3,550 validators with
+the 1,400,000 units (so that neither program's outcome hangs on how many units the bump searches of new keys take,
+which moves them by a few thousand) and requires the port's to fit in 200,000.
 
 ## initialize.rs
 
@@ -341,5 +354,5 @@ The manager check of SetFee runs before the fee type is looked at, so one wrong-
 | huge_pool::add_validator_to_pool [3,000] | added |
 | huge_pool::set_preferred [3,000] | added |
 | huge_pool::deposit_stake [20,000 with 1.4M CU, 3,000] | added |
-| huge_pool::withdraw [20,000 with 1.4M CU, 3,000] | added |
+| huge_pool::withdraw [20,000 with 1.4M CU, 3,000] | added (and 3,550, the regression above) |
 | huge_pool::cleanup_all [3,000] | added |

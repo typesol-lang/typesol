@@ -1463,6 +1463,24 @@ describe("huge_pool.rs", () => {
     });
   }
 
+  // Regression: past MAX_POOL_SIZE, with no compute-unit request, the port's withdrawal once ran out of compute where
+  // the original's did not (its search for validators with stake to give went through the whole list in one pass that
+  // only stopped once it had found active and transient stake both; the original's two searches each stop at the
+  // first). At 3,550 validators the original needs about 191,000 of the default 200,000 units, the port then needed
+  // more. Run with the 1,400,000 units, so that neither depends on how many units the bump searches of new keys take,
+  // and the port's must fit the default.
+  it("withdraw [3550]: from the last validator, within the default compute budget", async () => {
+    const h = await setup(3_550, 3_550, STAKE_AMOUNT, [3_549], STATUS.Active, true);
+    await depositLast(h, 3_550);
+    const receive = await blank(h.d, h.payer);
+    const label = "huge 3550: withdraw stake";
+    await h.run(
+      label,
+      ix.withdrawStake(h.p, { split: h.stakes.get(h.last)!, receive, newAuthority: h.user.address, transferAuthority: h.user, from: h.tokens }, TEST_STAKE),
+    );
+    expect(hugeUnits[label]![1]).toBeLessThan(200_000n);
+  });
+
   it(`remove_validator_from_pool [${MAX}]: the first, the middle and the last, merged and cleaned up`, async () => {
     const middle = MAX / 2;
     const h = await setup(MAX, MAX, SOL, [0, middle, MAX - 1]);
