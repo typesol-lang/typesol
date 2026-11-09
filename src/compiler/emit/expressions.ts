@@ -351,6 +351,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const l = this.lookup(node.expression.text);
         if (l?.type.kind === "vecArg") return { c: `((uint64_t)${l.c}.len)`, type: U64 };
       }
+      // A slice of a Vec argument or the instruction data.
+      if (this.isVecArgView(node.expression)) return { c: `((uint64_t)${this.vecArgView(node.expression)!.c}.len)`, type: U64 };
       let what = "this value";
       try {
         what = this.checker.typeToString(this.checker.getTypeAtLocation(node.expression));

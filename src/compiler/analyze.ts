@@ -118,6 +118,7 @@ const TYPE_EXPORTS = new Set([
   "FixedVec",
   "BigVec",
   "BigVecSlice",
+  "InstructionBytes",
   "Program",
   "UncheckedProgram",
   "CpiAccount",
@@ -1709,6 +1710,9 @@ function analyzeHelper(
         reporter.fail(p.type, "helpers take the struct itself: check the Option argument is not null and pass it (or its fields)");
       if (type?.kind === "vecArg" && type.optional) reporter.fail(p.type, "helpers take the list itself: check the Option argument is not null and pass it");
       if (type) return { name: p.name.text, type, node: p };
+      // The instruction data (or a slice of it), read-only: a view like a Vec<u8> argument.
+      if (typesolName(p.type, scope.imports) === "InstructionBytes")
+        return { name: p.name.text, type: { kind: "vecArg", elem: { kind: "int", name: "u8" } } as ValueType, node: p };
       if (typesolName(p.type, scope.imports) === "SignerSeeds") return { name: p.name.text, type: { kind: "signerSeeds" } as ValueType, node: p };
       // One of the remaining accounts (remainingAccounts().get(i)), as the instruction holds it: read with readData or
       // loadAccount, its key, owner, lamports and data length.

@@ -14,6 +14,7 @@ import {
   optC,
   scalarC,
   scalarStorageC,
+  storageDecl,
   valueC,
 } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
@@ -421,10 +422,49 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     if (stages.length) {
       const l = ts.isIdentifier(base) ? this.lookup(base.text) : undefined;
-      if (!(l?.type.kind === "vecArg" || l?.type.kind === "array" || this.peekArray(base)))
+      if (!(l?.type.kind === "vecArg" || l?.type.kind === "array" || this.peekArray(base) || this.isVecArgView(base) || this.isInlineArray(base)))
         this.fail(base, "map and filter work on a Vec, FixedArray or FixedVec");
     }
     return { base, stages };
+  }
+
+  /** List bases already made into locals (see holdList), so a list method and the loop under it make them once. */
+  protected heldLists = new Map<ts.Node, ts.Identifier>();
+
+  /**
+   * A list written inline that must be made before it is read: `fixedArray<T, N>(fill)` (a local array, filled once)
+   * or a slice of a Vec argument or the instruction data (a view, range-checked once). Made here, in a local named by
+   * a synthetic identifier the loop reads; undefined for any other list (read in place).
+   */
+  protected holdList(base: ts.Expression): ts.Identifier | undefined {
+    const held = this.heldLists.get(base);
+    if (held) return held;
+    let made: Local | undefined;
+    if (this.isInlineArray(base)) {
+      let call = base;
+      while (ts.isParenthesizedExpression(call)) call = call.expression;
+      const c = this.tmp("fa");
+      made = { c, type: this.localArray(call as ts.CallExpression, c), mutable: false };
+    } else if (!ts.isIdentifier(base) && this.isVecArgView(base)) {
+      const v = this.vecArgView(base)!;
+      made = { c: v.c, type: v.type, mutable: false };
+    }
+    if (!made) return undefined;
+    const id = ts.factory.createIdentifier(`__hl${this.temp++}`);
+    ts.setTextRange(id, base);
+    (id as { parent?: ts.Node }).parent = base.parent;
+    this.scopes.at(-1)!.set(id.text, made);
+    return id;
+  }
+
+  /** The type of an inline `fixedArray<T, N>(fill)` from its type arguments, without emitting code. */
+  protected inlineArrayType(e: ts.Expression): (FieldType & { kind: "array" }) | undefined {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!this.isInlineArray(e)) return undefined;
+    const [elemNode, lenNode] = (e as ts.CallExpression).typeArguments ?? [];
+    const elem = elemNode && this.localElem(elemNode);
+    const len = lenNode && ts.isLiteralTypeNode(lenNode) && ts.isNumericLiteral(lenNode.literal) ? Number(lenNode.literal.text) : NaN;
+    return elem && Number.isInteger(len) ? { kind: "array", elem, len } : undefined;
   }
 
   /**
@@ -440,7 +480,10 @@ export abstract class StatementEmitter extends CpiEmitter {
     names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void {
-    const { base, stages } = this.pipelineStages(list);
+    const stagesOf = this.pipelineStages(list);
+    const { stages } = stagesOf;
+    // An inline fixedArray(…) or a slice of a Vec argument / the instruction data: made once, before the loop.
+    const base: ts.Expression = this.holdList(stagesOf.base) ?? stagesOf.base;
     // A BigVec slice is lowered (and range-checked) once, here; the loop reads its length and elements from that.
     const sliced =
       ts.isCallExpression(base) && ts.isPropertyAccessExpression(base.expression) && base.expression.name.text === "slice" ? this.ref(base) : undefined;
@@ -578,7 +621,9 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (!ts.isTypeReferenceNode(t) || typesolName(t, this.scope.imports) !== "FixedVec" || !annotatedElem || !Number.isInteger(n) || n < 1)
         this.fail(t, "annotate the new list as FixedVec<T, N> (N a literal)");
       cap = n;
-    } else {
+    } else if (this.inlineArrayType(base)) cap = this.inlineArrayType(base)!.len;
+    else {
+      if (this.isVecArgView(base)) this.fail(init, "this list has no fixed size: annotate the new one with its capacity, const ys: FixedVec<T, N> = …");
       const r = this.reporter.guard(() => this.ref(base));
       const l = ts.isIdentifier(base) ? this.lookup(base.text) : undefined;
       if (r?.type.kind === "array") cap = r.type.len;
@@ -622,17 +667,25 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.line(`${c}.len++;`);
       });
     const t = { kind: "vec", elem: annotatedElem ?? elem!, cap: cap0 } as FieldType & { kind: "vec"; cap: number };
-    const bytes = 4 + this.fieldBytes(t.elem) * cap0;
-    if (bytes > 2048) this.fail(init, `the new list takes ${bytes} bytes; locals live on the 4 KiB stack, so keep it under 2 KiB (a smaller FixedVec<T, N>)`);
+    this.checkLocalListSize(t, init, "the new list");
     this.model.localVecs.set(fixedVecC(t), t);
     const pad = "  ".repeat(this.indent);
     this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero(&${c}, sizeof(${c}));`;
     return t;
   }
-
   /** The element type of a Vec, FixedArray, FixedVec or Vec argument. */
   protected listElem(list: ts.Expression): FieldType {
-    const l = ts.isIdentifier(list) ? this.lookup(list.text) : undefined;
+    const inline = this.inlineArrayType(list);
+    if (inline) return inline.elem;
+    // A slice of a Vec argument or the instruction data: the elements of the list it slices.
+    let root = list;
+    for (;;) {
+      if (ts.isParenthesizedExpression(root)) root = root.expression;
+      else if (ts.isCallExpression(root) && ts.isPropertyAccessExpression(root.expression) && root.expression.name.text === "slice" && this.isVecArgView(root))
+        root = root.expression.expression;
+      else break;
+    }
+    const l = ts.isIdentifier(root) ? this.lookup(root.text) : undefined;
     if (l?.type.kind === "vecArg") return l.type.elem;
     const r = this.ref(list);
     if (r && (r.type.kind === "array" || r.type.kind === "vec")) return r.type.elem;
@@ -802,6 +855,19 @@ export abstract class StatementEmitter extends CpiEmitter {
    * `find` gives an Option of the element (scalar elements), `findIndex` / `indexOf` an i64 (-1 when absent).
    */
   protected listMethod(node: ts.CallExpression, method: string): Value | undefined {
+    // A list written inline is made first, as JS evaluates the receiver before the arguments (reduce's initial value).
+    const base = this.pipelineStages((node.expression as ts.PropertyAccessExpression).expression).base;
+    const held = this.holdList(base);
+    if (!held) return this.listMethodLoop(node, method);
+    this.heldLists.set(base, held);
+    try {
+      return this.listMethodLoop(node, method);
+    } finally {
+      this.heldLists.delete(base);
+    }
+  }
+
+  private listMethodLoop(node: ts.CallExpression, method: string): Value | undefined {
     const access = node.expression as ts.PropertyAccessExpression;
     const list = access.expression;
     const args = node.arguments;
@@ -1126,7 +1192,7 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       if (fn === "fixedArray") {
-        const t = this.localArray(init as ts.CallExpression, c);
+        const t = this.localArray(init as ts.CallExpression, c, d.type);
         this.scopes.at(-1)!.set(name, { c, type: t, mutable });
         continue;
       }
@@ -1192,6 +1258,20 @@ export abstract class StatementEmitter extends CpiEmitter {
           this.line(`TSS_${S.name} *${c} = &${c}__v;`);
         }
         this.scopes.at(-1)!.set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d });
+        continue;
+      }
+      // A local list declared with its type: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, … }])`,
+      // `const buf: FixedVec<u8, 600> = fixedVec([])`, or a copy of another list (a Vec argument, instruction data).
+      const listType = d.type ? this.listAnnotation(d.type) : undefined;
+      if (listType) {
+        this.checkLocalListSize(listType, d.type!);
+        if (listType.kind === "vec") {
+          this.model.localVecs.set(fixedVecC(listType), listType);
+          this.line(`${fixedVecC(listType)} ${c};`);
+          this.line(`ts_memzero(&${c}, sizeof(${c}));`);
+        } else this.line(`${storageDecl(listType, c)};`);
+        this.writeAggregate({ lv: c, type: listType, writable: true }, init, true);
+        this.scopes.at(-1)!.set(name, { c, type: listType, mutable });
         continue;
       }
       // Struct values: `const p: Point = { x, y }` (or a copy of another Point) is a local of its own.

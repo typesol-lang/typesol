@@ -119,6 +119,11 @@ export interface Vec<T> extends ListMethods<T> {
    * back: 3004, as under Anchor).
    */
   push(value: T, payer?: Mut<Signer>): void;
+  /**
+   * A FixedVec's bulk append (declared here so a Vec still passes where a FixedVec is expected): a Vec in account data
+   * grows one `push` at a time, so calling it on a Vec is a compile error.
+   */
+  pushAll(items: IndexedList<T>): void;
   /** Remove and return the last element, shrinking the account. */
   pop(): T;
   /** Remove every element, shrinking the account. */
@@ -137,6 +142,12 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   get(index: bigint): T;
   set(index: bigint, value: T): void;
   push(value: T): void;
+  /**
+   * Append every element of `items` in one copy (a memcpy, not a loop of pushes): another FixedVec, a Vec or FixedArray
+   * of the same elements, a Vec argument or the instruction data, or a slice of them (`out.pushAll(data.slice(a, b))`).
+   * More than the room left fails (5104) and appends nothing.
+   */
+  pushAll(items: IndexedList<T>): void;
   pop(): T;
   clear(): void;
   [Symbol.iterator](): Iterator<T>;
@@ -2230,8 +2241,22 @@ export declare function constraint(account: AccountMeta | RemainingAccount | nul
  */
 export declare function instructionData(): InstructionBytes;
 
-/** The instruction data, read in place: its bytes, and little-endian values at a byte offset. */
-export interface InstructionBytes extends IndexedList<u8> {
+/**
+ * The instruction data, read in place: its bytes, and little-endian values at a byte offset. A list of u8 like any other
+ * (`for (const b of data)`, `map` / `filter` / `reduce` / `some` …), read-only; a helper takes it (or a slice) as an
+ * `InstructionBytes` parameter.
+ */
+export interface InstructionBytes extends IndexedList<u8>, ListMethods<u8> {
+  readonly length: u64;
+  /** The byte at `index` (5104 past the end). */
+  get(index: bigint): u8;
+  /**
+   * Bytes `start` to `end - 1` in place, a view with the same methods (nothing is copied). Unlike JS's slice it does
+   * not clamp: `end` past the length or before `start` fails the instruction (5104). `end` defaults to the length.
+   * Copy one into a local list with `out.pushAll(data.slice(a, b))`.
+   */
+  slice(start: bigint, end?: bigint): InstructionBytes;
+  [Symbol.iterator](): Iterator<u8>;
   /** The little-endian value at `offset`; reading past the end fails the instruction (5104). */
   readU8(offset: u64): u8;
   readU16(offset: u64): u16;
