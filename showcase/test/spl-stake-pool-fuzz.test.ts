@@ -8,8 +8,8 @@
 // account the walk knows is also compared after each epoch and every 25 steps, so nothing drifts unseen.
 //
 // The choices and amounts come from the seed (the keys are fresh each run): reproduce a run with FUZZ_SEED=<seed>,
-// lengthen it with STAKE_POOL_FUZZ_STEPS=<n>, compare every account after each step with STAKE_POOL_FUZZ_SWEEP=1. The
-// walk's transactions are not in the counts the other files give.
+// lengthen it with STAKE_POOL_FUZZ_STEPS=<n> (default 1000), compare every account after each step with
+// STAKE_POOL_FUZZ_SWEEP=1. The walk's transactions are not in the counts the other files give.
 import { type Address, type Instruction, type KeyPairSigner, address, lamports } from "@solana/kit";
 import { EpochRewards } from "litesvm";
 import { describe, expect, it } from "vitest";
@@ -36,7 +36,11 @@ import {
 } from "./spl-stake-pool-helpers.js";
 
 const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
-const STEPS = Number(process.env.STAKE_POOL_FUZZ_STEPS ?? 150);
+// 1000 steps: every main kind of instruction succeeds at least once (checked at the end); at 150 about half the seeds
+// left one out, at 400 one in ten (most often a stake deposit, then a decrease).
+const STEPS = Number(process.env.STAKE_POOL_FUZZ_STEPS ?? 1000);
+/** Walks this long are required to have every main kind of instruction succeed. */
+const EVERY_KIND_STEPS = 1000;
 
 /** The most compute a transaction may use, appended after the pool's instruction (so its errors stay at index 0). */
 const BUDGET: Instruction = {
@@ -486,5 +490,26 @@ describe("a random walk over epochs", () => {
         `(${list.map((v) => `${STATUS[v.status]} ${v.active}/${v.transient}`).join(", ")}), totals ${JSON.stringify(d.totals(p), (_, x) => (typeof x === "bigint" ? String(x) : x))}`,
     );
     console.log(JSON.stringify(stats));
+    // A walk whose steps all failed would compare little: every main kind of instruction got through at least once (in
+    // a walk of EVERY_KIND_STEPS or more), and the walk compared at least about one transaction a step (most steps send
+    // one, an epoch's update several).
+    const classes: Record<string, string[]> = {
+      "deposit SOL": ["deposit sol", "deposit sol slippage"],
+      "withdraw SOL": ["withdraw sol", "withdraw sol slippage"],
+      "deposit stake": ["deposit stake", "deposit stake slippage"],
+      "withdraw stake": ["withdraw stake", "withdraw stake slippage"],
+      increase: ["increase", "increase additional"],
+      decrease: ["decrease with reserve", "decrease additional", "decrease (deprecated)"],
+      "update list": ["update list"],
+      "update pool": ["update pool"],
+      "add validator": ["add validator"],
+    };
+    if (STEPS >= EVERY_KIND_STEPS)
+      for (const [name, ops] of Object.entries(classes))
+        expect(
+          ops.reduce((n, op) => n + (stats[op]?.ok ?? 0), 0),
+          `no ${name} succeeded (seed ${SEED}): ${JSON.stringify(stats)}`,
+        ).toBeGreaterThan(0);
+    expect(d.compared, `transactions compared (seed ${SEED})`).toBeGreaterThanOrEqual(Math.floor(STEPS * 0.9));
   }, 3_600_000);
 });
