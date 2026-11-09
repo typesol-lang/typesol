@@ -5,7 +5,7 @@ import { type Address, AccountRole, generateKeyPairSigner, type KeyPairSigner } 
 import { FailedTransactionMetadata, type TransactionMetadata } from "litesvm";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type Deployed, compileErrors, deployFile, fundedSigner, send } from "../harness.js";
+import { type Deployed, acct, compileErrors, deployFile, fundedSigner, send } from "../harness.js";
 
 type Result = TransactionMetadata | FailedTransactionMetadata;
 const logs = (r: Result) => (r instanceof FailedTransactionMetadata ? r.meta() : r).logs();
@@ -52,7 +52,7 @@ describe("literals as helper arguments", () => {
 
   it("passes a literal to a helper that also takes an account", async () => {
     expect(err(await call(40n, false, 8n, 3n, [ledger]))).toBe("ok");
-    const data = Buffer.from(d.svm.getAccount(ledger)!.data);
+    const data = Buffer.from(acct(d.svm, ledger).data);
     expect([data.readBigUInt64LE(0), data.readBigUInt64LE(8), data.readBigUInt64LE(16)]).toEqual([40n, 3n, 1n]);
   });
 

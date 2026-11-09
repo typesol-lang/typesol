@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, type Deployed, compileErrors, customError, deployFile, fundedSigner, ix, send } from "../harness.js";
+import { BN, type Deployed, acct, compileErrors, customError, deployFile, fundedSigner, ix, send } from "../harness.js";
 
 type Result = TransactionMetadata | FailedTransactionMetadata;
 const logs = (r: Result) => (r instanceof FailedTransactionMetadata ? r.meta() : r).logs();
@@ -45,7 +45,7 @@ describe("NATIVE_ACCOUNT_WRITES", () => {
     data.writeBigUInt64LE(count, 32);
     native.svm.setAccount({ address: counter, lamports: 10_000_000n, programAddress: d.programId, executable: false, data } as never);
   };
-  const count = () => Buffer.from(native.svm.getAccount(counter)!.data).readBigUInt64LE(32);
+  const count = () => Buffer.from(acct(native.svm, counter).data).readBigUInt64LE(32);
   const putList = (d: Deployed) => {
     const data = Buffer.alloc(1 + 4 + 8 * 4); // room for 4 items, 1 stored
     data.writeUInt32LE(1, 1);
