@@ -1449,7 +1449,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
 
   /** `pushAll(items)`'s source: a list of exactly `elem` (see listSpan). */
   protected bulkSource(e: ts.Expression, elem: FieldType): { items: string; count: string } {
-    const what = `pushAll takes a list of ${typeName(elem)}: a Vec, FixedVec or FixedArray, a Vec argument or the instruction data (or a slice of them)`;
+    const what = `pushAll takes a list of ${typeName(elem)}: a Vec, FixedVec or FixedArray, a Vec argument, or the instruction data or a slice of it`;
     const s = this.listSpan(e) ?? this.fail(e, what);
     if (!sameType(s.elem, elem)) this.fail(e, what);
     // A Vec argument's booleans and enums are checked as each is read (get, for … of), not on entry.

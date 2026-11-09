@@ -20,7 +20,7 @@ codes, and says so here.
   of `push`), 5104 when it does not fit. Declared on `Vec` as well so a Vec still passes for a FixedVec; calling it on
   a Vec is a compile error.
 - The instruction data is a list: `for … of`, the list methods, `data.slice(start, end?)` (a view; 5104 out of range,
-  where JS would clamp) and `InstructionBytes` helper parameters; slices of `Vec` arguments too.
+  where JS would clamp) and `InstructionBytes` helper parameters.
 - `invokeInstruction` in helpers (with their `RemainingAccounts` parameter), with metas and data from local lists, a
   `FixedArray`, the instruction data or a slice of it: a native port's instruction builder, metas naming accounts by
   key.

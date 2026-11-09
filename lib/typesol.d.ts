@@ -144,7 +144,7 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   push(value: T): void;
   /**
    * Append every element of `items` in one copy (a memcpy, not a loop of pushes): another FixedVec, a Vec or FixedArray
-   * of the same elements, a Vec argument or the instruction data, or a slice of them (`out.pushAll(data.slice(a, b))`).
+   * of the same elements, a Vec argument, or the instruction data or a slice of it (`out.pushAll(data.slice(a, b))`).
    * More than the room left fails (5104) and appends nothing.
    */
   pushAll(items: IndexedList<T>): void;
