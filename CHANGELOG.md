@@ -36,6 +36,9 @@ codes, and says so here.
 - New: a struct, data-enum or `fixedArray<T, N>(fill)` literal as a helper argument (`applyFee({ denominator: 100n,
   numerator: 3n }, amount)`, nested literals, a ternary with a literal branch, helpers in other files), built as
   `const fee: Fee = { … }` would be; it failed with "expected a Fee". Other programs compile to the same C.
+- Fixed: an `Option<Pubkey>` (or `Option<Hash>`) in a template string or `+` was refused ("only strings, integers,
+  booleans and Pubkeys can be joined into text") even after `x !== null`; it joins as the base58, or `null` when
+  empty, as JS prints it (as Options of integers and booleans already did). Other programs compile to the same C.
 
 ## 0.41.0 — 2026-11-07
 

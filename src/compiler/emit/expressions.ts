@@ -596,6 +596,15 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const v = this.expr(node);
     if (v.type.kind === "string") return v.c;
     if (converted) converted.yes = true;
+    if (v.type.kind === "option" && v.type.inner.kind === "pubkey") {
+      // `${key}` of an Option<Pubkey> (or Hash), narrowed or not: its base58, or "null" like JS.
+      const o = this.tmp("o");
+      const t = this.tmp("txt");
+      this.line(`${optC(v.type.inner)} ${o} = ${v.c};`);
+      this.line(`TS_Str ${t} = ts_str((const uint8_t *)"null", 4);`);
+      this.line(`if (${o}.some) TS_TRY(ts_base58_32((const uint8_t *)&${o}.v, &${t}));`);
+      return t;
+    }
     if (v.type.kind === "option" && (v.type.inner.kind === "int" || v.type.inner.kind === "bool")) {
       // `${opt}`: the value, or "null" like JS.
       const inner = v.type.inner;
