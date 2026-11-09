@@ -73,6 +73,91 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
   const out: string[] = [];
   for (const s of model.structs.values()) {
     if ((s.layout !== "borsh" && s.wire !== "borsh") || s.size === undefined) continue;
+    out.push(
+      ...codec(s, model, { unpack: `ts_unpack_${s.name}`, pack: `ts_pack_${s.name}`, deser: DESER, ser: SER, title: "Borsh (Anchor's account layout)" }),
+    );
+  }
+  return out;
+}
+
+/**
+ * C for `ts_bdec_<S>` / `ts_benc_<S>` of the structs `loadBorsh` / `storeBorsh` use (model.borshNative): the same
+ * straight-line codec, failing with a bare nonzero return (no log) so that the call site fails with BorshIoError.
+ */
+export function emitNativeBorshCodecs(model: ProgramModel): string[] {
+  const out: string[] = [];
+  for (const name of model.borshNative) {
+    const s = model.structs.get(name)!;
+    out.push(
+      ...codec(s, model, {
+        unpack: `ts_bdec_${name}`,
+        pack: `ts_benc_${name}`,
+        deser: "return 1",
+        ser: "return 1",
+        title: "Borsh (loadBorsh / storeBorsh)",
+        utf8: true,
+      }),
+    );
+  }
+  return out;
+}
+
+/**
+ * Why `loadBorsh<T>` / `storeBorsh` cannot take a field of this type (their codec has no heap and no views), or
+ * undefined when it can.
+ */
+function borshNativeUnsupported(t: FieldType, model: Pick<ProgramModel, "structs" | "dataEnums">): string | undefined {
+  if (borshIdentical(t, model)) return undefined;
+  switch (t.kind) {
+    case "fstring":
+      return undefined;
+    case "vec":
+      if (t.heap || t.cap === undefined) return "a Vec<T> (it would live on the heap): use FixedVec<T, N>";
+      return borshIdentical(t.elem, model) || t.elem.kind === "fstring" ? undefined : "a FixedVec of Options, data enums or lists";
+    case "option": {
+      const inner = t.inner as FieldType;
+      if (borshIdentical(inner, model)) return undefined;
+      const v = variableStruct(inner, model);
+      return v ? borshNativeStructUnsupported(v, model) : "an Option of a list, a string or a data enum";
+    }
+    case "struct": {
+      const v = variableStruct(t, model);
+      return v ? borshNativeStructUnsupported(v, model) : `${t.name} is itself @layout borsh: nest a plain struct (it is Borsh inside this one)`;
+    }
+    case "dataEnum": {
+      const e = model.dataEnums.get(t.name)!;
+      for (const v of e.variants)
+        for (const f of v.fields)
+          if (!borshIdentical(f.type, model))
+            return `${e.name} variant ${v.name}'s ${f.name} is not fixed-size (data enum payloads: integers, booleans, Pubkeys, unit enums, FixedArrays and structs of them)`;
+      return undefined;
+    }
+    case "array":
+      return "a FixedArray of Options, data enums, strings or lists";
+    case "string":
+      return "a string (a view of the bytes it was read from): use FixedString<N>";
+    default:
+      return `a ${t.kind} field`;
+  }
+}
+
+/** Why `loadBorsh<S>` / `storeBorsh` cannot take struct `s`, or undefined when they can. */
+export function borshNativeStructUnsupported(s: StructDef, model: Pick<ProgramModel, "structs" | "dataEnums">): string | undefined {
+  if (s.size === undefined || s.viewsOnly) return `${s.name} has string fields (views of the bytes it was read from): use FixedString<N>`;
+  if (s.vec) return `${s.name} has a Vec<T> field (it would live on the heap): use FixedVec<T, N>`;
+  for (const f of s.fields) {
+    const why = borshNativeUnsupported(f.type, model);
+    if (why) return `${s.name}.${f.name} is ${why}`;
+  }
+  return undefined;
+}
+
+/** The decode / encode pair of one struct. */
+function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: string; deser: string; ser: string; title: string; utf8?: boolean }): string[] {
+  const out: string[] = [];
+  const DESER = o.deser;
+  const SER = o.ser;
+  {
     let k = 0;
     const tmp = (p: string) => `${p}${k++}`;
 
@@ -119,6 +204,8 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
             `${pad}at += 4;`,
             `${pad}if (${l} > ${t.cap}) ${DESER};`,
             need(l, rest, pad),
+            // Bytes another program wrote (loadBorsh): checked as UTF-8 as Borsh String deserialization does.
+            ...(o.utf8 ? [`${pad}if (!ts_utf8_valid(src + at, ${l})) ${DESER};`] : []),
             `${pad}${lv}.len = ${l};`,
             `${pad}ts_memcpy(${lv}.bytes, src + at, ${l});`,
             `${pad}at += ${l};`,
@@ -372,15 +459,15 @@ export function emitBorshCodecs(model: ProgramModel): string[] {
     const min = borshMinSize(s, model);
 
     out.push(
-      `/* ${s.name} as Borsh (Anchor's account layout) <-> its fixed-layout struct. */`,
-      `__attribute__((noinline)) static uint64_t ts_unpack_${s.name}(const uint8_t *src, uint64_t len, TSS_${s.name} *out, uint64_t *used) {`,
+      `/* ${s.name} as ${o.title} <-> its fixed-layout struct. */`,
+      `__attribute__((noinline)) static uint64_t ${o.unpack}(const uint8_t *src, uint64_t len, TSS_${s.name} *out, uint64_t *used) {`,
       `  if (len < ${min}) ${DESER};`,
       `  uint64_t at = 0;`,
       ...unpackLines,
       `  if (used) *used = at;`,
       `  return SUCCESS;`,
       `}`,
-      `__attribute__((noinline)) static uint64_t ts_pack_${s.name}(const TSS_${s.name} *in, uint8_t *dst, uint64_t cap, uint64_t *written) {`,
+      `__attribute__((noinline)) static uint64_t ${o.pack}(const TSS_${s.name} *in, uint8_t *dst, uint64_t cap, uint64_t *written) {`,
       `  if (cap < ${min}) ${SER};`,
       `  uint64_t at = 0;`,
       ...packLines,

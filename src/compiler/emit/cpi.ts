@@ -189,18 +189,13 @@ export abstract class CpiEmitter extends MetaplexEmitter {
    */
   protected invokeInstruction(node: ts.CallExpression): undefined {
     const a = node.arguments;
-    if (!this.ix) this.fail(node, "invokeInstruction is only available in instructions (it passes remaining accounts)");
     if (a.length !== 4 && a.length !== 5) this.fail(node, "invokeInstruction(programId, accounts, data, infos, signerSeeds?) takes 4 or 5 arguments");
     const program = this.expect(this.expr(a[0]!, PUBKEY), PUBKEY, a[0]!);
     const programKey = this.tmp("dprog");
     this.line(`SolPubkey ${programKey} = *(${program.c});`);
-    const list = (e: ts.Expression, what: string): { items: string; count: string; elem: FieldType } => {
-      const l = ts.isIdentifier(e) ? this.lookup(e.text) : undefined;
-      if (l?.type.kind === "vecArg") return { items: `${l.c}.ptr`, count: `((uint64_t)${l.c}.len)`, elem: l.type.elem };
-      const r = this.ref(e);
-      if (r?.vec && r.type.kind === "vec") return { items: `${r.vec.items}`, count: vecCount(r.vec), elem: r.type.elem };
-      this.fail(e, `${what}: a Vec or FixedVec (account data, an argument or a local list)`);
-    };
+    // A Vec, FixedVec or FixedArray (account data, an argument or a local list), the instruction data or a slice of it.
+    const list = (e: ts.Expression, what: string): { items: string; count: string; elem: FieldType } =>
+      this.listSpan(e) ?? this.fail(e, `${what}: a Vec or FixedVec (account data, an argument or a local list)`);
     const metas = list(a[1]!, "the accounts");
     const elem = metas.elem;
     const st = elem.kind === "struct" ? this.model.structs.get(elem.name) : undefined;
@@ -209,7 +204,10 @@ export abstract class CpiEmitter extends MetaplexEmitter {
       this.fail(a[1]!, "each account is a struct with pubkey: Pubkey, isSigner: boolean and isWritable: boolean");
     const data = list(a[2]!, "the data");
     if (data.elem.kind !== "int" || data.elem.name !== "u8") this.fail(a[2]!, "the data is a list of u8");
-    const range = this.remainingRange(a[3]!) ?? this.fail(a[3]!, "pass the accounts the CPI may use: remainingAccounts() or rest.slice(a, b)");
+    // In a helper: its RemainingAccounts parameter (or a slice of it).
+    const range =
+      this.remainingRange(a[3]!) ??
+      this.fail(a[3]!, "pass the accounts the CPI may use: remainingAccounts() or rest.slice(a, b) (in a helper, its RemainingAccounts parameter)");
     const multi = a.length === 5 ? this.signerSets(a[4]!) : undefined;
     const seeds = a.length === 5 && !multi ? this.signingSeeds(a[4]!) : undefined;
 
@@ -225,7 +223,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     this.line(`  ${m}[${i}] = (SolAccountMeta){(SolPubkey *)&e->pubkey, e->isWritable != 0, e->isSigner != 0};`);
     this.line(`}`);
     // Every account offered goes along as an AccountInfo (ts_invoke's scratch holds TS_MAX_ACCOUNTS of them).
-    const base = this.ix.accounts.length;
+    const base = range.base;
     this.line(`uint64_t ${k} = 0;`);
     this.line(`TS_INFOS_RESERVE(params, (${range.to}) - (${range.from}));`);
     this.line(`for (uint64_t ${i}b = ${base} + ${range.from}; ${i}b < ${base} + ${range.to}; ${i}b++) ts_info(params->ka[${i}b], &params->infos[${k}++]);`);
@@ -417,7 +415,8 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     const b = this.tmp("evb");
     const w = this.tmp("evw");
     // One pair of heap buffers per emit site, taken on first use: an emit in a loop does not take new heap each pass.
-    this.hoisted.push(`  TSS_${s.name} *${t} = NULL;`, `  uint8_t *${b} = NULL;`);
+    this.hoistLazy(t, (n) => `TSS_${s.name} *${n}`);
+    this.hoistLazy(b, (n) => `uint8_t *${n}`);
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(sizeof(TSS_${s.name}), (uint8_t **)&${t}));`);
     this.writeAggregate({ lv: `(*${t})`, type: { kind: "struct", name: s.name }, writable: true }, obj);
     // Borsh never takes more than the fixed layout (a String/Vec is 4 + used bytes, an Option 1 + payload).

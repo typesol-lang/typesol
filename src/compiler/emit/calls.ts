@@ -1,6 +1,6 @@
 import ts from "typescript";
-import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase, structNameOf } from "../analyze.js";
-import { borshIdentical } from "./borsh.js";
+import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase, structNameOf, typesolName } from "../analyze.js";
+import { borshIdentical, borshNativeStructUnsupported } from "./borsh.js";
 import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
 import {
@@ -11,8 +11,10 @@ import {
   type FieldType,
   type Helper,
   type IntName,
+  type ParamKind,
   type ScalarType,
   type StructDef,
+  type ValueType,
   isScalar,
   isWritable,
   sameType,
@@ -31,6 +33,8 @@ import {
   HASH,
   type Value,
   type Ref,
+  type CpiAcct,
+  type CpiProgram,
   cBytes,
   cString,
   scalarC,
@@ -117,12 +121,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         // A built-in ProgramError: its u64 form (the index shifted into the high 32 bits), as solana_program returns it.
         if (ts.isPropertyAccessExpression(args[1]) && this.exportName(args[1].expression) === "ProgramError") {
-          const idx = PROGRAM_ERRORS.indexOf(args[1].name.text);
-          if (idx < 0) this.fail(args[1].name, `ProgramError has no ${args[1].name.text}`);
-          // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
-          const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
-          const text = typeof pre === "string" ? `${pre}${args[1].name.text}` : `Error: ${args[1].name.text} (${this.location(node)})`;
-          this.line(`if (!${cond.c}) TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)});`);
+          if (!PROGRAM_ERRORS.includes(args[1].name.text)) this.fail(args[1].name, `ProgramError has no ${args[1].name.text}`);
+          this.line(`if (!${cond.c}) ${this.programErrorFail(args[1].name.text, node)};`);
           return undefined;
         }
         const err = this.errorRef(args[1]);
@@ -139,17 +139,28 @@ export abstract class CallEmitter extends ExpressionEmitter {
           const v = ts.isIdentifier(a) ? this.model.constants.get(a.text)?.value : undefined;
           return typeof v === "string" ? v : undefined;
         };
-        if (args.length > 2 || args.some((a) => text(a) === undefined))
-          this.fail(node, 'panic() takes an optional message and an optional "file:line:column" location: string literals or string constants');
-        const msg = args.length ? text(args[0]!)! : "explicit panic";
+        // A null message: nothing logged, only the runtime's line (a native program whose panic handler logs nothing).
+        const silent = args.length > 0 && args[0]!.kind === ts.SyntaxKind.NullKeyword;
+        if (args.length > 2 || args.some((a, i) => !(i === 0 && silent) && text(a) === undefined))
+          this.fail(
+            node,
+            'panic() takes an optional message (or null to log nothing) and an optional "file:line:column" location: string literals or string constants',
+          );
+        const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
         // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
         // ported program's panic reports it, else this source line.
         const at = args.length > 1 ? text(args[1]!)! : this.location(node);
         const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
         const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
-        this.line(`sol_log(${cString(msg)});`);
+        if (msg !== undefined) this.line(`sol_log(${cString(msg)});`);
         this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
         this.line(`__builtin_unreachable();`);
+        return undefined;
+      }
+      case "abort": {
+        // Rust's abort on SBF: the runtime's `abort` syscall ("SBF program panicked", no location, nothing logged).
+        if (args.length) this.fail(node, "abort() takes no arguments; log the original's message first with log(…) where it writes one");
+        this.line(`abort();`);
         return undefined;
       }
       case "log": {
@@ -227,6 +238,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (builtin === "lastRestartSlot") this.line(`TS_TRY(ts_last_restart_slot(&${t}));`);
         else this.line(`TS_TRY(ts_epoch_schedule(${{ slotsPerEpoch: 0, epochWarmup: 2, firstNormalEpoch: 3, firstNormalSlot: 4 }[builtin]}, &${t}));`);
         return builtin === "epochWarmup" ? { c: `(${t} != 0)`, type: BOOL } : { c: t, type: U64 };
+      }
+      case "epochRewards": {
+        if (args.length !== 0) this.fail(node, "epochRewards() takes no arguments");
+        // Rust's EpochRewards::get() (sol_get_epoch_rewards_sysvar): a copy of the sysvar, read where it is called.
+        const t = this.tmp("erw");
+        this.line(`TsEpochRewards ${t};`);
+        this.line(`TS_TRY(ts_epoch_rewards(&${t}));`);
+        return { c: t, type: { kind: "epochRewards" } };
       }
       case "currentSlot":
       case "currentEpoch":
@@ -665,7 +684,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "loadRaw":
       case "loadRawMut":
       case "loadForeign":
+      case "loadBorsh":
         this.fail(node, `bind ${builtin}<T>(...) to a const first: const p = ${builtin}<T>(account)`);
+      case "storeBorsh":
+        return this.storeBorsh(node);
       case "emit":
         return this.emitEvent(node);
       case "emitCpi": {
@@ -680,6 +702,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "returnData":
         return this.returnData(node);
+      case "programAt":
+      case "sysvarAt":
+        return this.programAt(node, builtin);
       case "instructionData":
         this.fail(node, "bind the data to a local first: const data = instructionData()");
       case "fixedArray":
@@ -692,6 +717,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "sighash":
       case "hex":
         this.fail(node, `${builtin}() is only valid inside the data list of invoke()`);
+      case "named":
+        this.fail(node, "named(account, address) is only valid as a Stake CPI's sysvar or stake config argument");
     }
     if (builtin) this.fail(callee, `${builtin} cannot be called here`);
 
@@ -722,16 +749,24 @@ export abstract class CallEmitter extends ExpressionEmitter {
       // xs.some(…) and friends on a Vec, FixedArray, FixedVec or Vec argument: a loop with the callback expanded in it.
       if (LIST_METHODS.has(method)) {
         const l = ts.isIdentifier(callee.expression) ? this.lookup(callee.expression.text) : undefined;
-        if (l?.type.kind === "vecArg" || l?.type.kind === "array" || this.isPipeline(callee.expression) || this.peekArray(callee.expression))
+        if (
+          l?.type.kind === "vecArg" ||
+          l?.type.kind === "array" ||
+          this.isPipeline(callee.expression) ||
+          this.peekArray(callee.expression) ||
+          this.isVecArgView(callee.expression) ||
+          this.isInlineArray(callee.expression)
+        )
           return this.listMethod(node, method);
       }
       // A map / filter chain is consumed by a list method, `.length` or for…of, or stored: const ys = xs.map(…).
       if (this.isPipeline(node))
         this.fail(node, `${method} builds a new list: store it (const ys = xs.${method}(…)), or use it right away with a list method, .length or for…of`);
-      // Vec<T> instruction arguments are read-only views.
-      if (ts.isIdentifier(callee.expression)) {
-        const l = this.lookup(callee.expression.text);
-        if (l?.type.kind === "vecArg") {
+      // Vec<T> instruction arguments (and the instruction data) are read-only views; slice gives another one.
+      if (this.isVecArgView(callee.expression)) {
+        if (method === "slice") return this.vecArgView(node);
+        const l = this.vecArgView(callee.expression)!;
+        {
           // Bytes (instruction data, a Vec<u8> argument): little-endian reads at a byte offset, bounds-checked (5104).
           const le: Record<string, [string, number, Value["type"]]> = {
             readU8: ["uint8_t", 1, U8],
@@ -761,7 +796,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
             const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
             return { c: `(((const TS_Str *)${l.c}.ptr)[${idx}])`, type: STRING };
           }
-          if (!isScalar(elem)) this.fail(node, `read a field of the element: ${callee.expression.text}.get(i).field`);
+          if (!isScalar(elem))
+            this.fail(node, `read a field of the element: ${ts.isIdentifier(callee.expression) ? callee.expression.text : "list"}.get(i).field`);
           const idx = this.index(args[0], `(uint64_t)${l.c}.len`);
           const t = this.tmp("el");
           this.line(`${scalarStorageC(elem)} ${t};`);
@@ -822,6 +858,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const right = this.expect(this.expr(args[0], left.type), left.type, args[0]);
         return { c: `ts_key_eq(${this.settle(left, mark).c}, ${right.c})`, type: BOOL };
       }
+      const at = this.programAtValue(callee.expression);
+      if (at) return this.programAtMethod(node, at, method);
       if (this.accountAt(callee.expression)) {
         const target = this.accountAt(callee.expression);
         // Program accounts used through their methods (systemProgram.transfer, tokenProgram.*…) may be optional.
@@ -836,23 +874,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (target?.kind.kind === "migrate" && method === "migrate") return this.migrate(node, target, topLevel);
         if (target?.kind.kind === "initIfNeeded" && method === "createIfNeeded") return this.create(node, target, topLevel, true);
         if (target?.kind.kind === "system" && method === "transfer") return this.systemTransfer(node);
-        if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, target);
+        if (target?.kind.kind === "system" && method === "createAccount") return this.createAccount(node, this.programParam(target));
         if (target?.kind.kind === "system" && method === "createPda") return this.createPda(node);
-        if (target?.kind.kind === "system" && (method === "allocate" || method === "assign")) return this.allocateOrAssign(node, target, method);
-        if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, target, method);
-        if (target?.kind.kind === "ataProgram") return this.ataOp(node, target, method);
-        if (target?.kind.kind === "memoProgram") return this.memoOp(node, target, method);
-        if (target?.kind.kind === "stakeHistory") {
-          const fields: Record<string, number> = { has: 0, effective: 1, activating: 2, deactivating: 3 };
-          if (!(method in fields)) this.fail(callee.name, "StakeHistorySysvar has has(epoch), effective(epoch), activating(epoch) and deactivating(epoch)");
-          if (args.length !== 1) this.fail(node, `${method}(epoch) takes the epoch`);
-          const epoch = this.expect(this.expr(args[0]!, U64), U64, args[0]!);
-          const f = this.tmp("shf");
-          const v = this.tmp("shv");
-          this.line(`bool ${f};`);
-          this.line(`uint64_t ${v} = ts_stake_history(a_${target.name}, ${epoch.c}, ${Math.max(1, fields[method]!)}, &${f});`);
-          return method === "has" ? { c: f, type: BOOL } : { c: v, type: U64 };
-        }
+        if (target?.kind.kind === "system" && (method === "allocate" || method === "assign"))
+          return this.allocateOrAssign(node, this.programParam(target), method);
+        if (target?.kind.kind === "tokenProgram") return this.tokenOp(node, this.programParam(target), method);
+        if (target?.kind.kind === "ataProgram") return this.ataOp(node, this.programParam(target), method);
+        if (target?.kind.kind === "memoProgram") return this.memoOp(node, this.programParam(target), method);
+        if (target?.kind.kind === "stakeHistory") return this.stakeHistoryRead(node, `a_${target.name}`, method);
         if (target?.kind.kind === "sbRandomness") {
           if (method !== "value" && method !== "valueU64") this.fail(callee.name, "SwitchboardRandomness has value() and valueU64()");
           if (args.length) this.fail(node, `${method}() takes no arguments`);
@@ -861,7 +890,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`TS_TRY(ts_sb_randomness_value(a_${target.name}, &${t}));`);
           return method === "value" ? { c: `((const SolPubkey *)${t})`, type: HASH } : { c: `ts_read_le(${t}, 8)`, type: U64 };
         }
-        if (target?.kind.kind === "stakeProgram") return this.stakeOp(node, target, method);
+        if (target?.kind.kind === "stakeProgram") return this.stakeOp(node, this.programParam(target), method);
         if (target?.kind.kind === "metadataProgram") return this.metadataOp(node, target, method);
         // Each Metaplex CPI in its own C block: its data buffer's stack slot is reused by the next one.
         if (target?.kind.kind === "coreProgram" || target?.kind.kind === "bubblegumProgram") {
@@ -934,6 +963,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
+    if (info.big !== undefined) {
+      const done = this.bigVecMethod(node, method, v, { stageElem, needWritable, elemPaths });
+      if (done) return done.value;
+    }
     /**
      * The growable Vecs stored after this one move by `by` bytes (+ grows, - shrinks): where they start and how many
      * bytes they take, read before the resize; references into them cannot outlive this call.
@@ -949,6 +982,22 @@ export abstract class CallEmitter extends ExpressionEmitter {
       return { at, n };
     };
     switch (method) {
+      case "pushAll": {
+        // Every element of another list appended in one copy (a memcpy, not a loop of pushes).
+        if (info.cap === undefined || info.heap)
+          this.fail(node, "pushAll(items) appends to a FixedVec; a Vec grows one push(value) at a time (for (const x of items) list.push(x, …))");
+        if (args.length !== 1) this.fail(node, "pushAll(items) takes the list to append");
+        needWritable();
+        const src = this.bulkSource(args[0]!, vt.elem);
+        const n = this.tmp("n");
+        const k = this.tmp("k");
+        this.line(`uint64_t ${n} = ${count};`);
+        this.line(`uint64_t ${k} = ${src.count};`);
+        this.line(`if (${k} > ${info.cap} - ${n}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: pushAll() past the FixedVec's room");`);
+        this.line(`ts_memcpy_bulk((uint8_t *)${info.items} + ${n} * ${info.elemSize}, (const uint8_t *)${src.items}, ${k} * ${info.elemSize});`);
+        this.line(`${info.len} = (uint32_t)(${n} + ${k});`);
+        return undefined;
+      }
       case "set": {
         if (args.length !== 2) this.fail(node, "set(index, value) takes two arguments");
         needWritable();
@@ -1039,6 +1088,146 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
     }
     this.fail(node, `Vecs support get, set, push, pop, clear and .length, not ${method}()`);
+  }
+
+  /**
+   * The methods a BigVec adds or changes (SPL's big_vec): `push` into the account's room, `retain`, and the refusals;
+   * undefined for the methods it shares with other lists (`set`).
+   */
+  private bigVecMethod(
+    node: ts.CallExpression,
+    method: string,
+    v: Ref,
+    h: { stageElem: (n: ts.Expression) => (el: Ref) => void; needWritable: () => void; elemPaths: () => string[] | undefined },
+  ): { value: Value | undefined } | undefined {
+    const args = node.arguments;
+    const info = v.vec!;
+    const vt = v.type as FieldType & { kind: "vec" };
+    if (method === "set") return undefined;
+    if (method === "slice")
+      this.fail(node, "use slice(start, end) right where it is read: for (const x of list.slice(a, b)), list.slice(a, b).forEach(…) or .get(i)");
+    if (info.slice) this.fail(node, `a slice has get, set, .length, for … of and the list methods; call ${method}() on the BigVec itself`);
+    switch (method) {
+      case "push": {
+        // BigVec::push: the element goes after the last one if the account has room for it, else AccountDataTooSmall.
+        if (args.length !== 1) this.fail(node, "push(value) on a BigVec takes the value (its room is the account's, never resized)");
+        h.needWritable();
+        const write = h.stageElem(args[0]!);
+        const n = this.tmp("n");
+        this.line(`uint64_t ${n} = (uint64_t)${info.len};`);
+        this.line(`if (${n} >= ${info.big}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+        this.line(`${info.len} = (uint32_t)(${n} + 1);`);
+        write(this.withFixedVec({ ...v, lv: `${info.items}[${n}]`, type: vt.elem, vec: undefined, path: undefined }));
+        return { value: undefined };
+      }
+      case "retain": {
+        // BigVec::retain: one pass, the predicate reading each element where it was; each run of kept elements moves
+        // down once (sol_memmove), when the next removal (or the end) is found. Bytes past the new end keep what they held.
+        if (args.length !== 1) this.fail(node, "retain(fn) takes one argument: (x) => keep it");
+        const cb = args[0]!;
+        if (!ts.isArrowFunction(cb) && !ts.isFunctionExpression(cb)) this.fail(cb, "pass retain an arrow function written here: xs.retain((x) => …)");
+        if (cb.parameters.length > 1) this.fail(cb.parameters[1]!, "retain's callback takes the element");
+        h.needWritable();
+        this.assertNotAliased(h.elemPaths(), node);
+        const size = info.elemSize;
+        if (vt.elem.kind === "struct") return this.retainStructs(node, cb, v, vt.elem.name, size);
+        const items = this.tmp("rt_items");
+        const n = this.tmp("rt_n");
+        const removed = this.tmp("rt_removed");
+        const dst = this.tmp("rt_dst");
+        const i = this.tmp("rt_i");
+        const move = (count: string) => `sol_memmove_(${items} + ${dst} * ${size}, ${items} + (${dst} + ${removed}) * ${size}, (${count}) * ${size});`;
+        this.line(`{`);
+        this.block(() => {
+          this.line(`uint8_t *${items} = (uint8_t *)${info.items};`);
+          this.line(`uint64_t ${n} = ${vecCount(info)}, ${removed} = 0, ${dst} = 0;`);
+          this.line(`for (uint64_t ${i} = 0; ${i} < ${n}; ${i}++) {`);
+          this.block(() => {
+            const f = ts.factory;
+            const place = <T extends ts.Node>(x: T): T => {
+              ts.setTextRange(x, node);
+              (x as { parent?: ts.Node }).parent = node;
+              return x;
+            };
+            const index = `__rt${this.temp++}`;
+            this.scopes.at(-1)!.set(index, { c: i, type: U64, mutable: false });
+            const list = (node.expression as ts.PropertyAccessExpression).expression;
+            const element = place(f.createCallExpression(place(f.createPropertyAccessExpression(list, "get")), undefined, [place(f.createIdentifier(index))]));
+            const closure: Closure = { node: cb, name: "retain's callback", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
+            const kept = this.expandClosure(closure, [element].slice(0, cb.parameters.length), cb);
+            if (!kept) this.fail(cb, "retain's callback returns a boolean: true keeps the element");
+            const b = this.expect(kept, BOOL, cb);
+            this.line(`if (!(${b.c})) {`);
+            this.line(`  if (${removed} > 0 && ${i} - ${removed} > ${dst}) ${move(`${i} - ${removed} - ${dst}`)}`);
+            this.line(`  ${dst} = ${i} - ${removed};`);
+            this.line(`  ${removed}++;`);
+            this.line(`}`);
+          });
+          this.line(`}`);
+          this.line(`if (${removed} > 0 && ${n} - ${removed} > ${dst}) ${move(`${n} - ${removed} - ${dst}`)}`);
+          this.line(`${info.len} = (uint32_t)(${n} - ${removed});`);
+        });
+        this.line(`}`);
+        return { value: undefined };
+      }
+      case "pop":
+      case "clear":
+        this.fail(node, `a BigVec has push and retain (as SPL's big_vec), not ${method}(): remove elements with retain((x) => …)`);
+    }
+    this.fail(node, `a BigVec supports get, set, push, retain, slice, find / findIndex and the other list methods, .length and .capacity, not ${method}()`);
+  }
+
+  /**
+   * BigVec::retain over struct elements, walked with a pointer: the predicate gets each element in place, a kept one
+   * costs its predicate and the step. `run` is the first element not yet moved (the run of kept ones since the last
+   * removal), `dst` where that run goes; each run moves down once, when the next removal (or the end) is found, and
+   * only once something before it was removed. The length is written once, at the end (the moves never reach it).
+   */
+  private retainStructs(node: ts.CallExpression, cb: ts.ArrowFunction | ts.FunctionExpression, v: Ref, struct: string, size: number): { value: undefined } {
+    const info = v.vec!;
+    const items = this.tmp("rt_items");
+    const end = this.tmp("rt_end");
+    const run = this.tmp("rt_run");
+    const dst = this.tmp("rt_dst");
+    const p = this.tmp("rt_p");
+    this.line(`{`);
+    this.block(() => {
+      this.line(`uint8_t *${items} = (uint8_t *)${info.items};`);
+      this.line(`uint8_t *${end} = ${items} + ${vecCount(info)} * ${size}, *${run} = ${items}, *${dst} = ${items};`);
+      this.line(`for (uint8_t *${p} = ${items}; ${p} < ${end}; ${p} += ${size}) {`);
+      this.block(() => {
+        const el = this.tmp("rt_el");
+        this.line(`TSS_${struct} *${el} = (TSS_${struct} *)${p};`);
+        const list = (node.expression as ts.PropertyAccessExpression).expression;
+        const id = ts.factory.createIdentifier(`__rt${this.temp++}`);
+        ts.setTextRange(id, node);
+        (id as { parent?: ts.Node }).parent = node;
+        // The element as list.get(i) gives it: a reference into the list, with the list's aliasing paths.
+        this.scopes.at(-1)!.set(id.text, {
+          c: el,
+          type: { kind: "structRef", struct, writable: !!v.writable },
+          mutable: false,
+          paths: this.pathsOf(list)?.map((x) => `${x}[]`),
+        });
+        const closure: Closure = { node: cb, name: "retain's callback", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
+        const kept = this.expandClosure(closure, [id].slice(0, cb.parameters.length), cb);
+        if (!kept) this.fail(cb, "retain's callback returns a boolean: true keeps the element");
+        const b = this.expect(kept, BOOL, cb);
+        const at = this.tmp("rt_at");
+        this.line(`if (!(${b.c})) {`);
+        // The removal's own copy of the position, so the scan loop keeps a single pointer (see ts_opaque_ptr).
+        this.line(`  uint8_t *${at} = ts_opaque_ptr(${p});`);
+        this.line(`  if (${dst} != ${run} && ${at} != ${run}) sol_memmove_(${dst}, ${run}, ${at} - ${run});`);
+        this.line(`  ${dst} += ${at} - ${run};`);
+        this.line(`  ${run} = ${at} + ${size};`);
+        this.line(`}`);
+      });
+      this.line(`}`);
+      this.line(`if (${dst} != ${run} && ${end} != ${run}) sol_memmove_(${dst}, ${run}, ${end} - ${run});`);
+      this.line(`${info.len} = (uint32_t)((uint64_t)(${dst} + (${end} - ${run}) - ${items}) / ${size});`);
+    });
+    this.line(`}`);
+    return { value: undefined };
   }
 
   /** sha256(...) / keccak256(...) over strings, Pubkeys, Hashes, integers (LE) and booleans. */
@@ -1249,8 +1438,149 @@ export abstract class CallEmitter extends ExpressionEmitter {
     );
   }
 
+  /** `fixedArray<T, N>(fill)` written inline (a list method, a map / filter chain or `for … of` over it). */
+  protected isInlineArray(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isInlineArray(node.expression);
+    return ts.isCallExpression(node) && this.exportName(node.expression) === "fixedArray";
+  }
+
+  /**
+   * Whether `node` is a read-only view of a Vec argument or the instruction data, without emitting code: a local or
+   * helper parameter holding one, or `.slice(start, end?)` of such a view.
+   */
+  protected isVecArgView(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isVecArgView(node.expression);
+    if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "vecArg";
+    return (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "slice" &&
+      this.isVecArgView(node.expression.expression)
+    );
+  }
+
+  /**
+   * The view `node` names (see isVecArgView) as a `TS_VecArg` C expression. `.slice(start, end)` is elements start..end-1
+   * in place (`end` defaults to the length): unlike JS's slice it does not clamp, an `end` past the length or before
+   * `start` fails with 5104. Undefined when `node` is not such a view.
+   */
+  protected vecArgView(node: ts.Expression): { c: string; type: ValueType & { kind: "vecArg" } } | undefined {
+    if (ts.isParenthesizedExpression(node)) return this.vecArgView(node.expression);
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      return l?.type.kind === "vecArg" ? { c: l.c, type: l.type } : undefined;
+    }
+    if (!this.isVecArgView(node)) return undefined;
+    const call = node as ts.CallExpression;
+    const base = this.vecArgView((call.expression as ts.PropertyAccessExpression).expression)!;
+    if (base.type.optional) this.fail(call, "check the Option argument is not null before slicing it");
+    const elem = base.type.elem;
+    if (elem.kind === "string") this.fail(call, "slice works on lists of fixed-size elements, not on a Vec<string>");
+    if (call.arguments.length < 1 || call.arguments.length > 2)
+      this.fail(call, "slice(start, end?) takes the first element's index and the index after the last one");
+    const start = this.tmp("sl_start");
+    const end = this.tmp("sl_end");
+    this.line(`uint64_t ${start} = ${this.expect(this.expr(call.arguments[0]!, U64), U64, call.arguments[0]!).c};`);
+    this.line(`uint64_t ${end} = ${call.arguments[1] ? this.expect(this.expr(call.arguments[1], U64), U64, call.arguments[1]).c : `(uint64_t)${base.c}.len`};`);
+    this.line(`if (${end} > (uint64_t)${base.c}.len || ${start} > ${end}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: slice out of range");`);
+    const t = this.tmp("view");
+    this.line(`TS_VecArg ${t} = {${base.c}.ptr + ${start} * ${this.fieldBytes(elem)}, (uint32_t)(${end} - ${start})};`);
+    return { c: t, type: { kind: "vecArg", elem } };
+  }
+
+  /**
+   * A list's elements as one contiguous run, for a bulk copy or a CPI: a Vec argument, the instruction data or a slice
+   * of them; a Vec, FixedVec, BigVec (slice) or FixedArray in account data or a local. Undefined for anything else.
+   */
+  protected listSpan(e: ts.Expression): { items: string; count: string; elem: FieldType; view: boolean } | undefined {
+    if (this.isVecArgView(e)) {
+      const v = this.vecArgView(e)!;
+      return { items: `${v.c}.ptr`, count: `((uint64_t)${v.c}.len)`, elem: v.type.elem, view: true };
+    }
+    const r = this.ref(e);
+    if (r?.type.kind === "array") return { items: `${r.lv}`, count: `${r.type.len}ULL`, elem: r.type.elem, view: false };
+    if (r?.vec && r.type.kind === "vec") return { items: r.vec.items, count: vecCount(r.vec), elem: r.type.elem, view: false };
+    return undefined;
+  }
+
+  /** `pushAll(items)`'s source: a list of exactly `elem` (see listSpan). */
+  protected bulkSource(e: ts.Expression, elem: FieldType): { items: string; count: string } {
+    const what = `pushAll takes a list of ${typeName(elem)}: a Vec, FixedVec or FixedArray, a Vec argument, or the instruction data or a slice of it`;
+    const s = this.listSpan(e) ?? this.fail(e, what);
+    if (!sameType(s.elem, elem)) this.fail(e, what);
+    // A Vec argument's booleans and enums are checked as each is read (get, for … of), not on entry.
+    if (s.view && (elem.kind === "bool" || elem.kind === "enum"))
+      this.fail(e, "a Vec argument's booleans and enums are checked as each is read: push them one by one (for … of)");
+    return s;
+  }
+
+  /**
+   * Whether `node` names one account a choice may pick, without emitting code: a remaining account (`rest.get(i)`), a
+   * local or `RemainingAccount` helper parameter bound to one, an `AccountInfo` parameter, or a choice between those.
+   */
+  protected looksLikeAccountHandle(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.looksLikeAccountHandle(node.expression);
+    if (ts.isConditionalExpression(node)) return this.looksLikeAccountHandle(node.whenTrue) && this.looksLikeAccountHandle(node.whenFalse);
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      if (l) return l.type.kind === "account";
+      return this.accountAt(node)?.kind.kind === "info";
+    }
+    return (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "get" &&
+      this.isRemaining(node.expression.expression)
+    );
+  }
+
+  /**
+   * `c ? rest.get(5n) : reserve`: one of two accounts, chosen at run time (only the chosen side runs), as a `TsAccount *`
+   * usable wherever a remaining account is. Each side is a remaining account, a local or helper parameter bound to one,
+   * an `AccountInfo` parameter or another such choice; a `programAt` check is kept when both sides carry the same one.
+   */
+  protected accountChoice(node: ts.ConditionalExpression): Value {
+    const side = (e: ts.Expression): Value => {
+      if (ts.isParenthesizedExpression(e)) return side(e.expression);
+      if (ts.isConditionalExpression(e)) return this.accountChoice(e);
+      if (ts.isIdentifier(e)) {
+        const l = this.lookup(e.text);
+        if (l?.type.kind === "account") return { c: l.c, type: l.type };
+        const a = this.accountAt(e);
+        if (!l && a?.kind.kind === "info") return { c: `a_${this.accountParam(e, "a choice between accounts").name}`, type: { kind: "account" } };
+      }
+      const h = this.handle(e);
+      if (h) return { c: h, type: { kind: "account" } };
+      this.fail(
+        e,
+        "choose between accounts of the same kind: remaining accounts (rest.get(i), a local or RemainingAccount parameter bound to one) or AccountInfo parameters",
+      );
+    };
+    const cond = this.expect(this.expr(node.condition, BOOL), BOOL, node.condition);
+    const t = this.tmp("acct");
+    this.line(`TsAccount *${t};`);
+    this.line(`if (${cond.c}) {`);
+    let a!: Value;
+    let b!: Value;
+    this.block(() => {
+      a = side(node.whenTrue);
+      this.line(`${t} = ${a.c};`);
+    });
+    this.line(`} else {`);
+    this.block(() => {
+      b = side(node.whenFalse);
+      this.line(`${t} = ${b.c};`);
+    });
+    this.line(`}`);
+    const pa = a.type.kind === "account" ? a.type.program : undefined;
+    const pb = b.type.kind === "account" ? b.type.program : undefined;
+    const program = pa && pb && JSON.stringify(pa) === JSON.stringify(pb) ? pa : undefined;
+    return { c: t, type: { kind: "account", ...(program ? { program } : {}) } };
+  }
+
   protected handle(node: ts.Expression): string | undefined {
     if (ts.isParenthesizedExpression(node)) return this.handle(node.expression);
+    if (ts.isConditionalExpression(node) && this.looksLikeAccountHandle(node)) return this.accountChoice(node).c;
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       return l?.type.kind === "account" ? l.c : undefined;
@@ -1276,6 +1606,125 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const h = this.handle(node);
     if (h) return h;
     return `a_${this.accountParam(node, what).name}`;
+  }
+
+  /**
+   * An account argument of a typed CPI: a declared account parameter (`param`, its kind and writability checked by
+   * the caller), or a remaining account, a local bound to one, a RemainingAccount helper parameter or a loaded struct
+   * (no compile-time checks: the called program and the runtime check them).
+   */
+  protected cpiAccount(node: ts.Expression, what: string): CpiAcct {
+    const h = this.handle(node);
+    if (h) return { c: h };
+    const loaded = ts.isIdentifier(node) ? this.lookup(node.text)?.loaded : undefined;
+    if (loaded) return { c: loaded.handle };
+    const param = this.accountParam(node, what);
+    return { c: `a_${param.name}`, param };
+  }
+
+  /** A declared program parameter as the program of a typed CPI. */
+  protected programParam(a: AccountParam): CpiProgram {
+    return { c: `a_${a.name}`, kind: a.kind };
+  }
+
+  /**
+   * `programAt<P>(acct)` / `sysvarAt<S>(acct)`: the account (a remaining account or an AccountInfo parameter) checked
+   * to be that program or sysvar by its key, once, then usable with P's typed methods. A wrong program fails with
+   * ProgramError.IncorrectProgramId and a wrong sysvar with ProgramError.InvalidArgument, as solana_program's checks do.
+   */
+  protected programAt(node: ts.CallExpression, fn: "programAt" | "sysvarAt"): Value {
+    const programs: Record<string, [ParamKind, string | undefined, string]> = {
+      StakeProgram: [{ kind: "stakeProgram" }, "TS_STAKE_PROGRAM_ID", "the Stake program"],
+      SystemProgram: [{ kind: "system" }, "TS_SYSTEM_PROGRAM_ID", "the System Program"],
+      TokenProgram: [{ kind: "tokenProgram", flavor: "token" }, "TS_TOKEN_PROGRAM_ID", "the Token program"],
+      Token2022Program: [{ kind: "tokenProgram", flavor: "token2022" }, "TS_TOKEN_2022_PROGRAM_ID", "the Token-2022 program"],
+      TokenInterface: [{ kind: "tokenProgram", flavor: "tokenInterface" }, undefined, "a token program"],
+      AssociatedTokenProgram: [{ kind: "ataProgram" }, "TS_ATA_PROGRAM_ID", "the Associated Token program"],
+      MemoProgram: [{ kind: "memoProgram" }, "TS_MEMO_PROGRAM_ID", "the Memo program"],
+    };
+    const sysvars: typeof programs = { StakeHistorySysvar: [{ kind: "stakeHistory" }, "TS_STAKE_HISTORY_ID", "the StakeHistory sysvar"] };
+    const table = fn === "programAt" ? programs : sysvars;
+    const targ = node.typeArguments?.[0];
+    const name = targ && typesolName(targ, this.scope.imports);
+    const entry = name ? table[name] : undefined;
+    if (!entry)
+      this.fail(
+        targ ?? node,
+        fn === "programAt" ? `programAt<P>(account): P is one of ${Object.keys(programs).join(", ")}` : "sysvarAt<S>(account): S is StakeHistorySysvar",
+      );
+    if (node.arguments.length !== 1) this.fail(node, `${fn}<${name}>(account) takes one remaining account or AccountInfo parameter`);
+    const arg = node.arguments[0]!;
+    let h = this.handle(arg);
+    if (!h) {
+      const acct = this.accountParam(arg, `${fn}'s account`);
+      if (acct.kind.kind !== "info")
+        this.fail(arg, `pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter; a declared parameter can be typed ${name} itself`);
+      h = `a_${acct.name}`;
+    }
+    const [kind, id, what] = entry;
+    const err = PROGRAM_ERRORS.indexOf(fn === "programAt" ? "IncorrectProgramId" : "InvalidArgument");
+    // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: logged as a native entrypoint logs the error.
+    const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
+    const text = typeof pre === "string" ? `${pre}${PROGRAM_ERRORS[err]}` : `TypeSOL: not ${what}`;
+    const bad = id ? `!ts_key_eq(&${h}->key, &${id})` : `!ts_is_token_program(&${h}->key)`;
+    this.line(`if (${bad}) TS_FAIL(((uint64_t)${err + 2}) << 32, ${cString(text)});`);
+    if (kind.kind === "stakeHistory") this.line(`if (${h}->data_len < 8) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: not the StakeHistory sysvar's data");`);
+    return { c: h, type: { kind: "account", program: kind } };
+  }
+
+  /** A value `programAt` / `sysvarAt` checked (a local bound to one, or the call itself), as the program it is. */
+  protected programAtValue(node: ts.Expression): CpiProgram | undefined {
+    if (ts.isParenthesizedExpression(node)) return this.programAtValue(node.expression);
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      return l?.type.kind === "account" && l.type.program ? { c: l.c, kind: l.type.program } : undefined;
+    }
+    if (!ts.isCallExpression(node)) return undefined;
+    const fn = this.exportName(node.expression);
+    if (fn !== "programAt" && fn !== "sysvarAt") return undefined;
+    const v = this.programAt(node, fn);
+    return { c: v.c, kind: (v.type as { program: ParamKind }).program };
+  }
+
+  /** `stake.split(…)` on a programAt value: the same typed methods as on a declared program parameter. */
+  protected programAtMethod(node: ts.CallExpression, at: CpiProgram, method: string): Value | undefined {
+    switch (at.kind.kind) {
+      case "system":
+        if (method === "transfer") return this.systemTransfer(node);
+        if (method === "createAccount") return this.createAccount(node, at);
+        if (method === "createPda") return this.createPda(node);
+        if (method === "allocate" || method === "assign") return this.allocateOrAssign(node, at, method);
+        this.fail(node.expression, `the System Program has transfer, createAccount, createPda, allocate and assign, not ${method}`);
+      case "tokenProgram":
+        return this.tokenOp(node, at, method);
+      case "ataProgram":
+        return this.ataOp(node, at, method);
+      case "memoProgram":
+        return this.memoOp(node, at, method);
+      case "stakeProgram":
+        return this.stakeOp(node, at, method);
+      case "stakeHistory":
+        return this.stakeHistoryRead(node, at.c, method);
+    }
+    this.fail(node.expression, `unsupported call: ${method}`);
+  }
+
+  /** StakeHistorySysvar's has / effective / activating / deactivating(epoch), on the sysvar account `h`. */
+  protected stakeHistoryRead(node: ts.CallExpression, h: string, method: string): Value {
+    const args = node.arguments;
+    const fields: Record<string, number> = { has: 0, effective: 1, activating: 2, deactivating: 3 };
+    if (!(method in fields))
+      this.fail(
+        (node.expression as ts.PropertyAccessExpression).name,
+        "StakeHistorySysvar has has(epoch), effective(epoch), activating(epoch) and deactivating(epoch)",
+      );
+    if (args.length !== 1) this.fail(node, `${method}(epoch) takes the epoch`);
+    const epoch = this.expect(this.expr(args[0]!, U64), U64, args[0]!);
+    const f = this.tmp("shf");
+    const v = this.tmp("shv");
+    this.line(`bool ${f};`);
+    this.line(`uint64_t ${v} = ts_stake_history(${h}, ${epoch.c}, ${Math.max(1, fields[method]!)}, &${f});`);
+    return method === "has" ? { c: f, type: BOOL } : { c: v, type: U64 };
   }
 
   /** `readData<T>(account, offset)`: a bounds-checked little-endian read of any account's data. */
@@ -1361,7 +1810,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const fn = mut ? "loadRawMut" : "loadRaw";
     const targ = node.typeArguments?.[0];
     const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
-    if (!s || s.size === undefined || s.vec) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
+    if (!s || s.size === undefined || (s.vec && !s.bigVec)) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: ${fn} reads fixed layouts only`);
     if (node.arguments.length !== 1) this.fail(node, `${fn}<T>(account) takes one remaining account or AccountInfo parameter`);
     let h = this.handle(node.arguments[0]);
@@ -1369,14 +1818,31 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (!h) {
       const acct = this.accountParam(node.arguments[0], "the account");
       if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
-      if (mut && !isWritable(acct.kind)) this.fail(node.arguments[0], `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut`);
+      if (mut && !isWritable(acct.kind) && !this.nativeAccountWrites())
+        this.fail(
+          node.arguments[0],
+          `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+        );
       if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
       h = `a_${acct.name}`;
       param = this.ix.accounts.indexOf(acct);
     }
     this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
     this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
-    if (mut) {
+    // A BigVec's stored length must fit in the account. Its capacity is kept in a local: every access is clamped to it
+    // (the length may be written again after this), without a division each time.
+    let bigCap: string | undefined;
+    if (s.bigVec) {
+      bigCap = this.tmp("bv_cap");
+      this.line(`uint64_t ${bigCap} = (${h}->data_len - sizeof(TSS_${s.name})) / ${s.bigVec.elemSize};`);
+      this.line(`if ((uint64_t)((TSS_${s.name} *)(${h}->data))->${s.bigVec.name}__len > ${bigCap}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+      // Named in scope, so a loop moved into a function of its own is given it (see outlinedLoop).
+      this.scopes.at(-1)!.set(`__${bigCap}`, { c: bigCap, type: U64, mutable: false });
+    }
+    // NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
+    // instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
+    // gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
+    if (mut && !this.nativeAccountWrites()) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
       const slot = this.claimSlots.get(node);
       if (slot)
@@ -1387,7 +1853,108 @@ export abstract class CallEmitter extends ExpressionEmitter {
         );
       else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
     }
-    return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut } };
+    return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut }, ...(bigCap ? { bigCap } : {}) };
+  }
+
+  /**
+   * `const v = loadBorsh<T>(acct)`: the account's data from byte 0 decoded as Borsh into a local `T` (a copy), as
+   * `try_from_slice_unchecked` reads it: no owner check, no discriminator, trailing bytes ignored; bytes that are not
+   * a valid `T` (too short, an Option tag or bool not 0/1, an enum tag out of range) fail with BorshIoError.
+   */
+  protected loadBorsh(node: ts.CallExpression, c: string, declared: StructDef | undefined): StructDef {
+    const s = this.borshNativeStruct(node, node.typeArguments?.[0], declared, "loadBorsh");
+    if (node.arguments.length !== 1) this.fail(node, "loadBorsh<T>(account) takes one remaining account or AccountInfo parameter");
+    const h = this.borshAccount(node.arguments[0], "loadBorsh", false);
+    this.line(`TSS_${s.name} ${c}__v;`);
+    this.line(`if (ts_bdec_${s.name}(${h}->data, ${h}->data_len, &${c}__v, NULL)) ${this.programErrorFail("BorshIoError", node)};`);
+    this.line(`TSS_${s.name} *${c} = &${c}__v;`);
+    return s;
+  }
+
+  /**
+   * `storeBorsh(acct, value)`: `value` encoded as Borsh into the account's data from byte 0, as Rust's
+   * `value.serialize(&mut &mut data[..])` writes it: only the encoded bytes (the rest of the account is left as it
+   * was), BorshIoError when they do not fit. The account must be writable.
+   */
+  protected storeBorsh(node: ts.CallExpression): undefined {
+    if (node.arguments.length !== 2) this.fail(node, "storeBorsh(account, value) takes the account and the struct value to write");
+    const h = this.borshAccount(node.arguments[0], "storeBorsh", true);
+    const valueNode = node.arguments[1];
+    const targ = node.typeArguments?.[0];
+    let ptr: string;
+    let s: StructDef;
+    const inner = ts.isParenthesizedExpression(valueNode) ? valueNode.expression : valueNode;
+    if (ts.isObjectLiteralExpression(inner)) {
+      if (!targ) this.fail(valueNode, "storeBorsh needs the struct type for an object literal: storeBorsh<MyStruct>(account, { … })");
+      s = this.borshNativeStruct(node, targ, undefined, "storeBorsh");
+      const t = this.tmp("bval");
+      this.line(`TSS_${s.name} ${t};`);
+      this.writeAggregate({ lv: t, type: { kind: "struct", name: s.name }, writable: true }, inner, true);
+      ptr = `(&${t})`;
+    } else {
+      const place = this.structPlace(valueNode);
+      if (!place) this.fail(valueNode, "storeBorsh writes a struct value: a local (const pool = loadBorsh<Pool>(acct)), a struct field or an object literal");
+      const want = targ ? this.borshNativeStruct(node, targ, undefined, "storeBorsh") : undefined;
+      if (want && want.name !== place.struct) this.fail(valueNode, `expected a ${want.name}, got a ${place.struct}`);
+      s = this.borshNativeStruct(node, undefined, this.model.structs.get(place.struct), "storeBorsh");
+      ptr = place.ptr;
+    }
+    this.line(`if (ts_benc_${s.name}(${ptr}, ${h}->data, ${h}->data_len, NULL)) ${this.programErrorFail("BorshIoError", node)};`);
+    return undefined;
+  }
+
+  /** The struct loadBorsh / storeBorsh decodes or encodes: from the type argument, else the declared type. */
+  private borshNativeStruct(node: ts.Node, targ: ts.TypeNode | undefined, declared: StructDef | undefined, fn: string): StructDef {
+    let s = declared;
+    if (targ) {
+      const named = ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
+      if (!named) this.fail(targ, `${fn} needs a struct type: ${fn === "loadBorsh" ? "loadBorsh<MyStruct>(account)" : "storeBorsh<MyStruct>(account, value)"}`);
+      if (declared && declared.name !== named.name) this.fail(node, `loadBorsh<${named.name}> is bound to a ${declared.name}`);
+      s = named;
+    }
+    if (!s)
+      this.fail(
+        node,
+        `${fn} needs a struct type: ${fn === "loadBorsh" ? "const pool = loadBorsh<MyStruct>(account)" : "storeBorsh<MyStruct>(account, value)"}`,
+      );
+    const why = borshNativeStructUnsupported(s, this.model);
+    if (why) this.fail(targ ?? node, `${fn} cannot take ${s.name}: ${why}`);
+    this.model.borshNative.add(s.name);
+    return s;
+  }
+
+  /** The account loadBorsh reads or storeBorsh writes (writable: checked at run time, or Mut<AccountInfo>). */
+  private borshAccount(node: ts.Expression, fn: string, write: boolean): string {
+    const h = this.handle(node);
+    // NATIVE_ACCOUNT_WRITES: written as Rust's serialize writes it, the runtime judging writability afterwards.
+    const native = this.nativeAccountWrites();
+    // Without the flag, a write also needs the account passed once: given again (as another declared account or a
+    // remaining one), what the program reads through the other would not be what it wrote here.
+    if (h) {
+      if (write && !native) {
+        this.line(`TS_TRY(ts_check_writable(${h}));`);
+        this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+      }
+      return h;
+    }
+    const acct = this.accountParam(node, `${fn}'s account`);
+    if (acct.kind.kind !== "info") this.fail(node, `${fn} takes a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter`);
+    if (write && !isWritable(acct.kind) && !native)
+      this.fail(
+        node,
+        `${acct.name} must be Mut<AccountInfo> to write it with storeBorsh (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+      );
+    if (write && !native) this.line(`TS_TRY(ts_check_unaliased(params, a_${acct.name}));`);
+    return `a_${acct.name}`;
+  }
+
+  /** `TS_FAIL` with a built-in ProgramError (no custom code), logged as `require(…, ProgramError.X)` logs it. */
+  protected programErrorFail(name: string, node: ts.Node): string {
+    const idx = PROGRAM_ERRORS.indexOf(name);
+    // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
+    const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
+    const text = typeof pre === "string" ? `${pre}${name}` : `Error: ${name} (${this.location(node)})`;
+    return `TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)})`;
   }
 
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
@@ -1404,6 +1971,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (!s || s.size === undefined) this.fail(node, "loadAccount needs an account struct type: loadAccount<MyStruct>(account)");
     if (s.accountDiscriminator.length !== 8) this.fail(node, `${s.name}'s discriminator is shorter than 8 bytes: take it as Owner<Account<${s.name}>, "…">`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: declare it as an instruction parameter (remaining accounts are read in place)`);
+    if (s.bigVec) this.fail(node, `${s.name} ends in a BigVec, a native program's list (no discriminator): read it with loadRaw / loadRawMut`);
     if (node.arguments.length !== 1) this.fail(node, "loadAccount<T>(account) takes one remaining account or AccountInfo parameter");
     let h = this.handle(node.arguments[0]);
     // An AccountInfo parameter (Anchor: AccountLoader::try_from on an UncheckedAccount). The entry checks already
@@ -1648,6 +2216,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (want.mut && !l.loaded.mut) this.fail(n, `${h.name}() takes ${p.name} as Mut<${l.loaded.struct}>: load it with loadAccountMut`);
         return l.loaded.handle;
       }
+      // A program or sysvar programAt / sysvarAt checked: as that kind of account.
+      const at = this.programAtValue(n);
+      if (at) {
+        const why = accountMismatch(at.kind, p.account);
+        if (why) this.fail(n, `${h.name}() takes ${p.name} as ${why}`);
+        return at.c;
+      }
       const acct = this.accountParam(n, `${h.name}()'s ${p.name}`);
       const why = accountMismatch(acct.kind, p.account);
       if (why) this.fail(n, `${h.name}() takes ${p.name} as ${why}`);
@@ -1664,6 +2239,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "structRef":
       case "arrayArg": {
         const want: FieldType = p.type.kind === "structRef" ? { kind: "struct", name: p.type.struct } : p.type.array;
+        const built = this.literalArg(n, want);
+        if (built) return built;
         let r = this.ref(n);
         // A narrowed Option<Struct> / Option<FixedArray> place (`c.opt !== null` before it): its value.
         if (r && r.type.kind === "option" && sameType(r.type.inner as FieldType, want)) r = this.someValue(r);
@@ -1671,11 +2248,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.snapshotPlace(r.lv, want, h, n);
       }
       case "dataEnumArg": {
+        const built = this.literalArg(n, { kind: "dataEnum", name: p.type.name });
+        if (built) return built;
         const r = this.ref(n);
         if (!r || r.type.kind !== "dataEnum" || r.type.name !== p.type.name) this.fail(n, `expected a ${p.type.name}`);
         return this.snapshotPlace(r.lv, { kind: "dataEnum", name: p.type.name }, h, n);
       }
       case "vecArg": {
+        // A slice of a Vec argument or the instruction data: a view of its own, passed like the list.
+        if (!ts.isIdentifier(n) && this.isVecArgView(n)) {
+          const v = this.vecArgView(n)!;
+          if (!sameType(v.type, p.type)) this.fail(n, `expected a ${typeName(p.type)}`);
+          return v.c;
+        }
         const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
         // An Option<Vec<T>> argument passes as its list once checked against null (TypeScript narrows it).
         const t = l?.type.kind === "vecArg" && l.type.optional ? { ...l.type, optional: undefined } : l?.type;
@@ -1685,6 +2270,29 @@ export abstract class CallEmitter extends ExpressionEmitter {
       default:
         return this.expect(this.expr(n, p.type), p.type, n);
     }
+  }
+
+  /**
+   * A struct, array or data-enum helper argument written as a literal (`f({ a: 1n, b: { c } })`, `g([1n, 2n])`, or a
+   * ternary with a literal branch): built in a local of its own, as `const x: T = { … }; f(x)` would, and passed by
+   * pointer (the helper cannot change it, and nothing else sees it). Undefined for anything else.
+   */
+  protected literalArg(n: ts.Expression, want: FieldType): string | undefined {
+    const literal = (e: ts.Expression): boolean => {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (ts.isConditionalExpression(e)) return literal(e.whenTrue) || literal(e.whenFalse);
+      if (want.kind === "array") return ts.isCallExpression(e) && this.exportName(e.expression) === "fixedArray";
+      return ts.isObjectLiteralExpression(e);
+    };
+    if (!literal(n)) return undefined;
+    if (want.kind === "struct") {
+      const s = this.model.structs.get(want.name)!;
+      if (s.size === undefined || s.vec) this.fail(n, `${s.name} has variable-size fields and cannot be built as an argument`);
+    }
+    const t = this.tmp("larg");
+    this.line(`${want.kind === "array" ? storageDecl(want, t) : `${fieldC(want)} ${t}`};`);
+    this.writeAggregate({ lv: t, type: want, writable: true }, n, true);
+    return `(&${t})`;
   }
 
   /**
@@ -1699,8 +2307,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const n = this.fieldBytes(type);
     // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
     const t = this.tmp("argc");
-    const decl = type.kind === "array" ? storageDecl(type, `(*${t})`) : `${fieldC(type)} *${t}`;
-    this.hoisted.push(`  ${decl} = NULL;`);
+    this.hoistLazy(t, (n) => (type.kind === "array" ? storageDecl(type, `(*${n})`) : `${fieldC(type)} *${n}`));
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
     this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
     return t;
@@ -1778,27 +2385,27 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const t = targ && resolveScalarType(targ, this.scope);
     if (!t) this.fail(node, "returnData needs an explicit type: returnData<u64>(program)");
     if (node.arguments.length !== 1) this.fail(node, "returnData<T>(program) takes the program that returned it");
-    const program = this.accountParam(node.arguments[0], "returnData's program");
+    const program = this.anyAccount(node.arguments[0], "returnData's program");
     const out = this.tmp("rd");
     if (t.kind === "pubkey") {
       this.line(`SolPubkey ${out};`);
-      this.line(`TS_TRY(ts_return_data(a_${program.name}, (uint8_t *)&${out}, 32));`);
+      this.line(`TS_TRY(ts_return_data(${program}, (uint8_t *)&${out}, 32));`);
       return { c: `(&${out})`, type: t };
     }
     if (t.kind === "bool") {
       this.line(`uint8_t ${out};`);
-      this.line(`TS_TRY(ts_return_data(a_${program.name}, &${out}, 1));`);
+      this.line(`TS_TRY(ts_return_data(${program}, &${out}, 1));`);
       this.line(`if (${out} > 1) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid bool return data");`);
       return { c: `(${out} == 1)`, type: BOOL };
     }
     if (t.kind === "enum") {
       this.line(`uint8_t ${out};`);
-      this.line(`TS_TRY(ts_return_data(a_${program.name}, &${out}, 1));`);
+      this.line(`TS_TRY(ts_return_data(${program}, &${out}, 1));`);
       this.line(`if (${out} >= ${this.model.enums.get(t.name)!.variants.length}) TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid enum return data");`);
       return { c: out, type: t };
     }
     this.line(`${INT_INFO[t.name].c} ${out};`);
-    this.line(`TS_TRY(ts_return_data(a_${program.name}, (uint8_t *)&${out}, ${INT_INFO[t.name].bytes}));`);
+    this.line(`TS_TRY(ts_return_data(${program}, (uint8_t *)&${out}, ${INT_INFO[t.name].bytes}));`);
     return { c: out, type: t };
   }
 }

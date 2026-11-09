@@ -938,6 +938,26 @@ static inline uint64_t ts_last_restart_slot(uint64_t *out) {
   return SUCCESS;
 }
 
+/* EpochRewards, as the syscall writes it: Rust's #[repr(C, align(16))] struct (81 bytes of fields, 96 in memory). The
+   runtime checks the destination's 16-byte alignment, hence the attribute. */
+typedef struct __attribute__((aligned(16))) {
+  uint64_t distribution_starting_block_height;
+  uint64_t num_partitions;
+  SolPubkey parent_blockhash;
+  unsigned __int128 total_points;
+  uint64_t total_rewards;
+  uint64_t distributed_rewards;
+  uint8_t active;
+} TsEpochRewards;
+_Static_assert(sizeof(TsEpochRewards) == 96 && __builtin_offsetof(TsEpochRewards, total_points) == 48 &&
+                   __builtin_offsetof(TsEpochRewards, active) == 80,
+               "EpochRewards layout");
+uint64_t sol_get_epoch_rewards_sysvar(void *ret);
+static inline uint64_t ts_epoch_rewards(TsEpochRewards *out) {
+  if (sol_get_epoch_rewards_sysvar(out) != SUCCESS) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: epoch rewards sysvar unavailable");
+  return SUCCESS;
+}
+
 /* The general case, in integers: exactly (uint64_t)((double)per_year * threshold) as soft-float computes it (the
    conversion and the product rounded to nearest, ties to even; NaN, negative and < 1 give 0), or UINT64_MAX when that
    product is >= 2^64 (no double below 2^64 converts to UINT64_MAX: the largest is 2^64 - 2048). No soft-float routine
@@ -1414,6 +1434,21 @@ static inline uint64_t ts_cpi(TsParams *params, const TsAccount *program, uint8_
   return ts_invoke(params, &ix, &signer, nseeds > 0 ? 1 : 0);
 }
 
+/* A CPI whose account infos are `accounts` (one per meta, in order), as Rust's invoke_signed(&ix, &[a, b, …]) takes
+   them: a meta may name an address other than its account's key (`named(account, address)`: a sysvar, as
+   solana_program's stake instruction builders name them). The runtime looks each meta's key up among these infos only,
+   so a slot holding another account fails the call (MissingAccount) as it fails the original's, wherever else in the
+   instruction the named account is. */
+static inline uint64_t ts_cpi_named(TsParams *params, const TsAccount *program, uint8_t *data, uint64_t len, SolAccountMeta *metas,
+                                    uint64_t n, const TsAccount *const *accounts, const SolSignerSeed *seeds, int nseeds) {
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, n, data, len};
+  SolSignerSeeds signer = {seeds, (uint64_t)nseeds};
+  TS_INFOS_RESERVE(params, n);
+  SolAccountInfo *infos = params->infos;
+  for (uint64_t i = 0; i < n; i++) ts_info(accounts[i], &infos[i]);
+  return sol_invoke_signed(&ix, infos, n, &signer, nseeds > 0 ? 1 : 0);
+}
+
 /* ---- Token-2022 extensions (TLV after the 165-byte base and the account-type byte) ---- */
 /* `a` must be a token-program mint (want 1) or account (want 2), or either (want 0): legacy SPL Token accounts
    simply have no extensions; a Token-2022 multisig or a foreign account is refused. */
@@ -1734,6 +1769,40 @@ static inline bool ts_ix_is(const TsIx *ix, const SolPubkey *program, const uint
 }
 /* How deep in CPIs the program runs: 1 when the transaction calls it directly. */
 extern uint64_t sol_get_stack_height(void);
+/* The runtime's `abort` syscall (Rust's abort on SBF, e.g. the allocator's out-of-memory error): ProgramFailedToComplete,
+ * logged as "SBF program panicked", with no location. */
+extern __attribute__((noreturn)) void abort(void);
+
+/*
+ * ---- BigVec (SPL's big_vec) ------------------------------------------------
+ * The memmove syscall, for BigVec::retain's block moves as the Rust does: it costs max(10, n / 250) CU, where the
+ * word loop of ts_memmove costs about n / 2 (a 1.4 MB validator list moves in a few thousand CU, not hundreds of
+ * thousands). Overlapping ranges are allowed. The "no SDK byte loops" rule is about the SDK's C loops, not this.
+ */
+extern void sol_memmove_(void *dst, const void *src, uint64_t n);
+/* The memcpy syscall, for bulk copies of a length known only at run time (FixedVec.pushAll): max(10, n / 250) CU plus
+ * the call, against about 0.74 CU a byte for ts_memcpy's word loop over unaligned data (measured: 1000 bytes of
+ * instruction data), so copies under 32 bytes keep the loop. The ranges never overlap (a FixedVec's free slots and
+ * another list, or its own elements). */
+extern void sol_memcpy_(void *dst, const void *src, uint64_t n);
+#define TS_MEMCPY_SYSCALL_MIN 32
+static inline __attribute__((always_inline)) void ts_memcpy_bulk(void *dst, const void *src, uint64_t n) {
+  if (n >= TS_MEMCPY_SYSCALL_MIN) sol_memcpy_(dst, src, n);
+  else ts_memcpy(dst, src, n);
+}
+/* A BigVec's room: a BigVec struct is only ever a loadRaw view, which sits at a TsAccount's data, right after its
+ * data_len (see TsAccount); the elements that fit in the account past the struct (its fixed fields and the length). */
+static inline __attribute__((always_inline)) uint64_t ts_bigvec_cap(const uint8_t *data, uint64_t fixed, uint64_t elem) {
+  uint64_t len = ts_ld64(data - 8);
+  return len < fixed ? 0 : (len - fixed) / elem;
+}
+/* The same pointer, but one the optimizer cannot relate to `p`. BigVec::retain's scan loop steps one pointer over the
+ * elements; its removal branch computes the moves from this copy, so clang's loop strength reduction does not rebuild
+ * the scan around offsets the moves share (measured: 5 instructions per kept element, against 6 to 9 without). */
+static inline __attribute__((always_inline)) uint8_t *ts_opaque_ptr(uint8_t *p) {
+  __asm__("" : "+r"(p));
+  return p;
+}
 
 /*
  * Did an Ed25519 precompile instruction in this transaction verify `message` signed by `signer`?

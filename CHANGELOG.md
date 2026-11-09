@@ -6,6 +6,89 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: showcase/mainnet/spl-stake-pool, a port of SPL Stake Pool (the native program at SPoo1Ku8…, all 27
+  instructions), from the tag a reproducible build proves is the mainnet binary (program@v2.1.0), checked against that
+  binary on 2,107 transactions (the original's own 221 integration tests mapped and run as differential cases, pools of
+  up to 20,000 validators) and a random walk over epochs with the same outcomes, log lines and account bytes; 19–80% of
+  the original's compute units (the stake CPIs are the same in both), 202,240 bytes against 338,912.
+  docs/case-study-spl-stake-pool.md.
+- BigVec loops cost less an entry. A loop over a BigVec (`for … of`, the list methods, a slice) becomes a C function
+  of its own, given the variables it uses: inside a large function it shared SBF's registers with everything held
+  across it, and clang spilled its pointer and totals every step. `retain` over structs walks the elements with one
+  pointer. SPL Stake Pool's UpdateStakePoolBalance sum costs 16 CU an entry (was 31; the original 27) and its cleanup's
+  retain 5 (was 11; the original 9), so both fit the default 200,000 units wherever the original does. The heap
+  buffers such a loop takes on first use (an event's, an element copied for a helper) stay declared in the function
+  it came from, so they are taken once however many times the loop runs; a loop that formats a Pubkey moves too.
+  Programs without a BigVec compile to the same C.
+- `panic(null, "src/lib.rs:105:19")` panics at a location without logging a message, for a native port whose panic
+  handler writes none; `abort()` is Rust's abort on SBF (the allocator's out-of-memory error), the runtime's `abort`
+  syscall: "SBF program panicked", no location.
+- A ternary between accounts, `const source = ephemeral ? rest.get(5n) : reserve`: remaining accounts, locals and
+  `RemainingAccount` helper parameters bound to one, and `AccountInfo` parameters; only the chosen side runs, and the
+  result goes wherever a remaining account does (typed CPIs, `readData`, `loadRaw`, `loadBorsh`, helpers).
+- Local lists on the stack: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, isWritable }])`,
+  `fixedVec([])`, `FixedArray<T, N>` locals, structs and `FixedString<N>` elements (also in `fixedArray<T, N>(fill)`),
+  at most 2 KiB each (a compile error naming the size); `fixedArray(…)` written inline feeds a chain, a list method or
+  `for … of`.
+- New: `FixedVec.pushAll(items)`, a bulk append (a memcpy: about 0.01 CU a byte for 1000 bytes, against 11 for a loop
+  of `push`), 5104 when it does not fit. Declared on `Vec` as well so a Vec still passes for a FixedVec; calling it on
+  a Vec is a compile error.
+- The instruction data is a list: `for … of`, the list methods, `data.slice(start, end?)` (a view; 5104 out of range,
+  where JS would clamp) and `InstructionBytes` helper parameters.
+- `invokeInstruction` in helpers (with their `RemainingAccounts` parameter), with metas and data from local lists, a
+  `FixedArray`, the instruction data or a slice of it: a native port's instruction builder, metas naming accounts by
+  key.
+- `NATIVE_ACCOUNT_WRITES` (no change in behaviour, now tested and documented): a second `loadRawMut` of one account at
+  the same position is allowed with the flag (2040 without), and `loadRaw` reads what `loadRawMut`, `storeBorsh` or a
+  BigVec push wrote, with or without it.
+- New: `named(account, address)`, a Stake CPI's sysvar or stake config argument as solana_program's stake builders
+  and `invoke_signed` give it: the instruction names the address, the slot's account is the account info. The runtime
+  looks the address up among the CPI's accounts only, so a slot holding another account fails with MissingAccount, as
+  the original does, even when the sysvar is elsewhere in the transaction.
+- New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake
+  Pool's `StakePool`) read into a local struct and written back from byte 0, as Rust's `try_from_slice_unchecked` and
+  `serialize` do: trailing bytes ignored, the bytes after a shrunk value left as they were, invalid bytes or a value
+  that does not fit failing with `ProgramError.BorshIoError`. Without `NATIVE_ACCOUNT_WRITES` the account written must
+  be writable (3006) and passed once (2040: not also another declared or remaining account), as the other writes
+  check. A straight-line decoder and encoder per struct, no heap
+  (a 611-byte `StakePool`: about 280 CU to read, 610 CU to read and write back). Programs that do not use them
+  compile to the same C as before.
+- New: `BigVec<T>`, SPL's `big_vec` for native ports (the stake pool's validator list): the last field of a `loadRaw`
+  struct, sized by the account; `push`, `retain`, `slice` (`deserialize_mut_slice`), `get` / `set`, `for … of`, the list
+  methods and `.capacity`, with big_vec's bytes and errors (AccountDataTooSmall). Every access is bounded by the
+  account's room as well as the length (the capacity computed once at the load), so a length written again after the
+  load (writeData, another view, storeBorsh) never reaches past the account. Other programs compile to the same C.
+- `typesol/testing`: epochs and staking. `warpToEpoch` / `nextEpoch` move the Clock consistently (epoch, slot, leader
+  schedule epoch, timestamps); `StakeCluster` keeps a cluster-like StakeHistory over one or more LiteSVMs, so warmup
+  and cooldown are rate-limited as on a cluster (it refuses a history with a gap or an entry for an epoch that has not
+  ended, when made and at each warp); `stakeActivation` ports the Stake program's activation math;
+  `createVoteAccount`, `createStakeAccount`, `delegateStake`, `readStakeAccount`. Checked to the lamport against the
+  Stake program in LiteSVM (docs/test-your-program.md#epochs-and-staking).
+- New: `programAt<P>(account)`: a remaining account (or an `AccountInfo` parameter) checked to be that program (one key
+  compare; ProgramError.IncorrectProgramId otherwise) with P's typed methods, for `StakeProgram`, `SystemProgram`,
+  `TokenProgram`, `Token2022Program`, `TokenInterface`, `AssociatedTokenProgram` and `MemoProgram`; bind it, call it
+  inline or pass it to a helper taking that program. `sysvarAt<StakeHistorySysvar>(account)` likewise.
+- Typed CPIs (System, Token / Token-2022, ATA, Memo, Stake) take remaining accounts and `AccountInfo` parameters for
+  any account, as native ports need; declared parameters keep their compile-time checks, remaining accounts are left to
+  the runtime and the called program. `returnData` takes a remaining account as the program.
+- Stake program: `split`, `merge`, `getMinimumDelegation()` (fails as solana_program's `get_minimum_delegation`),
+  `initialize(…, lockup?)`, and the lockup custodian for `authorize` / `withdraw`. Existing calls compile to the same C.
+- New (language surface: `epochRewards()` and the `EpochRewards` type in lib/typesol.d.ts): the EpochRewards sysvar
+  through `sol_get_epoch_rewards_sysvar`, Rust's `EpochRewards::get()`, with no account: every field
+  (`active`, `totalRewards`, `distributedRewards`, `totalPoints`, `numPartitions`, `parentBlockhash`,
+  `distributionStartingBlockHeight`). Other programs compile to the same C.
+- New: a struct, data-enum or `fixedArray<T, N>(fill)` literal as a helper argument (`applyFee({ denominator: 100n,
+  numerator: 3n }, amount)`, nested literals, a ternary with a literal branch, helpers in other files), built as
+  `const fee: Fee = { … }` would be; it failed with "expected a Fee". Other programs compile to the same C.
+- Fixed: an `Option<Pubkey>` (or `Option<Hash>`) in a template string or `+` was refused ("only strings, integers,
+  booleans and Pubkeys can be joined into text") even after `x !== null`; it joins as the base58, or `null` when
+  empty, as JS prints it (as Options of integers and booleans already did). Other programs compile to the same C.
+- New: `export const NATIVE_ACCOUNT_WRITES = true` (opt-in, for native ports): `loadRawMut`, `storeBorsh` and BigVec
+  writes skip the up-front writability check (3006) and the one-claim-per-account refusal (2040) and take a plain
+  `AccountInfo`; the runtime reports a changed read-only account (`ReadonlyDataModified`), and an account passed twice
+  is two views of one buffer, as in a native program. Lamports, `loadAccountMut`, CPIs and `Mut<…>` checks unchanged;
+  see docs/language.md#porting-a-native-program for the trade-off. Programs without it compile to the same C.
+
 ## 0.41.0 — 2026-11-07
 
 TypeSOL for AI coding agents, and Raydium CP-Swap ported in full. `typesol init` writes the rules an agent needs

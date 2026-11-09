@@ -116,6 +116,9 @@ const TYPE_EXPORTS = new Set([
   "FixedArray",
   "FixedString",
   "FixedVec",
+  "BigVec",
+  "BigVecSlice",
+  "InstructionBytes",
   "Program",
   "UncheckedProgram",
   "CpiAccount",
@@ -158,6 +161,7 @@ const TYPE_EXPORTS = new Set([
   "ProgramData",
   "SignerSeeds",
   "SystemAccount",
+  "EpochRewards",
 ]);
 
 /** Largest fixed array a struct may declare, and largest FixedString. */
@@ -939,6 +943,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       fstrings,
       fixedVecs,
       localVecs: new Map(),
+      borshNative: new Set(),
     },
     sourceFile,
     files: programFiles(program, entryPath).map((f) => f.fileName),
@@ -1173,6 +1178,8 @@ function analyzeStructs(
     }
     const ext = typesolName(node, imports);
     const targs = (node as ts.TypeReferenceNode).typeArguments ?? [];
+    if (ext === "BigVec")
+      reporter.fail(node, "BigVec<T> is only the last field of a struct (its elements run to the end of the account), not inside another type");
     if (ext === "FixedArray") {
       if (!targs[0]) reporter.fail(node, "FixedArray<T, N> needs an element type");
       const elem = fieldType(targs[0]);
@@ -1208,6 +1215,20 @@ function analyzeStructs(
     );
   };
 
+  // `BigVec<T>`: a u32 length, then elements to the end of the account (SPL's big_vec). Only the last field, so its
+  // elements are the account's remaining bytes; T is a scalar or a fixed-size struct.
+  const bigVecField = (m: ts.PropertySignature, decl: ts.InterfaceDeclaration): FieldType => {
+    const node = m.type as ts.TypeReferenceNode;
+    const elemNode = node.typeArguments?.[0];
+    if (!elemNode || node.typeArguments!.length !== 1) reporter.fail(node, "BigVec<T> takes one element type: BigVec<ValidatorStakeInfo>");
+    if (decl.members.at(-1) !== m)
+      reporter.fail(m, `BigVec<T> must be the last field of ${decl.name.text}: its elements run to the end of the account (move it after the others)`);
+    const elem = fieldType(elemNode);
+    if (!isScalarField(elem) && elem.kind !== "struct")
+      reporter.fail(elemNode, "BigVec elements are integers, booleans, Pubkeys, unit enums or fixed-size structs");
+    return { kind: "vec", elem, big: true };
+  };
+
   for (const { decl, imports: fileImports } of items) {
     scope = scopeFor(fileImports);
     imports = fileImports;
@@ -1221,7 +1242,7 @@ function analyzeStructs(
         if (RESERVED_FIELDS.has(name)) reporter.fail(m.name, `"${name}" is reserved; pick another field name`);
         const problem = cNameProblem(name);
         if (problem) reporter.fail(m.name, problem);
-        const type = fieldType(m.type);
+        const type = typesolName(m.type, imports) === "BigVec" ? bigVecField(m, decl) : fieldType(m.type);
         // `/** @bytes */`: an integer the IDL describes as its bytes (Marginfi's WrappedI80F48 { value: [u8; 16] }), or a
         // FixedArray of them, each its bytes (Marginfi's HealthCache.prices: [[u8; 8]; 16], f64 bits).
         const bytesTag = ts.getJSDocTags(m).find((t) => t.tagName.text === "bytes");
@@ -1245,6 +1266,11 @@ function analyzeStructs(
       if (layoutTag && layoutText !== "borsh" && layoutText !== "fixed")
         reporter.fail(layoutTag, "@layout is borsh (Anchor's account bytes) or fixed (the default)");
       const growable = (f: StructField) => f.type.kind === "vec" && f.type.cap === undefined;
+      const big = fields.find((f) => f.type.kind === "vec" && f.type.big);
+      if (big && layoutText === "borsh")
+        reporter.fail(big.node!, "a @layout borsh struct cannot hold a BigVec: BigVec is read in place (loadRaw / loadRawMut) from a fixed layout");
+      if (big && fields.some((f) => f !== big && growable(f)))
+        reporter.fail(big.node!, `${decl.name.text} has a Vec and a BigVec: only one list may run to the end of the account`);
       // In a @layout borsh struct a Vec<T> is Anchor's: held on the heap while an instruction runs, any field, bounded
       // only by the account when it is written back.
       if (layoutText === "borsh") for (const f of fields) if (growable(f)) f.type = { ...(f.type as FieldType & { kind: "vec" }), heap: true };
@@ -1375,6 +1401,7 @@ function analyzeStructs(
         if (!s) return 0;
         visit(s);
         if (s.size === undefined) reporter.fail(at, `${t.name} has a string field and cannot be nested; use FixedString<N>`);
+        if (s.bigVec) reporter.fail(at, `${t.name} ends in a BigVec and cannot be nested: read it with loadRaw / loadRawMut`);
         if (s.vec) reporter.fail(at, `${t.name} has a growable Vec and can only be account data, not nested`);
         return s.size;
       }
@@ -1447,6 +1474,7 @@ function analyzeStructs(
         (s.vecs ??= []).push({ name: f.name, elem: f.type.elem, elemSize });
       }
     s.vec = s.vecs?.[0];
+    if (s.vec && s.fields.some((f) => f.name === s.vec!.name && f.type.kind === "vec" && f.type.big)) s.bigVec = s.vec;
     // The C struct holds the first Vec's length; each further one adds its own when the account is created.
     if (s.vecs && s.size !== undefined) s.size -= 4 * (s.vecs.length - 1);
     state.set(s.name, "done");
@@ -1682,6 +1710,9 @@ function analyzeHelper(
         reporter.fail(p.type, "helpers take the struct itself: check the Option argument is not null and pass it (or its fields)");
       if (type?.kind === "vecArg" && type.optional) reporter.fail(p.type, "helpers take the list itself: check the Option argument is not null and pass it");
       if (type) return { name: p.name.text, type, node: p };
+      // The instruction data (or a slice of it), read-only: a view like a Vec<u8> argument.
+      if (typesolName(p.type, scope.imports) === "InstructionBytes")
+        return { name: p.name.text, type: { kind: "vecArg", elem: { kind: "int", name: "u8" } } as ValueType, node: p };
       if (typesolName(p.type, scope.imports) === "SignerSeeds") return { name: p.name.text, type: { kind: "signerSeeds" } as ValueType, node: p };
       // One of the remaining accounts (remainingAccounts().get(i)), as the instruction holds it: read with readData or
       // loadAccount, its key, owner, lamports and data length.
@@ -2249,6 +2280,11 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
   const structOf = (t: ts.TypeNode): StructDef | undefined => {
     const s = ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) ? structs.get(t.typeName.text) : undefined;
     if (s && s.size === undefined) reporter.fail(t, `${s.name} has a variable-length string field and cannot be account data; use FixedString<N>`);
+    if (s?.bigVec)
+      reporter.fail(
+        t,
+        `${s.name} ends in a BigVec, which is a native program's zero-copy list: take the account as AccountInfo (or a remaining account) and read it with loadRaw<${s.name}> / loadRawMut<${s.name}>`,
+      );
     if (s) checkAccountMembers(s, t, reporter);
     return s;
   };
@@ -2385,6 +2421,14 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
       reporter.fail(t, "Mut<T> takes a struct, Signer, AccountInfo, TokenAccount or Mint");
     }
   }
+  const bare = ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) ? structs.get(node.typeName.text) : undefined;
+  if (bare?.bigVec)
+    reporter.fail(
+      node,
+      `${bare.name} ends in a BigVec, so it is account data, not an argument: read it with loadRaw<${bare.name}> / loadRawMut<${bare.name}> from an AccountInfo or a remaining account`,
+    );
+  if (typesolName(node, imports) === "BigVec")
+    reporter.fail(node, "BigVec<T> is the last field of a native account's struct (read with loadRaw), not an argument; a list argument is a Vec<T>");
   reporter.fail(
     node,
     "parameter type must be an integer, boolean, Pubkey, string, or an account type (Signer, Account<T>, Mut<T>, Init<T>, AccountInfo, TokenAccount, Mint, SystemProgram, TokenProgram, Token2022Program, TokenInterface, Program<...>)",

@@ -87,6 +87,10 @@ Each holds for every instruction of every program the compiler accepts. A break 
   from the arguments.
 - **`Dup<…>`.** A parameter marked `Dup` may be the same account as another writable one. Reads see every write
   (both are the same bytes), so a value read before a write through the other slot is stale: read, then write.
+- **`NATIVE_ACCOUNT_WRITES`.** A program that declares it gives up the up-front writability check and the
+  one-view-per-account refusal for `loadRawMut`, `storeBorsh` and BigVec writes, as a native program has neither: the
+  runtime still refuses a changed read-only account, but two loads of one account alias each other. Make the
+  original's address and type checks before loading.
 - **Instruction introspection.** The Instructions sysvar holds what the transaction's author put there. Require things
   of the transaction with it (that a repay instruction follows), never treat it as proof of who did what.
 - **Oracles.** `pythPrice` checks verification, feed and age (pass the exponent you scale by); the raw `update.*`

@@ -49,12 +49,17 @@ export type ValueType =
   | { kind: "optionArg"; option: FieldType & { kind: "option" } }
   /** A Solana `SignerSeeds` helper parameter: the seeds of one PDA signature, built with signer([...]). */
   | { kind: "signerSeeds" }
-  /** An extra account from remainingAccounts(): `SolAccountInfo *`. */
-  | { kind: "account" }
+  /**
+   * An extra account from remainingAccounts(): `SolAccountInfo *`. `program`: what `programAt<P>(acct)` /
+   * `sysvarAt<S>(acct)` checked it is (its typed methods then apply).
+   */
+  | { kind: "account"; program?: ParamKind }
   /** The remainingAccounts() list itself. */
   | { kind: "remaining" }
   /** One instruction of the transaction (InstructionsSysvar.get(i)): a `TsIx` view into the sysvar. */
   | { kind: "txIx" }
+  /** The EpochRewards sysvar as epochRewards() read it: a `TsEpochRewards` copy. */
+  | { kind: "epochRewards" }
   /** A struct loaded from a remaining account with loadAccount / loadAccountMut. */
   | { kind: "structRef"; struct: string; writable: boolean }
   /** A data-enum place (local value, argument, or alias into account data): `TS_DE_<name> *`. */
@@ -79,8 +84,10 @@ export type FieldType =
    * `Vec<T>` (stored after the fixed-size fields, grows the account) or, with `cap`, `FixedVec<T, N>`: a u32 length and
    * room for N elements. With `heap`, a `Vec<T>` in a `@layout borsh` struct: Anchor's Vec, held on the heap while the
    * instruction runs (`TSH_*`: length, capacity, elements) and bounded only by the account when it is written back.
+   * With `big`, a `BigVec<T>` (the last field of a struct read with loadRaw): stored like a trailing Vec, its room set by
+   * the account's size, never resized.
    */
-  | { kind: "vec"; elem: FieldType; cap?: number; heap?: true; optional?: true };
+  | { kind: "vec"; elem: FieldType; cap?: number; heap?: true; optional?: true; big?: true };
 
 export interface StructField {
   name: string;
@@ -109,6 +116,8 @@ export interface StructDef {
    * then its elements); each further one follows the previous one's elements: a u32 length, then its elements.
    */
   vecs?: { name: string; elem: FieldType; elemSize: number }[];
+  /** A `BigVec<T>` last field (also `vec` and `vecs`, so every refusal of variable-size structs applies to it). */
+  bigVec?: { name: string; elem: FieldType; elemSize: number };
   accountDiscriminator: number[];
   eventDiscriminator: number[];
   node: ts.InterfaceDeclaration;
@@ -391,6 +400,8 @@ export interface ProgramModel {
   fixedVecs: Map<string, FieldType & { kind: "vec" }>;
   /** FixedVec types of local lists (`const ys = xs.map(…)`), filled in while emitting: C typedefs only, not the IDL. */
   localVecs: Map<string, FieldType & { kind: "vec" }>;
+  /** Structs read or written with loadBorsh / storeBorsh, filled in while emitting: their ts_bdec_ / ts_benc_ codecs. */
+  borshNative: Set<string>;
 }
 
 export function isWritable(k: ParamKind): boolean {
@@ -437,6 +448,7 @@ export function typeName(t: ValueType | FieldType): string {
       return t.name;
     case "vec":
       if (t.optional) return `Option<Vec<${typeName(t.elem)}>>`;
+      if (t.big) return `BigVec<${typeName(t.elem)}>`;
       return t.cap === undefined ? `Vec<${typeName(t.elem)}>` : `FixedVec<${typeName(t.elem)}, ${t.cap}>`;
     case "vecArg":
       return t.optional ? `Option<Vec<${typeName(t.elem)}>>` : `Vec<${typeName(t.elem)}>`;
@@ -452,6 +464,8 @@ export function typeName(t: ValueType | FieldType): string {
       return "RemainingAccounts";
     case "txIx":
       return "TransactionInstruction";
+    case "epochRewards":
+      return "EpochRewards";
     case "structRef":
       return t.struct;
   }
@@ -481,6 +495,7 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
         a.cap === (b as typeof a).cap &&
         !a.heap === !(b as typeof a).heap &&
         !a.optional === !(b as typeof a).optional &&
+        !a.big === !(b as typeof a).big &&
         sameType(a.elem, (b as typeof a).elem)
       );
     case "vecArg":

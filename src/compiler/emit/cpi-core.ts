@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { argIdlName, fieldIdlName, snakeCase } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type IdlSeed, type IntName, isScalar, scalarSize, typeName } from "../model.js";
-import { accountLimit, MAX_SEEDS, U64, type Value, isStable, cString, scalarStorageC, optC } from "./shared.js";
+import { accountLimit, MAX_SEEDS, U64, type Value, type CpiAcct, isStable, cString, scalarStorageC, optC } from "./shared.js";
 import { CallEmitter } from "./calls.js";
 
 /** Seeds and signer seeds, the byte buffers and Borsh serialization every CPI builds on, remaining-account ranges. */
@@ -180,9 +180,14 @@ export abstract class CpiCoreEmitter extends CallEmitter {
     this.line(`TS_TRY(ts_cpi(params, ${program}, ${buf}, ${len}, ${m}, ${cnt}, ${seeds.name}, ${seeds.count}));`);
   }
 
-  protected signerSeeds(node: ts.Expression | undefined, authority: AccountParam, at: ts.Node): { name: string; count: number | string } {
+  /**
+   * The seeds a CPI is signed with, or none: then a declared authority must be a Signer. A remaining account (a
+   * CpiAcct without `param`) is left to the runtime, which refuses a signer meta for an account that did not sign.
+   */
+  protected signerSeeds(node: ts.Expression | undefined, authority: AccountParam | CpiAcct, at: ts.Node): { name: string; count: number | string } {
     if (!node) {
-      if (authority.kind.kind !== "signer") this.fail(at, "the authority must be a Signer, or pass signerSeeds for a PDA authority");
+      const declared = "c" in authority ? authority.param : authority;
+      if (declared && declared.kind.kind !== "signer") this.fail(at, "the authority must be a Signer, or pass signerSeeds for a PDA authority");
       return { name: "NULL", count: 0 };
     }
     return this.signingSeeds(node);
@@ -234,22 +239,23 @@ export abstract class CpiCoreEmitter extends CallEmitter {
 
   /**
    * `remainingAccounts()` (or a const bound to it): every remaining account; `rest.slice(a, b?)`: indexes a..b of them
-   * (both checked against the count, 5104). C expressions for the range, relative to the first remaining account.
+   * (both checked against the count, 5104). C expressions for the range, relative to the first remaining account, and
+   * `base`, the index of that account among the instruction's (a helper's RemainingAccounts parameter carries it).
    */
-  protected remainingRange(node: ts.Expression): { from: string; to: string } | undefined {
+  protected remainingRange(node: ts.Expression): { from: string; to: string; base: string } | undefined {
     const sliced = ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "slice";
     if (!this.isRemaining(node) && !(sliced && this.isRemaining((node.expression as ts.PropertyAccessExpression).expression))) return undefined;
-    if (!this.ix) this.fail(node, "pass the remaining accounts to a CPI from the instruction; a helper reads them one at a time with .get(i)");
-    const n = this.ix.accounts.length;
+    // In a helper: the RemainingAccounts parameter (remainingBase refuses remainingAccounts() there, with a hint).
+    const n = this.ix ? this.ix.accounts.length : this.remainingBase(sliced ? (node.expression as ts.PropertyAccessExpression).expression : node);
     const count = `(params->ka_num - ${n})`;
-    if (this.isRemaining(node)) return { from: "0", to: count };
+    if (this.isRemaining(node)) return { from: "0", to: count, base: String(n) };
     if (!ts.isCallExpression(node)) return undefined;
     if (node.arguments.length < 1 || node.arguments.length > 2) this.fail(node, "slice(start, end?) takes one or two indexes");
     // Both ends may equal the count (an empty slice at the end).
     const from = this.index(node.arguments[0]!, `${count} + 1`);
     const to = node.arguments[1] ? this.index(node.arguments[1], `${count} + 1`) : count;
     this.line(`if (${from} > ${to}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: remaining accounts slice out of range");`);
-    return { from, to };
+    return { from, to, base: String(n) };
   }
 
   /**

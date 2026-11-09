@@ -12,7 +12,7 @@ import {
   type ValueType,
   isScalar,
 } from "../model.js";
-import { type Value, type Ref, type Local, type Closure, type FunctionChoice, isStable, cString, valueC, type EmitOptions } from "./shared.js";
+import { type Value, type Ref, type Local, type Closure, type FunctionChoice, isStable, cString, valueC, type EmitOptions, type CpiProgram } from "./shared.js";
 
 /**
  * State of one function being lowered, and the primitives every layer uses: emitting lines, temporaries,
@@ -28,6 +28,14 @@ export abstract class EmitterBase {
   protected lines: string[] = [];
   /** Declarations placed at the top of the function (buffers reused by every pass through a loop). */
   protected hoisted: string[] = [];
+  /**
+   * The hoisted declarations of heap buffers taken on first use (`T *name = NULL;`), by line: a loop moved into a
+   * function of its own leaves them in its caller and is given a pointer to each (see outlinedLoop), so the buffer is
+   * still taken once per function, not once per call of the loop's.
+   */
+  protected readonly lazyHoists = new Map<string, { name: string; decl: (name: string) => string }>();
+  /** Loops moved into C functions of their own (see outlinedLoop), placed before this function. */
+  protected outlinedLoops: string[] = [];
   protected indent = 1;
   protected temp = 0;
   /** Init accounts whose create() has run (top-level, in order). */
@@ -240,6 +248,13 @@ export abstract class EmitterBase {
     return `${prefix}${this.temp++}`;
   }
 
+  /** Declare a heap buffer pointer at the top of the function, NULL until first use (`decl(name)` declares it). */
+  protected hoistLazy(name: string, decl: (name: string) => string): void {
+    const line = `  ${decl(name)} = NULL;`;
+    this.lazyHoists.set(line, { name, decl });
+    this.hoisted.push(line);
+  }
+
   /**
    * JS evaluates operands left to right, but a lowered Value is a C expression read where it is used.
    * When lowering a later operand emitted statements (from line `mark` on, e.g. a pop() or a helper call),
@@ -321,6 +336,7 @@ export abstract class EmitterBase {
     const saved = {
       lines: this.lines.length,
       hoisted: this.hoisted.length, // a probed helper call may hoist declarations
+      outlined: this.outlinedLoops.length,
       temp: this.temp,
       diagnostics: this.reporter.diagnostics.length,
       scopes: this.scopes.length,
@@ -337,6 +353,7 @@ export abstract class EmitterBase {
     } finally {
       this.lines.length = saved.lines;
       this.hoisted.length = saved.hoisted;
+      this.outlinedLoops.length = saved.outlined;
       this.temp = saved.temp;
       this.reporter.diagnostics.length = saved.diagnostics;
       this.scopes.length = saved.scopes;
@@ -363,6 +380,23 @@ export abstract class EmitterBase {
 
   protected exportName(node: ts.Expression): string | undefined {
     return ts.isIdentifier(node) ? this.imports.get(node.text) : undefined;
+  }
+
+  /**
+   * `const NATIVE_ACCOUNT_WRITES = true`: loadRawMut, storeBorsh and BigVec writes follow a native program, which
+   * writes data in place and leaves writability to the runtime (ReadonlyDataModified when a read-only account's data
+   * changed) and lets one account be viewed twice. Without it they check writability (3006) and claim the account
+   * once (2040) up front.
+   */
+  protected nativeAccountWrites(): boolean {
+    return this.model.constants.get("NATIVE_ACCOUNT_WRITES")?.value === true;
+  }
+
+  /** Whether `node` is an EpochRewards value: `epochRewards()` or a local holding one. */
+  protected isEpochRewards(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.isEpochRewards(node.expression);
+    if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "epochRewards";
+    return ts.isCallExpression(node) && this.exportName(node.expression) === "epochRewards";
   }
 
   /**
@@ -453,6 +487,10 @@ export abstract class EmitterBase {
   protected abstract isRemaining(node: ts.Expression): boolean;
   protected abstract remainingBase(node: ts.Expression): string;
   protected abstract handle(node: ts.Expression): string | undefined;
+  protected abstract looksLikeAccountHandle(node: ts.Expression): boolean;
+  protected abstract isVecArgView(node: ts.Expression): boolean;
+  protected abstract vecArgView(node: ts.Expression): { c: string; type: ValueType & { kind: "vecArg" } } | undefined;
+  protected abstract accountChoice(node: ts.ConditionalExpression): Value;
   protected abstract instructionsParam(node: ts.Expression): AccountParam | undefined;
   protected abstract isTxIx(node: ts.Expression): boolean;
   protected abstract seeds(node: ts.Expression, extra: number): { name: string; count: number; idl: IdlSeed[] | undefined };
@@ -461,13 +499,13 @@ export abstract class EmitterBase {
   protected abstract createAta(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value | undefined;
   protected abstract createToken(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value;
   protected abstract systemTransfer(node: ts.CallExpression): undefined;
-  protected abstract createAccount(node: ts.CallExpression, system: AccountParam): undefined;
+  protected abstract createAccount(node: ts.CallExpression, system: CpiProgram): undefined;
   protected abstract createPda(node: ts.CallExpression): Value;
-  protected abstract allocateOrAssign(node: ts.CallExpression, system: AccountParam, method: "allocate" | "assign"): undefined;
-  protected abstract tokenOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
-  protected abstract ataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
-  protected abstract memoOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
-  protected abstract stakeOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
+  protected abstract allocateOrAssign(node: ts.CallExpression, system: CpiProgram, method: "allocate" | "assign"): undefined;
+  protected abstract tokenOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined;
+  protected abstract ataOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined;
+  protected abstract memoOp(node: ts.CallExpression, program: CpiProgram, method: string): undefined;
+  protected abstract stakeOp(node: ts.CallExpression, program: CpiProgram, method: string): Value | undefined;
   protected abstract metadataOp(node: ts.CallExpression, program: AccountParam, method: string): undefined;
   protected abstract coreOp(node: ts.CallExpression, core: AccountParam, method: string): undefined;
   protected abstract bubblegumOp(node: ts.CallExpression, bg: AccountParam, method: string): undefined;
@@ -478,6 +516,7 @@ export abstract class EmitterBase {
   protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract callChoice(choice: FunctionChoice, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
+  protected abstract programErrorFail(name: string, node: ts.Node): string;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
   protected abstract closureOf(arg: ts.Expression): Closure;
 
@@ -494,7 +533,7 @@ export abstract class EmitterBase {
   protected abstract eachElement(
     list: ts.Expression,
     at: ts.Node,
-    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void; body?: ts.Node },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void;
 }

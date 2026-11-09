@@ -11,12 +11,15 @@ import {
   type Ref,
   cString,
   fixedVecC,
+  helperSignature,
   optC,
   scalarC,
   scalarStorageC,
+  storageDecl,
   valueC,
 } from "./shared.js";
 import { CpiEmitter } from "./cpi.js";
+import { cTokens, declaredNames, isGlobalName, parameterDecls, usedNames } from "./outline.js";
 
 /**
  * Statements: variables, assignment, control flow and return.
@@ -251,7 +254,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     const ci = this.tmp("of_i");
     const label = this.tmp("ts_continue_");
     const release = this.iterationClaims(stmt.statement);
-    this.eachElement(stmt.expression, stmt, { index, ci, next: label, alwaysNext: true, atNext: release }, (element) => {
+    this.eachElement(stmt.expression, stmt, { index, ci, next: label, alwaysNext: true, atNext: release, body: stmt.statement }, (element) => {
       // The element's declaration: the source's own name (so aliasing checks find its uses) bound to the element.
       const decl = f.createVariableDeclaration(d.name, undefined, undefined, element);
       ts.setTextRange(decl, d);
@@ -421,10 +424,49 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     if (stages.length) {
       const l = ts.isIdentifier(base) ? this.lookup(base.text) : undefined;
-      if (!(l?.type.kind === "vecArg" || l?.type.kind === "array" || this.peekArray(base)))
+      if (!(l?.type.kind === "vecArg" || l?.type.kind === "array" || this.peekArray(base) || this.isVecArgView(base) || this.isInlineArray(base)))
         this.fail(base, "map and filter work on a Vec, FixedArray or FixedVec");
     }
     return { base, stages };
+  }
+
+  /** List bases already made into locals (see holdList), so a list method and the loop under it make them once. */
+  protected heldLists = new Map<ts.Node, ts.Identifier>();
+
+  /**
+   * A list written inline that must be made before it is read: `fixedArray<T, N>(fill)` (a local array, filled once)
+   * or a slice of a Vec argument or the instruction data (a view, range-checked once). Made here, in a local named by
+   * a synthetic identifier the loop reads; undefined for any other list (read in place).
+   */
+  protected holdList(base: ts.Expression): ts.Identifier | undefined {
+    const held = this.heldLists.get(base);
+    if (held) return held;
+    let made: Local | undefined;
+    if (this.isInlineArray(base)) {
+      let call = base;
+      while (ts.isParenthesizedExpression(call)) call = call.expression;
+      const c = this.tmp("fa");
+      made = { c, type: this.localArray(call as ts.CallExpression, c), mutable: false };
+    } else if (!ts.isIdentifier(base) && this.isVecArgView(base)) {
+      const v = this.vecArgView(base)!;
+      made = { c: v.c, type: v.type, mutable: false };
+    }
+    if (!made) return undefined;
+    const id = ts.factory.createIdentifier(`__hl${this.temp++}`);
+    ts.setTextRange(id, base);
+    (id as { parent?: ts.Node }).parent = base.parent;
+    this.scopes.at(-1)!.set(id.text, made);
+    return id;
+  }
+
+  /** The type of an inline `fixedArray<T, N>(fill)` from its type arguments, without emitting code. */
+  protected inlineArrayType(e: ts.Expression): (FieldType & { kind: "array" }) | undefined {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!this.isInlineArray(e)) return undefined;
+    const [elemNode, lenNode] = (e as ts.CallExpression).typeArguments ?? [];
+    const elem = elemNode && this.localElem(elemNode);
+    const len = lenNode && ts.isLiteralTypeNode(lenNode) && ts.isNumericLiteral(lenNode.literal) ? Number(lenNode.literal.text) : NaN;
+    return elem && Number.isInteger(len) ? { kind: "array", elem, len } : undefined;
   }
 
   /**
@@ -437,7 +479,32 @@ export abstract class StatementEmitter extends CpiEmitter {
   protected eachElement(
     list: ts.Expression,
     at: ts.Node,
-    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void },
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void; body?: ts.Node },
+    body: (element: ts.Expression, index: ts.Expression) => void,
+  ): void {
+    const stagesOf = this.pipelineStages(list);
+    const { stages } = stagesOf;
+    // An inline fixedArray(…) or a slice of a Vec argument / the instruction data: made once, before the loop.
+    const base: ts.Expression = this.holdList(stagesOf.base) ?? stagesOf.base;
+    // A BigVec slice is lowered (and range-checked) once, here; the loop reads its length and elements from that.
+    const sliced =
+      ts.isCallExpression(base) && ts.isPropertyAccessExpression(base.expression) && base.expression.name.text === "slice" ? this.ref(base) : undefined;
+    if (sliced?.vec?.slice) this.sliceViews.set(base, sliced);
+    try {
+      // A BigVec runs to the size of its account (20,000 validators): its loops get a C function of their own.
+      const big = (sliced ?? this.probe(() => this.ref(base)))?.vec?.big !== undefined;
+      if (!big || !this.outlinedLoop(names.body, () => this.eachElementLoop(base, stages, at, names, body)))
+        this.eachElementLoop(base, stages, at, names, body);
+    } finally {
+      this.sliceViews.delete(base);
+    }
+  }
+
+  private eachElementLoop(
+    base: ts.Expression,
+    stages: ReturnType<StatementEmitter["pipelineStages"]>["stages"],
+    at: ts.Node,
+    names: { index: string; ci: string; next?: string; alwaysNext?: boolean; atNext?: () => void; body?: ts.Node },
     body: (element: ts.Expression, index: ts.Expression) => void,
   ): void {
     const f = ts.factory;
@@ -446,7 +513,6 @@ export abstract class StatementEmitter extends CpiEmitter {
       (n as { parent?: ts.Node }).parent = at;
       return n;
     };
-    const { base, stages } = this.pipelineStages(list);
     const { index, ci } = names;
     const indexId = place(f.createIdentifier(index));
     const length = place(f.createPropertyAccessExpression(base, "length"));
@@ -536,6 +602,137 @@ export abstract class StatementEmitter extends CpiEmitter {
   }
 
   /**
+   * Run `emit` (a loop) as a C function of its own, called here: `TS_TRY(fn__loopN(params, …))`. SBF has ten
+   * registers, four of them kept across calls; a loop inside a large function shares them with every value the
+   * function holds across it, and clang spills the loop's own (the stake pool's pass over 20,000 validators paid a
+   * reload and a store per entry). A function of its own has them all. It gets the caller's variables the loop uses:
+   * by value when the loop only reads them, else through a pointer, copied in and back out when it is done (a failure
+   * returns at once, as it would here). False, with nothing emitted, when the loop cannot move: its body returns from
+   * the function, declares an account (create), or uses a variable of the caller that is not one of its locals or
+   * parameters (a claim slot, a list held in place); it then stays where it is.
+   */
+  protected outlinedLoop(body: ts.Node | undefined, emit: () => void): boolean {
+    const returns = (n: ts.Node): boolean => ts.isReturnStatement(n) || (!ts.isFunctionLike(n) && !ts.isClassLike(n) && (ts.forEachChild(n, returns) ?? false));
+    if (body && returns(body)) return false;
+    // The variables visible here, by C name (innermost first, as lookup finds them).
+    const visible = new Map<string, Local>();
+    for (const scope of [...[...this.scopes].reverse(), this.args]) for (const l of scope.values()) if (!visible.has(l.c)) visible.set(l.c, l);
+    const saved = {
+      lines: this.lines,
+      hoisted: this.hoisted,
+      indent: this.indent,
+      temp: this.temp,
+      diagnostics: this.reporter.diagnostics.length,
+      outlined: this.outlinedLoops.length,
+      seedArrays: new Map(this.seedArrays),
+      state: () => JSON.stringify([[...this.created], [...this.pendingInit], [...this.bumps]]),
+    };
+    const state = saved.state();
+    this.lines = [];
+    this.hoisted = [];
+    this.indent = 1;
+    let lines: string[];
+    let hoisted: string[];
+    try {
+      emit();
+    } finally {
+      lines = this.lines;
+      hoisted = this.hoisted;
+      this.lines = saved.lines;
+      this.hoisted = saved.hoisted;
+      this.indent = saved.indent;
+      // Seed arrays the loop declared live in its function (their positions are in its lines).
+      this.seedArrays.clear();
+      saved.seedArrays.forEach((v, k) => this.seedArrays.set(k, v));
+    }
+    const plan = saved.state() === state ? this.outlinedParams([...hoisted, ...lines].join("\n"), visible) : undefined;
+    if (!plan) {
+      this.temp = saved.temp;
+      this.reporter.diagnostics.length = saved.diagnostics;
+      this.outlinedLoops.length = saved.outlined;
+      return false;
+    }
+    // Heap buffers taken on first use stay declared in the caller, which passes each in by pointer: declared in the
+    // loop's function, every call of it would take a new one (an emit or a helper's argument copy in a loop run many
+    // times would exhaust the heap).
+    const lazy = hoisted.filter((l) => this.lazyHoists.has(l));
+    for (const l of lazy) {
+      const { name: buffer, decl } = this.lazyHoists.get(l)!;
+      this.hoisted.push(l);
+      plan.params.push(decl(`*cp_${buffer}`));
+      plan.args.push(`&${buffer}`);
+      plan.copyIn.push(`  ${decl(buffer)} = *cp_${buffer};`);
+      plan.copyOut.push(`  *cp_${buffer} = ${buffer};`);
+    }
+    hoisted = hoisted.filter((l) => !lazy.includes(l));
+    const name = `${this.helper ? `fn_${this.helper.name}` : `ix_${this.ix!.name}`}__loop${this.outlinedLoops.length}`;
+    this.outlinedLoops.push(
+      [
+        `static __attribute__((noinline)) uint64_t ${name}(${["TsParams *params", ...plan.params].join(", ")}) {`,
+        ...plan.copyIn,
+        ...hoisted,
+        ...lines,
+        ...plan.copyOut,
+        `  return SUCCESS;`,
+        `}`,
+        ``,
+      ].join("\n"),
+    );
+    this.line(`TS_TRY(${name}(${["params", ...plan.args].join(", ")}));`);
+    return true;
+  }
+
+  /**
+   * The parameters a loop moved out of this function takes for the caller's variables its C uses, or undefined when
+   * it uses one that cannot be passed (or that is not a local or parameter at all).
+   */
+  private outlinedParams(c: string, visible: Map<string, Local>): { params: string[]; args: string[]; copyIn: string[]; copyOut: string[] } | undefined {
+    const toks = cTokens(c);
+    const own = declaredNames(toks);
+    const signature = this.helper ? parameterDecls(helperSignature(this.helper)) : new Map<string, string>();
+    const out = { params: [] as string[], args: [] as string[], copyIn: [] as string[], copyOut: [] as string[] };
+    for (const n of [...usedNames(toks)].sort()) {
+      if (own.has(n) || n === "params" || isGlobalName(n)) continue;
+      const param = signature.get(n);
+      if (param) {
+        out.params.push(param);
+        out.args.push(n);
+        continue;
+      }
+      if (this.ix && n.startsWith("a_") && this.accounts.has(n.slice(2))) {
+        out.params.push(`TsAccount *${n}`);
+        out.args.push(n);
+        continue;
+      }
+      const l = visible.get(n);
+      if (!l || l.closure || l.choice) return undefined;
+      const t = l.type;
+      if (
+        t.kind === "array" ||
+        t.kind === "vec" ||
+        t.kind === "remaining" ||
+        t.kind === "arrayArg" ||
+        t.kind === "optionArg" ||
+        t.kind === "signerSeeds" ||
+        t.kind === "dataEnumArg"
+      )
+        return undefined;
+      const ct = t.kind === "pubkey" ? (l.ptr ? "const SolPubkey *" : "SolPubkey") : valueC(t);
+      const decl = (name: string) => (ct.endsWith("*") ? `${ct}${name}` : `${ct} ${name}`);
+      if (!l.mutable && (ct.endsWith("*") || t.kind === "int" || t.kind === "bool" || t.kind === "enum")) {
+        out.params.push(decl(n));
+        out.args.push(n);
+        continue;
+      }
+      out.params.push(decl(`*cp_${n}`));
+      out.args.push(`&${n}`);
+      out.copyIn.push(`  ${decl(n)} = *cp_${n};`);
+      if (l.mutable) out.copyOut.push(`  *cp_${n} = ${n};`);
+    }
+    return out;
+  }
+
+  /**
    * `const ys = xs.map(…)` / `xs.filter(…)`: the chain's elements in a local FixedVec, as big as the list it starts
    * from (a FixedArray's length, a FixedVec's capacity) or as annotated (`const ys: FixedVec<u64, 16> = …`, needed
    * when it starts from a Vec). It lives on the stack, so it holds at most 2 KiB; one more element than it holds aborts.
@@ -560,7 +757,9 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (!ts.isTypeReferenceNode(t) || typesolName(t, this.scope.imports) !== "FixedVec" || !annotatedElem || !Number.isInteger(n) || n < 1)
         this.fail(t, "annotate the new list as FixedVec<T, N> (N a literal)");
       cap = n;
-    } else {
+    } else if (this.inlineArrayType(base)) cap = this.inlineArrayType(base)!.len;
+    else {
+      if (this.isVecArgView(base)) this.fail(init, "this list has no fixed size: annotate the new one with its capacity, const ys: FixedVec<T, N> = …");
       const r = this.reporter.guard(() => this.ref(base));
       const l = ts.isIdentifier(base) ? this.lookup(base.text) : undefined;
       if (r?.type.kind === "array") cap = r.type.len;
@@ -604,17 +803,25 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.line(`${c}.len++;`);
       });
     const t = { kind: "vec", elem: annotatedElem ?? elem!, cap: cap0 } as FieldType & { kind: "vec"; cap: number };
-    const bytes = 4 + this.fieldBytes(t.elem) * cap0;
-    if (bytes > 2048) this.fail(init, `the new list takes ${bytes} bytes; locals live on the 4 KiB stack, so keep it under 2 KiB (a smaller FixedVec<T, N>)`);
+    this.checkLocalListSize(t, init, "the new list");
     this.model.localVecs.set(fixedVecC(t), t);
     const pad = "  ".repeat(this.indent);
     this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero(&${c}, sizeof(${c}));`;
     return t;
   }
-
   /** The element type of a Vec, FixedArray, FixedVec or Vec argument. */
   protected listElem(list: ts.Expression): FieldType {
-    const l = ts.isIdentifier(list) ? this.lookup(list.text) : undefined;
+    const inline = this.inlineArrayType(list);
+    if (inline) return inline.elem;
+    // A slice of a Vec argument or the instruction data: the elements of the list it slices.
+    let root = list;
+    for (;;) {
+      if (ts.isParenthesizedExpression(root)) root = root.expression;
+      else if (ts.isCallExpression(root) && ts.isPropertyAccessExpression(root.expression) && root.expression.name.text === "slice" && this.isVecArgView(root))
+        root = root.expression.expression;
+      else break;
+    }
+    const l = ts.isIdentifier(root) ? this.lookup(root.text) : undefined;
     if (l?.type.kind === "vecArg") return l.type.elem;
     const r = this.ref(list);
     if (r && (r.type.kind === "array" || r.type.kind === "vec")) return r.type.elem;
@@ -784,6 +991,19 @@ export abstract class StatementEmitter extends CpiEmitter {
    * `find` gives an Option of the element (scalar elements), `findIndex` / `indexOf` an i64 (-1 when absent).
    */
   protected listMethod(node: ts.CallExpression, method: string): Value | undefined {
+    // A list written inline is made first, as JS evaluates the receiver before the arguments (reduce's initial value).
+    const base = this.pipelineStages((node.expression as ts.PropertyAccessExpression).expression).base;
+    const held = this.holdList(base);
+    if (!held) return this.listMethodLoop(node, method);
+    this.heldLists.set(base, held);
+    try {
+      return this.listMethodLoop(node, method);
+    } finally {
+      this.heldLists.delete(base);
+    }
+  }
+
+  private listMethodLoop(node: ts.CallExpression, method: string): Value | undefined {
     const access = node.expression as ts.PropertyAccessExpression;
     const list = access.expression;
     const args = node.arguments;
@@ -842,6 +1062,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`/* ${res} */`);
     }
     const findDecl = method === "find" ? this.lines.length - 1 : -1;
+    // The result is the loop's to set: named in scope, so a loop moved into a function of its own gets it (outlinedLoop).
+    if (result && method !== "find") this.scopes.at(-1)!.set(`__${res}`, { c: res, type: result.type, mutable: true });
 
     const ci = this.tmp("lm_i");
     this.eachElement(list, node, { index, ci }, (element, indexId) => {
@@ -1108,7 +1330,7 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       if (fn === "fixedArray") {
-        const t = this.localArray(init as ts.CallExpression, c);
+        const t = this.localArray(init as ts.CallExpression, c, d.type);
         this.scopes.at(-1)!.set(name, { c, type: t, mutable });
         continue;
       }
@@ -1133,7 +1355,19 @@ export abstract class StatementEmitter extends CpiEmitter {
           const h = /^\(\(TSS_\w+ \*\)\((\w+)->data \+ 8\)\)$/.exec(t.c)?.[1];
           if (h) loaded = { handle: h, struct: t.type.struct, mut: fn === "loadAccountMut" };
         }
-        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded });
+        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded, ...(t.bigCap ? { bigCap: t.bigCap } : {}) });
+        continue;
+      }
+      // A local decoded from an account's Borsh bytes: `const pool = loadBorsh<StakePool>(acct)` (a copy, as Rust's).
+      if (fn === "loadBorsh") {
+        if (mutable) this.fail(d, "bind loadBorsh<T>(...) with const (its fields can still be updated)");
+        const named = d.type && structNameOf(d.type, this.scope);
+        const declared = named ? this.model.structs.get(named) : undefined;
+        if (d.type && !declared) this.fail(d.type, "loadBorsh returns a struct: declare the local as one (or leave the type out)");
+        const s = this.loadBorsh(init as ts.CallExpression, c, declared);
+        this.scopes
+          .at(-1)!
+          .set(name, { c, type: { kind: "structRef", struct: s.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
         continue;
       }
       // A struct another program returned: `const q = returnData<Quote>(amm)` (Anchor's `get_return_data` + deserialize).
@@ -1142,14 +1376,14 @@ export abstract class StatementEmitter extends CpiEmitter {
         const S = this.returnedStruct(init as ts.CallExpression)!;
         const call = init as ts.CallExpression;
         if (call.arguments.length !== 1) this.fail(call, "returnData<T>(program) takes the program that returned it");
-        const program = this.accountParam(call.arguments[0], "returnData's program");
+        const program = this.anyAccount(call.arguments[0], "returnData's program");
         const bad = `TS_FAIL(TS_ERR_RETURN_DATA, "TypeSOL: invalid ${S.name} return data")`;
         if (S.layout === "borsh") {
           // Borsh of any size: unpacked into the fixed-layout struct, every byte used.
           const raw = `${c}__raw`;
           this.line(`uint8_t *${raw};`);
           this.line(`uint64_t ${raw}_len = 0, ${raw}_used = 0;`);
-          this.line(`TS_TRY(ts_return_data_any(a_${program.name}, &${raw}, &${raw}_len));`);
+          this.line(`TS_TRY(ts_return_data_any(${program}, &${raw}, &${raw}_len));`);
           this.line(`TSS_${S.name} *${c};`);
           this.line(`TS_TRY(ts_alloc(sizeof(TSS_${S.name}), (uint8_t **)&${c}));`);
           this.line(`if (ts_unpack_${S.name}(${raw}, ${raw}_len, ${c}, &${raw}_used) != SUCCESS || ${raw}_used != ${raw}_len) ${bad};`);
@@ -1157,11 +1391,25 @@ export abstract class StatementEmitter extends CpiEmitter {
         } else {
           // A fixed layout whose bytes are its Borsh form: copied in, then bools and enums checked.
           this.line(`TSS_${S.name} ${c}__v;`);
-          this.line(`TS_TRY(ts_return_data_exact(a_${program.name}, &${c}__v, sizeof(TSS_${S.name})));`);
+          this.line(`TS_TRY(ts_return_data_exact(${program}, &${c}__v, sizeof(TSS_${S.name})));`);
           for (const l of this.validation(`${c}__v`, { kind: "struct", name: S.name }, "", bad)) this.line(l.trim());
           this.line(`TSS_${S.name} *${c} = &${c}__v;`);
         }
         this.scopes.at(-1)!.set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d });
+        continue;
+      }
+      // A local list declared with its type: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, … }])`,
+      // `const buf: FixedVec<u8, 600> = fixedVec([])`, or a copy of another list (a Vec argument, instruction data).
+      const listType = d.type ? this.listAnnotation(d.type) : undefined;
+      if (listType) {
+        this.checkLocalListSize(listType, d.type!);
+        if (listType.kind === "vec") {
+          this.model.localVecs.set(fixedVecC(listType), listType);
+          this.line(`${fixedVecC(listType)} ${c};`);
+          this.line(`ts_memzero(&${c}, sizeof(${c}));`);
+        } else this.line(`${storageDecl(listType, c)};`);
+        this.writeAggregate({ lv: c, type: listType, writable: true }, init, true);
+        this.scopes.at(-1)!.set(name, { c, type: listType, mutable });
         continue;
       }
       // Struct values: `const p: Point = { x, y }` (or a copy of another Point) is a local of its own.
@@ -1221,7 +1469,8 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       let declared: ValueType | undefined;
-      if (d.type) {
+      if (d.type && typesolName(d.type, this.scope.imports) === "EpochRewards") declared = { kind: "epochRewards" };
+      else if (d.type) {
         declared = resolveValueType(d.type, this.scope);
         if (!declared || declared.kind === "vecArg") this.fail(d.type, "local type must be an integer, boolean, Pubkey, enum, option or string");
       }

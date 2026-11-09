@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { heapVecOf, resolveScalarType } from "../analyze.js";
+import { heapVecOf, resolveScalarType, structNameOf, typesolName } from "../analyze.js";
 import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
 import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount, vecPlace, emptySizeC } from "./shared.js";
 import { AliasEmitter } from "./alias.js";
@@ -127,19 +127,77 @@ export abstract class StorageEmitter extends AliasEmitter {
     return r?.type.kind === "struct";
   }
 
+  /**
+   * A local list lives in the function's stack frame (4 KiB on SBPF v0, shared with every other local and the helpers
+   * clang inlines): one list may take at most 2 KiB, so the failure is a clear compile error, not clang's frame error.
+   */
+  protected checkLocalListSize(t: FieldType & { kind: "vec" | "array" }, at: ts.Node, what = typeName(t)): void {
+    const bytes = this.fieldBytes(t);
+    const smaller = t.kind === "vec" ? "FixedVec<T, N>" : "FixedArray<T, N>";
+    if (bytes > 2048) this.fail(at, `${what} takes ${bytes} bytes; locals live on the 4 KiB stack, so keep it under 2 KiB (a smaller ${smaller})`);
+  }
+
+  /**
+   * `FixedVec<T, N>` / `FixedArray<T, N>` written as a local's type: T an integer, boolean, Pubkey, enum,
+   * `FixedString<N>` or fixed-size struct, N a literal. Undefined for other types; a list type with anything else fails.
+   */
+  protected listAnnotation(t: ts.TypeNode): (FieldType & { kind: "vec"; cap: number }) | (FieldType & { kind: "array" }) | undefined {
+    const list = typesolName(t, this.scope.imports);
+    if ((list !== "FixedVec" && list !== "FixedArray") || !ts.isTypeReferenceNode(t)) return undefined;
+    const [elemNode, nNode] = t.typeArguments ?? [];
+    const n = nNode && ts.isLiteralTypeNode(nNode) && ts.isNumericLiteral(nNode.literal) ? Number(nNode.literal.text) : NaN;
+    if (!Number.isInteger(n) || n < 1) this.fail(t, `${list}<T, N>: N must be a literal of at least 1`);
+    const elem = elemNode && this.localElem(elemNode);
+    if (!elem) this.fail(elemNode ?? t, `${list}<T, N> as a local: T is an integer, boolean, Pubkey, enum, FixedString<N> or a struct of fixed size`);
+    return list === "FixedVec" ? { kind: "vec", elem, cap: n } : { kind: "array", elem, len: n };
+  }
+
+  /** A local list's element type: a scalar, a FixedString<N> or a fixed-size struct (no Vec, no heap). */
+  protected localElem(node: ts.TypeNode): FieldType | undefined {
+    const scalar = resolveScalarType(node, this.scope);
+    if (scalar) return scalar;
+    if (typesolName(node, this.scope.imports) === "FixedString") {
+      const a = (node as ts.TypeReferenceNode).typeArguments?.[0];
+      const cap = a && ts.isLiteralTypeNode(a) && ts.isNumericLiteral(a.literal) ? Number(a.literal.text) : NaN;
+      if (!Number.isInteger(cap) || cap < 1) return undefined;
+      this.model.fstrings.add(cap);
+      return { kind: "fstring", cap };
+    }
+    const sn = structNameOf(node, this.scope);
+    const s = sn ? this.model.structs.get(sn) : undefined;
+    if (s && s.size !== undefined && !s.vec && !heapVecOf(s)) return { kind: "struct", name: s.name };
+    return undefined;
+  }
+
   /** `fixedArray<T, N>(fill)` as a local declaration. */
-  protected localArray(init: ts.CallExpression, c: string): FieldType & { kind: "array" } {
-    const [elemNode, lenNode] = init.typeArguments ?? [];
-    const elem = elemNode && resolveScalarType(elemNode, this.scope);
-    if (!elem) this.fail(init, "fixedArray<T, N>(fill): T must be an integer, boolean or Pubkey");
+  protected localArray(init: ts.CallExpression, c: string, annotation?: ts.TypeNode): FieldType & { kind: "array" } {
+    // The type arguments, or the declaration's `FixedArray<T, N>` when the call has none.
+    const fromType = !init.typeArguments?.length && annotation && ts.isTypeReferenceNode(annotation) ? annotation.typeArguments : undefined;
+    const [elemNode, lenNode] = init.typeArguments ?? fromType ?? [];
+    const scalar = elemNode && resolveScalarType(elemNode, this.scope);
+    // A struct (or FixedString) element: the fill is built once and copied into every slot, as JS fills with one value.
+    const elem: FieldType | undefined = scalar ?? (elemNode && this.localElem(elemNode));
+    if (!elem) this.fail(init, "fixedArray<T, N>(fill): T must be an integer, boolean, Pubkey, enum, FixedString<N> or a struct of fixed size");
     const len = lenNode && ts.isLiteralTypeNode(lenNode) && ts.isNumericLiteral(lenNode.literal) ? Number(lenNode.literal.text) : NaN;
     if (!Number.isInteger(len) || len < 1 || len > 256) this.fail(init, "fixedArray<T, N>: N must be a literal 1..256 (locals live on the 4KB stack)");
     if (init.arguments.length !== 1) this.fail(init, "fixedArray<T, N>(fill) takes the fill value");
-    const fill = this.expect(this.expr(init.arguments[0], elem), elem, init.arguments[0]);
     const type: FieldType & { kind: "array" } = { kind: "array", elem, len };
-    this.line(`${storageDecl(type, c)};`);
     const i = this.tmp("i");
-    this.line(`for (uint64_t ${i} = 0; ${i} < ${len}; ${i}++) ${this.writeStorage({ lv: `${c}[${i}]`, type: elem, writable: true }, fill.c)};`);
+    if (scalar) {
+      const fill = this.expect(this.expr(init.arguments[0], scalar), scalar, init.arguments[0]);
+      this.line(`${storageDecl(type, c)};`);
+      this.line(`for (uint64_t ${i} = 0; ${i} < ${len}; ${i}++) ${this.writeStorage({ lv: `${c}[${i}]`, type: elem, writable: true }, fill.c)};`);
+      return type;
+    }
+    this.checkLocalListSize(type, init);
+    const one = this.tmp("fill");
+    this.line(`${storageDecl(elem, one)};`);
+    this.line(`ts_memzero(&${one}, sizeof(${one}));`);
+    const vt = this.storageValueType(elem);
+    if (vt) this.line(this.writeStorage({ lv: one, type: elem, writable: true }, this.expect(this.expr(init.arguments[0], vt), vt, init.arguments[0]).c) + ";");
+    else this.writeAggregate({ lv: one, type: elem, writable: true }, init.arguments[0], true);
+    this.line(`${storageDecl(type, c)};`);
+    this.line(`for (uint64_t ${i} = 0; ${i} < ${len}; ${i}++) ts_memcpy(&${c}[${i}], &${one}, sizeof(${one}));`);
     return type;
   }
 
@@ -164,7 +222,8 @@ export abstract class StorageEmitter extends AliasEmitter {
       // An Option<struct> instruction argument: read like an Option<struct> field.
       if (l && l.type.kind === "optionArg") return { lv: l.c, type: l.type.option, writable: false };
       // A struct loaded from a remaining account.
-      if (l && l.type.kind === "structRef") return { lv: `(*${l.c})`, type: { kind: "struct", name: l.type.struct }, writable: l.type.writable };
+      if (l && l.type.kind === "structRef")
+        return { lv: `(*${l.c})`, type: { kind: "struct", name: l.type.struct }, writable: l.type.writable, ...(l.bigCap ? { bigCap: l.bigCap } : {}) };
       if (l && l.type.kind === "enumRef") return { lv: `(*${l.c})`, type: { kind: "dataEnum", name: l.type.name }, writable: l.type.writable };
       return undefined;
     }
@@ -265,7 +324,19 @@ export abstract class StorageEmitter extends AliasEmitter {
         const f = s.fields.find((x) => x.name === field);
         if (!f) this.fail(node.name, `${s.name} has no field "${field}"`);
         const r: Ref = { ...base, lv: `${base.lv}.${f.name}`, type: f.type, path: base.path && [...base.path, f.name], vec: undefined };
-        if (f.type.kind === "vec" && f.type.heap) r.vec = this.heapVec(r.lv, f.type.elem);
+        if (f.type.kind === "vec" && f.type.big) {
+          // A loadRaw view sits at the account's data, so its room is what the account holds past the struct.
+          const elemSize = s.bigVec!.elemSize;
+          r.vec = {
+            len: `${base.lv}.${f.name}__len`,
+            items: r.lv,
+            fixed: "",
+            elemSize,
+            resizable: false,
+            // Computed once at the load for a view bound to a local; for one used in place, here.
+            big: base.bigCap ?? `ts_bigvec_cap((const uint8_t *)&${base.lv}, sizeof(TSS_${s.name}), ${elemSize})`,
+          };
+        } else if (f.type.kind === "vec" && f.type.heap) r.vec = this.heapVec(r.lv, f.type.elem);
         // Vecs of loaded accounts can be read and updated in place but not resized (no entry length known).
         else if (f.type.kind === "vec" && f.type.cap === undefined) {
           const k = s.vecs!.findIndex((v) => v.name === f.name);
@@ -275,6 +346,14 @@ export abstract class StorageEmitter extends AliasEmitter {
         }
         return this.withFixedVec(r);
       }
+      return undefined;
+    }
+    // bigVec.slice(start, end): a view of elements start..end-1, for for … of and the list methods.
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "slice") {
+      const cached = this.sliceViews.get(node);
+      if (cached) return cached;
+      const base = this.ref(node.expression.expression);
+      if (base?.vec?.big !== undefined && !base.vec.slice) return this.bigVecSlice(node, base);
       return undefined;
     }
     // arr.get(i) / vec.get(i)
@@ -390,6 +469,11 @@ export abstract class StorageEmitter extends AliasEmitter {
         this.fail(node, `this is a ${r.type.name}; compare .kind or read a field of the narrowed variant`);
       case "array":
       case "vec":
+        if (r.vec?.slice)
+          this.fail(
+            node,
+            "a slice is not stored: use it where it is written (for (const x of list.slice(a, b)), list.slice(a, b).forEach(…), .get(i), .length)",
+          );
         this.fail(node, "this is a list; use .get(i), .set(i, v) or .length");
       case "struct":
         this.fail(node, `this is a ${r.type.name}; read one of its fields`);
@@ -581,7 +665,9 @@ export abstract class StorageEmitter extends AliasEmitter {
     const heap = target.type.kind === "vec" && !!target.type.heap;
     if (target.type.kind === "vec" && (target.type.cap !== undefined || heap) && target.type.elem.kind !== "string" && target.type.elem.kind !== "fstring") {
       const t = target.type as FieldType & { kind: "vec" };
-      const l = ts.isIdentifier(valueNode) ? this.lookup(valueNode.text) : undefined;
+      // A slice of a Vec argument or the instruction data is a view like the list itself.
+      const view = !ts.isIdentifier(valueNode) && this.isVecArgView(valueNode) ? this.vecArgView(valueNode) : undefined;
+      const l = ts.isIdentifier(valueNode) ? this.lookup(valueNode.text) : view;
       const r = l?.type.kind === "vecArg" ? undefined : this.reporter.guard(() => this.ref(valueNode));
       const from =
         l?.type.kind === "vecArg" && sameType(l.type.elem, t.elem)
@@ -637,6 +723,28 @@ export abstract class StorageEmitter extends AliasEmitter {
   /** A heap Vec (a Vec<T> in a `@layout borsh` struct) at `lv`: `{ len, cap, items }`, grown by ts_hvec_reserve. */
   protected heapVec(lv: string, elem: FieldType): NonNullable<Ref["vec"]> {
     return { len: `${lv}.len`, items: `${lv}.items`, fixed: "", elemSize: this.fieldBytes(elem), resizable: false, heap: true };
+  }
+
+  /** Slices lowered once before a loop over them (see eachElement): the loop's length and element reads reuse them. */
+  protected sliceViews = new Map<ts.Node, Ref>();
+
+  /**
+   * `bigVec.slice(start, end)`: elements start..end-1 in place, as BigVec::deserialize_mut_slice(start, end - start)
+   * gives them. Out of range fails with ProgramError::AccountDataTooSmall, as that does (JS's slice would clamp).
+   */
+  protected bigVecSlice(node: ts.CallExpression, base: Ref): Ref {
+    const args = node.arguments;
+    if (args.length < 1 || args.length > 2) this.fail(node, "slice(start, end) takes the first element's index and the index after the last one");
+    const info = base.vec!;
+    const start = this.tmp("sl_start");
+    const end = this.tmp("sl_end");
+    this.line(`uint64_t ${start} = ${this.expect(this.expr(args[0]!, U64), U64, args[0]!).c};`);
+    this.line(`uint64_t ${end} = ${args[1] ? this.expect(this.expr(args[1], U64), U64, args[1]).c : vecCount(info)};`);
+    this.line(`if (${end} > ${vecCount(info)} || ${start} > ${end}) ${this.programErrorFail("AccountDataTooSmall", node)};`);
+    // Named in scope, so a loop over the slice moved into a function of its own is given them (see outlinedLoop).
+    for (const c of [start, end]) this.scopes.at(-1)!.set(`__${c}`, { c, type: U64, mutable: false });
+    const items = `((${fieldC((base.type as FieldType & { kind: "vec" }).elem)} *)${info.items} + ${start})`;
+    return { ...base, lv: items, path: undefined, vec: { ...info, len: `(${end} - ${start})`, items, slice: true } };
   }
 
   /** A place whose type is a FixedVec (or a heap Vec) gets its Vec view. */

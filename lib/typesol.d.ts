@@ -119,6 +119,11 @@ export interface Vec<T> extends ListMethods<T> {
    * back: 3004, as under Anchor).
    */
   push(value: T, payer?: Mut<Signer>): void;
+  /**
+   * A FixedVec's bulk append (declared here so a Vec still passes where a FixedVec is expected): a Vec in account data
+   * grows one `push` at a time, so calling it on a Vec is a compile error.
+   */
+  pushAll(items: IndexedList<T>): void;
   /** Remove and return the last element, shrinking the account. */
   pop(): T;
   /** Remove every element, shrinking the account. */
@@ -137,11 +142,53 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   get(index: bigint): T;
   set(index: bigint, value: T): void;
   push(value: T): void;
+  /**
+   * Append every element of `items` in one copy (a memcpy, not a loop of pushes): another FixedVec, a Vec or FixedArray
+   * of the same elements, a Vec argument, or the instruction data or a slice of it (`out.pushAll(data.slice(a, b))`).
+   * More than the room left fails (5104) and appends nothing.
+   */
+  pushAll(items: IndexedList<T>): void;
   pop(): T;
   clear(): void;
   [Symbol.iterator](): Iterator<T>;
   readonly __capacity?: N;
 }
+/**
+ * A native program's zero-copy list over the rest of an account (SPL's `big_vec::BigVec`, the stake pool's validator
+ * list): a u32 length, then the elements back to back, in an account allocated up front. Only the last field of a
+ * struct read with `loadRaw` / `loadRawMut`; its room is the account's (`capacity`), and it is never resized. Loading
+ * checks that the stored length fits in the account (ProgramError::AccountDataTooSmall). Elements are read and
+ * written in place (structs by reference).
+ */
+export interface BigVec<T> extends ListMethods<T> {
+  readonly length: u64;
+  /** How many elements fit: (the account's size - the struct's fixed fields - 4) / size(T). */
+  readonly capacity: u64;
+  get(index: bigint): T;
+  set(index: bigint, value: T): void;
+  /** Append after the last element (BigVec::push); no room left fails with ProgramError::AccountDataTooSmall. */
+  push(value: T): void;
+  /**
+   * Keep the elements `fn` holds for, in order, moved down in place in one pass (BigVec::retain); the bytes past the new
+   * end keep what they held.
+   */
+  retain(fn: (x: T) => boolean): void;
+  /**
+   * Elements `start` to `end - 1` in place (BigVec::deserialize_mut_slice(start, end - start)), for `for … of`, the
+   * list methods, `get`, `set` and `.length` right where it is written. Unlike JS's slice it does not clamp: `end`
+   * past the length or before `start` fails with ProgramError::AccountDataTooSmall. `end` defaults to the length.
+   */
+  slice(start: bigint, end?: bigint): BigVecSlice<T>;
+  [Symbol.iterator](): Iterator<T>;
+}
+/** Some elements of a BigVec, in place: `bigVec.slice(start, end)`. */
+export interface BigVecSlice<T> extends ListMethods<T> {
+  readonly length: u64;
+  get(index: bigint): T;
+  set(index: bigint, value: T): void;
+  [Symbol.iterator](): Iterator<T>;
+}
+
 /** A FixedVec value holding these elements (`acct.owners = fixedVec([a, b])`, `{ owners: fixedVec([]) }`). */
 export declare function fixedVec<T>(items: T[]): FixedVec<T, never>;
 
@@ -174,6 +221,23 @@ export interface RemainingSlice extends Iterable<CpiAccount> {
 export declare function remainingAccounts(): RemainingAccounts;
 
 /**
+ * A remaining account (or an AccountInfo parameter) as a typed program: `const stake = programAt<StakeProgram>(rest.get(12n))`,
+ * then `stake.split(…)`, `token.mintTo(…)`, `system.transfer(…)` as on a declared program parameter, and passed to
+ * helpers that take that program type. Its key is checked once, here (ProgramError.IncorrectProgramId otherwise;
+ * TokenInterface: either token program). The typed methods take remaining accounts as well as declared ones: the
+ * compiler checks declared parameters (writable, signer), the called program and the runtime check remaining accounts.
+ */
+export declare function programAt<
+  P extends StakeProgram | SystemProgram | TokenProgram | Token2022Program | TokenInterface | AssociatedTokenProgram | MemoProgram,
+>(account: RemainingAccount | AccountInfo): P;
+/**
+ * A remaining account (or an AccountInfo parameter) as a sysvar read in place: `sysvarAt<StakeHistorySysvar>(acct)`,
+ * bound to a const, then `.count`, `.latestEpoch`, `.effective(epoch)` …. Its key is checked once, here (ProgramError.InvalidArgument
+ * otherwise, as solana_program's `Sysvar::from_account_info`).
+ */
+export declare function sysvarAt<S extends StakeHistorySysvar>(account: RemainingAccount | AccountInfo): S;
+
+/**
  * Read a struct of this program from a remaining account or an `AccountInfo` parameter (Anchor's
  * `AccountLoader::try_from` on an `UncheckedAccount`): owner, discriminator and size are checked.
  * `loadAccountMut` also requires it to be writable, not aliased by another writable account, and not already loaded
@@ -192,6 +256,20 @@ export declare function loadAccountMut<T>(account: RemainingAccount | AccountInf
  */
 export declare function loadRaw<T>(account: RemainingAccount | AccountInfo): Account<T>;
 export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
+/**
+ * A native program's Borsh account, as Rust's `try_from_slice_unchecked::<T>(&data)` reads it: the data from byte 0
+ * decoded into a local `T` (a copy; write it back with `storeBorsh`). No owner check and no discriminator; bytes after
+ * the value are ignored. Data too short for it, an Option tag or a boolean other than 0/1, or an enum tag out of range
+ * fail with `ProgramError.BorshIoError`. Bind it with const: `const pool = loadBorsh<StakePool>(stakePool)`.
+ */
+export declare function loadBorsh<T>(account: RemainingAccount | AccountInfo): T;
+/**
+ * Write `value` into the account's data from byte 0 as Borsh, as Rust's `value.serialize(&mut *data)` does: only the
+ * encoded bytes are written (an Option that became None leaves the old bytes after it as they were); an account too
+ * small for the encoding fails with `ProgramError.BorshIoError`. The account must be writable (`Mut<AccountInfo>`, or a
+ * remaining account checked at run time).
+ */
+export declare function storeBorsh<T>(account: RemainingAccount | Mut<AccountInfo>, value: T): void;
 
 /** 32 bytes of hash output (sha256 / keccak256, Merkle roots). Compare with `===`. */
 export interface Hash {
@@ -344,48 +422,113 @@ export interface MemoProgram extends AccountMeta {
   memo(text: string, signers?: AccountMeta[], signerSeeds?: Seed[] | SignerSeeds): void;
 }
 
+/** An account whose slot in a Stake CPI names another address: what `named(account, address)` gives. */
+export interface NamedAccount {
+  readonly __named_account: void;
+}
+/**
+ * A Stake CPI's sysvar or stake config argument as solana_program's stake instruction builders write it: the
+ * instruction's account list names `address` (`SysvarC1ock…`), and `account` (the slot's account, whatever its key) is
+ * the account handed to the runtime, as Rust's `invoke_signed(&ix, &[stake, clock_info, …])` hands it. The runtime finds
+ * each named address among the CPI's accounts only: a slot holding another account fails the call with MissingAccount
+ * (Instruction references an unknown account), as the original does, even when the sysvar is elsewhere in the
+ * transaction. Only valid as such an argument.
+ */
+export declare function named(account: AccountMeta, address: Pubkey): NamedAccount;
+
 /**
  * The native Stake program (`Stake1111…`). Its address is checked. The sysvar and config accounts it reads are
  * passed in, as anchor-spl's stake module does (`SysvarRent…`, `SysvarC1ock…`, `SysvarStakeHistory…`,
- * `StakeConfig…`). Each authority signs: a wallet, or a PDA of this program with `signerSeeds`.
+ * `StakeConfig…`), or as `named(account, address)` (a native port: the address in the instruction, the slot's account
+ * passed). Each authority signs: a wallet, or a PDA of this program with `signerSeeds`. The instructions and
+ * their accounts are solana-stake-interface's (`StakeInstruction`, bincode with a u32 tag). Every account may also be
+ * a remaining account (then the Stake program and the runtime check that it is writable and signed where it must).
  */
 export interface StakeProgram extends AccountMeta {
   readonly __stake_program: void;
-  /** Initialize a stake account (created with 200 bytes, owned by the Stake program), with no lockup. */
-  initialize(stake: AccountMeta, rentSysvar: AccountMeta, staker: Pubkey, withdrawer: Pubkey): void;
+  /**
+   * Initialize a stake account (created with 200 bytes, owned by the Stake program), with no lockup or with `lockup`:
+   * no withdrawal before `unixTimestamp` and `epoch` unless `custodian` signs.
+   */
+  initialize(
+    stake: AccountMeta,
+    rentSysvar: AccountMeta | NamedAccount,
+    staker: Pubkey,
+    withdrawer: Pubkey,
+    lockup?: { unixTimestamp: i64; epoch: u64; custodian: Pubkey },
+  ): void;
   /** Hand the staker or the withdrawer authority to `newAuthority`. */
   authorize(
     stake: AccountMeta,
-    clockSysvar: AccountMeta,
+    clockSysvar: AccountMeta | NamedAccount,
     authority: AccountMeta,
     newAuthority: Pubkey,
     which: "staker" | "withdrawer",
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  /** The same, with the lockup custodian signing (to change the withdrawer while a lockup is in force). */
+  authorize(
+    stake: AccountMeta,
+    clockSysvar: AccountMeta | NamedAccount,
+    authority: AccountMeta,
+    newAuthority: Pubkey,
+    which: "staker" | "withdrawer",
+    custodian: AccountMeta,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
   delegate(
     stake: AccountMeta,
     vote: AccountMeta,
-    clockSysvar: AccountMeta,
-    stakeHistorySysvar: AccountMeta,
-    stakeConfig: AccountMeta,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
+    stakeConfig: AccountMeta | NamedAccount,
     staker: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
-  deactivate(stake: AccountMeta, clockSysvar: AccountMeta, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  /** Move `lamports` (and their share of the stake) into `splitStake`: 200 bytes, owned by the Stake program, uninitialized. */
+  split(stake: AccountMeta, splitStake: AccountMeta, staker: AccountMeta, lamports: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  deactivate(stake: AccountMeta, clockSysvar: AccountMeta | NamedAccount, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   withdraw(
     stake: AccountMeta,
     to: AccountMeta,
-    clockSysvar: AccountMeta,
-    stakeHistorySysvar: AccountMeta,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
     withdrawer: AccountMeta,
     lamports: u64,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
+  /** The same, with the lockup custodian signing (to withdraw while a lockup is in force). */
+  withdraw(
+    stake: AccountMeta,
+    to: AccountMeta,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
+    withdrawer: AccountMeta,
+    lamports: u64,
+    custodian: AccountMeta,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /** Merge `source` into `destination` (same authorities and lockup, compatible states); `source` is drained. */
+  merge(
+    destination: AccountMeta,
+    source: AccountMeta,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
+    staker: AccountMeta,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
+  /**
+   * The cluster's minimum delegation in lamports: a GetMinimumDelegation CPI and the u64 the Stake program returns
+   * (solana_program's `stake::tools::get_minimum_delegation`, failing as it does: InvalidInstructionData without
+   * return data or with another size, IncorrectProgramId when another program returned it).
+   */
+  getMinimumDelegation(): u64;
 }
 
 /**
  * The StakeHistory sysvar (`SysvarStakeHistory…`), read as an account: the cluster's stake per recent epoch (up to
- * 512, newest first), as the Stake program uses it for warmup and cooldown. The address is checked.
+ * 512, newest first), as the Stake program uses it for warmup and cooldown. The address is checked. A remaining
+ * account becomes one with `sysvarAt<StakeHistorySysvar>(acct)`.
  */
 export interface StakeHistorySysvar extends AccountMeta {
   readonly __stake_history: void;
@@ -418,21 +561,21 @@ export interface SlotHashesSysvar extends AccountMeta {
 export interface AssociatedTokenProgram extends AccountMeta {
   readonly __ata_program: void;
   create(
-    payer: Mut<Signer>,
+    payer: Mut<Signer> | RemainingAccount,
     ata: AccountMeta,
     owner: AccountMeta,
     mint: AccountMeta,
-    systemProgram: SystemProgram,
-    tokenProgram: TokenProgram | Token2022Program | TokenInterface,
+    systemProgram: SystemProgram | RemainingAccount,
+    tokenProgram: TokenProgram | Token2022Program | TokenInterface | RemainingAccount,
   ): void;
   /** Like create, but succeeds if the account already exists. */
   createIdempotent(
-    payer: Mut<Signer>,
+    payer: Mut<Signer> | RemainingAccount,
     ata: AccountMeta,
     owner: AccountMeta,
     mint: AccountMeta,
-    systemProgram: SystemProgram,
-    tokenProgram: TokenProgram | Token2022Program | TokenInterface,
+    systemProgram: SystemProgram | RemainingAccount,
+    tokenProgram: TokenProgram | Token2022Program | TokenInterface | RemainingAccount,
   ): void;
 }
 /** The associated token account address of `owner` for `mint` under `tokenProgram`. */
@@ -1552,6 +1695,28 @@ export declare function firstNormalEpoch(): u64;
 export declare function firstNormalSlot(): u64;
 /** The LastRestartSlot sysvar: the last slot the cluster restarted at (0 if never). */
 export declare function lastRestartSlot(): u64;
+/** The EpochRewards sysvar, as `epochRewards()` reads it: read-only; keep it in a local (`const er = epochRewards()`). */
+export interface EpochRewards {
+  /** The block height the rewards distribution started at in the current epoch. */
+  readonly distributionStartingBlockHeight: u64;
+  /** How many partitions the distribution has (seeds the partition hasher). */
+  readonly numPartitions: u64;
+  /** The parent blockhash of the epoch's first block (seeds the partition hasher). */
+  readonly parentBlockhash: Hash;
+  /** Sum of delegated stake × credits observed over all delegations. */
+  readonly totalPoints: u128;
+  /** The rewards calculated for the epoch, in lamports. */
+  readonly totalRewards: u64;
+  /** The rewards distributed so far, in lamports. */
+  readonly distributedRewards: u64;
+  /** Whether the rewards period (calculation and distribution) is active: stake accounts are being credited. */
+  readonly active: boolean;
+}
+/**
+ * The EpochRewards sysvar through the `sol_get_epoch_rewards_sysvar` syscall, Rust's `EpochRewards::get()` (no account
+ * needed). Native programs refuse stake operations while `epochRewards().active`.
+ */
+export declare function epochRewards(): EpochRewards;
 export type CloseTo<A, Destination extends string> = A & { readonly __closeTo?: Destination };
 
 /** A program-owned account that this instruction creates as a PDA. */
@@ -1660,14 +1825,21 @@ export interface SystemProgram extends AccountMeta {
    * Create `account` with `space` bytes owned by `owner`, funded by `payer`. The new account signs: a
    * `Mut<Signer>` keypair, or a PDA of this program when you pass its `signerSeeds` (with the bump).
    */
-  createAccount(payer: Mut<Signer>, account: AccountMeta, lamports: u64, space: u64, owner: Pubkey, signerSeeds?: Seed[] | SignerSeeds): void;
+  createAccount(
+    payer: Mut<Signer> | RemainingAccount,
+    account: AccountMeta,
+    lamports: u64,
+    space: u64,
+    owner: Pubkey,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
   /**
    * Anchor's `init` with `seeds`, `space` and `owner = …` on an `UncheckedAccount`: `account` must be the PDA of this
    * program for `seeds` (no bump; 2006 otherwise); it is created with `space` bytes owned by `owner`, or, when someone
    * already funded the address, topped up to rent, allocated and assigned. Returns the bump. Among the creates a body
    * starts with, it runs before the other accounts' constraints, as Anchor's `init` does.
    */
-  createPda(payer: Mut<Signer>, account: Mut<AccountInfo>, space: u64, owner: Pubkey, seeds: Seed[]): u8;
+  createPda(payer: Mut<Signer> | RemainingAccount, account: Mut<AccountInfo> | RemainingAccount, space: u64, owner: Pubkey, seeds: Seed[]): u8;
   /** System Allocate: give `account` `space` bytes of data. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
   allocate(account: AccountMeta, space: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** System Assign: make `owner` the account's owner. It signs: a keypair, or a PDA of this program with `signerSeeds`. */
@@ -1675,32 +1847,39 @@ export interface SystemProgram extends AccountMeta {
 }
 
 /**
+ * A token account or mint argument of a token CPI: a `TokenAccount` / `Mint` parameter (checked on entry), an
+ * `AccountInfo` parameter, or a remaining account (the token program checks those).
+ */
+type TokenAccountArg = TokenAccount | AccountInfo | RemainingAccount;
+type MintArg = Mint | AccountInfo | RemainingAccount;
+
+/**
  * Token program operations. Pass `signerSeeds` (including the bump) when `authority` is a PDA of this program.
  * Prefer transferChecked: Token-2022 mints with extensions (transfer fees, hooks) require it.
  */
 interface TokenOps {
-  transfer(from: TokenAccount, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  transferChecked(from: TokenAccount, mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  transfer(from: TokenAccountArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  transferChecked(from: TokenAccountArg, mint: MintArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** `mint`: a Mut<Mint>, or a mint this instruction created and initialized (Mut<Signer> / Mut<AccountInfo>). */
   /** `to`: a Mut<TokenAccount>, or a Mut<AccountInfo> token account this instruction created (e.g. with `ata.create`). */
-  mintTo(mint: Mint | AccountMeta, to: TokenAccount | AccountInfo, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  burn(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  mintTo(mint: MintArg | AccountMeta, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  burn(from: TokenAccountArg, mint: MintArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Close a token account (empty), or under Token-2022 a mint with no supply left (its MintCloseAuthority signs). */
-  closeAccount(account: TokenAccount | Mint, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  closeAccount(account: TokenAccountArg | MintArg, destination: AccountMeta, authority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Let `delegate` move up to `amount` from `source`. */
-  approve(source: TokenAccount, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  revoke(source: TokenAccount, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  approve(source: TokenAccountArg, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  revoke(source: TokenAccountArg, owner: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** The checked forms read the decimals from `mint`; Token-2022 mints with some extensions require them. */
-  approveChecked(source: TokenAccount, mint: Mint, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  mintToChecked(mint: Mint, to: TokenAccount, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  burnChecked(from: TokenAccount, mint: Mint, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  approveChecked(source: TokenAccountArg, mint: MintArg, delegate: AccountMeta, owner: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  mintToChecked(mint: MintArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  burnChecked(from: TokenAccountArg, mint: MintArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Change or remove (null) an authority of a mint or token account: `AuthorityType.MintTokens`, …. */
   setAuthority(target: AccountMeta, currentAuthority: AccountMeta, authorityType: u8, newAuthority: Pubkey | null, signerSeeds?: Seed[] | SignerSeeds): void;
   /** `account`: a Mut<TokenAccount>, or (freezeAccount) a Mut<AccountInfo> token account this instruction created. */
-  freezeAccount(account: TokenAccount | AccountInfo, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
-  thawAccount(account: TokenAccount, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  freezeAccount(account: TokenAccountArg, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  thawAccount(account: TokenAccountArg, mint: AccountMeta, freezeAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** Update a wrapped-SOL account's amount after lamports were sent to it. */
-  syncNative(account: TokenAccount): void;
+  syncNative(account: TokenAccountArg): void;
   /** Initialize a mint created with systemProgram.createAccount (InitializeMint2: no rent sysvar needed). */
   initializeMint2(mint: AccountMeta, decimals: u8, mintAuthority: Pubkey, freezeAuthority: Pubkey | null): void;
   /** Initialize a token account created with systemProgram.createAccount (InitializeAccount3). */
@@ -1781,9 +1960,9 @@ interface Token2022Ops {
   updateInterestRate(mint: AccountMeta, rateAuthority: AccountMeta, rate: i16, signerSeeds?: Seed[] | SignerSeeds): void;
   /** TransferFee TransferCheckedWithFee: `fee` must be the fee Token-2022 computes for `amount`; decimals are the mint's. */
   transferCheckedWithFee(
-    from: TokenAccount,
-    mint: Mint,
-    to: TokenAccount,
+    from: TokenAccountArg,
+    mint: MintArg,
+    to: TokenAccountArg,
     authority: AccountMeta,
     amount: u64,
     fee: u64,
@@ -1792,7 +1971,7 @@ interface Token2022Ops {
   /** TransferFee HarvestWithheldTokensToMint: move withheld fees from the given token accounts (passed on writable as they were passed) to the mint. */
   harvestWithheldTokensToMint(mint: AccountMeta, sources: RemainingAccounts | RemainingSlice): void;
   /** TransferFee WithdrawWithheldTokensFromMint: the fees held by the mint to `destination`. */
-  withdrawWithheldTokensFromMint(mint: AccountMeta, destination: TokenAccount, withdrawAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  withdrawWithheldTokensFromMint(mint: AccountMeta, destination: TokenAccountArg, withdrawAuthority: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   /** TransferFee SetTransferFee: takes effect two epochs later. */
   setTransferFee(mint: AccountMeta, configAuthority: AccountMeta, basisPoints: u16, maximumFee: u64, signerSeeds?: Seed[] | SignerSeeds): void;
 
@@ -2051,9 +2230,17 @@ export declare enum ProgramError {
  * Stop the program as a Rust `panic!` / `unwrap()` on `None` / `unreachable!()` does: the message is logged and the
  * instruction fails with ProgramFailedToComplete (no error code). For porting native programs whose failures panic:
  * `location` ("program/src/instruction.rs:482:17") is the place the runtime reports, as the original's panic gives it;
- * by default this source line.
+ * by default this source line. A `null` message logs nothing, for a program whose panic handler writes no line of its
+ * own: `panic(null, "src/lib.rs:105:19")` leaves only the runtime's "SBF program Panicked in src/lib.rs at 105:19".
  */
-export declare function panic(message?: string, location?: string): never;
+export declare function panic(message?: string | null, location?: string): never;
+/**
+ * Stop the program as Rust's `abort` does on SBF (the allocator's out-of-memory error, `std::process::abort`): the
+ * runtime's `abort` syscall, which fails the instruction with ProgramFailedToComplete and logs "SBF program panicked"
+ * (no location, nothing else). Log the original's own line first where it writes one:
+ * `log("Error: memory allocation failed, out of memory"); abort();`.
+ */
+export declare function abort(): never;
 /**
  * Anchor's `constraint = condition @ error` on `account`. Written at the start of an instruction's body (before any
  * other statement), it runs with that account's checks, after its has_one and before its owner check, so a transaction
@@ -2069,8 +2256,22 @@ export declare function constraint(account: AccountMeta | RemainingAccount | nul
  */
 export declare function instructionData(): InstructionBytes;
 
-/** The instruction data, read in place: its bytes, and little-endian values at a byte offset. */
-export interface InstructionBytes extends IndexedList<u8> {
+/**
+ * The instruction data, read in place: its bytes, and little-endian values at a byte offset. A list of u8 like any other
+ * (`for (const b of data)`, `map` / `filter` / `reduce` / `some` …), read-only; a helper takes it (or a slice) as an
+ * `InstructionBytes` parameter.
+ */
+export interface InstructionBytes extends IndexedList<u8>, ListMethods<u8> {
+  readonly length: u64;
+  /** The byte at `index` (5104 past the end). */
+  get(index: bigint): u8;
+  /**
+   * Bytes `start` to `end - 1` in place, a view with the same methods (nothing is copied). Unlike JS's slice it does
+   * not clamp: `end` past the length or before `start` fails the instruction (5104). `end` defaults to the length.
+   * Copy one into a local list with `out.pushAll(data.slice(a, b))`.
+   */
+  slice(start: bigint, end?: bigint): InstructionBytes;
+  [Symbol.iterator](): Iterator<u8>;
   /** The little-endian value at `offset`; reading past the end fails the instruction (5104). */
   readU8(offset: u64): u8;
   readU16(offset: u64): u16;

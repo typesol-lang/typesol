@@ -301,7 +301,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isConditionalExpression(node)) return this.conditional(node, hint);
     if (ts.isArrayLiteralExpression(node))
       this.fail(node, "arrays are only allowed inline as seeds/CPI lists; declare local arrays with fixedArray<T, N>(fill)");
-    if (ts.isObjectLiteralExpression(node)) this.fail(node, "object literals are only allowed as the argument of emit<T>(...)");
+    if (ts.isObjectLiteralExpression(node))
+      this.fail(
+        node,
+        "an object literal needs a struct type here: give it one (const p: Point = { … }), or pass it where one is known (emit<T>(…), a helper's struct parameter, a struct field, storeBorsh<T>(…))",
+      );
     if (ts.isCallExpression(node)) {
       const h = this.handle(node);
       if (h) return { c: h, type: { kind: "account" } };
@@ -318,6 +322,11 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   protected property(node: ts.PropertyAccessExpression): Value {
     const field = node.name.text;
+    // A BigVec's room: the elements the account holds past the struct.
+    if (field === "capacity" && this.peekKind(node.expression) === "vec") {
+      const r = this.ref(node.expression);
+      if (r?.vec?.big !== undefined && !r.vec.slice) return { c: r.vec.big, type: U64 };
+    }
     if (field === "length") {
       if (this.isRemaining(node.expression)) return { c: `((uint64_t)(params->ka_num - ${this.remainingBase(node.expression)}))`, type: U64 };
       const sysvar = this.instructionsParam(node.expression);
@@ -342,6 +351,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const l = this.lookup(node.expression.text);
         if (l?.type.kind === "vecArg") return { c: `((uint64_t)${l.c}.len)`, type: U64 };
       }
+      // A slice of a Vec argument or the instruction data.
+      if (this.isVecArgView(node.expression)) return { c: `((uint64_t)${this.vecArgView(node.expression)!.c}.len)`, type: U64 };
       let what = "this value";
       try {
         what = this.checker.typeToString(this.checker.getTypeAtLocation(node.expression));
@@ -351,6 +362,21 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (/^string$|^FixedString/.test(what)) this.fail(node, "use byteLength(s) for strings; .length is available on arrays, Vecs and remainingAccounts()");
       this.fail(node, `.length is available on arrays, Vecs, map / filter chains and remainingAccounts(), not on ${what}`);
     }
+    if (this.isEpochRewards(node.expression)) {
+      const er = this.expr(node.expression).c;
+      const fields: Record<string, Value> = {
+        distributionStartingBlockHeight: { c: `(${er}.distribution_starting_block_height)`, type: U64 },
+        numPartitions: { c: `(${er}.num_partitions)`, type: U64 },
+        parentBlockhash: { c: `(&${er}.parent_blockhash)`, type: HASH },
+        totalPoints: { c: `(${er}.total_points)`, type: { kind: "int", name: "u128" } },
+        totalRewards: { c: `(${er}.total_rewards)`, type: U64 },
+        distributedRewards: { c: `(${er}.distributed_rewards)`, type: U64 },
+        active: { c: `(${er}.active != 0)`, type: BOOL },
+      };
+      const v = Object.hasOwn(fields, field) ? fields[field] : undefined;
+      if (!v) this.fail(node.name, `EpochRewards has ${Object.keys(fields).join(", ")}, not ${field}`);
+      return v;
+    }
     if (this.isTxIx(node.expression)) {
       const ix = this.expr(node.expression);
       if (field === "programId") return { c: `(${ix.c}.program_id)`, type: PUBKEY };
@@ -359,6 +385,12 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       this.fail(node.name, `a TransactionInstruction has programId, accountsLength and dataLength, not ${field}`);
     }
     const h = this.handle(node.expression);
+    // `sysvarAt<StakeHistorySysvar>(acct)`: its count and newest epoch, as on a StakeHistorySysvar parameter.
+    const sysvar = h && ts.isIdentifier(node.expression) ? this.lookup(node.expression.text)?.type : undefined;
+    if (h && sysvar?.kind === "account" && sysvar.program?.kind === "stakeHistory") {
+      if (field === "count") return { c: `ts_read_le(${h}->data, 8)`, type: U64 };
+      if (field === "latestEpoch") return { c: `(${h}->data_len >= 16 && ts_read_le(${h}->data, 8) ? ts_read_le(${h}->data + 8, 8) : 0)`, type: U64 };
+    }
     if (h) {
       switch (field) {
         case "key":
@@ -570,6 +602,15 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const v = this.expr(node);
     if (v.type.kind === "string") return v.c;
     if (converted) converted.yes = true;
+    if (v.type.kind === "option" && v.type.inner.kind === "pubkey") {
+      // `${key}` of an Option<Pubkey> (or Hash), narrowed or not: its base58, or "null" like JS.
+      const o = this.tmp("o");
+      const t = this.tmp("txt");
+      this.line(`${optC(v.type.inner)} ${o} = ${v.c};`);
+      this.line(`TS_Str ${t} = ts_str((const uint8_t *)"null", 4);`);
+      this.line(`if (${o}.some) TS_TRY(ts_base58_32((const uint8_t *)&${o}.v, &${t}));`);
+      return t;
+    }
     if (v.type.kind === "option" && (v.type.inner.kind === "int" || v.type.inner.kind === "bool")) {
       // `${opt}`: the value, or "null" like JS.
       const inner = v.type.inner;
@@ -615,6 +656,13 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   /** `c ? a : b` on values: only the chosen branch runs (its checks and side effects included). */
   protected conditional(node: ts.ConditionalExpression, hint?: ValueType): Value {
+    // One of two accounts: `ephemeral ? rest.get(5n) : reserve`.
+    if (this.looksLikeAccountHandle(node)) return this.accountChoice(node);
+    if (this.looksLikeAccountHandle(node.whenTrue) || this.looksLikeAccountHandle(node.whenFalse))
+      this.fail(
+        node,
+        "choose between accounts of one kind: remaining accounts (rest.get(i), a local or RemainingAccount parameter bound to one) or AccountInfo parameters",
+      );
     if (this.looksLikeStructPlace(node.whenTrue)) this.fail(node, "bind a choice between structs to a const: const o = c ? a.get(i) : b.get(i)");
     const cond = this.expect(this.expr(node.condition, BOOL), BOOL, node.condition);
     const t = this.tmp("cond");
@@ -647,7 +695,12 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     });
     this.line(`}`);
     const vt = type!;
-    if (vt.kind === "account" || vt.kind === "remaining" || vt.kind === "structRef" || vt.kind === "vecArg")
+    if (vt.kind === "account")
+      this.fail(
+        node,
+        "choose between accounts of one kind: remaining accounts (rest.get(i), a local or RemainingAccount parameter bound to one) or AccountInfo parameters",
+      );
+    if (vt.kind === "remaining" || vt.kind === "structRef" || vt.kind === "vecArg")
       this.fail(node, "choose between plain values (integers, booleans, Pubkeys, strings, options)");
     this.lines[declAt] = this.lines[declAt].replace(`/* ${t} */`, `${vt.kind === "pubkey" ? "SolPubkey" : valueC(vt)} ${t};`);
     return vt.kind === "pubkey" ? { c: `(&${t})`, type: vt } : { c: t, type: vt };

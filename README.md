@@ -344,7 +344,7 @@ Details are in [docs/testing.md](docs/testing.md).
 [`showcase/`](showcase) holds programs ported from Anchor and checked against the binaries deployed on mainnet (same
 outcomes, account bytes and events; [`showcase/test`](showcase/test)), and the ports of all 46
 [solana-developers/program-examples](showcase/program-examples/README.md).
-Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Raydium AMM v4](docs/case-study-raydium-amm.md), [Raydium CLMM](docs/case-study-raydium-clmm.md),
+Case studies: [Marginfi v2](docs/case-study-marginfi.md), [SPL Stake Pool](docs/case-study-spl-stake-pool.md), [Raydium AMM v4](docs/case-study-raydium-amm.md), [Raydium CLMM](docs/case-study-raydium-clmm.md),
 [Raydium CP-Swap](docs/case-study-raydium-cp-swap.md), [Jito MEV](docs/case-study-jito-mev.md),
 [coral-xyz/multisig](docs/case-study-multisig.md), [an Anchor escrow](docs/case-study-escrow.md).
 
@@ -354,6 +354,7 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Raydium AMM v4](docs/
 | [`raydium-clmm/`](showcase/mainnet/raydium-clmm) | Raydium CLMM in full: concentrated-liquidity positions as NFTs, swaps and multi-hop routes across tick arrays, limit orders, rewards, dynamic fees, u256 math |
 | [`jito-mev/`](showcase/mainnet/jito-mev) | Jito's tip payment, tip distribution and priority fee distribution: tips paid out per leader, Merkle-proof claims, epochs and expiry |
 | [`marginfi/`](showcase/mainnet/marginfi) | Marginfi v2 in full, all 124 instructions: I80F48 fixed-point arithmetic, zero-copy accounts, oracles (Pyth, Switchboard, staked SOL, Scope, venue exchange rates), the risk engine, liquidation and bankruptcy, flash loans, orders, rebalances, and the Solend, Kamino, Drift and JupLend banks |
+| [`spl-stake-pool/`](showcase/mainnet/spl-stake-pool) | SPL Stake Pool in full, all 27 instructions, a native program and the one behind most liquid staking tokens: pools of stake across up to 20,000 validators, SOL and stake deposits and withdrawals, rebalancing over epochs, fees and authorities, token metadata |
 | [`raydium-amm/`](showcase/mainnet/raydium-amm) | Raydium AMM v4, the original constant-product AMM and a native (non-Anchor) program, in full: pool creation, deposits and withdrawals, the v1 and v2 swaps, P&L and administration, down to its log records and panics |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
