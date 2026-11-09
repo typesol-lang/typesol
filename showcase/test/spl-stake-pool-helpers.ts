@@ -118,7 +118,6 @@ const s = (k: KeyPairSigner): Meta => ({ address: k.address, signer: k });
 const ws = (k: KeyPairSigner): Meta => ({ address: k.address, signer: k, writable: true });
 /** An account that may or may not sign (a signer when given as a keypair). */
 const maybe = (a: Address | KeyPairSigner): Meta => (typeof a === "string" ? r(a) : s(a));
-const addr = (a: Address | KeyPairSigner): Address => (typeof a === "string" ? a : a.address);
 
 /** The pool's accounts, as a test keeps them. */
 export interface Pool {
@@ -478,6 +477,8 @@ export interface DiffOptions {
 export class Diff {
   readonly cu: Record<string, [bigint, bigint]> = {};
   compared = 0;
+  /** The original's log lines of the last compared transaction (for messages). */
+  lastLogs = "";
   private constructor(
     readonly original: LiteSVM,
     readonly port: LiteSVM,
@@ -524,6 +525,30 @@ export class Diff {
       });
   }
 
+  /** An account's data in the original. */
+  data(a: Address): Buffer {
+    const acct = this.original.getAccount(a);
+    if (!acct.exists) throw new Error(`${a} does not exist`);
+    return Buffer.from(acct.data);
+  }
+
+  /** Change an account's bytes in both VMs (its lamports and owner kept unless given). */
+  patch(a: Address, edit: (data: Buffer) => void, opts: { lamports?: bigint; owner?: Address } = {}): void {
+    const acct = this.original.getAccount(a);
+    if (!acct.exists) throw new Error(`${a} does not exist`);
+    const data = Buffer.from(acct.data);
+    edit(data);
+    this.write(a, opts.owner ?? acct.programAddress, data, opts.lamports ?? BigInt(acct.lamports));
+  }
+
+  /** Move an account to another address in both VMs (the old address is emptied). */
+  move(from: Address, to: Address): void {
+    const acct = this.original.getAccount(from);
+    if (!acct.exists) throw new Error(`${from} does not exist`);
+    this.write(to, acct.programAddress, Buffer.from(acct.data), BigInt(acct.lamports));
+    this.write(from, SYSTEM, Buffer.alloc(0), 0n);
+  }
+
   /** An account's lamports, owner and data, as compared. */
   bytes(vm: LiteSVM, a: Address): string {
     const acct = vm.getAccount(a);
@@ -549,12 +574,14 @@ export class Diff {
       expect(this.bytes(this.port, at), `${label}: ${at}`).toBe(this.bytes(this.original, at));
     }
     this.cu[label] = [meta(a).computeUnitsConsumed(), meta(b).computeUnitsConsumed()];
+    this.lastLogs = logs(a);
     return outcome(a);
   }
 
   /** both(), which must succeed. */
   async ok(label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[] = []): Promise<void> {
-    expect(await this.both(label, payer, ixs, watch), label).toBe("ok");
+    const got = await this.both(label, payer, ixs, watch);
+    expect(got, `${label}\n${this.lastLogs}`).toBe("ok");
   }
 
   /** Move both VMs one epoch on (the StakeHistory gets the ending epoch's entry). */
@@ -598,7 +625,7 @@ export class Diff {
   ): Promise<Address> {
     const m = await generateKeyPairSigner();
     const program = opts.program ?? TOKEN;
-    const size = program === TOKEN ? 82 : t22.getMintSize(opts.extensions ?? []);
+    const size = program === TOKEN || !opts.extensions?.length ? 82 : t22.getMintSize(opts.extensions);
     const init = program === TOKEN ? token.getInitializeMint2Instruction : t22.getInitializeMint2Instruction;
     await this.setup(payer, [
       getCreateAccountInstruction({
@@ -617,7 +644,7 @@ export class Diff {
   /** A token account of `mint` held by `owner` (sized for the mint's required account extensions). */
   async tokenAccount(payer: KeyPairSigner, mint: Address, owner: Address, program: Address = TOKEN, extensions: t22.ExtensionArgs[] = []): Promise<Address> {
     const a = await generateKeyPairSigner();
-    const size = program === TOKEN ? 165 : t22.getTokenSize(extensions);
+    const size = program === TOKEN || !extensions.length ? 165 : t22.getTokenSize(extensions);
     const init = program === TOKEN ? token.getInitializeAccount3Instruction : t22.getInitializeAccount3Instruction;
     await this.setup(payer, [
       getCreateAccountInstruction({
@@ -783,3 +810,50 @@ export async function updatePairs(d: Diff, p: Pool, from = 0, count?: number): P
     list.map(async (v) => [await validatorStake(v.vote, p.pool, v.seed), await transientStake(v.vote, p.pool, v.transientSeed)] as [Address, Address]),
   );
 }
+
+// ---- Raw token accounts (spl-token / Token-2022 layouts), for states the token programs would not make ------------
+
+export const u16 = (n: number) => {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(n);
+  return b;
+};
+/** One Token-2022 extension entry (type, length, value). */
+export const tlv = (type: number, value: Buffer) => Buffer.concat([u16(type), u16(value.length), value]);
+
+/** A mint's bytes: the 82-byte base and, with `tlv`, the padding, the Mint account-type byte and the entries. */
+export function mintBytes(o: {
+  authority?: Address | null;
+  supply?: bigint;
+  decimals?: number;
+  initialized?: number;
+  freeze?: Address | null;
+  tlv?: Buffer;
+}): Buffer {
+  const b = Buffer.alloc(82);
+  if (o.authority) {
+    b.writeUInt32LE(1, 0);
+    key(o.authority).copy(b, 4);
+  }
+  b.writeBigUInt64LE(o.supply ?? 0n, 36);
+  b[44] = o.decimals ?? 9;
+  b[45] = o.initialized ?? 1;
+  if (o.freeze) {
+    b.writeUInt32LE(1, 46);
+    key(o.freeze).copy(b, 50);
+  }
+  return o.tlv ? Buffer.concat([b, Buffer.alloc(83), u8(1), o.tlv]) : b;
+}
+
+/** A token account's bytes: the 165-byte base and, with `tlv`, the Account account-type byte and the entries. */
+export function tokenAccountBytes(o: { mint: Address; owner: Address; amount?: bigint; state?: number; tlv?: Buffer }): Buffer {
+  const b = Buffer.alloc(165);
+  key(o.mint).copy(b, 0);
+  key(o.owner).copy(b, 32);
+  b.writeBigUInt64LE(o.amount ?? 0n, 64);
+  b[108] = o.state ?? 1;
+  return o.tlv ? Buffer.concat([b, u8(2), o.tlv]) : b;
+}
+
+/** Offsets in a StakeStateV2 (the Meta's authorities, the Delegation's epochs). */
+export const STAKE_OFFSETS = { staker: 12, withdrawer: 44, voter: 124, stake: 156, activation: 164, deactivation: 172 } as const;
