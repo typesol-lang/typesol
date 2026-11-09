@@ -296,7 +296,8 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   whose data actually changed fails the instruction (`ReadonlyDataModified`, or an access violation at the write under
   account-data direct mapping), one that was only read (or written with the bytes it held) is fine, and an account
   passed twice is two `AccountInfo`s over one buffer. By default
-  `loadRawMut` and `storeBorsh` check writability up front (3006) and `loadRawMut` claims the account once (2040), so a
+  `loadRawMut` and `storeBorsh` check writability up front (3006), `loadRawMut` claims the account once and
+  `storeBorsh` refuses an account passed more than once (2040, as a write to a remaining account's lamports), so a
   port fails where the original succeeds (a read-only validator list that is only read; the list passed again as a
   stake account, which the original skips by its address checks). With the flag, `loadRawMut`, `storeBorsh` and the
   BigVec writes through a `loadRawMut` view skip both, and both take a plain `AccountInfo` parameter (no `Mut<…>`

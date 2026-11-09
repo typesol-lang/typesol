@@ -1928,8 +1928,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const h = this.handle(node);
     // NATIVE_ACCOUNT_WRITES: written as Rust's serialize writes it, the runtime judging writability afterwards.
     const native = this.nativeAccountWrites();
+    // Without the flag, a write also needs the account passed once: given again (as another declared account or a
+    // remaining one), what the program reads through the other would not be what it wrote here.
     if (h) {
-      if (write && !native) this.line(`TS_TRY(ts_check_writable(${h}));`);
+      if (write && !native) {
+        this.line(`TS_TRY(ts_check_writable(${h}));`);
+        this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+      }
       return h;
     }
     const acct = this.accountParam(node, `${fn}'s account`);
@@ -1939,6 +1944,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         node,
         `${acct.name} must be Mut<AccountInfo> to write it with storeBorsh (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
       );
+    if (write && !native) this.line(`TS_TRY(ts_check_unaliased(params, a_${acct.name}));`);
     return `a_${acct.name}`;
   }
 

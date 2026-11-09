@@ -7,7 +7,7 @@ import { FailedTransactionMetadata, type TransactionMetadata } from "litesvm";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type Deployed, compileErrors, customError, deployFile, expectOk, fundedSigner, send } from "../harness.js";
+import { BN, type Deployed, compileErrors, customError, deployFile, expectOk, fundedSigner, send } from "../harness.js";
 
 type Result = TransactionMetadata | FailedTransactionMetadata;
 const enc = getAddressEncoder();
@@ -359,6 +359,37 @@ describe("loadBorsh / storeBorsh", () => {
     const ro = await put(Buffer.alloc(e.length + 8));
     expect(customError(await call(0, [src, { address: ro, writable: false }]))).toBe(3006);
     expect(bytes(ro).equals(Buffer.alloc(e.length + 8))).toBe(true);
+  });
+
+  it("refuses to write an account passed twice (2040), as the other writes without NATIVE_ACCOUNT_WRITES do", async () => {
+    const ixOf = (name: string, data: Buffer, accounts: Address[]) =>
+      ({
+        programAddress: d.programId,
+        accounts: accounts.map((address) => ({ address, role: AccountRole.WRITABLE })),
+        data: new Uint8Array(Buffer.concat([Buffer.from(d.idl.instructions.find((i) => i.name === name)!.discriminator), data])),
+      }) as Instruction;
+    const tallyBytes = async (count: bigint) => Buffer.from(await d.coder.accounts.encode("Tally", { count: new BN(count.toString()) }));
+    const tally = await put(await tallyBytes(5n));
+    const x = Buffer.alloc(4);
+    x.writeInt32LE(-9);
+    // Beside the declared account: written.
+    const other = await put(Buffer.alloc(8));
+    expectOk(await send(d.svm, payer, [ixOf("beside_declared", x, [tally, other])]));
+    expect([bytes(other).readInt32LE(0), bytes(other).readInt32LE(4)]).toEqual([-9, 9]);
+    expect(bytes(tally).equals(await tallyBytes(6n))).toBe(true);
+    // The declared Mut<Tally> passed again as the remaining account: refused before a byte is written.
+    expect(customError(await send(d.svm, payer, [ixOf("beside_declared", x, [tally, tally])]))).toBe(2040);
+    expect(bytes(tally).equals(await tallyBytes(6n))).toBe(true);
+    // A remaining account given twice, and an AccountInfo parameter given again.
+    const e = encodeKitchen(kitchen());
+    const src = await put(e);
+    const dst = await put(Buffer.alloc(e.length));
+    expect(customError(await call(0, [src, dst, dst]))).toBe(2040);
+    expect(customError(await call(0, [src, dst, { address: dst, writable: false }]))).toBe(2040);
+    expect(bytes(dst).equals(Buffer.alloc(e.length))).toBe(true);
+    expect(customError(await send(d.svm, payer, [ixOf("via_params", Buffer.alloc(0), [src, dst, dst])]))).toBe(2040);
+    expectOk(await send(d.svm, payer, [ixOf("via_params", Buffer.alloc(0), [src, dst])]));
+    expect(bytes(dst).equals(e)).toBe(true);
   });
 
   describe("SPL Stake Pool's StakePool", () => {

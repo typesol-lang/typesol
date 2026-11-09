@@ -150,6 +150,17 @@ export function viaParams(src: AccountInfo, dst: Mut<AccountInfo>): void {
   storeBorsh(dst, k);
 }
 
+/** An account of this program's own (with a discriminator), declared as a parameter. */
+export interface Tally {
+  count: u64;
+}
+
+/** A Point written with storeBorsh to the first remaining account, next to a declared account it must not be. */
+export function besideDeclared(tally: Mut<Tally>, x: i32): void {
+  storeBorsh<Point>(remainingAccounts().get(0n), { x, y: -x });
+  tally.count += 1n;
+}
+
 /** @fallback */
 export function entry(): void {
   const data = instructionData();
