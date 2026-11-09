@@ -12,14 +12,14 @@
 // first (try_from_slice: lengths that fit, UTF-8, nothing after the uri; anything else is BorshIoError, or the
 // allocator's out-of-memory abort for a length too big for the heap), so they are checked here before the
 // "Instruction: …" line. The original then moves them into the Metaplex instruction's DataV2 unchanged, so its bytes
-// are this instruction's from the name on, between a new tag and the fixed fields after the uri. The entry
-// (stake_pool.ts) builds that instruction from the data as sent and invokes it, with metadataCpiAccount's accounts:
-// invokeInstruction runs only in the instruction itself, not in a helper.
+// are this instruction's from the name on, between a new tag and the fixed fields after the uri: invokeMetaplex copies
+// them over as sent, in one piece.
 //
 // The withdraw authority signs with the bump stored in the pool, which check_authority_withdraw has just proved gives
 // its address; the original finds the bump again (find_withdraw_authority_program_address). Initialize stores the
 // bump it finds, so the two are the same for every pool.
 import {
+  type FixedVec,
   type Pubkey,
   type RemainingAccount,
   type RemainingAccounts,
@@ -27,7 +27,9 @@ import {
   ProgramError,
   abort,
   findProgramAddress,
+  fixedVec,
   instructionData,
+  invokeInstruction,
   loadBorsh,
   log,
   programId,
@@ -37,13 +39,13 @@ import {
 } from "typesol";
 import { StakePoolError } from "./errors.js";
 import { type StakePool, AccountType } from "./state.js";
-import { SYSTEM_PROGRAM_ID, checkAccountOwner, checkAuthorityWithdraw, checkManager, checkMint, checkSystemProgram, need } from "./util.js";
+import { AUTHORITY_WITHDRAW, SYSTEM_PROGRAM_ID, checkAccountOwner, checkAuthorityWithdraw, checkManager, checkMint, checkSystemProgram, need } from "./util.js";
 
 /** inline_mpl_token_metadata::ID. */
-export const MPL_TOKEN_METADATA_ID = pubkey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+const MPL_TOKEN_METADATA_ID = pubkey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 /** Metaplex's instruction tags: CreateMetadataAccountV3, UpdateMetadataAccountV2. */
-export const CREATE_METADATA_ACCOUNT_V3 = 33n;
-export const UPDATE_METADATA_ACCOUNT_V2 = 15n;
+const CREATE_METADATA_ACCOUNT_V3 = 33n;
+const UPDATE_METADATA_ACCOUNT_V2 = 15n;
 
 /** An account of the Metaplex instruction (solana_instruction::AccountMeta). */
 export interface InstructionMeta {
@@ -178,10 +180,9 @@ function checkMetadataAddress(metadata: Pubkey, poolMint: Pubkey): void {
 
 /**
  * Tag 17: CreateTokenMetadata { name, symbol, uri }. Accounts: pool, manager (signs), withdraw authority, pool mint,
- * payer (signs, a wallet), metadata account, Metaplex, System. Returns the withdraw authority's bump, for the entry's
- * CreateMetadataAccountV3 (metadata, mint, mint authority, payer, update authority, System).
+ * payer (signs, a wallet), metadata account, Metaplex, System.
  */
-export function createTokenMetadata(rest: RemainingAccounts): u8 {
+export function createTokenMetadata(rest: RemainingAccounts): void {
   decodeArguments(rest);
   log("Instruction: CreateTokenMetadata");
   need(rest, 8n);
@@ -201,15 +202,14 @@ export function createTokenMetadata(rest: RemainingAccounts): u8 {
   checkAuthorityWithdraw(pool, rest.get(2n).key, poolAcct.key);
   checkMint(pool, rest.get(3n));
   checkMetadataAddress(rest.get(5n).key, pool.poolMint);
-  return pool.stakeWithdrawBumpSeed;
+  invokeMetaplex(rest, true, pool.stakeWithdrawBumpSeed);
 }
 
 /**
  * Tag 18: UpdateTokenMetadata { name, symbol, uri }. Accounts: pool, manager (signs), withdraw authority, metadata
- * account, Metaplex. Returns the withdraw authority's bump, for the entry's UpdateMetadataAccountV2 (metadata, update
- * authority).
+ * account, Metaplex.
  */
-export function updateTokenMetadata(rest: RemainingAccounts): u8 {
+export function updateTokenMetadata(rest: RemainingAccounts): void {
   decodeArguments(rest);
   log("Instruction: UpdateTokenMetadata");
   need(rest, 5n);
@@ -221,19 +221,45 @@ export function updateTokenMetadata(rest: RemainingAccounts): u8 {
   checkManager(pool, rest.get(1n));
   checkAuthorityWithdraw(pool, rest.get(2n).key, poolAcct.key);
   checkMetadataAddress(rest.get(3n).key, pool.poolMint);
-  return pool.stakeWithdrawBumpSeed;
+  invokeMetaplex(rest, false, pool.stakeWithdrawBumpSeed);
 }
 
 /**
- * The Metaplex instruction's account `i` (create_metadata_accounts_v3 / update_metadata_accounts_v2): the withdraw
- * authority signs as the mint authority and the update authority.
+ * Metaplex's CreateMetadataAccountV3 (`create`) or UpdateMetadataAccountV2, built as create_metadata_accounts_v3 /
+ * update_metadata_accounts_v2 build it and signed by the withdraw authority, the mint authority and update authority.
+ * Its data: the tag (and the update's Some(DataV2)), this instruction's bytes from the name on, then DataV2's
+ * seller_fee_basis_points 0 and creators, collection and uses None, then for the create is_mutable true and
+ * collection_details None, for the update update_authority and primary_sale_happened None and is_mutable Some(true).
+ * Room for any instruction a transaction (1232 bytes) carries, and those 10 bytes.
  */
-export function metadataCpiAccount(rest: RemainingAccounts, create: boolean, i: u64): InstructionMeta {
-  if (!create)
-    return i === 0n ? { pubkey: rest.get(3n).key, isSigner: false, isWritable: true } : { pubkey: rest.get(2n).key, isSigner: true, isWritable: false };
-  if (i === 0n) return { pubkey: rest.get(5n).key, isSigner: false, isWritable: true };
-  if (i === 1n) return { pubkey: rest.get(3n).key, isSigner: false, isWritable: false };
-  if (i === 3n) return { pubkey: rest.get(4n).key, isSigner: true, isWritable: true };
-  if (i === 5n) return { pubkey: rest.get(7n).key, isSigner: false, isWritable: false };
-  return { pubkey: rest.get(2n).key, isSigner: true, isWritable: false };
+function invokeMetaplex(rest: RemainingAccounts, create: boolean, bump: u8): void {
+  const data = instructionData();
+  const cpiData: FixedVec<u8, 1248> = fixedVec([]);
+  if (create) cpiData.push(CREATE_METADATA_ACCOUNT_V3);
+  else {
+    cpiData.push(UPDATE_METADATA_ACCOUNT_V2);
+    cpiData.push(1n);
+  }
+  cpiData.pushAll(data.slice(1n));
+  for (let k = 0n; k < 5n; k++) cpiData.push(0n);
+  const authority = rest.get(2n).key;
+  const metas: FixedVec<InstructionMeta, 6> = fixedVec([]);
+  if (create) {
+    cpiData.push(1n);
+    cpiData.push(0n);
+    metas.push({ pubkey: rest.get(5n).key, isSigner: false, isWritable: true });
+    metas.push({ pubkey: rest.get(3n).key, isSigner: false, isWritable: false });
+    metas.push({ pubkey: authority, isSigner: true, isWritable: false });
+    metas.push({ pubkey: rest.get(4n).key, isSigner: true, isWritable: true });
+    metas.push({ pubkey: authority, isSigner: true, isWritable: false });
+    metas.push({ pubkey: SYSTEM_PROGRAM_ID, isSigner: false, isWritable: false });
+  } else {
+    cpiData.push(0n);
+    cpiData.push(0n);
+    cpiData.push(1n);
+    cpiData.push(1n);
+    metas.push({ pubkey: rest.get(3n).key, isSigner: false, isWritable: true });
+    metas.push({ pubkey: authority, isSigner: true, isWritable: false });
+  }
+  invokeInstruction(MPL_TOKEN_METADATA_ID, metas, cpiData, rest, [rest.get(0n).key, AUTHORITY_WITHDRAW, bump]);
 }
