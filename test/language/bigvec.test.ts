@@ -264,6 +264,16 @@ describe("BigVec", () => {
     tooSmall(await call(Buffer.concat([Buffer.from([8]), u64(11)]))); // 4 + 6 × 8 + 3: room for 6
   });
 
+  it("runs loops with break, continue, changed locals, a loop inside a loop and a return", async () => {
+    // Elements 0..5, the third (status 1) skipped by continue; the first loop moves into a function of its own (the
+    // slice's loop inside it too), the one returned from stays in the instruction.
+    put(listBytes(6, 8, (i) => (i === 2 ? 1 : 0)));
+    const run = (stop: number) => call(Buffer.concat([Buffer.from([10]), u64(stop), Buffer.alloc(32, 0xcd)]), false);
+    expect(logs(ok(await run(4)))).toContain("Program log: stopped at 4: seen 3 pairs 2 last 3");
+    expect(logs(ok(await run(10)))).toContain("Program log: seen 5 pairs 2 last 5");
+    expect(logs(ok(await run(0)))).toContain("Program log: stopped at 0: seen 0 pairs 0 last -1");
+  });
+
   describe("large lists (73-byte elements)", () => {
     const report: string[] = [];
     for (const n of [1_000, 10_000]) {

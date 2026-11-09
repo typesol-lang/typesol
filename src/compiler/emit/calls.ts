@@ -1128,6 +1128,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         h.needWritable();
         this.assertNotAliased(h.elemPaths(), node);
         const size = info.elemSize;
+        if (vt.elem.kind === "struct") return this.retainStructs(node, cb, v, vt.elem.name, size);
         const items = this.tmp("rt_items");
         const n = this.tmp("rt_n");
         const removed = this.tmp("rt_removed");
@@ -1172,6 +1173,59 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.fail(node, `a BigVec has push and retain (as SPL's big_vec), not ${method}(): remove elements with retain((x) => …)`);
     }
     this.fail(node, `a BigVec supports get, set, push, retain, slice, find / findIndex and the other list methods, .length and .capacity, not ${method}()`);
+  }
+
+  /**
+   * BigVec::retain over struct elements, walked with a pointer: the predicate gets each element in place, a kept one
+   * costs its predicate and the step. `run` is the first element not yet moved (the run of kept ones since the last
+   * removal), `dst` where that run goes; each run moves down once, when the next removal (or the end) is found, and
+   * only once something before it was removed. The length is written once, at the end (the moves never reach it).
+   */
+  private retainStructs(node: ts.CallExpression, cb: ts.ArrowFunction | ts.FunctionExpression, v: Ref, struct: string, size: number): { value: undefined } {
+    const info = v.vec!;
+    const items = this.tmp("rt_items");
+    const end = this.tmp("rt_end");
+    const run = this.tmp("rt_run");
+    const dst = this.tmp("rt_dst");
+    const p = this.tmp("rt_p");
+    this.line(`{`);
+    this.block(() => {
+      this.line(`uint8_t *${items} = (uint8_t *)${info.items};`);
+      this.line(`uint8_t *${end} = ${items} + (uint64_t)${info.len} * ${size}, *${run} = ${items}, *${dst} = ${items};`);
+      this.line(`for (uint8_t *${p} = ${items}; ${p} < ${end}; ${p} += ${size}) {`);
+      this.block(() => {
+        const el = this.tmp("rt_el");
+        this.line(`TSS_${struct} *${el} = (TSS_${struct} *)${p};`);
+        const list = (node.expression as ts.PropertyAccessExpression).expression;
+        const id = ts.factory.createIdentifier(`__rt${this.temp++}`);
+        ts.setTextRange(id, node);
+        (id as { parent?: ts.Node }).parent = node;
+        // The element as list.get(i) gives it: a reference into the list, with the list's aliasing paths.
+        this.scopes.at(-1)!.set(id.text, {
+          c: el,
+          type: { kind: "structRef", struct, writable: !!v.writable },
+          mutable: false,
+          paths: this.pathsOf(list)?.map((x) => `${x}[]`),
+        });
+        const closure: Closure = { node: cb, name: "retain's callback", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
+        const kept = this.expandClosure(closure, [id].slice(0, cb.parameters.length), cb);
+        if (!kept) this.fail(cb, "retain's callback returns a boolean: true keeps the element");
+        const b = this.expect(kept, BOOL, cb);
+        const at = this.tmp("rt_at");
+        this.line(`if (!(${b.c})) {`);
+        // The removal's own copy of the position, so the scan loop keeps a single pointer (see ts_opaque_ptr).
+        this.line(`  uint8_t *${at} = ts_opaque_ptr(${p});`);
+        this.line(`  if (${dst} != ${run} && ${at} != ${run}) sol_memmove_(${dst}, ${run}, ${at} - ${run});`);
+        this.line(`  ${dst} += ${at} - ${run};`);
+        this.line(`  ${run} = ${at} + ${size};`);
+        this.line(`}`);
+      });
+      this.line(`}`);
+      this.line(`if (${dst} != ${run} && ${end} != ${run}) sol_memmove_(${dst}, ${run}, ${end} - ${run});`);
+      this.line(`${info.len} = (uint32_t)((uint64_t)(${dst} + (${end} - ${run}) - ${items}) / ${size});`);
+    });
+    this.line(`}`);
+    return { value: undefined };
   }
 
   /** sha256(...) / keccak256(...) over strings, Pubkeys, Hashes, integers (LE) and booleans. */

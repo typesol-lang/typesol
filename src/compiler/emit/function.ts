@@ -34,7 +34,7 @@ export class FunctionEmitter extends StatementEmitter {
     for (const stmt of h.statements) this.reporter.guard(() => this.statement(stmt));
     // A helper with a result must return one; falling off the end would leave it unset.
     const end = h.returns ? `  TS_FAIL(TS_ERR_NO_RETURN, "TypeSOL: ${h.display} ended without returning a value");` : `  return SUCCESS;`;
-    return [`${helperSignature(h)} {`, ...this.hoisted, ...this.lines, end, `}`].join("\n");
+    return [...this.outlinedLoops, `${helperSignature(h)} {`, ...this.hoisted, ...this.lines, end, `}`].join("\n");
   }
 
   emitInstruction(): string {
@@ -500,7 +500,7 @@ export class FunctionEmitter extends StatementEmitter {
     // The Clock cache is declared first: a constraint (in the head) may read the Clock before the body does.
     const clock = this.hoisted.filter((l) => l.includes("ts_clk_ok"));
     const hoisted = this.hoisted.filter((l) => !clock.includes(l));
-    return [head[0]!, ...clock, ...head.slice(1), ...hoisted, ...this.lines, ...end, `}`].join("\n");
+    return [...this.outlinedLoops, head[0]!, ...clock, ...head.slice(1), ...hoisted, ...this.lines, ...end, `}`].join("\n");
   }
 
   /**

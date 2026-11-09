@@ -1806,6 +1806,13 @@ static inline __attribute__((always_inline)) uint64_t ts_bigvec_cap(const uint8_
   uint64_t len = ts_ld64(data - 8);
   return len < fixed ? 0 : (len - fixed) / elem;
 }
+/* The same pointer, but one the optimizer cannot relate to `p`. BigVec::retain's scan loop steps one pointer over the
+ * elements; its removal branch computes the moves from this copy, so clang's loop strength reduction does not rebuild
+ * the scan around offsets the moves share (measured: 5 instructions per kept element, against 6 to 9 without). */
+static inline __attribute__((always_inline)) uint8_t *ts_opaque_ptr(uint8_t *p) {
+  __asm__("" : "+r"(p));
+  return p;
+}
 
 /*
  * Did an Ed25519 precompile instruction in this transaction verify `message` signed by `signer`?
