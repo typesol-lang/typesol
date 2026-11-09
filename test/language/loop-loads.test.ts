@@ -138,7 +138,9 @@ describe("loadAccountMut in a loop", () => {
         `import { type Dup, type Signer, type u64, loadAccountMut, remainingAccounts } from "typesol";\nexport interface Counter { n: u64; }\nexport function f(payer: Signer): void {\n  const rest = remainingAccounts();\n${body}\n}\n`,
       );
     expect(program("  let last = loadAccountMut<Counter>(rest.get(0n));")).toMatch(/bind loaded accounts with const/);
-    expect(program("  for (let i = 0n; i < rest.length; i++) { const c = loadAccountMut<Counter>(rest.get(i)); const o = { c }; }")).toMatch(/an object literal needs a struct type/);
+    expect(program("  for (let i = 0n; i < rest.length; i++) { const c = loadAccountMut<Counter>(rest.get(i)); const o = { c }; }")).toMatch(
+      /an object literal needs a struct type/,
+    );
     // Dup<…> outside a loop iteration's scope, or on loadAccount, is refused.
     expect(program("  const c = loadAccountMut<Dup<Counter>>(rest.get(0n));")).toMatch(/is for remaining accounts loaded in a loop/);
   });
