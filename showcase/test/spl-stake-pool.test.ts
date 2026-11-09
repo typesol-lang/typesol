@@ -329,6 +329,7 @@ describe("Initialize", () => {
       ["mint uninitialized", mintBytes({ authority: w, initialized: 0 }), builtin("UninitializedAccount")],
       ["mint bad bool", mintBytes({ authority: w, initialized: 2 }), builtin("InvalidAccountData")],
       ["mint short", mintBytes({ authority: w }).subarray(0, 81), builtin("InvalidAccountData")],
+      ["mint of a multisig's length", Buffer.alloc(355), builtin("InvalidAccountData")],
       ["mint with supply", mintBytes({ authority: w, supply: 1n }), custom(E.NonZeroPoolTokenSupply)],
       ["mint with 6 decimals", mintBytes({ authority: w, decimals: 6 }), custom(E.IncorrectMintDecimals)],
       ["mint of another authority", mintBytes({ authority: q.manager.address }), custom(E.WrongMintingAuthority)],
@@ -646,6 +647,16 @@ describe("SOL deposits and withdrawals", () => {
     );
   });
 
+  it("mints no fee tokens without a deposit fee", async () => {
+    const { p, user, tokens, referrer } = await setting({ depositFee: fee(0n, 0n), label: "initialize (no deposit fee)" });
+    await d.ok("deposit sol: no fee", payer, [ix.depositSol(p, { from: user, to: tokens, referrer }, 2n * SOL)]);
+    expect(d.tokenBalance(tokens)).toBe(2n * SOL);
+    // A referral share of 0: the whole deposit fee goes to the manager.
+    await d.ok("set fee: sol deposit 1%", payer, [ix.setFee(p, p.manager, { kind: "SolDeposit", fee: fee(1n, 100n) })]);
+    await d.ok("set fee: sol referral 0", payer, [ix.setFee(p, p.manager, { kind: "SolReferral", percent: 0 })]);
+    await d.ok("deposit sol: no referral", payer, [ix.depositSol(p, { from: user, to: tokens, referrer }, 2n * SOL)]);
+  });
+
   it("asks the SOL deposit and withdraw authorities to sign", async () => {
     const { p, user, tokens, referrer } = await setting({ label: "initialize (sol authorities)" });
     const auth = await d.funded(1n);
@@ -899,6 +910,21 @@ describe("validators over epochs", () => {
     await d.ok("update pool (transient 4)", payer, [ix.updateStakePoolBalance(q)]);
     await d.ok("cleanup (transient)", payer, [ix.cleanupRemovedValidatorEntries(q)]);
   });
+
+  it("refuses a status byte that is no StakeStatus", async () => {
+    const r = await d.createPool(payer, { reserveLamports: 5n * SOL, maxValidators: 2, label: "initialize (status)" });
+    const v = await d.vote(payer);
+    await d.ok("add validator (status)", payer, [ix.addValidator(r, r.staker, await validatorStake(v, r.pool), v)]);
+    d.patch(r.list, (b) => (b[9 + 40] = 9));
+    expect(await d.both("set preferred withdraw: bad status", payer, [ix.setPreferredValidator(r, r.staker, "Withdraw", v)])).toBe(
+      custom(E.InvalidPreferredValidator),
+    );
+    d.nextEpoch();
+    for (const noMerge of [true, false])
+      expect(
+        await d.both(`update list: bad status (no merge ${noMerge})`, payer, [ix.updateValidatorListBalance(r, 0, noMerge, await updatePairs(d, r))]),
+      ).toBe(builtin("InvalidAccountData"));
+  });
 });
 
 describe("warmup and cooldown over several epochs", () => {
@@ -957,6 +983,8 @@ describe("a pool of 60 validators", () => {
     for (let i = 0; i < N; i += CHUNK)
       await d.ok(i === 0 ? "update list (12 pairs)" : `update list (big ${i})`, payer, [ix.updateValidatorListBalance(p, i, false, pairs.slice(i, i + CHUNK))]);
     await d.ok("update pool (60)", payer, [ix.updateStakePoolBalance(p)]);
+    // More than 32 accounts in one instruction: 16 pairs (39 accounts), with no merge.
+    await d.ok("update list (16 pairs)", payer, [ix.updateValidatorListBalance(p, 0, true, pairs.slice(0, 16))]);
     const removed = [3, 17, 18, 40, 59];
     for (const i of removed) await d.ok(`remove validator (big ${i})`, payer, [ix.removeValidator(p, p.staker, pairs[i]![0], pairs[i]![1])]);
     await d.ok("set preferred (60)", payer, [ix.setPreferredValidator(p, p.staker, "Withdraw", d.validators(p)[N - 2]!.vote)]);
@@ -987,6 +1015,7 @@ describe("compute units", () => {
       ["set preferred", "set preferred: deposit"],
       ["update list (4 pairs)", "update list (rewards)"],
       ["update list (12 pairs)", "update list (12 pairs)"],
+      ["update list (16, no merge)", "update list (16 pairs)"],
       ["update list (merges)", "update list (transient)"],
       ["update pool", "update pool (rewards)"],
       ["update pool (60)", "update pool (60)"],
