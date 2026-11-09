@@ -90,7 +90,8 @@ export function addValidatorToPool(rest: RemainingAccounts, seed: u32): void {
   const listAcct = rest.get(4n);
   const stakeAcct = rest.get(5n);
   const vote = rest.get(6n);
-  // The Clock, StakeHistory and stake config (accounts 8 to 10) are named by address in the Stake CPIs.
+  // The Clock, StakeHistory and stake config (accounts 8 to 10): named by address in the Stake CPIs, passed as those
+  // accounts.
   const epoch = currentEpoch();
 
   checkSystemProgram(rest.get(11n));
@@ -137,7 +138,7 @@ export function addValidatorToPool(rest: RemainingAccounts, seed: u32): void {
   stakeSplit(stake, reserve, withdrawAuth, poolAcct.key, bumpSeed, required, stakeAcct);
   // The vote account is only looked up in the list (not found, as the list is no vote account of it).
   checkNotTheList(vote, listAcct);
-  stakeDelegate(stake, stakeAcct, vote, withdrawAuth, poolAcct.key, bumpSeed);
+  stakeDelegate(stake, stakeAcct, vote, rest.get(8n), rest.get(9n), rest.get(10n), withdrawAuth, poolAcct.key, bumpSeed);
 
   list.validators.push({
     activeStakeLamports: required,
@@ -204,11 +205,11 @@ export function removeValidatorFromPool(rest: RemainingAccounts): void {
     checkTransientStakeAddress(poolAcct.key, transientAcct.key, voteKey, entry.transientSeedSuffix);
     const t = stakeState(transientAcct);
     if (t.tag === STAKE_STATE_STAKE && stakeIsUsableByPool(t, withdrawAuth.key, pool) && notDeactivating(t))
-      stakeDeactivate(stake, transientAcct, withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
+      stakeDeactivate(stake, transientAcct, rest.get(6n), withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
     newStatus = u8(STATUS_DEACTIVATING_ALL);
   }
   // A stake force-deactivated already (deactivate-delinquent) is not deactivated again.
-  if (notDeactivating(s)) stakeDeactivate(stake, stakeAcct, withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
+  if (notDeactivating(s)) stakeDeactivate(stake, stakeAcct, rest.get(6n), withdrawAuth, poolAcct.key, pool.stakeWithdrawBumpSeed);
   entry.status = newStatus;
 
   const preferredDeposit = pool.preferredDepositValidatorVoteAddress;

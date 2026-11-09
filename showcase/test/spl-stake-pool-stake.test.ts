@@ -70,6 +70,8 @@ function accounts(i: Instruction, edit: (list: { address: Address; role: Account
   return { ...i, accounts: list as Instruction["accounts"] };
 }
 const truncate = (i: Instruction, n: number) => accounts(i, (l) => l.splice(n));
+/** The instruction with one more (read-only) account at the end, past every account it takes. */
+const plus = (i: Instruction, address: Address) => accounts(i, (l) => l.push({ address, role: AccountRole.READONLY }));
 const replace = (i: Instruction, at: number, address: Address) =>
   accounts(i, (l) => {
     l[at] = {
@@ -356,6 +358,10 @@ describe("stake deposits", () => {
     // Another account where the StakeHistory sysvar goes: the merge names the sysvar itself, which the transaction
     // does not hold (the runtime's MissingAccount).
     expect(await d.both("deposit stake: wrong stake history", payer, [replace(dep, 12, CLOCK)])).toBe(builtin("MissingAccount"));
+    // The sysvar elsewhere in the instruction does not stand in for its slot: the runtime looks only among the CPI's accounts.
+    expect(await d.both("deposit stake: wrong stake history, the sysvar appended", payer, [plus(replace(dep, 12, p.mint), STAKE_HISTORY)])).toBe(
+      builtin("MissingAccount"),
+    );
     // A stale pool takes no deposits until it is updated.
     d.nextEpoch();
     expect(await d.both("deposit stake: stale pool", payer, [dep])).toBe(custom(E.StakeListAndPoolOutOfDate));

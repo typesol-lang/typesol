@@ -44,7 +44,8 @@ to the same C as before):
   methods, its loops emitted as functions of their own so they keep their registers (16 CU per entry for the pool's
   update sum, against the original's 27).
 - `programAt<P>` / `sysvarAt<S>` and typed CPIs that take remaining accounts, the Stake program's `split`, `merge`,
-  `getMinimumDelegation` and lockups, and sysvars named by address as solana_program's builders name them.
+  `getMinimumDelegation` and lockups, and `named(account, address)`: a sysvar named by address as solana_program's
+  builders name it, with the slot's account passed as Rust's `invoke_signed` passes it.
 - `NATIVE_ACCOUNT_WRITES`: account data written in place and judged by the runtime afterwards, as a native program's
   is; `epochRewards()`; `panic(null, location)` and `abort()`; local lists, the instruction data as a list and
   `invokeInstruction` in helpers (the Metaplex CPI); a ternary between accounts.

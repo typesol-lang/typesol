@@ -24,6 +24,7 @@ import {
   findProgramAddressBump,
   log,
   max,
+  named,
   panic,
   programId,
   pubkey,
@@ -788,8 +789,10 @@ export function mintTokens(
 
 // The Stake instructions are built as solana_program's builders build them (stake::instruction::merge, withdraw,
 // deactivate_stake, delegate_stake), which name the Clock, the StakeHistory sysvar and the stake config by their
-// addresses: the runtime finds each among the instruction's accounts by key, and refuses the call when the transaction
-// did not pass it (MissingAccount, "Instruction references an unknown account"), whatever is in its slot.
+// addresses, and invoked with the accounts of their slots in the instruction (clock_info, stake_history_info,
+// stake_config_info), as Rust's invoke_signed takes them: the runtime finds each address among those accounts only, and
+// refuses the call when a slot holds another account (MissingAccount, "Instruction references an unknown account"),
+// wherever else the sysvar is.
 
 /** Processor::stake_merge: Merge `source` into `destination`, signed by the withdraw authority. */
 export function stakeMerge(
@@ -799,13 +802,22 @@ export function stakeMerge(
   poolKey: Pubkey,
   bump: u8,
   destination: RemainingAccount,
+  clock: RemainingAccount,
+  stakeHistory: RemainingAccount,
 ): void {
-  stake.merge(destination, source, CLOCK_SYSVAR_ID, STAKE_HISTORY_SYSVAR_ID, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
+  stake.merge(destination, source, named(clock, CLOCK_SYSVAR_ID), named(stakeHistory, STAKE_HISTORY_SYSVAR_ID), authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
 }
 
 /** Processor::stake_deactivate, signed by the withdraw authority. */
-export function stakeDeactivate(stake: StakeProgram, account: RemainingAccount, authority: RemainingAccount, poolKey: Pubkey, bump: u8): void {
-  stake.deactivate(account, CLOCK_SYSVAR_ID, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
+export function stakeDeactivate(
+  stake: StakeProgram,
+  account: RemainingAccount,
+  clock: RemainingAccount,
+  authority: RemainingAccount,
+  poolKey: Pubkey,
+  bump: u8,
+): void {
+  stake.deactivate(account, named(clock, CLOCK_SYSVAR_ID), authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
 }
 
 /** Processor::stake_withdraw: Withdraw `lamports` from `source` to `destination` (no custodian). */
@@ -816,9 +828,15 @@ export function stakeWithdraw(
   poolKey: Pubkey,
   bump: u8,
   destination: RemainingAccount,
+  clock: RemainingAccount,
+  stakeHistory: RemainingAccount,
   lamports: u64,
 ): void {
-  stake.withdraw(source, destination, CLOCK_SYSVAR_ID, STAKE_HISTORY_SYSVAR_ID, authority, lamports, [poolKey, AUTHORITY_WITHDRAW, bump]);
+  stake.withdraw(source, destination, named(clock, CLOCK_SYSVAR_ID), named(stakeHistory, STAKE_HISTORY_SYSVAR_ID), authority, lamports, [
+    poolKey,
+    AUTHORITY_WITHDRAW,
+    bump,
+  ]);
 }
 
 /** Processor::stake_split: Split `lamports` of `source` into `destination`, signed by the withdraw authority. */
@@ -839,11 +857,18 @@ export function stakeDelegate(
   stake: StakeProgram,
   account: RemainingAccount,
   vote: RemainingAccount,
+  clock: RemainingAccount,
+  stakeHistory: RemainingAccount,
+  stakeConfig: RemainingAccount,
   authority: RemainingAccount,
   poolKey: Pubkey,
   bump: u8,
 ): void {
-  stake.delegate(account, vote, CLOCK_SYSVAR_ID, STAKE_HISTORY_SYSVAR_ID, STAKE_CONFIG_ID, authority, [poolKey, AUTHORITY_WITHDRAW, bump]);
+  stake.delegate(account, vote, named(clock, CLOCK_SYSVAR_ID), named(stakeHistory, STAKE_HISTORY_SYSVAR_ID), named(stakeConfig, STAKE_CONFIG_ID), authority, [
+    poolKey,
+    AUTHORITY_WITHDRAW,
+    bump,
+  ]);
 }
 
 /** stake::tools::get_minimum_delegation, then minimum_delegation: the most of it and MINIMUM_ACTIVE_STAKE. */

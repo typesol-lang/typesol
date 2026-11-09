@@ -18,6 +18,7 @@ import {
   SOL,
   STAKE,
   STAKE_ACCOUNT_SIZE,
+  STAKE_CONFIG,
   STAKE_HISTORY,
   STAKE_OFFSETS,
   STAKE_POOL_SIZE,
@@ -95,6 +96,8 @@ function accounts(i: Instruction, edit: (list: { address: Address; role: Account
   return { ...i, accounts: list as Instruction["accounts"] };
 }
 const truncate = (i: Instruction, n: number) => accounts(i, (l) => l.splice(n));
+/** The instruction with one more (read-only) account at the end, past every account it takes. */
+const plus = (i: Instruction, address: Address) => accounts(i, (l) => l.push({ address, role: AccountRole.READONLY }));
 const replace = (i: Instruction, at: number, address: Address) =>
   accounts(i, (l) => {
     l[at] = {
@@ -627,6 +630,10 @@ describe("SOL deposits and withdrawals", () => {
       // runtime does not find the sysvar among the accounts.
       ["withdraw sol: another account as the clock", replace(wd, 8, STAKE_HISTORY), builtin("MissingAccount")],
       ["withdraw sol: another account as the stake history", replace(wd, 9, CLOCK), builtin("MissingAccount")],
+      // The sysvar elsewhere in the instruction (past the optional SOL withdraw authority) does not stand in for its slot:
+      // the runtime looks only among the CPI's accounts, those of its slots.
+      ["withdraw sol: the mint as the clock, the Clock appended", plus(replace(wd, 8, p.mint), CLOCK), builtin("MissingAccount")],
+      ["withdraw sol: the mint as the stake history, the sysvar appended", plus(replace(wd, 9, p.mint), STAKE_HISTORY), builtin("MissingAccount")],
     ];
     for (const [label, i, want] of cases) {
       const got = await d.both(label, payer, [i]);
@@ -725,6 +732,12 @@ describe("validators over epochs", () => {
     // call in the runtime (after the stake account was made and split); swapped, both are there (below).
     expect(await run("wrong stake history", replace(await add(votes[2]!), 9, p.mint))).toBe(builtin("MissingAccount"));
     expect(await run("wrong stake config", replace(await add(votes[2]!), 10, p.mint))).toBe(builtin("MissingAccount"));
+    // The sysvar elsewhere in the instruction does not stand in for its slot: the runtime looks for the address only among
+    // the CPI's accounts, those of its slots, as Rust's invoke_signed passes them.
+    expect(await run("wrong stake history, the sysvar appended", plus(replace(await add(votes[2]!), 9, p.mint), STAKE_HISTORY))).toBe(
+      builtin("MissingAccount"),
+    );
+    expect(await run("wrong stake config, the sysvar appended", plus(replace(await add(votes[2]!), 10, p.mint), STAKE_CONFIG))).toBe(builtin("MissingAccount"));
     // A reserve that cannot fund another validator and keep its rent.
     const poor = await d.createPool(payer, { reserveLamports: SOL / 1000n, label: "initialize (poor)" });
     expect(

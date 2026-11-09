@@ -21,6 +21,7 @@ import {
   loadBorsh,
   loadRawMut,
   log,
+  named,
   programAt,
   programId,
   readData,
@@ -80,7 +81,9 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   const managerFee = rest.get(8n);
   const referrerFee = rest.get(9n);
   const mint = rest.get(10n);
-  // The Clock and StakeHistory (accounts 11 and 12) are named by address in the Stake CPIs.
+  // The Clock and StakeHistory (accounts 11 and 12): named by address in the Stake CPIs, passed as these accounts.
+  const clock = rest.get(11n);
+  const stakeHistory = rest.get(12n);
   const tokenProgram = rest.get(13n);
 
   checkStakeProgram(rest.get(14n));
@@ -131,8 +134,8 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
   checkNotTheList(userStake, listAcct);
   checkNotTheList(depositAuth, listAcct);
   if (depositAuth.isSigner) {
-    stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "staker");
-    stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "withdrawer");
+    stake.authorize(userStake, named(clock, CLOCK_SYSVAR_ID), depositAuth, newAuthority, "staker");
+    stake.authorize(userStake, named(clock, CLOCK_SYSVAR_ID), depositAuth, newAuthority, "withdrawer");
   } else {
     // find_deposit_authority_program_address: the first bump from 255 down that gives an address.
     let depositBump: u8 = 255n;
@@ -143,15 +146,15 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
     }
     if (address === depositAuth.key) {
       const seeds = signer([poolAcct.key, AUTHORITY_DEPOSIT, depositBump]);
-      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "staker", seeds);
-      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "withdrawer", seeds);
+      stake.authorize(userStake, named(clock, CLOCK_SYSVAR_ID), depositAuth, newAuthority, "staker", seeds);
+      stake.authorize(userStake, named(clock, CLOCK_SYSVAR_ID), depositAuth, newAuthority, "withdrawer", seeds);
     } else {
-      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "staker");
-      stake.authorize(userStake, CLOCK_SYSVAR_ID, depositAuth, newAuthority, "withdrawer");
+      stake.authorize(userStake, named(clock, CLOCK_SYSVAR_ID), depositAuth, newAuthority, "staker");
+      stake.authorize(userStake, named(clock, CLOCK_SYSVAR_ID), depositAuth, newAuthority, "withdrawer");
     }
   }
   const bump = pool.stakeWithdrawBumpSeed;
-  stakeMerge(stake, userStake, withdrawAuth, poolAcct.key, bump, validatorStake);
+  stakeMerge(stake, userStake, withdrawAuth, poolAcct.key, bump, validatorStake, clock, stakeHistory);
 
   // A merged account is still delegated: only its stake is read again.
   const stakeAfter = readData<u64>(validatorStake, STAKE_DELEGATED);
@@ -191,7 +194,7 @@ export function depositStake(rest: RemainingAccounts, slippage: boolean, minimum
     mintTokens(token, mint, referrerFee, withdrawAuth, poolAcct.key, bump, referralFee);
   }
   // The lamports that did not come as stake go to the reserve.
-  if (solDeposit > 0n) stakeWithdraw(stake, validatorStake, withdrawAuth, poolAcct.key, bump, reserve, solDeposit);
+  if (solDeposit > 0n) stakeWithdraw(stake, validatorStake, withdrawAuth, poolAcct.key, bump, reserve, clock, stakeHistory, solDeposit);
 
   require(pool.poolTokenSupply <= U64_MAX - newPoolTokens, StakePoolError.CalculationFailure);
   pool.poolTokenSupply += newPoolTokens;
