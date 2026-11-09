@@ -12,6 +12,15 @@
 // merges it into the reserve once it is inactive. A validator has one transient stake account at a time: the
 // "Additional" forms add to it in the epoch it was made, through an ephemeral stake account that is split off (and
 // delegated or deactivated) first, then merged into it.
+//
+// The validator list is read in place (loadRaw) and loaded for writing only at the end: the original holds it borrowed
+// mutably throughout, so a client that passes it again in another slot meets a check or a panic first (the panics are
+// ported at the original's locations, below), never the end. Where the port cannot fail as the original does:
+// - those panics log their message ("already mutably borrowed: BorrowError"), a line the original's panic handler
+//   does not write (TypeSOL's panic() always logs one);
+// - a StakeHistory or stake config account that is not the sysvar fails the original's CPI in the runtime
+//   (MissingAccount, "Instruction references an unknown account"), which a program cannot reproduce: the port fails
+//   just before that CPI with NotEnoughAccountKeys (checkStakeHistory below).
 import {
   type Pubkey,
   type RemainingAccount,
@@ -26,11 +35,11 @@ import {
   loadBorsh,
   loadRaw,
   loadRawMut,
-  panic,
-  pubkey,
   log,
+  panic,
   programAt,
   programId,
+  pubkey,
   rentExempt,
   require,
   signer,
@@ -203,7 +212,8 @@ export function increaseValidatorStake(rest: RemainingAccounts, lamports: u64, t
 /**
  * Tags 3, 20 and 21: move `lamports` off the validator stake account of the stake account given into its transient
  * stake account (seed `transientSeed`), deactivating. `fundRentFromReserve` (all but the deprecated
- * DecreaseValidatorStake): the reserve pays the new stake accounts' rent, else the lamports split off must cover it.
+ * DecreaseValidatorStake): the reserve pays the new stake accounts' rent; without it nothing does, and the Stake
+ * program only splits active stake into a transient account funded beforehand.
  * With `ephemeral` (DecreaseAdditionalValidatorStake) the lamports go through the ephemeral stake account of
  * `ephemeralSeed` first, which is deactivated, then split into a new transient stake account or merged into the one
  * still deactivating from this epoch.
