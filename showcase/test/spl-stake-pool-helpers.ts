@@ -30,6 +30,8 @@ import {
 export const PROGRAM = address("SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy");
 export const ORIGINAL = fileURLToPath(new URL("../../test/programs/spl_stake_pool.so", import.meta.url));
 export const PORT = fileURLToPath(new URL("../mainnet/spl-stake-pool/stake_pool.ts", import.meta.url));
+/** Metaplex Token Metadata, fetched by scripts/fetch-programs.sh (see test/programs/SOURCES.md). */
+export const MPL_METADATA_SO = fileURLToPath(new URL("../../test/programs/mpl_token_metadata.so", import.meta.url));
 export const TOKEN = address(token.TOKEN_PROGRAM_ADDRESS);
 export const TOKEN_2022 = address(t22.TOKEN_2022_PROGRAM_ADDRESS);
 export const SYSTEM = address("11111111111111111111111111111111");
@@ -99,6 +101,8 @@ export const validatorStake = async (vote: Address, pool: Address, seed = 0) =>
 export const transientStake = async (vote: Address, pool: Address, seed: bigint) =>
   (await pda(PROGRAM, ["transient", vote, pool, new Uint8Array(u64(seed))]))[0];
 export const ephemeralStake = async (pool: Address, seed: bigint) => (await pda(PROGRAM, ["ephemeral", pool, new Uint8Array(u64(seed))]))[0];
+/** Metaplex's metadata account of `mint` (inline_mpl_token_metadata::pda::find_metadata_account). */
+export const metadataAddress = async (mint: Address) => (await pda(MPL_METADATA, ["metadata", MPL_METADATA, mint]))[0];
 
 // ---- Instructions (instruction.rs) -----------------------------------------------------------------------------------
 
@@ -511,6 +515,12 @@ export class Diff {
     original.addProgram(PROGRAM, new Uint8Array(readFileSync(ORIGINAL)));
     const cluster = new StakeCluster([original, port], opts.cluster);
     return new Diff(original, port, cluster);
+  }
+
+  /** Load Metaplex Token Metadata into both VMs. */
+  withMetaplex(): this {
+    for (const vm of this.vms) vm.addProgramFromFile(MPL_METADATA, MPL_METADATA_SO);
+    return this;
   }
 
   get vms(): readonly [LiteSVM, LiteSVM] {

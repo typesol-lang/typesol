@@ -12,7 +12,7 @@
 // The instructions live by subject: admin.ts (Initialize, the setters, SetPreferredValidator), validators.ts (adding,
 // removing and cleaning up validators), update.ts (the per-epoch updates), sol.ts (SOL deposits and withdrawals),
 // and the files the later parts fill: rebalance.ts, stake_deposit.ts, stake_withdraw.ts, metadata.ts.
-import { ProgramError, instructionData, log, remainingAccounts, require, u64 } from "typesol";
+import { type FixedVec, ProgramError, fixedArray, instructionData, invokeInstruction, log, remainingAccounts, require, u8, u64 } from "typesol";
 import { addValidatorToPool, cleanupRemovedValidatorEntries, removeValidatorFromPool } from "./validators.js";
 import { initialize, setFee, setFundingAuthority, setManager, setPreferredValidator, setStaker } from "./admin.js";
 import { updateStakePoolBalance, updateValidatorListBalance } from "./update.js";
@@ -20,8 +20,16 @@ import { depositSol, withdrawSol } from "./sol.js";
 import { decreaseValidatorStake, increaseValidatorStake } from "./rebalance.js";
 import { depositStake } from "./stake_deposit.js";
 import { withdrawStake } from "./stake_withdraw.js";
-import { createTokenMetadata, updateTokenMetadata } from "./metadata.js";
-import { DEFAULT_PUBKEY } from "./util.js";
+import {
+  type InstructionMeta,
+  CREATE_METADATA_ACCOUNT_V3,
+  MPL_TOKEN_METADATA_ID,
+  UPDATE_METADATA_ACCOUNT_V2,
+  createTokenMetadata,
+  metadataCpiAccount,
+  updateTokenMetadata,
+} from "./metadata.js";
+import { AUTHORITY_WITHDRAW, DEFAULT_PUBKEY } from "./util.js";
 import { type Fee } from "./state.js";
 
 /** The entrypoint's failure line, `msg!(error.to_str::<StakePoolError>())`: "Error: " and the error's text. */
@@ -165,13 +173,47 @@ export function process(): void {
     withdrawSol(rest, data.readU64(1n), tag === 26n, tag === 26n ? data.readU64(9n) : 0n);
     return;
   }
-  if (tag === 17n) {
-    // CreateTokenMetadata { name, symbol, uri }: Borsh Strings, decoded (and the line logged) there.
-    createTokenMetadata(rest);
-    return;
-  }
-  if (tag === 18n) {
-    updateTokenMetadata(rest);
+  if (tag === 17n || tag === 18n) {
+    // CreateTokenMetadata / UpdateTokenMetadata { name, symbol, uri }: Borsh Strings, decoded (and the line logged)
+    // with the checks in metadata.ts. The Metaplex instruction is built and invoked here: invokeInstruction runs only
+    // in the instruction itself, and a list cannot be handed to a helper to fill.
+    const create = tag === 17n;
+    const bump = create ? createTokenMetadata(rest) : updateTokenMetadata(rest);
+    // Its data: Metaplex's tag (and the update's Some(DataV2)), our bytes from the name on, then DataV2's
+    // seller_fee_basis_points 0 and creators, collection and uses None, then for CreateMetadataAccountV3 is_mutable
+    // true and collection_details None, for UpdateMetadataAccountV2 update_authority and primary_sale_happened None
+    // and is_mutable Some(true). Room for any instruction a transaction (1232 bytes) carries, and those 10 bytes.
+    const head = fixedArray<u8, 1>(create ? CREATE_METADATA_ACCOUNT_V3 : UPDATE_METADATA_ACCOUNT_V2);
+    const cpiData: FixedVec<u8, 1248> = head.map((b) => b);
+    if (!create) cpiData.push(1n);
+    // Eight bytes a step, then the rest.
+    let at = 1n;
+    for (; n - at >= 8n; at += 8n) {
+      const word = data.readU64(at);
+      cpiData.push(u8(word & 0xffn));
+      cpiData.push(u8((word >> 8n) & 0xffn));
+      cpiData.push(u8((word >> 16n) & 0xffn));
+      cpiData.push(u8((word >> 24n) & 0xffn));
+      cpiData.push(u8((word >> 32n) & 0xffn));
+      cpiData.push(u8((word >> 40n) & 0xffn));
+      cpiData.push(u8((word >> 48n) & 0xffn));
+      cpiData.push(u8(word >> 56n));
+    }
+    for (; at < n; at++) cpiData.push(data.get(at));
+    for (let k = 0n; k < 5n; k++) cpiData.push(0n);
+    if (create) {
+      cpiData.push(1n);
+      cpiData.push(0n);
+    } else {
+      cpiData.push(0n);
+      cpiData.push(0n);
+      cpiData.push(1n);
+      cpiData.push(1n);
+    }
+    // Its accounts: six for the create, two for the update.
+    const slots = fixedArray<u8, 6>(0n);
+    const metas: FixedVec<InstructionMeta, 6> = slots.filter((s, i) => create || i < 2n).map((s, i): InstructionMeta => metadataCpiAccount(rest, create, i));
+    invokeInstruction(MPL_TOKEN_METADATA_ID, metas, cpiData, rest, [rest.get(0n).key, AUTHORITY_WITHDRAW, bump]);
     return;
   }
   if (tag === 19n || tag === 20n) {
