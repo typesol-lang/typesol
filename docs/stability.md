@@ -46,7 +46,8 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside
   "the checks stay" promise above: it only applies to programs that declare it.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
-- `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake).
+- `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake); a ternary
+  between remaining accounts and `AccountInfo` parameters (Unreleased).
 - Functions chosen at run time and lists of functions, closures returned from functions.
 - `typesol/testing`'s epochs and staking: `warpToEpoch`, `nextEpoch`, `StakeCluster`, `stakeActivation`, the vote and
   stake account builders and `readStakeAccount`.

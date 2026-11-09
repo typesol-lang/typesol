@@ -1356,8 +1356,73 @@ export abstract class CallEmitter extends ExpressionEmitter {
     );
   }
 
+  /**
+   * Whether `node` names one account a choice may pick, without emitting code: a remaining account (`rest.get(i)`), a
+   * local or `RemainingAccount` helper parameter bound to one, an `AccountInfo` parameter, or a choice between those.
+   */
+  protected looksLikeAccountHandle(node: ts.Expression): boolean {
+    if (ts.isParenthesizedExpression(node)) return this.looksLikeAccountHandle(node.expression);
+    if (ts.isConditionalExpression(node)) return this.looksLikeAccountHandle(node.whenTrue) && this.looksLikeAccountHandle(node.whenFalse);
+    if (ts.isIdentifier(node)) {
+      const l = this.lookup(node.text);
+      if (l) return l.type.kind === "account";
+      return this.accountAt(node)?.kind.kind === "info";
+    }
+    return (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "get" &&
+      this.isRemaining(node.expression.expression)
+    );
+  }
+
+  /**
+   * `c ? rest.get(5n) : reserve`: one of two accounts, chosen at run time (only the chosen side runs), as a `TsAccount *`
+   * usable wherever a remaining account is. Each side is a remaining account, a local or helper parameter bound to one,
+   * an `AccountInfo` parameter or another such choice; a `programAt` check is kept when both sides carry the same one.
+   */
+  protected accountChoice(node: ts.ConditionalExpression): Value {
+    const side = (e: ts.Expression): Value => {
+      if (ts.isParenthesizedExpression(e)) return side(e.expression);
+      if (ts.isConditionalExpression(e)) return this.accountChoice(e);
+      if (ts.isIdentifier(e)) {
+        const l = this.lookup(e.text);
+        if (l?.type.kind === "account") return { c: l.c, type: l.type };
+        const a = this.accountAt(e);
+        if (!l && a?.kind.kind === "info") return { c: `a_${this.accountParam(e, "a choice between accounts").name}`, type: { kind: "account" } };
+      }
+      const h = this.handle(e);
+      if (h) return { c: h, type: { kind: "account" } };
+      this.fail(
+        e,
+        "choose between accounts of the same kind: remaining accounts (rest.get(i), a local or RemainingAccount parameter bound to one) or AccountInfo parameters",
+      );
+    };
+    const cond = this.expect(this.expr(node.condition, BOOL), BOOL, node.condition);
+    const t = this.tmp("acct");
+    this.line(`TsAccount *${t};`);
+    this.line(`if (${cond.c}) {`);
+    let a!: Value;
+    let b!: Value;
+    this.block(() => {
+      a = side(node.whenTrue);
+      this.line(`${t} = ${a.c};`);
+    });
+    this.line(`} else {`);
+    this.block(() => {
+      b = side(node.whenFalse);
+      this.line(`${t} = ${b.c};`);
+    });
+    this.line(`}`);
+    const pa = a.type.kind === "account" ? a.type.program : undefined;
+    const pb = b.type.kind === "account" ? b.type.program : undefined;
+    const program = pa && pb && JSON.stringify(pa) === JSON.stringify(pb) ? pa : undefined;
+    return { c: t, type: { kind: "account", ...(program ? { program } : {}) } };
+  }
+
   protected handle(node: ts.Expression): string | undefined {
     if (ts.isParenthesizedExpression(node)) return this.handle(node.expression);
+    if (ts.isConditionalExpression(node) && this.looksLikeAccountHandle(node)) return this.accountChoice(node).c;
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       return l?.type.kind === "account" ? l.c : undefined;

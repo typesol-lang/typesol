@@ -9,6 +9,9 @@ codes, and says so here.
 - `panic(null, "src/lib.rs:105:19")` panics at a location without logging a message, for a native port whose panic
   handler writes none; `abort()` is Rust's abort on SBF (the allocator's out-of-memory error), the runtime's `abort`
   syscall: "SBF program panicked", no location.
+- A ternary between accounts, `const source = ephemeral ? rest.get(5n) : reserve`: remaining accounts, locals and
+  `RemainingAccount` helper parameters bound to one, and `AccountInfo` parameters; only the chosen side runs, and the
+  result goes wherever a remaining account does (typed CPIs, `readData`, `loadRaw`, `loadBorsh`, helpers).
 - Stake CPIs take a sysvar or the stake config by address (a `Pubkey`) as well as an account, as solana_program's
   stake builders name them: found by key among the instruction's accounts, MissingAccount when it was not passed.
 - New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake

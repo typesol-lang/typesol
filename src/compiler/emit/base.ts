@@ -470,6 +470,8 @@ export abstract class EmitterBase {
   protected abstract isRemaining(node: ts.Expression): boolean;
   protected abstract remainingBase(node: ts.Expression): string;
   protected abstract handle(node: ts.Expression): string | undefined;
+  protected abstract looksLikeAccountHandle(node: ts.Expression): boolean;
+  protected abstract accountChoice(node: ts.ConditionalExpression): Value;
   protected abstract instructionsParam(node: ts.Expression): AccountParam | undefined;
   protected abstract isTxIx(node: ts.Expression): boolean;
   protected abstract seeds(node: ts.Expression, extra: number): { name: string; count: number; idl: IdlSeed[] | undefined };
