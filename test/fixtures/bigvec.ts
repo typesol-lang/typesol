@@ -158,6 +158,31 @@ export function entry(): void {
     log(`n ${nums.items.length} first>100 ${big === null ? 0n : big} has42 ${nums.items.includes(42n)}`);
     return;
   }
+  if (tag === 10n) {
+    // Loops over the list with break and continue, locals (a Pubkey, counters) changed across steps, a loop over a
+    // slice inside one, and a loop the function returns from
+    const l = loadRaw<ValidatorList>(rest.get(0n));
+    const stop = data.readU64(1n);
+    let seen = 0n;
+    let pairs = 0n;
+    let last = data.readPubkey(9n);
+    for (const v of l.validators) {
+      if (v.status === 1n) continue;
+      if (u64(v.validator_seed_suffix) >= stop) break;
+      seen += 1n;
+      last = v.vote_account_address;
+      for (const w of l.validators.slice(0n, 2n)) if (w.validator_seed_suffix === v.validator_seed_suffix) pairs += 1n;
+    }
+    const at = l.validators.findIndex((v) => v.vote_account_address === last);
+    for (const v of l.validators) {
+      if (u64(v.validator_seed_suffix) === stop) {
+        log(`stopped at ${stop}: seen ${seen} pairs ${pairs} last ${at}`);
+        return;
+      }
+    }
+    log(`seen ${seen} pairs ${pairs} last ${at}`);
+    return;
+  }
   if (tag === 9n) {
     // nothing but the load (its checks)
     const l = loadRaw<ValidatorList>(rest.get(0n));

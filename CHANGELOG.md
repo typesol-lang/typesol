@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- BigVec loops cost less an entry. A loop over a BigVec (`for … of`, the list methods, a slice) becomes a C function
+  of its own, given the variables it uses: inside a large function it shared SBF's registers with everything held
+  across it, and clang spilled its pointer and totals every step. `retain` over structs walks the elements with one
+  pointer. SPL Stake Pool's UpdateStakePoolBalance sum costs 16 CU an entry (was 31; the original 27) and its cleanup's
+  retain 5 (was 11; the original 9), so both fit the default 200,000 units wherever the original does. Programs
+  without a BigVec compile to the same C.
 - `panic(null, "src/lib.rs:105:19")` panics at a location without logging a message, for a native port whose panic
   handler writes none; `abort()` is Rust's abort on SBF (the allocator's out-of-memory error), the runtime's `abort`
   syscall: "SBF program panicked", no location.

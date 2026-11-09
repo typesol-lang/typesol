@@ -1481,6 +1481,20 @@ describe("huge_pool.rs", () => {
     expect(hugeUnits[label]![1]).toBeLessThan(200_000n);
   });
 
+  // Regression: past MAX_POOL_SIZE, with no compute-unit request (the default 200,000 units), the two instructions
+  // that go through the whole list fit the original up to about 7,100 validators (UpdateStakePoolBalance) and 20,000
+  // (the cleanup). The port's BigVec loops once cost more an entry than the original's (31 and 11 units, against 27 and
+  // 9), so it ran out of compute where the original did not, from about 6,400 and 18,100 validators. Both must succeed.
+  it("update pool [6800]: within the default compute budget, as the original", async () => {
+    const h = await setup(6_800, 6_800, STAKE_AMOUNT, [], STATUS.Active, false);
+    await h.run("huge 6800: update pool (no CU request)", ix.updateStakePoolBalance(h.p));
+  });
+
+  it("cleanup [19000]: within the default compute budget, as the original", async () => {
+    const h = await setup(19_000, 19_000, STAKE_AMOUNT, [], STATUS.Active, false);
+    await h.run("huge 19000: cleanup (no CU request)", ix.cleanupRemovedValidatorEntries(h.p));
+  });
+
   it(`remove_validator_from_pool [${MAX}]: the first, the middle and the last, merged and cleaned up`, async () => {
     const middle = MAX / 2;
     const h = await setup(MAX, MAX, SOL, [0, middle, MAX - 1]);
