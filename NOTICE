@@ -9,7 +9,8 @@ This repository also holds third-party material used only by its tests. None of 
   (solana-program/program-metadata), coral-xyz/multisig, Raydium CP-Swap, Raydium CLMM and Raydium AMM v4 (raydium-io), Jito's tip
   payment, tip distribution and priority fee distribution programs (jito-foundation/jito-programs), marginfi v2
   (mrgnlabs/marginfi-v2), Solend's token-lending (solendprotocol/solana-program-library) and SPL Stake Pool
-  (solana-program/stake-pool). The licence text is test/programs/LICENSE-Apache-2.0.txt; each binary's source, program id
+  (solana-program/stake-pool); and, under the MIT licence, Phoenix v1 (Ellipsis-Labs/phoenix-v1). The licence texts are test/programs/LICENSE-Apache-2.0.txt and
+  test/programs/LICENSE-MIT-phoenix-v1.txt; each binary's source, program id
   and sha256 are in test/programs/SOURCES.md.
   marginfi v2's Drift v2 test build (drift-labs/protocol-v2) is Apache-2.0 too and kept.
   The Metaplex programs, under the Metaplex(TM) NFT Open Source License 1.0, Kamino's lending and farms programs and
