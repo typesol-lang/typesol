@@ -388,7 +388,10 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   read through the other), where Rust's `RefCell` would fail a second `borrow_mut()` while the first is held (a panic,
   or `AccountBorrowFailed` through `try_borrow_mut_data`). The original's own address and type checks normally refuse
   such a pair before it is loaded (SPL Stake Pool's PDA checks); make them in the same order, before the load. Only
-  data writes are affected: `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of
+  data writes are affected: with or without the flag every view reads the account's bytes in place, so a `loadRaw`
+  of an account also loaded with `loadRawMut` (or written with `storeBorsh`) reads what was written, BigVec pushes
+  included; the flag only lifts the up-front checks (a second `loadRawMut` of one account, at the same position or
+  another, is 2040 without it). `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of
   `Mut<…>` parameters stay as they are, and programs without the flag compile exactly as before.
 - Errors as the original returns them: an error enum may start at code 0 (`/** @code 0 */`, Rust's
   `ProgramError::Custom(0)`, returned as Solana's CUSTOM_ZERO); `require(c, ProgramError.InvalidInstructionData)` for a

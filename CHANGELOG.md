@@ -24,6 +24,9 @@ codes, and says so here.
 - `invokeInstruction` in helpers (with their `RemainingAccounts` parameter), with metas and data from local lists, a
   `FixedArray`, the instruction data or a slice of it: a native port's instruction builder, metas naming accounts by
   key.
+- `NATIVE_ACCOUNT_WRITES` (no change in behaviour, now tested and documented): a second `loadRawMut` of one account at
+  the same position is allowed with the flag (2040 without), and `loadRaw` reads what `loadRawMut`, `storeBorsh` or a
+  BigVec push wrote, with or without it.
 - Stake CPIs take a sysvar or the stake config by address (a `Pubkey`) as well as an account, as solana_program's
   stake builders name them: found by key among the instruction's accounts, MissingAccount when it was not passed.
 - New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake
