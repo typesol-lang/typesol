@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+- Stake CPIs take a sysvar or the stake config by address (a `Pubkey`) as well as an account, as solana_program's
+  stake builders name them: found by key among the instruction's accounts, MissingAccount when it was not passed.
 - New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake
   Pool's `StakePool`) read into a local struct and written back from byte 0, as Rust's `try_from_slice_unchecked` and
   `serialize` do: trailing bytes ignored, the bytes after a shrunk value left as they were, invalid bytes or a value

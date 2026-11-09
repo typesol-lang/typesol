@@ -14,6 +14,7 @@ import {
   invoke,
   log,
   programAt,
+  pubkey,
   readonly,
   readonlySigner,
   remainingAccounts,
@@ -105,6 +106,18 @@ export function entry(): void {
     // A wallet authority (it signed the transaction): no signerSeeds.
     const stake = programAt<StakeProgram>(rest.get(3n));
     stake.deactivate(rest.get(0n), rest.get(1n), rest.get(2n));
+  } else if (tag === 14n) {
+    // merge(destination, source, PDA authority) with the sysvars named by address, as solana_program's stake
+    // builders name them: the runtime finds them among the transaction's accounts.
+    const stake = programAt<StakeProgram>(rest.get(3n));
+    stake.merge(
+      rest.get(0n),
+      rest.get(1n),
+      pubkey("SysvarC1ock11111111111111111111111111111111"),
+      pubkey("SysvarStakeHistory1111111111111111111111111"),
+      rest.get(2n),
+      ["authority", data.readU8(1n)],
+    );
   } else if (tag === 30n) {
     // mintTo(mint, to, PDA mint authority, amount at 2)
     const token = programAt<TokenInterface>(rest.get(3n));

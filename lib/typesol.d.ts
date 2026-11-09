@@ -426,7 +426,7 @@ export interface StakeProgram extends AccountMeta {
    */
   initialize(
     stake: AccountMeta,
-    rentSysvar: AccountMeta,
+    rentSysvar: AccountMeta | Pubkey,
     staker: Pubkey,
     withdrawer: Pubkey,
     lockup?: { unixTimestamp: i64; epoch: u64; custodian: Pubkey },
@@ -434,7 +434,7 @@ export interface StakeProgram extends AccountMeta {
   /** Hand the staker or the withdrawer authority to `newAuthority`. */
   authorize(
     stake: AccountMeta,
-    clockSysvar: AccountMeta,
+    clockSysvar: AccountMeta | Pubkey,
     authority: AccountMeta,
     newAuthority: Pubkey,
     which: "staker" | "withdrawer",
@@ -443,7 +443,7 @@ export interface StakeProgram extends AccountMeta {
   /** The same, with the lockup custodian signing (to change the withdrawer while a lockup is in force). */
   authorize(
     stake: AccountMeta,
-    clockSysvar: AccountMeta,
+    clockSysvar: AccountMeta | Pubkey,
     authority: AccountMeta,
     newAuthority: Pubkey,
     which: "staker" | "withdrawer",
@@ -453,20 +453,20 @@ export interface StakeProgram extends AccountMeta {
   delegate(
     stake: AccountMeta,
     vote: AccountMeta,
-    clockSysvar: AccountMeta,
-    stakeHistorySysvar: AccountMeta,
-    stakeConfig: AccountMeta,
+    clockSysvar: AccountMeta | Pubkey,
+    stakeHistorySysvar: AccountMeta | Pubkey,
+    stakeConfig: AccountMeta | Pubkey,
     staker: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
   /** Move `lamports` (and their share of the stake) into `splitStake`: 200 bytes, owned by the Stake program, uninitialized. */
   split(stake: AccountMeta, splitStake: AccountMeta, staker: AccountMeta, lamports: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  deactivate(stake: AccountMeta, clockSysvar: AccountMeta, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  deactivate(stake: AccountMeta, clockSysvar: AccountMeta | Pubkey, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   withdraw(
     stake: AccountMeta,
     to: AccountMeta,
-    clockSysvar: AccountMeta,
-    stakeHistorySysvar: AccountMeta,
+    clockSysvar: AccountMeta | Pubkey,
+    stakeHistorySysvar: AccountMeta | Pubkey,
     withdrawer: AccountMeta,
     lamports: u64,
     signerSeeds?: Seed[] | SignerSeeds,
@@ -475,8 +475,8 @@ export interface StakeProgram extends AccountMeta {
   withdraw(
     stake: AccountMeta,
     to: AccountMeta,
-    clockSysvar: AccountMeta,
-    stakeHistorySysvar: AccountMeta,
+    clockSysvar: AccountMeta | Pubkey,
+    stakeHistorySysvar: AccountMeta | Pubkey,
     withdrawer: AccountMeta,
     lamports: u64,
     custodian: AccountMeta,
@@ -486,8 +486,8 @@ export interface StakeProgram extends AccountMeta {
   merge(
     destination: AccountMeta,
     source: AccountMeta,
-    clockSysvar: AccountMeta,
-    stakeHistorySysvar: AccountMeta,
+    clockSysvar: AccountMeta | Pubkey,
+    stakeHistorySysvar: AccountMeta | Pubkey,
     staker: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;

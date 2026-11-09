@@ -1434,6 +1434,31 @@ static inline uint64_t ts_cpi(TsParams *params, const TsAccount *program, uint8_
   return ts_invoke(params, &ix, &signer, nseeds > 0 ? 1 : 0);
 }
 
+/* A CPI whose account list names some accounts by key only (bit i of `keyonly`: a sysvar, as solana_program's stake
+   instruction builders name them): each is looked up among the instruction's accounts, and one the transaction did not
+   pass is left out of the account infos, so the runtime refuses the call (MissingAccount) as it refuses the original's. */
+static inline uint64_t ts_cpi_keyed(TsParams *params, const TsAccount *program, uint8_t *data, uint64_t len, SolAccountMeta *metas,
+                                    uint64_t n, uint64_t keyonly, const SolSignerSeed *seeds, int nseeds) {
+  SolInstruction ix = {(SolPubkey *)&program->key, metas, n, data, len};
+  SolSignerSeeds signer = {seeds, (uint64_t)nseeds};
+  TS_INFOS_RESERVE(params, n);
+  SolAccountInfo *infos = params->infos;
+  uint64_t m = 0;
+  for (uint64_t i = 0; i < n; i++) {
+    const TsAccount *a = NULL;
+    if ((keyonly >> i) & 1) {
+      for (uint64_t j = 0; j < params->ka_num; j++)
+        if (ts_key_eq(&params->ka[j]->key, metas[i].pubkey)) {
+          a = params->ka[j];
+          break;
+        }
+    } else
+      a = (const TsAccount *)((const uint8_t *)metas[i].pubkey - 8);
+    if (a) ts_info(a, &infos[m++]);
+  }
+  return sol_invoke_signed(&ix, infos, m, &signer, nseeds > 0 ? 1 : 0);
+}
+
 /* ---- Token-2022 extensions (TLV after the 165-byte base and the account-type byte) ---- */
 /* `a` must be a token-program mint (want 1) or account (want 2), or either (want 0): legacy SPL Token accounts
    simply have no extensions; a Token-2022 multisig or a foreign account is refused. */

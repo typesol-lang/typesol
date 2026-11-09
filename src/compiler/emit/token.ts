@@ -738,6 +738,19 @@ export abstract class TokenEmitter extends CreateEmitter {
       if (mut && x.param && !isWritable(x.param.kind)) this.fail(a[i]!, `${what} must be writable (Mut<...>)`);
       return x;
     };
+    /**
+     * A sysvar or config slot: an account as passed, or its address (a Pubkey), which goes into the instruction's
+     * account list as solana_program's stake instruction builders put it there, the runtime finding the account by key
+     * (MissingAccount when the transaction did not pass it).
+     */
+    const sysvar = (i: number, what: string): CpiAcct => {
+      const n = a[i]!;
+      if (this.checker.typeToString(this.checker.getTypeAtLocation(n)) !== "Pubkey") return acct(i, what);
+      const k = this.expect(this.expr(n, PUBKEY), PUBKEY, n);
+      const t = this.tmp("sysvar");
+      this.line(`const SolPubkey *${t} = ${k.c};`);
+      return { c: t, keyOnly: true };
+    };
     const send = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
       const { buf, len, put, finish } = this.byteBuffer("stk", 116, "TS_ERR_INSTRUCTION_DATA", "stake instruction");
       const t = this.tmp("tag");
@@ -745,6 +758,16 @@ export abstract class TokenEmitter extends CreateEmitter {
       put(`&${t}`, "4", 4);
       for (const f of fields) f(put);
       finish(node);
+      if (metas.some(([x]) => x.keyOnly)) {
+        // Sysvars named by address: looked up by key at the call (ts_cpi_keyed).
+        const m = this.tmp("metas");
+        this.line(
+          `SolAccountMeta ${m}[${metas.length}] = {${metas.map(([x, w, sg]) => `{${x.keyOnly ? `(SolPubkey *)${x.c}` : `&${x.c}->key`}, ${w}, ${sg}}`).join(", ")}};`,
+        );
+        const mask = metas.reduce((acc, [x], i) => (x.keyOnly ? acc | (1 << i) : acc), 0);
+        this.line(`TS_TRY(ts_cpi_keyed(params, ${program.c}, ${buf}, ${len}, ${m}, ${metas.length}, ${mask}, ${seeds.name}, ${seeds.count}));`);
+        return;
+      }
       this.cpi(
         program.c,
         metas.map(([x, w, sg]) => [x.c, w, sg]),
@@ -786,7 +809,7 @@ export abstract class TokenEmitter extends CreateEmitter {
           [value(a[2]!, PUBKEY), value(a[3]!, PUBKEY), a[4] ? (put) => this.stakeLockup(a[4]!, put) : zeros(48)],
           [
             [acct(0, "the stake account", true), true, false],
-            [acct(1, "the Rent sysvar"), false, false],
+            [sysvar(1, "the Rent sysvar"), false, false],
           ],
           {
             name: "NULL",
@@ -810,7 +833,7 @@ export abstract class TokenEmitter extends CreateEmitter {
           [value(a[3]!, PUBKEY), (put) => (this.line(`uint32_t ${k} = ${i};`), put(`&${k}`, "4", 4))],
           [
             [acct(0, "the stake account", true), true, false],
-            [acct(1, "the Clock sysvar"), false, false],
+            [sysvar(1, "the Clock sysvar"), false, false],
             [auth, false, true],
             ...(opt.custodian ? [custodian(opt.custodian, opt.seeds)] : []),
           ],
@@ -827,9 +850,9 @@ export abstract class TokenEmitter extends CreateEmitter {
           [
             [acct(0, "the stake account", true), true, false],
             [acct(1, "the vote account"), false, false],
-            [acct(2, "the Clock sysvar"), false, false],
-            [acct(3, "the StakeHistory sysvar"), false, false],
-            [acct(4, "the stake config account"), false, false],
+            [sysvar(2, "the Clock sysvar"), false, false],
+            [sysvar(3, "the StakeHistory sysvar"), false, false],
+            [sysvar(4, "the stake config account"), false, false],
             [staker, false, true],
           ],
           this.signerSeeds(a[6], staker, a[5]!),
@@ -859,7 +882,7 @@ export abstract class TokenEmitter extends CreateEmitter {
           [],
           [
             [acct(0, "the stake account", true), true, false],
-            [acct(1, "the Clock sysvar"), false, false],
+            [sysvar(1, "the Clock sysvar"), false, false],
             [staker, false, true],
           ],
           this.signerSeeds(a[3], staker, a[2]!),
@@ -878,8 +901,8 @@ export abstract class TokenEmitter extends CreateEmitter {
           [
             [acct(0, "the stake account", true), true, false],
             [acct(1, "the destination", true), true, false],
-            [acct(2, "the Clock sysvar"), false, false],
-            [acct(3, "the StakeHistory sysvar"), false, false],
+            [sysvar(2, "the Clock sysvar"), false, false],
+            [sysvar(3, "the StakeHistory sysvar"), false, false],
             [withdrawer, false, true],
             ...(opt.custodian ? [custodian(opt.custodian, opt.seeds)] : []),
           ],
@@ -896,8 +919,8 @@ export abstract class TokenEmitter extends CreateEmitter {
           [
             [acct(0, "the destination stake account", true), true, false],
             [acct(1, "the source stake account", true), true, false],
-            [acct(2, "the Clock sysvar"), false, false],
-            [acct(3, "the StakeHistory sysvar"), false, false],
+            [sysvar(2, "the Clock sysvar"), false, false],
+            [sysvar(3, "the StakeHistory sysvar"), false, false],
             [staker, false, true],
           ],
           this.signerSeeds(a[5], staker, a[4]!),
