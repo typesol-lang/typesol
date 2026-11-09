@@ -52,6 +52,8 @@ import { StakePoolError } from "./errors.js";
 import { type StakePool, type ValidatorList, AccountType, INVALID_STAKE_STATE, STAKE_ACCOUNT_SPACE, STAKE_STATE_STAKE, STATUS_ACTIVE } from "./state.js";
 import {
   CLOCK_SYSVAR_ID,
+  STAKE_HISTORY_SYSVAR_ID,
+  STAKE_CONFIG_ID,
   EPHEMERAL_STAKE_SEED_PREFIX,
   RENT_SYSVAR_ID,
   STAKE_PROGRAM_ID,
@@ -376,9 +378,6 @@ function checkPoolForRebalance(pool: StakePool, poolKey: Pubkey, withdrawAuth: P
   checkStaker(pool, staker);
   require(pool.lastUpdateEpoch >= epoch, StakePoolError.StakeListAndPoolOutOfDate);
 }
-
-const STAKE_HISTORY_SYSVAR_ID = pubkey("SysvarStakeHistory1111111111111111111111111");
-const STAKE_CONFIG_ID = pubkey("StakeConfig11111111111111111111111111111111");
 
 /**
  * The original's Stake instructions name the StakeHistory sysvar and the stake config account by their addresses

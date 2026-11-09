@@ -36,6 +36,7 @@ import { type StakePool, type ValidatorList, AccountType, STAKE_DELEGATED, STATU
 import {
   AUTHORITY_DEPOSIT,
   CLOCK_SYSVAR_ID,
+  STAKE_HISTORY_SYSVAR_ID,
   U64_MAX,
   calcPoolTokensForDeposit,
   calcReferralFee,
@@ -58,8 +59,6 @@ import {
   stakeWithdraw,
   toU64,
 } from "./util.js";
-
-const STAKE_HISTORY_SYSVAR_ID = pubkey("SysvarStakeHistory1111111111111111111111111");
 
 /**
  * Tags 9 and 23: deposit the stake account at position 4 into the validator stake account at position 5. With
