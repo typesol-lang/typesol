@@ -274,6 +274,21 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   `for (const v of list.validators.slice(skip, skip + len))` (`deserialize_mut_slice(skip, len)`). The load fails with
   AccountDataTooSmall when the stored length does not fit, where the Rust would only panic on reaching such an element:
   check the length first (`readData<u32>(acct, offset)`) where the original returns an error of its own before that.
+- Writes as the original makes them: `export const NATIVE_ACCOUNT_WRITES = true` (anywhere in the program; opt-in, for
+  native ports). A native program writes account data in place and the runtime judges afterwards: a read-only account
+  whose data actually changed fails the instruction with `ReadonlyDataModified`, one that was only read (or written
+  with the bytes it held) is fine, and an account passed twice is two `AccountInfo`s over one buffer. By default
+  `loadRawMut` and `storeBorsh` check writability up front (3006) and `loadRawMut` claims the account once (2040), so a
+  port fails where the original succeeds (a read-only validator list that is only read; the list passed again as a
+  stake account, which the original skips by its address checks). With the flag, `loadRawMut`, `storeBorsh` and the
+  BigVec writes through a `loadRawMut` view skip both, and both take a plain `AccountInfo` parameter (no `Mut<…>`
+  needed). Owner and size checks stay. **The trade-off:** a write to a read-only account is reported by the runtime at
+  the end, not at the write, and two loads of one account are two views of the same bytes (a write through one is
+  read through the other), where Rust's `RefCell` would fail a second `borrow_mut()` while the first is held (a panic,
+  or `AccountBorrowFailed` through `try_borrow_mut_data`). The original's own address and type checks normally refuse
+  such a pair before it is loaded (SPL Stake Pool's PDA checks); make them in the same order, before the load. Only
+  data writes are affected: `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of
+  `Mut<…>` parameters stay as they are, and programs without the flag compile exactly as before.
 - Errors as the original returns them: an error enum may start at code 0 (`/** @code 0 */`, Rust's
   `ProgramError::Custom(0)`, returned as Solana's CUSTOM_ZERO); `require(c, ProgramError.InvalidInstructionData)` for a
   built-in error; `panic(message, "program/src/lib.rs:12:5")` for a Rust panic (ProgramFailedToComplete, the runtime

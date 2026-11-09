@@ -1584,7 +1584,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (!h) {
       const acct = this.accountParam(node.arguments[0], "the account");
       if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
-      if (mut && !isWritable(acct.kind)) this.fail(node.arguments[0], `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut`);
+      if (mut && !isWritable(acct.kind) && !this.nativeAccountWrites())
+        this.fail(
+          node.arguments[0],
+          `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+        );
       if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
       h = `a_${acct.name}`;
       param = this.ix.accounts.indexOf(acct);
@@ -1596,7 +1600,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
       this.line(
         `if ((uint64_t)((TSS_${s.name} *)(${h}->data))->${s.bigVec.name}__len > (${h}->data_len - sizeof(TSS_${s.name})) / ${s.bigVec.elemSize}) ${this.programErrorFail("AccountDataTooSmall", node)};`,
       );
-    if (mut) {
+    // NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
+    // instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
+    // gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
+    if (mut && !this.nativeAccountWrites()) {
       this.line(`TS_TRY(ts_check_writable(${h}));`);
       const slot = this.claimSlots.get(node);
       if (slot)
@@ -1680,13 +1687,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
   /** The account loadBorsh reads or storeBorsh writes (writable: checked at run time, or Mut<AccountInfo>). */
   private borshAccount(node: ts.Expression, fn: string, write: boolean): string {
     const h = this.handle(node);
+    // NATIVE_ACCOUNT_WRITES: written as Rust's serialize writes it, the runtime judging writability afterwards.
+    const native = this.nativeAccountWrites();
     if (h) {
-      if (write) this.line(`TS_TRY(ts_check_writable(${h}));`);
+      if (write && !native) this.line(`TS_TRY(ts_check_writable(${h}));`);
       return h;
     }
     const acct = this.accountParam(node, `${fn}'s account`);
     if (acct.kind.kind !== "info") this.fail(node, `${fn} takes a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter`);
-    if (write && !isWritable(acct.kind)) this.fail(node, `${acct.name} must be Mut<AccountInfo> to write it with storeBorsh`);
+    if (write && !isWritable(acct.kind) && !native)
+      this.fail(
+        node,
+        `${acct.name} must be Mut<AccountInfo> to write it with storeBorsh (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+      );
     return `a_${acct.name}`;
   }
 
