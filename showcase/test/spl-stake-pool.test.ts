@@ -8,6 +8,7 @@
 // DepositSol, WithdrawSol (and the slippage forms), Redelegate, and the instruction decoding of every tag.
 import * as t22 from "@solana-program/token-2022";
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner, lamports } from "@solana/kit";
+import { EpochRewards } from "litesvm";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   CLOCK,
@@ -75,6 +76,7 @@ const E = {
   UnsupportedFeeAccountExtension: 38,
   ExceededSlippage: 39,
   IncorrectMintDecimals: 40,
+  EpochRewardDistributionInProgress: 43,
   TooManyValidatorsInPool: 44,
 } as const;
 
@@ -769,8 +771,24 @@ describe("validators over epochs", () => {
     expect(await d.both("add validator: stale pool", payer, [ix.addValidator(p, p.staker, await stakeOf(votes[4]!), votes[4]!)])).toBe(
       custom(E.StakeListAndPoolOutOfDate),
     );
-    // Only the first half of the list, then the rest (start index 2).
+    // While the cluster distributes epoch rewards (EpochRewards active), the list is not updated: after the pool's
+    // checks, before anything else.
     const pairs = await updatePairs(d, p);
+    const inactive = d.original.getEpochRewards();
+    expect(inactive.active).toBe(false);
+    for (const vm of d.vms) vm.setEpochRewards(new EpochRewards(100n, 4n, inactive.parentBlockhash, 10n ** 20n, 5n * SOL, SOL, true));
+    expect(await d.both("update list: rewards distributed", payer, [ix.updateValidatorListBalance(p, 0, false, pairs)])).toBe(
+      custom(E.EpochRewardDistributionInProgress),
+    );
+    expect(d.lastLogs).toContain("Program log: Error: Epoch reward distribution is currently in progress, stakes are still being updated");
+    expect(
+      await d.both("update list: rewards distributed, odd accounts", payer, [accounts(ix.updateValidatorListBalance(p, 0, false, pairs), (l) => l.pop())]),
+    ).toBe(custom(E.EpochRewardDistributionInProgress));
+    expect(await d.both("update list: rewards distributed, wrong reserve", payer, [replace(ix.updateValidatorListBalance(p, 0, false, []), 3, p.pool)])).toBe(
+      custom(E.InvalidProgramAddress),
+    );
+    for (const vm of d.vms) vm.setEpochRewards(inactive);
+    // Only the first half of the list, then the rest (start index 2).
     await d.ok("update list first half", payer, [ix.updateValidatorListBalance(p, 0, false, pairs.slice(0, 2))]);
     expect(await d.both("update pool after half", payer, [ix.updateStakePoolBalance(p)])).toBe(custom(E.StakeListOutOfDate));
     await d.ok("update list second half", payer, [ix.updateValidatorListBalance(p, 2, false, pairs.slice(2))]);

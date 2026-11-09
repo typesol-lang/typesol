@@ -13,6 +13,7 @@ import {
   type TokenInterface,
   ProgramError,
   currentEpoch,
+  epochRewards,
   loadBorsh,
   loadRaw,
   loadRawMut,
@@ -75,10 +76,7 @@ import {
 /**
  * Tag 6: update the list's entries from `start` on, one per pair of accounts after the seventh (the validator stake
  * account, then the transient one). A pair whose addresses are not that entry's is skipped. `noMerge` only records
- * balances (no merges, no withdrawals of extra lamports into the reserve).
- *
- * Not ported: the original first refuses to run while the cluster distributes epoch rewards (`EpochRewards::get()`,
- * EpochRewardDistributionInProgress). TypeSOL has no EpochRewards sysvar read yet.
+ * balances (no merges). Nothing runs while the cluster distributes epoch rewards (stake accounts are still changing).
  */
 export function updateValidatorListBalance(rest: RemainingAccounts, start: u64, noMerge: boolean): void {
   need(rest, 5n);
@@ -98,6 +96,8 @@ export function updateValidatorListBalance(rest: RemainingAccounts, start: u64, 
   checkAuthorityWithdraw(pool, withdrawAuth.key, poolAcct.key);
   checkReserveStake(pool, reserve);
   checkStakeProgram(rest.get(6n));
+  // EpochRewards::get(): refused while the rewards are being distributed.
+  require(!epochRewards().active, StakePoolError.EpochRewardDistributionInProgress);
 
   const accounts = rest.length - 7n;
   if (accounts % 2n !== 0n) {
