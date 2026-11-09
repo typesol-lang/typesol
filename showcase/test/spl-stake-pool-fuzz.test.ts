@@ -174,7 +174,8 @@ describe("a random walk over epochs", () => {
       d.nextEpoch();
       // In the order the walk met the accounts (not the VM's), so that a seed makes the same choices.
       for (const at of known) {
-        if (at === p.reserve || d.original.getAccount(at).programAddress !== STAKE) continue;
+        const account = d.original.getAccount(at);
+        if (at === p.reserve || !account.exists || account.programAddress !== STAKE) continue;
         const state = d.stake(at);
         if (state?.kind !== "Stake") continue;
         const a = d.cluster.activation(at);
