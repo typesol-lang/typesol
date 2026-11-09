@@ -59,8 +59,11 @@ export const HASH: ScalarType = { kind: "pubkey", hash: true };
 export interface CpiAcct {
   c: string;
   param?: AccountParam;
-  /** A key only (a sysvar named by its address): `c` is a `const SolPubkey *`, the account found by key at the call. */
-  keyOnly?: boolean;
+  /**
+   * `named(account, address)` (a Stake CPI's sysvar or config slot): the meta names `address` (a `const SolPubkey *`)
+   * while `c`, the slot's account, is the account info handed to the runtime, whatever its key.
+   */
+  named?: string;
 }
 
 /** The program a typed CPI goes to: a declared program parameter, or what `programAt<P>(acct)` checked. */

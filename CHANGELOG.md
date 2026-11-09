@@ -39,8 +39,10 @@ codes, and says so here.
 - `NATIVE_ACCOUNT_WRITES` (no change in behaviour, now tested and documented): a second `loadRawMut` of one account at
   the same position is allowed with the flag (2040 without), and `loadRaw` reads what `loadRawMut`, `storeBorsh` or a
   BigVec push wrote, with or without it.
-- Stake CPIs take a sysvar or the stake config by address (a `Pubkey`) as well as an account, as solana_program's
-  stake builders name them: found by key among the instruction's accounts, MissingAccount when it was not passed.
+- New: `named(account, address)`, a Stake CPI's sysvar or stake config argument as solana_program's stake builders
+  and `invoke_signed` give it: the instruction names the address, the slot's account is the account info. The runtime
+  looks the address up among the CPI's accounts only, so a slot holding another account fails with MissingAccount, as
+  the original does, even when the sysvar is elsewhere in the transaction.
 - New: `loadBorsh<T>(acct)` / `storeBorsh(acct, value)`, a native program's Borsh account (no discriminator; SPL Stake
   Pool's `StakePool`) read into a local struct and written back from byte 0, as Rust's `try_from_slice_unchecked` and
   `serialize` do: trailing bytes ignored, the bytes after a shrunk value left as they were, invalid bytes or a value

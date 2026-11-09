@@ -717,6 +717,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "sighash":
       case "hex":
         this.fail(node, `${builtin}() is only valid inside the data list of invoke()`);
+      case "named":
+        this.fail(node, "named(account, address) is only valid as a Stake CPI's sysvar or stake config argument");
     }
     if (builtin) this.fail(callee, `${builtin} cannot be called here`);
 

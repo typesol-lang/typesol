@@ -165,20 +165,45 @@ describe("typed CPIs from a native program (test/fixtures/native-cpi.ts)", () =>
     expect(data.subarray(44, 76)).toEqual(key(payer.address));
   });
 
-  it("names a sysvar by its address, as solana_program's stake builders do", async () => {
-    const mergeByAddress = (into: Address, from: Address, extra: Meta[]) =>
-      call(14, b(), [{ address: into, writable: true }, { address: from, writable: true }, { address: authority }, { address: STAKE }, ...extra]);
+  it("names a sysvar by its address with the slot's account, as solana_program's stake builders and invoke_signed do", async () => {
+    const mergeNamed = (into: Address, from: Address, clock: Address, history: Address, extra: Meta[] = []) =>
+      call(14, b(), [
+        { address: into, writable: true },
+        { address: from, writable: true },
+        { address: clock },
+        { address: history },
+        { address: authority },
+        { address: STAKE },
+        ...extra,
+      ]);
+    const failed = (r: TransactionMetadata | FailedTransactionMetadata) => {
+      expect(r).toBeInstanceOf(FailedTransactionMetadata);
+      return String((r as FailedTransactionMetadata).err());
+    };
     const i1 = await stakeAccount(1n);
     const i2 = await stakeAccount(1n);
-    // The Clock and StakeHistory anywhere in the transaction: found by key.
-    expectOk(await mergeByAddress(i1, i2, [{ address: HISTORY }, { address: CLOCK }]));
+    // The sysvars in their slots: merged.
+    expectOk(await mergeNamed(i1, i2, CLOCK, HISTORY));
     expect(lamportsOf(i2)).toBe(0n);
-    // Not passed: the runtime refuses the call (MissingAccount), as it refuses the original's.
+    // Another account in a slot, the sysvar elsewhere in the instruction: the runtime looks only among the CPI's
+    // accounts, so it refuses the call (MissingAccount), as it refuses the original's.
     const i3 = await stakeAccount(1n);
     const i4 = await stakeAccount(1n);
-    const r = await mergeByAddress(i3, i4, [{ address: CLOCK }]);
-    expect(r).toBeInstanceOf(FailedTransactionMetadata);
-    expect(String((r as FailedTransactionMetadata).err())).toMatch(/MissingAccount/);
+    expect(failed(await mergeNamed(i3, i4, authority, HISTORY, [{ address: CLOCK }]))).toMatch(/MissingAccount/);
+    expect(failed(await mergeNamed(i3, i4, CLOCK, authority, [{ address: HISTORY }]))).toMatch(/MissingAccount/);
+    expect(lamportsOf(i4)).toBeGreaterThan(0n);
+    // A bare Pubkey in a sysvar slot is refused at compile time, as is named() anywhere else.
+    const header = `import { type StakeProgram, named, pubkey, programAt, remainingAccounts } from "typesol";\n`;
+    expect(
+      compileErrors(
+        `${header}export function f(): void { const rest = remainingAccounts(); programAt<StakeProgram>(rest.get(0n)).deactivate(rest.get(1n), pubkey("SysvarC1ock11111111111111111111111111111111"), rest.get(2n)); }`,
+      ),
+    ).toMatch(/not assignable to parameter of type 'AccountMeta \| NamedAccount'/);
+    expect(
+      compileErrors(
+        `${header}export function f(): void { const x = named(remainingAccounts().get(0n), pubkey("SysvarC1ock11111111111111111111111111111111")); }`,
+      ),
+    ).toMatch(/only valid as a Stake CPI's sysvar/);
   });
 
   it("delegates, splits, merges, deactivates and withdraws with a PDA authority", async () => {

@@ -739,17 +739,25 @@ export abstract class TokenEmitter extends CreateEmitter {
       return x;
     };
     /**
-     * A sysvar or config slot: an account as passed, or its address (a Pubkey), which goes into the instruction's
-     * account list as solana_program's stake instruction builders put it there, the runtime finding the account by key
-     * (MissingAccount when the transaction did not pass it).
+     * A sysvar or config slot: an account, or `named(account, address)`, which names `address` in the instruction's
+     * account list as solana_program's stake instruction builders do while handing the runtime `account` (the slot's
+     * account, as Rust passes it to invoke_signed): the runtime looks the address up among the CPI's accounts only, so
+     * a slot holding another account fails (MissingAccount), as the original does.
      */
     const sysvar = (i: number, what: string): CpiAcct => {
-      const n = a[i]!;
-      if (this.checker.typeToString(this.checker.getTypeAtLocation(n)) !== "Pubkey") return acct(i, what);
-      const k = this.expect(this.expr(n, PUBKEY), PUBKEY, n);
-      const t = this.tmp("sysvar");
-      this.line(`const SolPubkey *${t} = ${k.c};`);
-      return { c: t, keyOnly: true };
+      let n = a[i]!;
+      while (ts.isParenthesizedExpression(n)) n = n.expression;
+      if (ts.isCallExpression(n) && this.exportName(n.expression) === "named") {
+        if (n.arguments.length !== 2) this.fail(n, "named(account, address) takes the slot's account and the address the instruction names");
+        const x = this.cpiAccount(n.arguments[0]!, what);
+        const k = this.expect(this.expr(n.arguments[1]!, PUBKEY), PUBKEY, n.arguments[1]!);
+        const t = this.tmp("named");
+        this.line(`const SolPubkey *${t} = ${k.c};`);
+        return { ...x, named: t };
+      }
+      if (this.checker.typeToString(this.checker.getTypeAtLocation(n)) === "Pubkey")
+        this.fail(n, `pass ${what} as an account, or named(account, address) to name its address with the slot's account`);
+      return acct(i, what);
     };
     const send = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
       const { buf, len, put, finish } = this.byteBuffer("stk", 116, "TS_ERR_INSTRUCTION_DATA", "stake instruction");
@@ -758,14 +766,15 @@ export abstract class TokenEmitter extends CreateEmitter {
       put(`&${t}`, "4", 4);
       for (const f of fields) f(put);
       finish(node);
-      if (metas.some(([x]) => x.keyOnly)) {
-        // Sysvars named by address: looked up by key at the call (ts_cpi_keyed).
+      if (metas.some(([x]) => x.named)) {
+        // Addresses named with the slot's account: the account infos are the CPI's accounts, as passed (ts_cpi_named).
         const m = this.tmp("metas");
+        const infos = this.tmp("accts");
         this.line(
-          `SolAccountMeta ${m}[${metas.length}] = {${metas.map(([x, w, sg]) => `{${x.keyOnly ? `(SolPubkey *)${x.c}` : `&${x.c}->key`}, ${w}, ${sg}}`).join(", ")}};`,
+          `SolAccountMeta ${m}[${metas.length}] = {${metas.map(([x, w, sg]) => `{${x.named ? `(SolPubkey *)${x.named}` : `&${x.c}->key`}, ${w}, ${sg}}`).join(", ")}};`,
         );
-        const mask = metas.reduce((acc, [x], i) => (x.keyOnly ? acc | (1 << i) : acc), 0);
-        this.line(`TS_TRY(ts_cpi_keyed(params, ${program.c}, ${buf}, ${len}, ${m}, ${metas.length}, ${mask}, ${seeds.name}, ${seeds.count}));`);
+        this.line(`const TsAccount *${infos}[${metas.length}] = {${metas.map(([x]) => x.c).join(", ")}};`);
+        this.line(`TS_TRY(ts_cpi_named(params, ${program.c}, ${buf}, ${len}, ${m}, ${metas.length}, ${infos}, ${seeds.name}, ${seeds.count}));`);
         return;
       }
       this.cpi(

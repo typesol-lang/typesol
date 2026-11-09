@@ -422,10 +422,25 @@ export interface MemoProgram extends AccountMeta {
   memo(text: string, signers?: AccountMeta[], signerSeeds?: Seed[] | SignerSeeds): void;
 }
 
+/** An account whose slot in a Stake CPI names another address: what `named(account, address)` gives. */
+export interface NamedAccount {
+  readonly __named_account: void;
+}
+/**
+ * A Stake CPI's sysvar or stake config argument as solana_program's stake instruction builders write it: the
+ * instruction's account list names `address` (`SysvarC1ock…`), and `account` (the slot's account, whatever its key) is
+ * the account handed to the runtime, as Rust's `invoke_signed(&ix, &[stake, clock_info, …])` hands it. The runtime finds
+ * each named address among the CPI's accounts only: a slot holding another account fails the call with MissingAccount
+ * (Instruction references an unknown account), as the original does, even when the sysvar is elsewhere in the
+ * transaction. Only valid as such an argument.
+ */
+export declare function named(account: AccountMeta, address: Pubkey): NamedAccount;
+
 /**
  * The native Stake program (`Stake1111…`). Its address is checked. The sysvar and config accounts it reads are
  * passed in, as anchor-spl's stake module does (`SysvarRent…`, `SysvarC1ock…`, `SysvarStakeHistory…`,
- * `StakeConfig…`). Each authority signs: a wallet, or a PDA of this program with `signerSeeds`. The instructions and
+ * `StakeConfig…`), or as `named(account, address)` (a native port: the address in the instruction, the slot's account
+ * passed). Each authority signs: a wallet, or a PDA of this program with `signerSeeds`. The instructions and
  * their accounts are solana-stake-interface's (`StakeInstruction`, bincode with a u32 tag). Every account may also be
  * a remaining account (then the Stake program and the runtime check that it is writable and signed where it must).
  */
@@ -437,7 +452,7 @@ export interface StakeProgram extends AccountMeta {
    */
   initialize(
     stake: AccountMeta,
-    rentSysvar: AccountMeta | Pubkey,
+    rentSysvar: AccountMeta | NamedAccount,
     staker: Pubkey,
     withdrawer: Pubkey,
     lockup?: { unixTimestamp: i64; epoch: u64; custodian: Pubkey },
@@ -445,7 +460,7 @@ export interface StakeProgram extends AccountMeta {
   /** Hand the staker or the withdrawer authority to `newAuthority`. */
   authorize(
     stake: AccountMeta,
-    clockSysvar: AccountMeta | Pubkey,
+    clockSysvar: AccountMeta | NamedAccount,
     authority: AccountMeta,
     newAuthority: Pubkey,
     which: "staker" | "withdrawer",
@@ -454,7 +469,7 @@ export interface StakeProgram extends AccountMeta {
   /** The same, with the lockup custodian signing (to change the withdrawer while a lockup is in force). */
   authorize(
     stake: AccountMeta,
-    clockSysvar: AccountMeta | Pubkey,
+    clockSysvar: AccountMeta | NamedAccount,
     authority: AccountMeta,
     newAuthority: Pubkey,
     which: "staker" | "withdrawer",
@@ -464,20 +479,20 @@ export interface StakeProgram extends AccountMeta {
   delegate(
     stake: AccountMeta,
     vote: AccountMeta,
-    clockSysvar: AccountMeta | Pubkey,
-    stakeHistorySysvar: AccountMeta | Pubkey,
-    stakeConfig: AccountMeta | Pubkey,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
+    stakeConfig: AccountMeta | NamedAccount,
     staker: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
   /** Move `lamports` (and their share of the stake) into `splitStake`: 200 bytes, owned by the Stake program, uninitialized. */
   split(stake: AccountMeta, splitStake: AccountMeta, staker: AccountMeta, lamports: u64, signerSeeds?: Seed[] | SignerSeeds): void;
-  deactivate(stake: AccountMeta, clockSysvar: AccountMeta | Pubkey, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
+  deactivate(stake: AccountMeta, clockSysvar: AccountMeta | NamedAccount, staker: AccountMeta, signerSeeds?: Seed[] | SignerSeeds): void;
   withdraw(
     stake: AccountMeta,
     to: AccountMeta,
-    clockSysvar: AccountMeta | Pubkey,
-    stakeHistorySysvar: AccountMeta | Pubkey,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
     withdrawer: AccountMeta,
     lamports: u64,
     signerSeeds?: Seed[] | SignerSeeds,
@@ -486,8 +501,8 @@ export interface StakeProgram extends AccountMeta {
   withdraw(
     stake: AccountMeta,
     to: AccountMeta,
-    clockSysvar: AccountMeta | Pubkey,
-    stakeHistorySysvar: AccountMeta | Pubkey,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
     withdrawer: AccountMeta,
     lamports: u64,
     custodian: AccountMeta,
@@ -497,8 +512,8 @@ export interface StakeProgram extends AccountMeta {
   merge(
     destination: AccountMeta,
     source: AccountMeta,
-    clockSysvar: AccountMeta | Pubkey,
-    stakeHistorySysvar: AccountMeta | Pubkey,
+    clockSysvar: AccountMeta | NamedAccount,
+    stakeHistorySysvar: AccountMeta | NamedAccount,
     staker: AccountMeta,
     signerSeeds?: Seed[] | SignerSeeds,
   ): void;
