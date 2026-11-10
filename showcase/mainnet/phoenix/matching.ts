@@ -49,9 +49,11 @@ import {
   type TraderState,
   BIDS_OFFSET,
   FIFO_MARKET_OFFSET,
+  ORDER_NODE_SIZE,
   asksOffset,
   tradersOffset,
 } from "./state.js";
+import { BATCH_LINE, MAX_ITERATOR_STACK, TOKEN_TRANSFER, TREE_ITERATOR, alloc8, fits, walkStackBytes } from "./heap.js";
 import { type Recorder, EVICT_EVENT_LEN, FILL_EVENT_LEN, PLACE_EVENT_LEN, SUMMARY_EVENT_LEN, TIME_IN_FORCE_EVENT_LEN, makeRoom } from "./recorder.js";
 import { type Released, EXPIRED, KEEP_FUNDS, marketShape, reduceOrderInner } from "./book.js";
 import {
@@ -83,6 +85,12 @@ export const CANCEL_PROVIDE: u8 = 1n;
 export const DECREMENT_TAKE: u8 = 2n;
 /** `u32::MAX`: the trader index of a taker with no seat on the market. */
 const NO_TRADER = 4294967295n;
+/**
+ * What a Limit order can still allocate on Phoenix's heap after its crossing check: up to three batches (an Evict,
+ * Place and TimeInForce event, then the last), the order id (4 of lib.rs's Vec<FIFOOrderId>), the two token transfers
+ * and the id's Borsh bytes.
+ */
+const LIMIT_ORDER_TAIL = 3n * BATCH_LINE + 64n + 2n * TOKEN_TRANSFER + 1024n;
 /** `u64::MAX >> 1`: the order sequence number past which no order is placed. */
 const MAX_SEQUENCE_NUMBER = U64_MAX >> 1n;
 
@@ -372,8 +380,9 @@ function matchOrder(
         if (!reduceOwn(rest, rec, logData, u32(currentTraderIndex), price, seq, bidBook, false, 0n)) return false;
         o.match_limit -= 1n;
       } else {
-        // DecrementTake: the resting order and the budgets go down by what would have matched.
-        let removed = o.adjusted_quote_lot_budget / ticksToPrice(tickSize, price);
+        // DecrementTake: the resting order and the budgets go down by what would have matched (the division is
+        // AdjustedQuoteLots::unchecked_div, which panics at its macro line for a market whose tick size is 0).
+        let removed = panicsAt("src/quantities.rs:257:1", o.adjusted_quote_lot_budget / ticksToPrice(tickSize, price));
         if (o.base_lot_budget < removed) removed = o.base_lot_budget;
         if (quoted < removed) removed = quoted;
         if (!reduceOwn(rest, rec, logData, u32(currentTraderIndex), price, seq, bidBook, true, removed)) return false;
@@ -394,8 +403,8 @@ function matchOrder(
       // The whole resting order: remove(&order_id)'s writes, at the node min() found (no second search).
       book.removeAt(best.index);
     } else {
-      // What the budget allows; the match ends here.
-      matchedBase = o.adjusted_quote_lot_budget / ticksToPrice(tickSize, price);
+      // What the budget allows; the match ends here (unchecked_div again: a tick size of 0 panics here).
+      matchedBase = panicsAt("src/quantities.rs:257:1", o.adjusted_quote_lot_budget / ticksToPrice(tickSize, price));
       if (o.base_lot_budget < matchedBase) matchedBase = o.base_lot_budget;
       matchedAdjusted = adjustedQuoteLots(ticksToPrice(tickSize, price), matchedBase);
       best.value.num_base_lots = subBaseLots(quoted, matchedBase);
@@ -604,13 +613,24 @@ export function placeOrder(
     // A Limit order still crossing the best unexpired, non-empty opposite order does not rest.
     let crosses = false;
     if (pk.kind === LIMIT) {
-      const opposite = rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, bookOffset(side === BID ? ASK : BID, n), n, orderCmp);
+      const oppositeAt = bookOffset(side === BID ? ASK : BID, n);
+      const opposite = rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, oppositeAt, n, orderCmp);
+      // `get_book(..).iter().find(..)` (fifo.rs:1005) walks a boxed sokoban iterator on Phoenix's heap (checked by the
+      // batch or transfer that comes next).
+      rec.heap = (rec.heap + TREE_ITERATOR + 7n) & 0xfffffffffffffff8n;
       let best = side === BID ? U64_MAX : 0n;
+      let found: u32 = 0n;
       for (const e of opposite) {
         if (!isExpired(e.value, slot, unixTimestamp) && e.value.num_base_lots > 0n) {
           best = e.key.price_in_ticks;
+          found = e.index;
           break;
         }
+      }
+      // Its stack, as deep as the walk went (to the order found, or the whole book), is worked out only when what can
+      // still come (LIMIT_ORDER_TAIL) might not fit with the deepest stack.
+      if (rec.heap + MAX_ITERATOR_STACK + LIMIT_ORDER_TAIL > rec.limit && !fits(rec, rest, MAX_ITERATOR_STACK + LIMIT_ORDER_TAIL)) {
+        alloc8(rec, rest, walkStackBytes(market, oppositeAt, ORDER_NODE_SIZE, found));
       }
       crosses = side === BID ? price >= best : price <= best;
     }

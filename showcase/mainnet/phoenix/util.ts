@@ -14,6 +14,7 @@ import {
   type RemainingAccounts,
   type SystemProgram,
   type i8,
+  type i64,
   type u8,
   type u32,
   ProgramError,
@@ -77,6 +78,15 @@ export function orderCmp(a: FIFOOrderId, b: FIFOOrderId): i8 {
 /** TraderState::default(), the value a newly registered trader gets. */
 export function emptyTraderState(): TraderState {
   return { quote_lots_locked: 0n, quote_lots_free: 0n, base_lots_locked: 0n, base_lots_free: 0n, padding: fixedArray<u64, 8>(0n) };
+}
+
+/**
+ * `clock.unix_timestamp as u64` (new_order.rs:385, :551): the i64's two's-complement bits, so a negative timestamp
+ * reads as a value above 2^63 (every time in force is then in the past). A checked cast would fail instead.
+ */
+export function timestampAsU64(t: i64): u64 {
+  if (t >= 0n) return u64(t);
+  return u64(t + 9223372036854775807n + 1n) + 9223372036854775808n;
 }
 
 // ---- Quantities (quantities.rs) ----------------------------------------------------------------------------------

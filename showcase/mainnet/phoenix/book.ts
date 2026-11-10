@@ -8,12 +8,12 @@
 // (match_order, check_for_cross) and its own orders a self trade cancels or decrements.
 //
 // Phoenix first collects the ids to cancel in a heap Vec (FIFOOrderId, 16 bytes, grown by doubling from 4 under
-// solana-program's bump allocator, which never frees), then cancels them one by one, each looked up again by its id.
-// The 513th id needs a 16 KiB allocation after the 16,320 bytes of the smaller ones, which the 32 KiB heap never has
-// room for: Phoenix runs out of memory there, before it cancels anything (the test measures it on the binary). The
-// port collects node indices (sokoban never moves a node, and a freed node keeps its key; a book holds at most 4096
-// orders, so an index fits a u16) in a 512-entry list and fails the same way on the 513th; each id is then read back
-// from its node and looked up as Phoenix looks it up.
+// solana-program's bump allocator, which never frees), walking each book with a boxed sokoban iterator, then cancels
+// them one by one, each looked up again by its id. heap.ts counts those allocations as Phoenix makes them, so the port
+// runs out of memory where Phoenix does: at the latest on the 513th id, whose 16 KiB never fit after the 16,320 bytes
+// of the smaller ones, sooner when the accounts or the batches took the room. The port collects node indices
+// (sokoban never moves a node, and a freed node keeps its key; a book holds at most 4096 orders, so an index fits a
+// u16) in a 512-entry list; each id is then read back from its node and looked up as Phoenix looks it up.
 import {
   type FixedVec,
   type Inout,
@@ -21,7 +21,6 @@ import {
   type Pubkey,
   type RemainingAccounts,
   type u8,
-  abort,
   fixedVec,
   loadRaw,
   loadRawAt,
@@ -42,10 +41,12 @@ import {
   type TraderState,
   BIDS_OFFSET,
   FIFO_MARKET_OFFSET,
+  ORDER_NODE_SIZE,
   asksOffset,
   tradersOffset,
 } from "./state.js";
-import { type Recorder, EVICT_EVENT_LEN, REDUCE_EVENT_LEN, makeRoom } from "./recorder.js";
+import { type Recorder, EVENT_ROOM, EVICT_EVENT_LEN, HEADER_LEN, REDUCE_EVENT_LEN, makeRoom } from "./recorder.js";
+import { BATCH_LINE, MAX_ITERATOR_STACK, TOKEN_TRANSFER, TREE_ITERATOR, alloc8, fits, grownBytes, outOfMemory, walkStackBytes } from "./heap.js";
 import { U64_MAX, addBaseLots, addQuoteLots, adjustedQuoteLots, orderCmp, subBaseLots, subQuoteLots, ticksToPrice } from "./util.js";
 
 /** The lots a reduction or cancel gives back to the trader's wallet: MatchingEngineResponse's *_out. */
@@ -86,8 +87,8 @@ export function marketShape(rest: RemainingAccounts): MarketShape {
   };
 }
 
-/** The ids Phoenix's Vec holds before its next growth runs out of memory (see the file's notes). */
-const MAX_COLLECTED = 512n;
+/** Reduce events a batch holds (35 bytes each after the 93 of the header): what the cancels' batches are counted by. */
+export const REDUCES_PER_BATCH = (EVENT_ROOM - HEADER_LEN) / REDUCE_EVENT_LEN;
 
 /** Side::from_order_sequence_number: a bid's stored sequence number has its top bit set. */
 export function isBidSequence(seq: u64): boolean {
@@ -269,13 +270,36 @@ function cancelOne(
   }
 }
 
-/** Vec::push past the room the heap has: the allocator's out-of-memory abort. */
+/**
+ * Vec::push of one more id. The 513th always runs out of memory in Phoenix (its 16 KiB after at least 1,512 + 88 +
+ * 16,320 bytes never fit), so the list stops there; the growth of the others is counted once the walk is done
+ * (collected), nothing being logged or sent in between.
+ */
 function collect(ids: Inout<FixedVec<u16, 512>>, index: u32): void {
-  if (ids.length === MAX_COLLECTED) {
-    log("Error: memory allocation failed, out of memory");
-    abort();
-  }
+  if (ids.length === 512n) outOfMemory();
   ids.push(u16(index));
+}
+
+/**
+ * The walk's allocations on Phoenix's heap (heap.ts), all made before anything is logged or sent: `walks` boxed
+ * iterators and the Vec of `ids` ids. Their stacks are counted only when what can still come (the cancels' batches, a
+ * Reduce event each, and the two token transfers of a withdrawal) might not fit beside the deepest ones: false then,
+ * for the caller to work them out before the books change.
+ */
+function collected(rec: Inout<Recorder>, rest: RemainingAccounts, walks: u64, ids: u64): boolean {
+  alloc8(rec, rest, walks * TREE_ITERATOR + grownBytes(ids, 16n));
+  return fits(rec, rest, walks * MAX_ITERATOR_STACK + (ids / REDUCES_PER_BATCH + 1n) * BATCH_LINE + 2n * TOKEN_TRANSFER);
+}
+
+/** The index of the `n`-th node (1-based) of the book at `at` in order. */
+function nthNode(rest: RemainingAccounts, at: u64, capacity: u64, n: u64): u32 {
+  let i = 0n;
+  const book = rbTreeAt<FIFOOrderId, FIFORestingOrder>(rest.get(2n), at, capacity, orderCmp);
+  for (const e of book) {
+    i++;
+    if (i === n) return e.index;
+  }
+  return 0n;
 }
 
 /** Cancel the collected nodes `from`..`to` of one book, in order, each by the id its node holds. */
@@ -318,11 +342,15 @@ export function cancelAllInner(
   const market = rest.get(2n);
   const ids: FixedVec<u16, 512> = fixedVec([]);
   const owner = u64(traderIndex);
+  // fifo.rs:1443-1453: a flat_map over both books, each walked whole by its own boxed iterator (red_black_tree.rs:180).
   const bids = rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, BIDS_OFFSET, m.bids, orderCmp);
   for (const e of bids) if (e.value.trader_index === owner && e.value.num_base_lots > 0n) collect(ids, e.index);
   const bidCount = ids.length;
   const asks = rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, m.asksAt, m.asks, orderCmp);
   for (const e of asks) if (e.value.trader_index === owner && e.value.num_base_lots > 0n) collect(ids, e.index);
+  if (!collected(rec, rest, 2n, ids.length)) {
+    alloc8(rec, rest, walkStackBytes(market, BIDS_OFFSET, ORDER_NODE_SIZE, 0n) + walkStackBytes(market, m.asksAt, ORDER_NODE_SIZE, 0n));
+  }
   cancelCollected(m, rest, rec, logData, traderIndex, true, ids, 0n, bidCount, mode, total);
   cancelCollected(m, rest, rec, logData, traderIndex, false, ids, bidCount, ids.length, mode, total);
 }
@@ -364,6 +392,7 @@ export function cancelUpToInner(
   const search = params.hasSearch ? u64(params.search) : len;
   const count = params.hasCancel ? u64(params.cancel) : len;
   let searched = 0n;
+  // fifo.rs:1479-1492: one boxed iterator (red_black_tree.rs:180), walked up to the last node a `take` let through.
   if (count > 0n) {
     for (const e of book) {
       if (searched === search) break;
@@ -374,6 +403,11 @@ export function cancelUpToInner(
       collect(ids, e.index);
       if (ids.length === count) break;
     }
+  }
+  if (!collected(rec, rest, 1n, ids.length) && searched > 0n) {
+    // The walk's last node is the `searched`-th, however it stopped (the search's end, the count filled, the book's end).
+    const at = bid ? BIDS_OFFSET : m.asksAt;
+    alloc8(rec, rest, walkStackBytes(rest.get(2n), at, ORDER_NODE_SIZE, nthNode(rest, at, bid ? m.bids : m.asks, searched)));
   }
   cancelCollected(m, rest, rec, logData, traderIndex, bid, ids, 0n, ids.length, mode, total);
 }

@@ -159,17 +159,44 @@ The binary is 231,856 bytes against the original's 1,344,472.
 
 ## Differences
 
-None that a transaction can reach. What the port does not reproduce needs resources a transaction cannot have, or
-bytes no instruction writes:
+What the port does not reproduce, and how a transaction would reach it:
 
 - **Compute.** The port spends 14–60% of the original's units, so a transaction that runs the original out of its
   compute budget can complete in the port; the tests give both enough.
-- **Memory.** Phoenix allocates its Vecs on solana-program's bump heap (32 KiB, never freed); the port keeps fixed lists
-  on the stack. The one exhaustion an instruction reaches is modelled: a cancel collecting its 513th id aborts with the
-  allocator's out-of-memory line, before cancelling anything, as the binary does. The port's lists are sized by what a
-  transaction can carry: 72 CondensedOrders a packet (73 take more than a 1,232-byte transaction) and 64 order ids of
-  return data (64 already pass the 1,024-byte return-data limit in both, and more need more orders than a transaction
-  holds).
+- **Memory, counted.** Phoenix allocates on solana-program 1.14.9's bump heap: 32 KiB from the top down, never freed,
+  and an allocation past it aborts with "Error: memory allocation failed, out of memory". The port keeps its own lists
+  fixed and counts Phoenix's heap instead ([`heap.ts`](../showcase/mainnet/phoenix/heap.ts)), charge by charge as the
+  Rust allocates: the entrypoint's 48 bytes per account entry and 72 per distinct account, the discriminant lines, the
+  event recorder, the status checks' messages (built even when they pass), each batch line, each SPL Token transfer's
+  instruction, the cancels' boxed tree iterators with their stacks and the ids they collect, CancelMultipleOrdersById's
+  decoded list and kept ids, the multiple-order packet's decoded lists, its sorts (the merge sort's buffer and stack of
+  runs) and the "Insufficient funds" lines of the orders it skips, the placed order ids and their Borsh bytes. So a
+  transaction that fills the heap (with up to 255 account entries, which Phoenix ignores past the ones it reads, or with
+  a CPI's larger instruction data) aborts in the port at the same allocation, after the same log lines and batches.
+  [`phoenix-limits.test.ts`](../showcase/test/phoenix-limits.test.ts) finds the original's boundary and compares both
+  sides of it (one account entry fewer succeeds, the next aborts) for CancelAllOrders and its free-funds form (257 to
+  512 orders, bids and asks, 4 to 20 accounts of their own, top-level and through a CPI), CancelUpTo with a count and
+  with a search limit, ForceCancelOrders, CancelMultipleOrdersById through a CPI (230 and 340 entries; 341 always runs
+  out), and PlaceMultiplePostOnlyOrders through a CPI (decoded lists past their first 85 orders, scrambled sides, 130
+  resting orders, token deposits, skipped orders).
+- **More than a transaction carries.** A CPI passes up to 10,240 bytes of instruction data, so a multiple-order packet
+  is decoded whatever its length, as Phoenix decodes it: past 170 orders a side always runs out of memory at its sort,
+  and past 340 while decoding; from 64 resting orders set_return_data refuses the ids (1,028 bytes and up), after every
+  order is placed and every batch sent, in both.
+- **Memory, not counted.** What Phoenix formats only when it fails is not charged: assert_with_msg's line with its
+  location, the formatted failure lines (an IOC's minimum fill, "Market is not active, …"), the String of a Borsh
+  decoding error, the panic handler's line. Phoenix builds each on the heap before it reports the failure, so when the
+  heap no longer has room for it Phoenix aborts with the out-of-memory line (ProgramFailedToComplete) where the port
+  logs the failure and returns its error. A transaction gets there only by failing after it has nearly filled the
+  heap. For instance a forwarded multiple-order packet of 300 bids whose asks are cut short fails with BorshIoError in
+  both with few account entries and runs out of memory in both (its decoded Vec's last growth) with many; in between,
+  at one account count, Phoenix runs out of memory building the error's message (about 100 bytes) while the port
+  returns BorshIoError. A formatted failure line after a long match would need the same kind of near-full heap.
+  Neither are InitializeMarket's, CollectFees' and the seat and governance
+  instructions' own lines and vectors charged (only their batches): with at most 128 distinct accounts, the most a
+  transaction locks, they stay far below the heap. A Limit order's crossing check (a boxed iterator) and a match's
+  batches are counted, but no test reaches the limit with them: it takes a match of about a thousand fills and more
+  distinct accounts than a transaction holds without lookup tables.
 - **Damaged trees.** A tree walk keeps its stack of 64 nodes on the program's stack, more than any red-black tree a u32
   index can address holds on one path; only damaged registers go deeper, and the port panics where sokoban's heap stack
   would grow. The panics of a node index out of range (`nodeAt` on damaged registers) take their locations from

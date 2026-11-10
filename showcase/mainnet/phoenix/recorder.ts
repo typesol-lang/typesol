@@ -38,6 +38,7 @@ import {
 } from "typesol";
 import { type MarketHeader, type PhoenixMarketEvent } from "./state.js";
 import { LOG_AUTHORITY_BUMP, LOG_AUTHORITY_ID, PHOENIX_ID } from "./util.js";
+import { BATCH_LINE, overLimit } from "./heap.js";
 
 /** The maximum data of an inner instruction (MAX_INNER_INSTRUCTION_SIZE). */
 const MAX_INNER_INSTRUCTION_SIZE = 1280n;
@@ -83,6 +84,10 @@ export interface Recorder {
   eventsEmitted: u64;
   /** Events added so far; the next event's index. */
   eventsAdded: u64;
+  /** Phoenix's heap: the bytes it has allocated past the entrypoint's (heap.ts). */
+  heap: u64;
+  /** What `heap` may reach before the room is checked (heap.ts). */
+  limit: u64;
 }
 
 /**
@@ -113,6 +118,9 @@ export function startRecorder(
 /** EventRecorder::flush: log the batch, patch its count in, send it, keep the header. */
 export function flush(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, rest: RemainingAccounts): void {
   const batch = rec.eventsAdded - rec.eventsEmitted;
+  // print_status's line is formatted on Phoenix's heap (event_recorder.rs:227) before it is logged (heap.ts).
+  rec.heap += BATCH_LINE;
+  if (rec.heap > rec.limit) overLimit(rec, rest);
   log(`Sending batch ${rec.batchIndex + 1n} with header and ${batch} market events, total events sent: ${rec.eventsAdded}`);
   data.setLE(HEADER_LEN - 2n, u16(batch));
   const metas: FixedVec<Meta, 1> = fixedVec([{ pubkey: LOG_AUTHORITY_ID, isSigner: true, isWritable: false }]);

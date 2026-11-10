@@ -20,6 +20,7 @@ import { type MarketHeader } from "./state.js";
 import { type Recorder, TAG_LOG, finishRecorder, startRecorder } from "./recorder.js";
 import { checkLogAuthority, checkMarket, checkMarketInit, checkPhoenixProgram, checkSigner } from "./checkers.js";
 import { LOG_AUTHORITY_ID } from "./util.js";
+import { HEAP_ROOM, MAX_PER_ACCOUNT, PREFIX } from "./heap.js";
 import { initializeMarket } from "./initialize.js";
 import { changeMarketStatus, claimAuthority, nameSuccessor } from "./governance.js";
 import { changeSeatStatus, requestSeat, requestSeatAuthorized } from "./seats.js";
@@ -88,7 +89,16 @@ export function process(): void {
   checkSigner(rest.get(3n));
 
   // EventRecorder::new: the header carries the market's sequence number as the instruction starts.
-  const rec: Recorder = { instruction: tag, batchIndex: 0n, eventsEmitted: 0n, eventsAdded: 0n };
+  // The heap Phoenix has used by then (heap.ts): the market's discriminant line and the recorder's buffers; its limit
+  // the room 120 bytes an account would leave.
+  const rec: Recorder = {
+    instruction: tag,
+    batchIndex: 0n,
+    eventsEmitted: 0n,
+    eventsAdded: 0n,
+    heap: PREFIX,
+    limit: HEAP_ROOM - MAX_PER_ACCOUNT * rest.length,
+  };
   // The Log instruction's data, [15] then the header (built empty, then pushed: cheaper than fixedVec([15n])).
   const logData: FixedVec<u8, 1280> = fixedVec([]);
   logData.pushLE<u8>(15n);
@@ -158,11 +168,11 @@ export function process(): void {
       break;
     case 12n:
       log("PhoenixInstruction::WithdrawFunds");
-      withdrawFunds(rest, data);
+      withdrawFunds(rest, data, rec);
       break;
     case 13n:
       log("PhoenixInstruction::DepositFunds");
-      depositFunds(rest, data);
+      depositFunds(rest, data, rec);
       break;
     case 107n:
       log("PhoenixInstruction::ForceCancelOrders");
@@ -170,7 +180,7 @@ export function process(): void {
       break;
     case 106n:
       log("PhoenixInstruction::EvictSeat");
-      evictSeat(rest);
+      evictSeat(rest, rec);
       break;
     case 101n:
       log("PhoenixInstruction::ClaimAuthority");

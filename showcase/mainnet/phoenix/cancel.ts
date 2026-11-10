@@ -26,22 +26,28 @@ import {
   KEEP_FUNDS,
   cancelAllInner,
   cancelByIdInner,
+  REDUCES_PER_BATCH,
   cancelUpToInner,
+  isBidSequence,
   marketShape,
   reduceOrderInner,
   traderIndexOf,
 } from "./book.js";
 import { need } from "./util.js";
+import { BATCH_LINE, REDUCE_ALLOWED_MESSAGE, SEAT_DISCRIMINANT_LINE, TOKEN_TRANSFER, alloc8, fits, grownBytes } from "./heap.js";
 
+/** CancelOrderParams a decoded Vec holds before it first grows: borsh's `cautious` cap of 4096 bytes, 24 bytes each. */
+const FIRST_CANCEL_PARAMS = 170n;
 /** Where the vault context starts for the trader's own instructions. */
 const TRADER_VAULTS = 4n;
 /** Where it starts for the authority's (after the trader and its seat). */
 const AUTHORIZED_VAULTS = 6n;
 
-/** CancelOrWithdrawContext::load: reductions allowed, then the trader's vault context. */
-function loadCancelContext(rest: RemainingAccounts): void {
+/** CancelOrWithdrawContext::load: reductions allowed (its message formatted on Phoenix's heap), then the trader's vault context. */
+function loadCancelContext(rest: RemainingAccounts, rec: Inout<Recorder>): void {
   const market = rest.get(2n);
   assertReduceAllowed(market);
+  rec.heap += REDUCE_ALLOWED_MESSAGE;
   checkVaultContext(rest, TRADER_VAULTS, market, rest.get(3n).key);
 }
 
@@ -64,8 +70,8 @@ function loadAuthorizedContext(rest: RemainingAccounts): void {
  * then assert that nothing was released, "WARNING: num_quote_lots_out must be 0", which cannot fail: without a claim
  * reduce_order_inner releases nothing.)
  */
-function finish(rest: RemainingAccounts, withdraw: boolean, vaults: u64, released: Released): void {
-  if (withdraw) tryWithdraw(rest, vaults, released.quote, released.base);
+function finish(rest: RemainingAccounts, rec: Inout<Recorder>, withdraw: boolean, vaults: u64, released: Released): void {
+  if (withdraw) tryWithdraw(rest, rec, vaults, released.quote, released.base);
 }
 
 /**
@@ -83,7 +89,7 @@ export function reduceOrder(
 ): void {
   logComputeUnits();
   require(data.length === 26n && data.readU8(1n) <= 1n, ProgramError.BorshIoError);
-  if (withdraw) loadCancelContext(rest);
+  if (withdraw) loadCancelContext(rest, rec);
   const market = rest.get(2n);
   dispatchLoadedMarket(market);
   logComputeUnits();
@@ -107,12 +113,12 @@ export function reduceOrder(
   );
   require(ok, PhoenixError.ReduceOrderError);
   logComputeUnits();
-  finish(rest, withdraw, TRADER_VAULTS, released);
+  finish(rest, rec, withdraw, TRADER_VAULTS, released);
 }
 
 /** Tags 6 (CancelAllOrders) and 7 (CancelAllOrdersWithFreeFunds): no arguments (any data after the tag is ignored). */
 export function cancelAllOrders(rest: RemainingAccounts, rec: Inout<Recorder>, logData: Inout<FixedVec<u8, 1280>>, withdraw: boolean): void {
-  if (withdraw) loadCancelContext(rest);
+  if (withdraw) loadCancelContext(rest, rec);
   dispatchLoadedMarket(rest.get(2n));
   logComputeUnits();
   const released: Released = { quote: 0n, base: 0n };
@@ -121,7 +127,7 @@ export function cancelAllOrders(rest: RemainingAccounts, rec: Inout<Recorder>, l
   const traderIndex = traderIndexOf(m, rest, rest.get(3n).key);
   if (traderIndex !== 0n) cancelAllInner(m, rest, rec, logData, traderIndex, withdraw ? CLAIM_FUNDS : KEEP_FUNDS, released);
   logComputeUnits();
-  finish(rest, withdraw, TRADER_VAULTS, released);
+  finish(rest, rec, withdraw, TRADER_VAULTS, released);
 }
 
 /** CancelUpToParams { side, tick_limit: Option<u64>, num_orders_to_search: Option<u32>, num_orders_to_cancel: Option<u32> } after the tag. */
@@ -172,12 +178,12 @@ function cancelOrders(
   const traderIndex = traderIndexOf(m, rest, rest.get(traderAt).key);
   if (traderIndex !== 0n) cancelUpToInner(m, rest, rec, logData, traderIndex, params, withdraw ? CLAIM_FUNDS : KEEP_FUNDS, released);
   logComputeUnits();
-  finish(rest, withdraw, vaults, released);
+  finish(rest, rec, withdraw, vaults, released);
 }
 
 /** Tags 8 (CancelUpTo, logged as "CancelMultipleOrders") and 9 (CancelUpToWithFreeFunds). */
 export function cancelUpTo(rest: RemainingAccounts, data: InstructionBytes, rec: Inout<Recorder>, logData: Inout<FixedVec<u8, 1280>>, withdraw: boolean): void {
-  if (withdraw) loadCancelContext(rest);
+  if (withdraw) loadCancelContext(rest, rec);
   const params = decodeCancelUpTo(data);
   cancelOrders(rest, rec, logData, 3n, params, withdraw, TRADER_VAULTS);
 }
@@ -193,10 +199,24 @@ export function cancelMultipleOrdersById(
   logData: Inout<FixedVec<u8, 1280>>,
   withdraw: boolean,
 ): void {
-  if (withdraw) loadCancelContext(rest);
-  // A u32 count, then that many CancelOrderParams of 17 bytes, each with a side of 0 or 1, and nothing after.
+  if (withdraw) loadCancelContext(rest, rec);
+  // A u32 count, then that many CancelOrderParams of 17 bytes, each with a side of 0 or 1, and nothing after. Borsh's
+  // Vec<CancelOrderParams> (24 bytes each) takes `cautious(count)`, at most 170, when the count is read, then doubles
+  // as the elements are pushed (borsh 0.9.3 de/mod.rs:320-323).
   require(data.length >= 5n, ProgramError.BorshIoError);
   const count = u64(data.readU32(1n));
+  if (count > 0n) {
+    const cap = count < FIRST_CANCEL_PARAMS ? count : FIRST_CANCEL_PARAMS;
+    alloc8(rec, rest, 24n * cap);
+    // Past it, the Vec doubles when element `grow` is pushed, once it and every element before it have decoded.
+    let decoded = 0n;
+    for (let grow = cap; grow < count; grow *= 2n) {
+      for (; decoded <= grow; decoded++) {
+        require(data.length >= 5n + 17n * (decoded + 1n) && data.readU8(5n + 17n * decoded) <= 1n, ProgramError.BorshIoError);
+      }
+      alloc8(rec, rest, 48n * grow);
+    }
+  }
   require(data.length === 5n + 17n * count, ProgramError.BorshIoError);
   for (let i = 0n; i < count; i++) require(data.readU8(5n + 17n * i) <= 1n, ProgramError.BorshIoError);
   if (count === 0n) {
@@ -205,26 +225,40 @@ export function cancelMultipleOrdersById(
   }
   logComputeUnits();
   dispatchLoadedMarket(rest.get(2n));
+  // The filter_map's Vec<FIFOOrderId> (cancel_multiple_orders.rs:178-195) of the entries whose side agrees with their
+  // sequence number, 16 bytes each, counted exactly only when the most it can take (every entry kept), the cancels'
+  // batches and the withdrawal's two transfers might not fit.
+  if (!fits(rec, rest, grownBytes(count, 16n) + (count / REDUCES_PER_BATCH + 1n) * BATCH_LINE + 2n * TOKEN_TRANSFER)) {
+    let kept = 0n;
+    for (let i = 0n; i < count; i++) {
+      const at = 5n + 17n * i;
+      if ((data.readU8(at) === 0n) === isBidSequence(data.readU64(at + 9n))) kept++;
+    }
+    alloc8(rec, rest, grownBytes(kept, 16n));
+  }
   const released: Released = { quote: 0n, base: 0n };
   const m = marketShape(rest);
   const traderIndex = traderIndexOf(m, rest, rest.get(3n).key);
   if (traderIndex !== 0n) cancelByIdInner(m, rest, rec, logData, data, count, traderIndex, withdraw ? CLAIM_FUNDS : KEEP_FUNDS, released);
   logComputeUnits();
-  finish(rest, withdraw, TRADER_VAULTS, released);
+  finish(rest, rec, withdraw, TRADER_VAULTS, released);
 }
 
 /**
  * Tag 106: the authority evicts a trader whose seat it no longer approves and who has no orders left: the trader's
  * free funds go back to its token accounts and its state leaves the traders tree (funds.ts's process_withdraw).
  */
-export function evictSeat(rest: RemainingAccounts): void {
+export function evictSeat(rest: RemainingAccounts, rec: Inout<Recorder>): void {
   loadAuthorizedContext(rest);
-  processWithdraw(rest, AUTHORIZED_VAULTS, rest.get(4n).key, false, 0n, false, 0n, true);
+  rec.heap += SEAT_DISCRIMINANT_LINE;
+  processWithdraw(rest, rec, AUTHORIZED_VAULTS, rest.get(4n).key, false, 0n, false, 0n, true);
 }
 
 /** Tag 107: the authority cancels a trader's orders as CancelUpTo would (CancelUpToParams), sending the funds to the trader. */
 export function forceCancelOrders(rest: RemainingAccounts, data: InstructionBytes, rec: Inout<Recorder>, logData: Inout<FixedVec<u8, 1280>>): void {
   loadAuthorizedContext(rest);
+  // The seat's discriminant line, on Phoenix's heap.
+  rec.heap += SEAT_DISCRIMINANT_LINE;
   const params = decodeCancelUpTo(data);
   cancelOrders(rest, rec, logData, 4n, params, true, AUTHORIZED_VAULTS);
 }

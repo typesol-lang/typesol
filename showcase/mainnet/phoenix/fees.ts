@@ -54,7 +54,17 @@ export function collectFees(rest: RemainingAccounts, rec: Inout<Recorder>, data:
 
   const quoteAtoms = quoteLotsToAtoms(quoteLots, h.quote_lot_size);
   log(`Collected ${decimalString(quoteAtoms, h.quote_params.decimals)} in fees`);
-  sendFromVault(programAt<TokenProgram>(rest.get(6n)), market.key, h.quote_params.mint_key, h.quote_params.vault_bump, rest.get(5n), rest.get(4n), quoteAtoms);
+  sendFromVault(
+    rec,
+    rest,
+    programAt<TokenProgram>(rest.get(6n)),
+    market.key,
+    h.quote_params.mint_key,
+    h.quote_params.vault_bump,
+    rest.get(5n),
+    rest.get(4n),
+    quoteAtoms,
+  );
 }
 
 /** process_change_fee_recipient. */

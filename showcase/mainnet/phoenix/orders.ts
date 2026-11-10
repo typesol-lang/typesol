@@ -36,6 +36,7 @@ import {
   require,
   setReturnData,
   u8,
+  u16,
   u32,
   u64,
   u128,
@@ -51,9 +52,32 @@ import {
   tradersOffset,
 } from "./state.js";
 import { type Recorder, finishRecorder } from "./recorder.js";
+import {
+  BASE_FUNDS_LINE,
+  CROSS_ALLOWED_MESSAGE,
+  POST_ALLOWED_MESSAGE,
+  QUOTE_FUNDS_LINE,
+  SEAT_DISCRIMINANT_LINE,
+  alloc,
+  alloc8,
+  outOfMemory,
+  overLimit,
+  sortBytes,
+} from "./heap.js";
 import { assertCrossAllowed, assertPostAllowed, checkSeatWithContext, checkVaultContext, dispatchLoadedMarket, statusName } from "./checkers.js";
-import { sendFromVault } from "./funds.js";
-import { U64_MAX, addBaseLots, addQuoteLots, baseLotsToAtoms, need, quoteLotsFor, quoteLotsToAtoms, subBaseLots, subQuoteLots } from "./util.js";
+import { depositTransfer, sendFromVault } from "./funds.js";
+import {
+  U64_MAX,
+  addBaseLots,
+  addQuoteLots,
+  baseLotsToAtoms,
+  need,
+  quoteLotsFor,
+  quoteLotsToAtoms,
+  subBaseLots,
+  subQuoteLots,
+  timestampAsU64,
+} from "./util.js";
 import { type Packet, type Response, ASK, BID, IMMEDIATE_OR_CANCEL, LIMIT, POST_ONLY, placeOrder } from "./matching.js";
 
 /** A packet with every field zero (filled by the decoder or the multiple-order loop). */
@@ -261,16 +285,22 @@ function availableBalances(rest: RemainingAccounts, vaults: u64): Available {
   if (vaults === 0n) return { base_lots: state.base_lots_free, quote_lots: state.quote_lots_free };
   const quoteAtoms = readData<u64>(rest.get(vaults + 1n), 64n);
   const baseAtoms = readData<u64>(rest.get(vaults), 64n);
+  // BaseAtoms::unchecked_div and QuoteAtoms::unchecked_div (new_order.rs:728-729) panic at their macro lines: a base
+  // lot of 0 atoms (raw_base_units_per_base_unit 0) divides by zero. (A quote lot is never 0 atoms.)
   return {
-    base_lots: addBaseLots(state.base_lots_free, baseAtoms / h.base_lot_size),
-    quote_lots: addQuoteLots(state.quote_lots_free, quoteAtoms / h.quote_lot_size),
+    base_lots: addBaseLots(state.base_lots_free, panicsAt("src/quantities.rs:241:1", baseAtoms / h.base_lot_size)),
+    quote_lots: addQuoteLots(state.quote_lots_free, panicsAt("src/quantities.rs:240:1", quoteAtoms / h.quote_lot_size)),
   };
 }
 
-/** order_packet_has_sufficient_funds: the lots a post needs (asks: base lots; bids: quote lots at its price), logged when short. */
-function hasSufficientFunds(rest: RemainingAccounts, pk: Inout<Packet>, baseLots: u64, quoteLots: u64): boolean {
+/**
+ * order_packet_has_sufficient_funds: the lots a post needs (asks: base lots; bids: quote lots at its price), logged
+ * when short (the line formatted on Phoenix's heap first, new_order.rs:745, :760).
+ */
+function hasSufficientFunds(rest: RemainingAccounts, rec: Inout<Recorder>, pk: Inout<Packet>, baseLots: u64, quoteLots: u64): boolean {
   if (pk.side === ASK) {
     if (baseLots < pk.num_base_lots) {
+      alloc(rec, rest, BASE_FUNDS_LINE);
       log(`Insufficient funds to place order: ${baseLots} base lots available, ${pk.num_base_lots} base lots required`);
       return false;
     }
@@ -279,6 +309,7 @@ function hasSufficientFunds(rest: RemainingAccounts, pk: Inout<Packet>, baseLots
   const fifo = loadRawAt<FifoMarketPrefix>(rest.get(2n), FIFO_MARKET_OFFSET);
   const required = quoteLotsFor(pk.price_in_ticks, fifo.tick_size_in_quote_lots_per_base_unit, pk.num_base_lots, fifo.base_lots_per_base_unit);
   if (quoteLots < required) {
+    alloc(rec, rest, QUOTE_FUNDS_LINE);
     log(`Insufficient funds to place order: ${quoteLots} quote lots available, ${required} quote lots required`);
     return false;
   }
@@ -306,13 +337,16 @@ function processNewOrder(
   const quoteLotSize = h.quote_lot_size;
   const baseLotSize = h.base_lot_size;
   const slot = currentSlot();
-  const unixTimestamp = u64(now());
+  const unixTimestamp = timestampAsU64(now());
   dispatchLoadedMarket(market);
   if (pk.fail_silently_on_insufficient_funds) {
     const available = availableBalances(rest, vaults);
-    if (!hasSufficientFunds(rest, pk, available.base_lots, available.quote_lots)) return;
+    if (!hasSufficientFunds(rest, rec, pk, available.base_lots, available.quote_lots)) return;
   }
   require(placeOrder(rest, rec, logData, rest.get(3n).key, pk, resp, slot, unixTimestamp), PhoenixError.NewOrderError);
+  // `order_ids.push(order_id)` (new_order.rs:420): the first push of lib.rs's Vec<FIFOOrderId> allocates 4 of them
+  // (64 bytes, alignment 8). Checked by the transfer or the batch that comes next.
+  if (resp.placed) rec.heap = (rec.heap + 64n + 7n) & 0xfffffffffffffff8n;
 
   const quoteOut = quoteLotsToAtoms(resp.num_quote_lots_out, quoteLotSize);
   const quoteIn = quoteLotsToAtoms(subQuoteLots(addQuoteLots(resp.num_quote_lots_in, resp.num_quote_lots_posted), resp.num_free_quote_lots_used), quoteLotSize);
@@ -325,11 +359,11 @@ function processNewOrder(
   if (!pk.use_only_deposited_funds) {
     const token = programAt<TokenProgram>(rest.get(vaults + 4n));
     if (pk.side === BID) {
-      sendFromVault(token, market.key, h.base_params.mint_key, h.base_params.vault_bump, rest.get(vaults + 2n), rest.get(vaults), baseOut);
-      if (quoteIn > 0n) token.transfer(rest.get(vaults + 1n), rest.get(vaults + 3n), rest.get(3n), quoteIn);
+      sendFromVault(rec, rest, token, market.key, h.base_params.mint_key, h.base_params.vault_bump, rest.get(vaults + 2n), rest.get(vaults), baseOut);
+      if (quoteIn > 0n) depositTransfer(rec, rest, token, rest.get(vaults + 1n), rest.get(vaults + 3n), rest.get(3n), quoteIn);
     } else {
-      sendFromVault(token, market.key, h.quote_params.mint_key, h.quote_params.vault_bump, rest.get(vaults + 3n), rest.get(vaults + 1n), quoteOut);
-      if (baseIn > 0n) token.transfer(rest.get(vaults), rest.get(vaults + 2n), rest.get(3n), baseIn);
+      sendFromVault(rec, rest, token, market.key, h.quote_params.mint_key, h.quote_params.vault_bump, rest.get(vaults + 3n), rest.get(vaults + 1n), quoteOut);
+      if (baseIn > 0n) depositTransfer(rec, rest, token, rest.get(vaults), rest.get(vaults + 2n), rest.get(3n), baseIn);
     }
   } else if (quoteIn > 0n || baseIn > 0n) {
     log("WARNING: Deposited amount of funds were insufficient to execute the order");
@@ -341,6 +375,9 @@ function processNewOrder(
 function finishWithOrderId(rest: RemainingAccounts, rec: Inout<Recorder>, logData: Inout<FixedVec<u8, 1280>>, resp: Inout<Response>): void {
   finishRecorder(rec, logData, rest);
   if (!resp.placed) return;
+  // order_ids.try_to_vec() (lib.rs:369): borsh's Vec::with_capacity(1024).
+  rec.heap += 1024n;
+  if (rec.heap > rec.limit) overLimit(rec, rest);
   const ids: FixedVec<u8, 20> = fixedVec([]);
   ids.pushLE<u32>(1n);
   ids.pushBorsh<FIFOOrderId>({ price_in_ticks: resp.placed_price_in_ticks, order_sequence_number: resp.placed_order_sequence_number });
@@ -361,6 +398,7 @@ export function swap(rest: RemainingAccounts, data: InstructionBytes, rec: Inout
   const market = rest.get(2n);
   // NewOrderContext::load_cross_only (no seat; the vault context).
   assertCrossAllowed(market);
+  rec.heap += CROSS_ALLOWED_MESSAGE;
   checkVaultContext(rest, 4n, market, rest.get(3n).key);
   const pk = emptyPacket();
   decodeOrderPacket(data, pk);
@@ -377,6 +415,7 @@ export function swapWithFreeFunds(rest: RemainingAccounts, data: InstructionByte
   assertCrossAllowed(market);
   need(rest, 5n);
   checkSeatWithContext(rest.get(4n), market.key, rest.get(3n).key, true);
+  rec.heap += CROSS_ALLOWED_MESSAGE + SEAT_DISCRIMINANT_LINE;
   const pk = emptyPacket();
   decodeOrderPacket(data, pk);
   check(pk.kind === IMMEDIATE_OR_CANCEL, "Order type must be IOC or FOK. \nsrc/program/processor/new_order.rs:199:5");
@@ -392,6 +431,7 @@ export function placeLimitOrder(rest: RemainingAccounts, data: InstructionBytes,
   assertPostAllowed(market);
   need(rest, 5n);
   checkSeatWithContext(rest.get(4n), market.key, rest.get(3n).key, true);
+  rec.heap += POST_ALLOWED_MESSAGE + SEAT_DISCRIMINANT_LINE;
   checkVaultContext(rest, 5n, market, rest.get(3n).key);
   const pk = emptyPacket();
   decodeOrderPacket(data, pk);
@@ -408,6 +448,7 @@ export function placeLimitOrderWithFreeFunds(rest: RemainingAccounts, data: Inst
   assertPostAllowed(market);
   need(rest, 5n);
   checkSeatWithContext(rest.get(4n), market.key, rest.get(3n).key, true);
+  rec.heap += POST_ALLOWED_MESSAGE + SEAT_DISCRIMINANT_LINE;
   const pk = emptyPacket();
   decodeOrderPacket(data, pk);
   check(pk.kind !== IMMEDIATE_OR_CANCEL, "Order type must be Limit or PostOnly. \nsrc/program/processor/new_order.rs:280:5");
@@ -419,48 +460,177 @@ export function placeLimitOrderWithFreeFunds(rest: RemainingAccounts, data: Inst
 
 // ---- Many PostOnly orders (process_multiple_new_orders) ----------------------------------------------------------------
 
-/** The most CondensedOrders a transaction can carry (18 bytes each at least, in at most 1232). */
-const MAX_CONDENSED = 72n;
+/**
+ * The most CondensedOrders of one side that can be sorted. Past it the side's decoded Vec has taken 4080 + 8160 +
+ * 16320 bytes, after at least 600 of the entrypoint (five accounts) and 1736 of the prefix and the checks, so the
+ * sort's own Vec (8 bytes an order) and its merge buffer (half that) cannot fit the heap: Phoenix always runs out of
+ * memory there (heap.ts).
+ */
+const MAX_SIDE = 170n;
+/** CondensedOrders a decoded Vec holds before it first grows: borsh's `cautious` cap of 4096 bytes, 48 bytes each. */
+const FIRST_CONDENSED = 85n;
+/** Order ids stored for the return data: 4 + 16 × 63 bytes is the most that fits its 1,024 (more fails, as in Phoenix). */
+const MAX_RETURNED = 63n;
 
 /**
  * One side's orders sorted best first, stably, as `sorted_by` sorts them (bids by price descending, asks ascending):
- * `prices` and `starts` (where each order's bytes start) move together. A side already in order stays as it is and
- * one in strictly the opposite order is reversed (the runs the standard library's merge sort finds first); anything
- * else is sorted by insertion.
+ * `starts` holds where each order's bytes start, its price first; `shape` is what the decoder saw of their order. A
+ * side already in order (IN_ORDER) stays as it is and one in strictly the opposite order (REVERSED) is reversed (the
+ * runs the standard library's merge sort finds first); anything else is sorted by insertion, or merged past 20 orders.
+ * Returns what the merge sort takes of Phoenix's heap (heap.ts): past 20 orders a buffer of half of them (8 bytes
+ * each), and the stack of runs, one run (a Vec of 4, 64 bytes) for a side in order or reversed.
  */
-function sortSide(prices: Inout<FixedVec<u64, 72>>, starts: Inout<FixedVec<u64, 72>>, first: u64, last: u64, descending: boolean): void {
-  let ordered = true;
-  let reversed = true;
-  for (let i = first + 1n; i < last; i++) {
-    const before = prices.get(i - 1n);
-    const p = prices.get(i);
-    if (descending ? before < p : before > p) ordered = false;
-    if (descending ? before >= p : before <= p) reversed = false;
-  }
-  if (ordered) return;
-  if (reversed) {
+function sortSide(data: InstructionBytes, starts: Inout<FixedVec<u16, 340>>, first: u64, last: u64, descending: boolean, shape: u8): u64 {
+  const n = last - first;
+  const sortHeap = n <= 20n ? 0n : 8n * (n / 2n) + 64n;
+  if (shape === IN_ORDER) return sortHeap;
+  if (shape === REVERSED) {
     for (let i = first, j = last - 1n; i < j; i++, j--) {
-      const p = prices.get(i);
       const s = starts.get(i);
-      prices.set(i, prices.get(j));
       starts.set(i, starts.get(j));
-      prices.set(j, p);
       starts.set(j, s);
     }
-    return;
+    return sortHeap;
   }
+  if (n > 20n) return mergeSortSide(data, starts, first, last, descending);
   for (let i = first + 1n; i < last; i++) {
-    const p = prices.get(i);
     const s = starts.get(i);
+    const p = data.readU64(u64(s));
     let j = i;
-    while (j > first && (descending ? prices.get(j - 1n) < p : prices.get(j - 1n) > p)) {
-      prices.set(j, prices.get(j - 1n));
+    while (j > first && (descending ? data.readU64(u64(starts.get(j - 1n))) < p : data.readU64(u64(starts.get(j - 1n))) > p)) {
       starts.set(j, starts.get(j - 1n));
       j--;
     }
-    prices.set(j, p);
     starts.set(j, s);
   }
+  return 0n;
+}
+
+/** What the decoder saw of a side's order (sortSide): best first already, strictly the other way, or neither. */
+const IN_ORDER: u8 = 0n;
+const REVERSED: u8 = 1n;
+const UNORDERED: u8 = 2n;
+/** Prices below 2^56 leave a sort key room for an order's position (8 bits) beside them. */
+const KEY_PRICE_LIMIT = 72057594037927936n;
+/** The run length the merge sort starts from, each run sorted by insertion first. */
+const SORT_RUN = 8n;
+
+/**
+ * sortSide past 20 orders in no simple order (at most MAX_SIDE): the prices read once and the heap the standard
+ * library's merge sort takes worked out on them as given (heap.ts); then the orders sorted by a key that is unique and
+ * in the order wanted, the price (bids: its complement) above the order's position, so that equal prices keep their
+ * order: by insertion in runs of SORT_RUN, then merged. A price from 2^56 up (no room for the position) sorts the
+ * (price, position) pairs instead (mergePairs).
+ * @noinline
+ */
+function mergeSortSide(data: InstructionBytes, starts: Inout<FixedVec<u16, 340>>, first: u64, last: u64, descending: boolean): u64 {
+  const n = last - first;
+  const at: FixedVec<u16, 170> = fixedVec([]);
+  const prices: FixedVec<u64, 170> = fixedVec([]);
+  let small = true;
+  for (let i = 0n; i < n; i++) {
+    const s = starts.get(first + i);
+    const price = data.readU64(u64(s));
+    if (price >= KEY_PRICE_LIMIT) small = false;
+    at.push(s);
+    prices.push(price);
+  }
+  const bytes = sortBytes(prices, n, descending);
+  if (small) sortByKeys(starts, first, n, at, prices, descending);
+  else mergePairs(starts, first, n, at, prices, descending);
+  return bytes;
+}
+
+/**
+ * The orders sorted by their keys (mergeSortSide): by insertion in runs of SORT_RUN, then merged.
+ * @noinline
+ */
+function sortByKeys(
+  starts: Inout<FixedVec<u16, 340>>,
+  first: u64,
+  n: u64,
+  at: Inout<FixedVec<u16, 170>>,
+  prices: Inout<FixedVec<u64, 170>>,
+  descending: boolean,
+): void {
+  const k0: FixedVec<u64, 170> = fixedVec([]);
+  const k1: FixedVec<u64, 170> = fixedVec([]);
+  for (let i = 0n; i < n; i++) {
+    const price = prices.get(i);
+    k0.push(((descending ? KEY_PRICE_LIMIT - 1n - price : price) << 8n) | i);
+    k1.push(0n);
+  }
+  for (let lo = 0n; lo < n; lo += SORT_RUN) {
+    const hi = lo + SORT_RUN < n ? lo + SORT_RUN : n;
+    for (let i = lo + 1n; i < hi; i++) {
+      const key = k0.get(i);
+      let j = i;
+      while (j > lo && k0.get(j - 1n) > key) {
+        k0.set(j, k0.get(j - 1n));
+        j--;
+      }
+      k0.set(j, key);
+    }
+  }
+  let inFirst = true;
+  for (let width = SORT_RUN; width < n; width *= 2n) {
+    if (inFirst) mergeKeys(k0, k1, n, width);
+    else mergeKeys(k1, k0, n, width);
+    inFirst = !inFirst;
+  }
+  for (let i = 0n; i < n; i++) starts.set(first + i, at.get((inFirst ? k0.get(i) : k1.get(i)) & 0xffn));
+}
+
+/** One pass of the merge sort of keys: the runs of `width` of `from` merged in pairs into `to`, ascending. */
+function mergeKeys(from: Inout<FixedVec<u64, 170>>, to: Inout<FixedVec<u64, 170>>, n: u64, width: u64): void {
+  for (let lo = 0n; lo < n; lo += 2n * width) {
+    const mid = lo + width < n ? lo + width : n;
+    const hi = mid + width < n ? mid + width : n;
+    let i = lo;
+    let j = mid;
+    let k = lo;
+    while (i < mid && j < hi) {
+      const a = from.get(i);
+      const b = from.get(j);
+      if (b < a) {
+        to.set(k, b);
+        j++;
+      } else {
+        to.set(k, a);
+        i++;
+      }
+      k++;
+    }
+    for (; i < mid; i++, k++) to.set(k, from.get(i));
+    for (; j < hi; j++, k++) to.set(k, from.get(j));
+  }
+}
+
+/**
+ * The orders sorted by (price, position) where a price leaves no room for a key: by insertion, equal prices kept in
+ * their order. (Only a price of 2^56 ticks or more comes here.)
+ */
+function mergePairs(
+  starts: Inout<FixedVec<u16, 340>>,
+  first: u64,
+  n: u64,
+  at: Inout<FixedVec<u16, 170>>,
+  prices: Inout<FixedVec<u64, 170>>,
+  descending: boolean,
+): void {
+  for (let i = 1n; i < n; i++) {
+    const s = at.get(i);
+    const p = prices.get(i);
+    let j = i;
+    while (j > 0n && (descending ? prices.get(j - 1n) < p : prices.get(j - 1n) > p)) {
+      at.set(j, at.get(j - 1n));
+      prices.set(j, prices.get(j - 1n));
+      j--;
+    }
+    at.set(j, s);
+    prices.set(j, p);
+  }
+  for (let i = 0n; i < n; i++) starts.set(first + i, at.get(i));
 }
 
 /** Whether the CondensedOrders at `a` and `b` have the same (price, last_valid_slot, last_valid_unix_timestamp). */
@@ -503,7 +673,8 @@ export function placeMultiplePostOnlyOrdersWithFreeFunds(
  * process_place_multiple_post_only_orders (tags 16 and 17): MultipleOrderPacket { bids, asks, client_order_id,
  * failed_multiple_limit_order_behavior }. Each side is sorted best first (stably) and the orders of one level (price,
  * last valid slot and timestamp, adjacent after the sort) are merged into one PostOnly order. Finishes the recorder and
- * returns the ids of the orders that rested.
+ * returns the ids of the orders that rested. As many orders as a CPI's 10,240 bytes carry are decoded; Phoenix's heap
+ * (heap.ts) decides how many it gets through, and its return data holds 63 ids at most (more fails in set_return_data).
  */
 /** @noinline */
 function multiplePostOnlyOrders(
@@ -518,22 +689,36 @@ function multiplePostOnlyOrders(
   assertPostAllowed(market);
   need(rest, 5n);
   checkSeatWithContext(rest.get(4n), market.key, trader.key, true);
+  rec.heap += POST_ALLOWED_MESSAGE + SEAT_DISCRIMINANT_LINE;
   if (!freeFunds) checkVaultContext(rest, 5n, market, trader.key);
 
-  // MultipleOrderPacket::try_from_slice: where each CondensedOrder starts, bids then asks.
-  const starts: FixedVec<u64, 72> = fixedVec([]);
-  const prices: FixedVec<u64, 72> = fixedVec([]);
+  // MultipleOrderPacket::try_from_slice: where each CondensedOrder starts (a side past MAX_SIDE is not kept: it never
+  // gets to its sort), bids then asks. Each side's Vec<CondensedOrder> takes `cautious(count)` elements when its count
+  // is read, then doubles as the elements are pushed (borsh 0.9.3 de/mod.rs:320-323).
+  const starts: FixedVec<u16, 340> = fixedVec([]);
   let at = 1n;
   let bidCount = 0n;
+  let askCount = 0n;
+  let keptBids = 0n;
+  let highestBid = 0n;
+  let lowestAsk = U64_MAX;
+  let bidShape = IN_ORDER;
+  let askShape = IN_ORDER;
   for (let side = 0n; side < 2n; side++) {
     require(at + 4n <= data.length, ProgramError.BorshIoError);
     const count = u64(data.readU32(at));
     at += 4n;
+    let cap = count < FIRST_CONDENSED ? count : FIRST_CONDENSED;
+    if (count > 0n) alloc8(rec, rest, 48n * cap);
+    const keep = count <= MAX_SIDE;
+    // Whether the side comes best first (bids not rising, asks not falling) or strictly the other way.
+    let inOrder = true;
+    let reversed = true;
+    let previous = 0n;
     for (let i = 0n; i < count; i++) {
       require(at + 17n <= data.length, ProgramError.BorshIoError);
-      if (starts.length === MAX_CONDENSED) require(false, ProgramError.BorshIoError);
-      starts.push(at);
-      prices.push(data.readU64(at));
+      const start = at;
+      const price = data.readU64(at);
       at += 16n;
       for (let f = 0n; f < 2n; f++) {
         require(at + 1n <= data.length, ProgramError.BorshIoError);
@@ -542,8 +727,35 @@ function multiplePostOnlyOrders(
         at += tag === 1n ? 9n : 1n;
         require(at <= data.length, ProgramError.BorshIoError);
       }
+      if (i === cap) {
+        cap *= 2n;
+        alloc8(rec, rest, 48n * cap);
+      }
+      if (keep) starts.push(u16(start));
+      if (side === 0n) {
+        if (price > highestBid) highestBid = price;
+        if (i > 0n) {
+          if (price > previous) inOrder = false;
+          else reversed = false;
+        }
+      } else {
+        if (price < lowestAsk) lowestAsk = price;
+        if (i > 0n) {
+          if (price < previous) inOrder = false;
+          else reversed = false;
+        }
+      }
+      previous = price;
     }
-    if (side === 0n) bidCount = count;
+    const shape = inOrder ? IN_ORDER : reversed ? REVERSED : UNORDERED;
+    if (side === 0n) {
+      bidCount = count;
+      keptBids = starts.length;
+      bidShape = shape;
+    } else {
+      askCount = count;
+      askShape = shape;
+    }
   }
   require(at + 1n <= data.length, ProgramError.BorshIoError);
   const idTag = data.readU8(at);
@@ -563,14 +775,6 @@ function multiplePostOnlyOrders(
   const failOnCross = behavior === 1n || behavior === 3n;
   const skip = behavior >= 2n;
 
-  let highestBid = 0n;
-  let lowestAsk = U64_MAX;
-  for (let i = 0n; i < prices.length; i++) {
-    const price = prices.get(i);
-    if (i < bidCount) {
-      if (price > highestBid) highestBid = price;
-    } else if (price < lowestAsk) lowestAsk = price;
-  }
   if (highestBid >= lowestAsk) {
     log("Invalid input. MultipleOrderPacket contains crossing bids and asks");
     require(false, ProgramError.InvalidArgument);
@@ -580,30 +784,38 @@ function multiplePostOnlyOrders(
   const quoteLotSize = h.quote_lot_size;
   const baseLotSize = h.base_lot_size;
   const slot = currentSlot();
-  const unixTimestamp = u64(now());
+  const unixTimestamp = timestampAsU64(now());
   dispatchLoadedMarket(market);
   const available = availableBalances(rest, freeFunds ? 0n : 5n);
   let baseAvailable = available.base_lots;
   let quoteAvailable = available.quote_lots;
   let quoteToDeposit = 0n;
   let baseToDeposit = 0n;
-  const ids: FixedVec<u8, 1028> = fixedVec([]);
+  const ids: FixedVec<u8, 1012> = fixedVec([]);
   ids.pushLE<u32>(0n);
   let placed = 0n;
+  let growAt = 0n;
 
   for (let side = 0n; side < 2n; side++) {
-    const first = side === 0n ? 0n : bidCount;
-    const last = side === 0n ? bidCount : starts.length;
-    sortSide(prices, starts, first, last, side === 0n);
+    const count = side === 0n ? bidCount : askCount;
+    const first = side === 0n ? 0n : keptBids;
+    const last = side === 0n ? keptBids : starts.length;
+    // sorted_by (itertools 0.10.5): Vec::from_iter of the side's references, then sort_by.
+    if (count > 0n) alloc8(rec, rest, 8n * count);
+    if (count > MAX_SIDE) {
+      alloc8(rec, rest, 8n * (count / 2n));
+      outOfMemory();
+    }
+    alloc8(rec, rest, sortSide(data, starts, first, last, side === 0n, side === 0n ? bidShape : askShape));
     let i = first;
     while (i < last) {
       // One level: the adjacent orders with its price and time in force, their sizes summed.
-      const s = starts.get(i);
-      const price = prices.get(i);
+      const s = u64(starts.get(i));
+      const price = data.readU64(s);
       let size = data.readU64(s + 8n);
       let k = i + 1n;
-      while (k < last && sameLevel(data, s, starts.get(k))) {
-        size = panicsAt("src/program/processor/new_order.rs:590:67", size + data.readU64(starts.get(k) + 8n));
+      while (k < last && sameLevel(data, s, u64(starts.get(k)))) {
+        size = panicsAt("src/program/processor/new_order.rs:590:67", size + data.readU64(u64(starts.get(k)) + 8n));
         k++;
       }
       i = k;
@@ -624,11 +836,18 @@ function multiplePostOnlyOrders(
       pk.has_last_valid_unix_timestamp = data.readU8(t) === 1n;
       if (pk.has_last_valid_unix_timestamp) pk.last_valid_unix_timestamp_in_seconds = data.readU64(t + 1n);
       pk.fail_silently_on_insufficient_funds = skip;
-      if (skip && !hasSufficientFunds(rest, pk, baseAvailable, quoteAvailable)) continue;
+      if (skip && !hasSufficientFunds(rest, rec, pk, baseAvailable, quoteAvailable)) continue;
       const resp = emptyResponse();
       require(placeOrder(rest, rec, logData, trader.key, pk, resp, slot, unixTimestamp), PhoenixError.NewOrderError);
       if (resp.placed) {
-        ids.pushBorsh<FIFOOrderId>({ price_in_ticks: resp.placed_price_in_ticks, order_sequence_number: resp.placed_order_sequence_number });
+        // order_ids.push (new_order.rs:627): lib.rs's Vec<FIFOOrderId> (16 bytes each) grows at 0, 4, 8, … ids.
+        if (placed === growAt) {
+          alloc8(rec, rest, growAt === 0n ? 64n : 32n * growAt);
+          growAt = growAt === 0n ? 4n : 2n * growAt;
+        }
+        if (placed < MAX_RETURNED) {
+          ids.pushBorsh<FIFOOrderId>({ price_in_ticks: resp.placed_price_in_ticks, order_sequence_number: resp.placed_order_sequence_number });
+        }
         placed++;
       }
       const quoteDeposited = subQuoteLots(addQuoteLots(resp.num_quote_lots_in, resp.num_quote_lots_posted), resp.num_free_quote_lots_used);
@@ -646,14 +865,14 @@ function multiplePostOnlyOrders(
     const token = programAt<TokenProgram>(rest.get(9n));
     if (bidCount > 0n) {
       const atoms = quoteLotsToAtoms(quoteToDeposit, quoteLotSize);
-      if (atoms > 0n) token.transfer(rest.get(6n), rest.get(8n), trader, atoms);
+      if (atoms > 0n) depositTransfer(rec, rest, token, rest.get(6n), rest.get(8n), trader, atoms);
     } else if (quoteToDeposit !== 0n) {
       log("WARNING: Expected quote_lots_to_deposit to be zero. \nsrc/program/processor/new_order.rs:671:17");
       require(false, PhoenixError.NewOrderError);
     }
-    if (starts.length > bidCount) {
+    if (askCount > 0n) {
       const atoms = baseLotsToAtoms(baseToDeposit, baseLotSize);
-      if (atoms > 0n) token.transfer(rest.get(5n), rest.get(7n), trader, atoms);
+      if (atoms > 0n) depositTransfer(rec, rest, token, rest.get(5n), rest.get(7n), trader, atoms);
     } else if (baseToDeposit !== 0n) {
       log("WARNING: Expected base_lots_to_deposit to be zero. \nsrc/program/processor/new_order.rs:686:17");
       require(false, PhoenixError.NewOrderError);
@@ -665,7 +884,22 @@ function multiplePostOnlyOrders(
 
   finishRecorder(rec, logData, rest);
   if (placed > 0n) {
-    ids.setLE(0n, u32(placed));
-    setReturnData(ids);
+    // order_ids.try_to_vec() (lib.rs:369): Vec::with_capacity(1024), doubled while the 4 + 16 × placed bytes do not
+    // fit (each id written as two u64s).
+    let cap = 1024n;
+    let bytes = 1024n;
+    while (cap < 4n + 16n * placed) {
+      cap *= 2n;
+      bytes += cap;
+    }
+    alloc(rec, rest, bytes);
+    if (placed <= MAX_RETURNED) {
+      ids.setLE(0n, u32(placed));
+      setReturnData(ids);
+    } else {
+      // Past 1,024 bytes the runtime refuses it ("Return data too large"); only the length matters, and the data
+      // (at least 18 bytes an order) is longer than 4 + 16 bytes an id.
+      setReturnData(data.slice(0n, 4n + 16n * placed));
+    }
   }
 }

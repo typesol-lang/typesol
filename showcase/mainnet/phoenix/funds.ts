@@ -11,6 +11,7 @@
 // - WithdrawFunds: base account, quote account, base vault, quote vault, SPL Token.
 import { type MarketHeader, type TraderState, tradersOffset } from "./state.js";
 import {
+  type Inout,
   type InstructionBytes,
   type Pubkey,
   type RemainingAccount,
@@ -30,15 +31,18 @@ import {
 import { PhoenixError } from "./errors.js";
 import { assertPostAllowed, assertReduceAllowed, checkSeatWithContext, checkVaultContext, dispatchLoadedMarket } from "./checkers.js";
 import { addBaseLots, addQuoteLots, baseLotsToAtoms, emptyTraderState, need, quoteLotsToAtoms, subBaseLots, subQuoteLots } from "./util.js";
+import { type Recorder } from "./recorder.js";
+import { POST_ALLOWED_MESSAGE, REDUCE_ALLOWED_MESSAGE, SEAT_DISCRIMINANT_LINE, TOKEN_TRANSFER, overLimit } from "./heap.js";
 
 /** process_deposit_funds: DepositParams { quote_lots_to_deposit, base_lots_to_deposit } after the tag. */
-export function depositFunds(rest: RemainingAccounts, data: InstructionBytes): void {
+export function depositFunds(rest: RemainingAccounts, data: InstructionBytes, rec: Inout<Recorder>): void {
   const market = rest.get(2n);
   const trader = rest.get(3n);
-  // DepositContext::load.
+  // DepositContext::load (its status message and the seat's discriminant line on Phoenix's heap, heap.ts).
   assertPostAllowed(market);
   need(rest, 5n);
   checkSeatWithContext(rest.get(4n), market.key, trader.key, true);
+  rec.heap += POST_ALLOWED_MESSAGE + SEAT_DISCRIMINANT_LINE;
   checkVaultContext(rest, 5n, market, trader.key);
   require(data.length === 17n, ProgramError.BorshIoError);
   const quoteLots = data.readU64(1n);
@@ -62,19 +66,35 @@ export function depositFunds(rest: RemainingAccounts, data: InstructionBytes): v
   const quoteAtoms = quoteLotsToAtoms(quoteLots, h.quote_lot_size);
   const baseAtoms = baseLotsToAtoms(baseLots, h.base_lot_size);
   const token = programAt<TokenProgram>(rest.get(9n));
-  if (quoteAtoms > 0n) token.transfer(rest.get(6n), rest.get(8n), trader, quoteAtoms);
-  if (baseAtoms > 0n) token.transfer(rest.get(5n), rest.get(7n), trader, baseAtoms);
+  if (quoteAtoms > 0n) depositTransfer(rec, rest, token, rest.get(6n), rest.get(8n), trader, quoteAtoms);
+  if (baseAtoms > 0n) depositTransfer(rec, rest, token, rest.get(5n), rest.get(7n), trader, baseAtoms);
+}
+
+/** token_utils.rs maybe_invoke_deposit's CPI (the caller checks the amount): its Instruction on Phoenix's heap first. */
+export function depositTransfer(
+  rec: Inout<Recorder>,
+  rest: RemainingAccounts,
+  token: TokenProgram,
+  from: RemainingAccount,
+  vault: RemainingAccount,
+  trader: RemainingAccount,
+  amount: u64,
+): void {
+  rec.heap += TOKEN_TRANSFER;
+  if (rec.heap > rec.limit) overLimit(rec, rest);
+  token.transfer(from, vault, trader, amount);
 }
 
 /**
  * process_withdraw_funds: WithdrawParams { quote_lots_to_withdraw: Option<u64>, base_lots_to_withdraw: Option<u64> }
  * after the tag (None: all the free lots).
  */
-export function withdrawFunds(rest: RemainingAccounts, data: InstructionBytes): void {
+export function withdrawFunds(rest: RemainingAccounts, data: InstructionBytes, rec: Inout<Recorder>): void {
   const market = rest.get(2n);
   const trader = rest.get(3n);
   // CancelOrWithdrawContext::load.
   assertReduceAllowed(market);
+  rec.heap += REDUCE_ALLOWED_MESSAGE;
   checkVaultContext(rest, 4n, market, trader.key);
   // Two Borsh Options: a tag (0 or 1), then the u64 when 1; nothing after.
   require(data.length >= 2n && data.readU8(1n) <= 1n, ProgramError.BorshIoError);
@@ -83,7 +103,7 @@ export function withdrawFunds(rest: RemainingAccounts, data: InstructionBytes): 
   require(data.length >= at + 1n && data.readU8(at) <= 1n, ProgramError.BorshIoError);
   const hasBase = data.readU8(at) === 1n;
   require(data.length === at + (hasBase ? 9n : 1n), ProgramError.BorshIoError);
-  processWithdraw(rest, 4n, trader.key, hasQuote, hasQuote ? data.readU64(2n) : 0n, hasBase, hasBase ? data.readU64(at + 1n) : 0n, false);
+  processWithdraw(rest, rec, 4n, trader.key, hasQuote, hasQuote ? data.readU64(2n) : 0n, hasBase, hasBase ? data.readU64(at + 1n) : 0n, false);
 }
 
 /**
@@ -94,6 +114,7 @@ export function withdrawFunds(rest: RemainingAccounts, data: InstructionBytes): 
  */
 export function processWithdraw(
   rest: RemainingAccounts,
+  rec: Inout<Recorder>,
   vaults: u64,
   trader: Pubkey,
   hasQuote: boolean,
@@ -125,7 +146,7 @@ export function processWithdraw(
     require(false, PhoenixError.EvictionError);
   }
   logComputeUnits();
-  tryWithdraw(rest, vaults, quoteLots, baseLots);
+  tryWithdraw(rest, rec, vaults, quoteLots, baseLots);
 }
 
 /**
@@ -134,14 +155,14 @@ export function processWithdraw(
  * vault context is the five accounts from position `vaults` (base account, quote account, base vault, quote vault,
  * SPL Token).
  */
-export function tryWithdraw(rest: RemainingAccounts, vaults: u64, quoteLots: u64, baseLots: u64): void {
+export function tryWithdraw(rest: RemainingAccounts, rec: Inout<Recorder>, vaults: u64, quoteLots: u64, baseLots: u64): void {
   const market = rest.get(2n);
   const h = loadRaw<MarketHeader>(market);
   const quoteAtoms = quoteLotsToAtoms(quoteLots, h.quote_lot_size);
   const baseAtoms = baseLotsToAtoms(baseLots, h.base_lot_size);
   const token = programAt<TokenProgram>(rest.get(vaults + 4n));
-  sendFromVault(token, market.key, h.quote_params.mint_key, h.quote_params.vault_bump, rest.get(vaults + 3n), rest.get(vaults + 1n), quoteAtoms);
-  sendFromVault(token, market.key, h.base_params.mint_key, h.base_params.vault_bump, rest.get(vaults + 2n), rest.get(vaults), baseAtoms);
+  sendFromVault(rec, rest, token, market.key, h.quote_params.mint_key, h.quote_params.vault_bump, rest.get(vaults + 3n), rest.get(vaults + 1n), quoteAtoms);
+  sendFromVault(rec, rest, token, market.key, h.base_params.mint_key, h.base_params.vault_bump, rest.get(vaults + 2n), rest.get(vaults), baseAtoms);
 }
 
 /** `*trader_state == TraderState::default()`: every field zero, the padding too. */
@@ -151,8 +172,13 @@ function isEmpty(s: TraderState): boolean {
   return true;
 }
 
-/** token_utils.rs maybe_invoke_withdraw: an SPL Token Transfer out of a vault (its own authority), when non-zero. */
+/**
+ * token_utils.rs maybe_invoke_withdraw: an SPL Token Transfer out of a vault (its own authority), when non-zero, its
+ * Instruction on Phoenix's heap first.
+ */
 export function sendFromVault(
+  rec: Inout<Recorder>,
+  rest: RemainingAccounts,
   token: TokenProgram,
   market: Pubkey,
   mint: Pubkey,
@@ -161,5 +187,9 @@ export function sendFromVault(
   to: RemainingAccount,
   amount: u64,
 ): void {
-  if (amount !== 0n) token.transfer(vault, to, vault, amount, ["vault", market, mint, u8(vaultBump & 0xffn)]);
+  if (amount !== 0n) {
+    rec.heap += TOKEN_TRANSFER;
+    if (rec.heap > rec.limit) overLimit(rec, rest);
+    token.transfer(vault, to, vault, amount, ["vault", market, mint, u8(vaultBump & 0xffn)]);
+  }
 }
