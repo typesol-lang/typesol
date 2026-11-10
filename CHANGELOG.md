@@ -6,6 +6,15 @@ codes, and says so here.
 
 ## Unreleased
 
+- Faster: the owner check of native account views (`loadRaw` / `loadRawMut`, `loadRawAt`, `rawArrayAt`, `rbTreeAt` and
+  their Mut forms) remembers the last account it found this program's, until a CPI or an owner write (`assignOwner`,
+  `closeRaw`, `close`) forgets it: the same account passes again with a pointer compare instead of a 32-byte one.
+  Phoenix's helpers each view the market again, often in loops that write it, where clang could not drop the
+  repeated compare (test/language/phx-costs.test.ts: a view per pass of a writing loop 21 → 15 CU, two views 35 → 21,
+  a helper call taking the market 54 → 43). A view after the account changed hands still fails with 3007
+  (test/language/owner-cache.test.ts: after assignOwner, closeRaw and a self-CPI that assigns it). Only programs that
+  make such views carry the cache (`TS_OWNER_CACHE`, a pointer in TsParams); their generated C changes (SPL Stake
+  Pool, Raydium AMM v4, Phoenix and the test fixtures that use views), and their tests pass unchanged.
 - Faster: a RedBlackTree walk (`for (const e of tree)`, `tree.reversed()`) checks each node's index against the
   capacity once, when it steps onto the node, instead of three times, and keeps its stack by pointer: 59 → 40 CU per
   node for a walk summing a field of a 400-order book (test/language/phx-costs.test.ts; 18 CU less per node read-only).

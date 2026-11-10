@@ -229,6 +229,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     this.line(`for (uint64_t ${i}b = ${base} + ${range.from}; ${i}b < ${base} + ${range.to}; ${i}b++) ts_info(params->ka[${i}b], &params->infos[${k}++]);`);
     const ixName = this.tmp("cpi");
     this.line(`SolInstruction ${ixName} = {&${programKey}, ${m}, ${n}, (uint8_t *)${data.items}, ${data.count}};`);
+    this.forgetOwners();
     if (multi) this.line(`TS_TRY(sol_invoke_signed(&${ixName}, params->infos, ${k}, ${multi.ptr}, ${multi.count}));`);
     else if (seeds) {
       const signer = this.tmp("signer");

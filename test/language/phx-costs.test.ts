@@ -93,7 +93,13 @@ describe("Phoenix's hot paths", () => {
     // 691 → 547 CU: the second search (about the cost of addrOf) is gone.
     expect(cancelByKey.cu - cancel.cu).toBeGreaterThan(120);
     const viewBase = (await run(29, 0, 0, 0, 100)).cu;
-    for (const op of [20, 21, 22, 23]) lines.push(`views op ${op} per pass ${(((await run(op, 0, 0, 0, 100)).cu - viewBase) / 100).toFixed(1)}`);
+    const pass = async (op: number) => ((await run(op, 0, 0, 0, 100)).cu - viewBase) / 100;
+    const views = [await pass(20), await pass(21), await pass(22), await pass(23)];
+    views.forEach((v, i) => lines.push(`views op ${20 + i} per pass ${v.toFixed(1)}`));
+    // The owner check of a view made again (in a loop that writes the account, in each helper call): a pointer
+    // compare (ts_owned). Before: 21.0, 35.0, 54.4 and 97.6 CU per pass.
+    expect(views[0]).toBeLessThan(17);
+    expect(views[1]).toBeLessThan(25);
     const ev0 = (await run(30, 0, 0, 0, 0)).cu;
     const evB = await run(30, 0, 0, 0, 100);
     const evL = await run(31, 0, 0, 0, 100);

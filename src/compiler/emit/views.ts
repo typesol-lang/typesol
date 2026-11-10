@@ -111,7 +111,7 @@ export abstract class ViewEmitter extends CallEmitter {
     const { h, param } = this.rawAccount(node, fn, mut);
     const off = this.u64Arg(node.arguments[1]!, "off");
     const cap = counts ? this.u64Arg(node.arguments[2]!, "cap") : undefined;
-    this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    this.line(this.viewOwnerCheck(h));
     return { h, param, off, cap };
   }
 

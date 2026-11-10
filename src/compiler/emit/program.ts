@@ -1,5 +1,6 @@
 import type { Analysis } from "../analyze.js";
-import { type FieldType, type StructDef } from "../model.js";
+import ts from "typescript";
+import { type FieldType, type ProgramModel, type StructDef } from "../model.js";
 import { accountLimit, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fieldC, fixedVecC, laterVecC, type EmitOptions } from "./shared.js";
 import { FunctionEmitter } from "./function.js";
 import { emitBorshCodecs, emitNativeBorshCodecs } from "./borsh.js";
@@ -11,6 +12,7 @@ import { emitRbTrees } from "./rbtree.js";
  */
 export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string {
   const { model, reporter } = analysis;
+  model.ownerCache = makesNativeViews(model);
 
   // Bodies first: they register events, string-literal errors and PDA descriptions.
   const helperBodies: string[] = [];
@@ -72,6 +74,8 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   if (nativeWrites && typeof nativeWrites.value !== "boolean") reporter.error(analysis.sourceFile, "NATIVE_ACCOUNT_WRITES must be true or false");
   // resizeAccount on a remaining account: the entrypoint records every account's size when the instruction starts.
   if ([...helperBodies, ...ixBodies].some((b) => b.includes("ts_entry_len("))) out.push(`#define TS_RECORD_ENTRY_LEN 1`);
+  // Native account views share one owner-check cache (ts_owned), zeroed in the entry point.
+  if (model.ownerCache) out.push(`#define TS_OWNER_CACHE 1`);
   // An error with code 0 must not return 0 (success): see ts_fail.
   if ([...model.errorEnums.values()].some((m) => [...m.values()].some((e) => e.code === 0))) out.push(`#define TS_CUSTOM_ZERO 1`);
   out.push(`#include "typesol_rt.h"`, "");
@@ -177,6 +181,7 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   // loadAccountMut's record of the accounts it loaded: set up only in programs that use it (one store otherwise wasted).
   // Above 32 accounts the CPI scratch lists are taken from the heap when first needed.
   if (limit > 32) out.push(`  params.infos_cap = 0;`, `  params.metas = NULL;`);
+  if (model.ownerCache) out.push(`  params.owned = NULL;`);
   if ([...helperBodies, ...ixBodies].some((b) => /ts_claim_mut(_at)?(_rec)?\(/.test(b)))
     out.push(limit > 64 ? `  ts_memzero(params.loaded_mut, sizeof(params.loaded_mut));` : `  params.loaded_mut = 0;`);
   const fallback = model.instructions.find((ix) => ix.fallback);
@@ -203,4 +208,14 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   out.push(fallback ? `  return ix_${fallback.name}(&params);` : `  TS_FAIL(TS_ERR_INSTRUCTION_NOT_FOUND, "TypeSOL: unknown instruction");`);
   out.push(`}`);
   return out.join("\n") + "\n";
+}
+
+/** The views whose owner checks share the cache (see ProgramModel.ownerCache). */
+const NATIVE_VIEWS = new Set(["loadRaw", "loadRawMut", "loadRawAt", "loadRawMutAt", "rawArrayAt", "rawArrayMutAt", "rbTreeAt", "rbTreeMutAt"]);
+
+/** Whether any function of the program calls one of the native views (by name: a false positive only costs a store). */
+function makesNativeViews(model: ProgramModel): boolean {
+  const calls = (n: ts.Node): boolean =>
+    (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && NATIVE_VIEWS.has(n.expression.text)) || !!ts.forEachChild(n, calls);
+  return [...model.instructions, ...model.helpers.values(), ...model.generics.values()].some((f) => calls(f.node));
 }

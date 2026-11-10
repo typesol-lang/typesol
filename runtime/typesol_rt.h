@@ -583,7 +583,16 @@ typedef struct {
 #else
   uint64_t loaded_mut;                        /* bit i: ka[i] loaded with loadAccountMut (zeroed by the entrypoint of a program that uses it) */
 #endif
+#ifdef TS_OWNER_CACHE
+  const TsAccount *owned;                     /* the account the last owner check found this program's (see ts_owned) */
+#endif
 } TsParams;
+/* Every CPI and every owner write of the program forgets the cached owner check (an owner may have changed). */
+#ifdef TS_OWNER_CACHE
+#define TS_OWNER_FORGET(p) ((p)->owned = NULL)
+#else
+#define TS_OWNER_FORGET(p) ((void)0)
+#endif
 
 #ifdef TS_SCRATCH_ON_HEAP
 static uint64_t ts_infos_reserve(TsParams *params, uint64_t n);
@@ -665,6 +674,7 @@ static inline __attribute__((always_inline)) uint64_t ts_invoke(TsParams *params
   TS_INFOS_RESERVE(params, ix->account_len);
   SolAccountInfo *infos = params->infos;
   for (uint64_t i = 0; i < ix->account_len; i++) ts_info((const TsAccount *)((const uint8_t *)ix->accounts[i].pubkey - 8), &infos[i]);
+  TS_OWNER_FORGET(params);
   return sol_invoke_signed(ix, infos, ix->account_len, signers, nsigners);
 }
 
@@ -755,6 +765,19 @@ static inline void ts_copy(void *dst, const void *src, uint64_t n) {
   if (dst != src) ts_memcpy(dst, src, n);
 }
 
+static inline __attribute__((always_inline)) bool ts_key_eq(const SolPubkey *a, const SolPubkey *b);
+#ifdef TS_OWNER_CACHE
+/* Is account `a` this program's? The views of native accounts (loadRaw, loadRawAt, rawArrayAt, rbTreeAt) check it each
+   time they are made, often of one account again and again (helpers that each make their own view, views in loops).
+   The last account found this program's is remembered until a CPI or an owner write (TS_OWNER_FORGET): until then
+   its owner cannot have changed, so the same record passes with one pointer compare instead of 32 bytes. */
+static inline __attribute__((always_inline)) bool ts_owned(TsParams *params, const TsAccount *a) {
+  if (params->owned == a) return true;
+  if (!ts_key_eq(&a->owner, params->program_id)) return false;
+  params->owned = a;
+  return true;
+}
+#endif
 static inline __attribute__((always_inline)) bool ts_key_eq(const SolPubkey *a, const SolPubkey *b) {
   return ts_ld64(a->x) == ts_ld64(b->x) && ts_ld64(a->x + 8) == ts_ld64(b->x + 8) && ts_ld64(a->x + 16) == ts_ld64(b->x + 16) &&
          ts_ld64(a->x + 24) == ts_ld64(b->x + 24);
@@ -1482,6 +1505,7 @@ static inline uint64_t ts_cpi_named(TsParams *params, const TsAccount *program, 
   TS_INFOS_RESERVE(params, n);
   SolAccountInfo *infos = params->infos;
   for (uint64_t i = 0; i < n; i++) ts_info(accounts[i], &infos[i]);
+  TS_OWNER_FORGET(params);
   return sol_invoke_signed(&ix, infos, n, &signer, nseeds > 0 ? 1 : 0);
 }
 

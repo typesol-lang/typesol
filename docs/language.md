@@ -275,7 +275,11 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   hand-encoded `invoke` data.
 - Accounts without a discriminator: `loadRaw<T>(acct)` / `loadRawMut<T>(acct)` view one as a fixed-layout struct from
   byte 0 (this program's, 3007; at least the struct's size, 3003; `loadRawMut`: writable, loaded once). Make the
-  original's own checks (an exact size, its error codes) before the load. Structs are packed, as `#[repr(C, packed)]`.
+  original's own checks (an exact size, its error codes) before the load. The owner check of these views (and of
+  `loadRawAt`, `rawArrayAt`, `rbTreeAt` below) is made every time, but the last account found this program's passes
+  again with one pointer compare instead of 32 bytes until a CPI or an owner write (`assignOwner`, `closeRaw`,
+  `close`): helpers that each view the market again, and views in loops, pay about 3 compute units for it instead of
+  about 14. Structs are packed, as `#[repr(C, packed)]`.
 - Borsh accounts without a discriminator (SPL Stake Pool's `StakePool`, read with `try_from_slice_unchecked` and
   written with `serialize`): `const pool = loadBorsh<StakePool>(acct)` decodes the data from byte 0 into a local
   struct (a copy: fields updated, Options narrowed and set to null or a value, data enums switched, copied, passed to

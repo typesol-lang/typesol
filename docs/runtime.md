@@ -34,7 +34,7 @@ In file order:
 | Well-known program ids | System, Token, Token-2022, ATA, Metaplex and the other programs the language names |
 | Strings | `TS_Str` views (pointer, length), UTF-8 validation, comparison, `FixedString<N>` storage |
 | Entry point input | `TsAccount` (the loader's serialized account, read in place), `TsParams`, `ts_deserialize` |
-| Account checks | owner, discriminator, signer, writable, executable, address, size, uniqueness (`ts_check_*`), growable Vec lengths |
+| Account checks | owner, discriminator, signer, writable, executable, address, size, uniqueness (`ts_check_*`), growable Vec lengths; `ts_owned`, the native views' owner check with its one-account cache (`TS_OWNER_CACHE`, forgotten at every CPI and owner write by `TS_OWNER_FORGET`) |
 | Little-endian IO | `ts_read_le` and friends for argument decoding and Borsh |
 | Sysvars | clock, rent (`ts_rent`, `ts_minimum_balance_of`, `ts_minimum_balance`), program data |
 | PDA | `ts_pda_hash`, `ts_create_pda_address`, `ts_find_pda` (canonical bump), `ts_require_pda` |
