@@ -440,7 +440,7 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   ```ts
   const data: FixedVec<u8, 1280> = fixedVec([15n]); // PhoenixInstruction::Log
   data.pushBorsh<PhoenixMarketEvent>({ kind: "Header", instruction, sequenceNumber, timestamp: now(), slot: currentSlot(), market, signer, totalEvents: 0n });
-  // … for each event: event.pushBorsh<PhoenixMarketEvent>({ kind: "Fill", index, … }); data.pushAll(event);
+  // … for each event, the batch sent first if it would not fit: data.pushBorsh<PhoenixMarketEvent>({ kind: "Fill", index, … });
   data.setLE(91n, u16(batchSize)); // total_events of this batch
   invokeInstruction(programId(), metas, data, rest, ["log", bump]);
   data.truncate(93n); // back to the header

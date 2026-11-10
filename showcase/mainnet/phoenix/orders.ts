@@ -41,11 +41,19 @@ import {
   u128,
 } from "typesol";
 import { PhoenixError } from "./errors.js";
-import { type FifoMarketPrefix, type MarketHeader, type TraderState, FIFO_MARKET_OFFSET, MARKET_STATUS_ACTIVE, tradersOffset } from "./state.js";
+import {
+  type FIFOOrderId,
+  type FifoMarketPrefix,
+  type MarketHeader,
+  type TraderState,
+  FIFO_MARKET_OFFSET,
+  MARKET_STATUS_ACTIVE,
+  tradersOffset,
+} from "./state.js";
 import { type Recorder, finishRecorder } from "./recorder.js";
 import { assertCrossAllowed, assertPostAllowed, checkSeatWithContext, checkVaultContext, dispatchLoadedMarket, statusName } from "./checkers.js";
 import { sendFromVault } from "./funds.js";
-import { addBaseLots, addQuoteLots, baseLotsToAtoms, need, quoteLotsFor, quoteLotsToAtoms, subBaseLots, subQuoteLots } from "./util.js";
+import { U64_MAX, addBaseLots, addQuoteLots, baseLotsToAtoms, need, quoteLotsFor, quoteLotsToAtoms, subBaseLots, subQuoteLots } from "./util.js";
 import { type Packet, type Response, ASK, BID, IMMEDIATE_OR_CANCEL, LIMIT, POST_ONLY, placeOrder } from "./matching.js";
 
 /** A packet with every field zero (filled by the decoder or the multiple-order loop). */
@@ -237,7 +245,7 @@ function decodeOrderPacket(data: InstructionBytes, pk: Inout<Packet>): void {
 // ---- Funds (get_available_balances_for_trader, order_packet_has_sufficient_funds) --------------------------------------
 
 /** A trader's lots available for orders: free on the market, plus what its token accounts hold when they are passed. */
-export interface Available {
+interface Available {
   base_lots: u64;
   quote_lots: u64;
 }
@@ -335,8 +343,7 @@ function finishWithOrderId(rest: RemainingAccounts, rec: Inout<Recorder>, logDat
   if (!resp.placed) return;
   const ids: FixedVec<u8, 20> = fixedVec([]);
   ids.pushLE<u32>(1n);
-  ids.pushLE(resp.placed_price_in_ticks);
-  ids.pushLE(resp.placed_order_sequence_number);
+  ids.pushBorsh<FIFOOrderId>({ price_in_ticks: resp.placed_price_in_ticks, order_sequence_number: resp.placed_order_sequence_number });
   setReturnData(ids);
 }
 
@@ -432,17 +439,13 @@ function sortSide(prices: Inout<FixedVec<u64, 72>>, starts: Inout<FixedVec<u64, 
   }
   if (ordered) return;
   if (reversed) {
-    let i = first;
-    let j = last - 1n;
-    while (i < j) {
+    for (let i = first, j = last - 1n; i < j; i++, j--) {
       const p = prices.get(i);
       const s = starts.get(i);
       prices.set(i, prices.get(j));
       starts.set(i, starts.get(j));
       prices.set(j, p);
       starts.set(j, s);
-      i++;
-      j--;
     }
     return;
   }
@@ -561,7 +564,7 @@ function multiplePostOnlyOrders(
   const skip = behavior >= 2n;
 
   let highestBid = 0n;
-  let lowestAsk = 18446744073709551615n;
+  let lowestAsk = U64_MAX;
   for (let i = 0n; i < prices.length; i++) {
     const price = prices.get(i);
     if (i < bidCount) {
@@ -625,8 +628,7 @@ function multiplePostOnlyOrders(
       const resp = emptyResponse();
       require(placeOrder(rest, rec, logData, trader.key, pk, resp, slot, unixTimestamp), PhoenixError.NewOrderError);
       if (resp.placed) {
-        ids.pushLE(resp.placed_price_in_ticks);
-        ids.pushLE(resp.placed_order_sequence_number);
+        ids.pushBorsh<FIFOOrderId>({ price_in_ticks: resp.placed_price_in_ticks, order_sequence_number: resp.placed_order_sequence_number });
         placed++;
       }
       const quoteDeposited = subQuoteLots(addQuoteLots(resp.num_quote_lots_in, resp.num_quote_lots_posted), resp.num_free_quote_lots_used);

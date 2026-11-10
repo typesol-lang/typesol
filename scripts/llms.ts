@@ -54,7 +54,7 @@ export function llms(): { index: string; full: string } {
     "",
     "## Optional",
     "",
-    `- [Case studies](${SITE}/case-study-marginfi/): mainnet programs (Marginfi v2, SPL Stake Pool, Raydium AMM v4, CLMM, CP-Swap, Jito) ported and checked against their binaries`,
+    `- [Case studies](${SITE}/case-study-marginfi/): mainnet programs (Marginfi v2, Phoenix v1, SPL Stake Pool, Raydium AMM v4, CLMM, CP-Swap, Jito) ported and checked against their binaries`,
     "",
   ].join("\n");
   const full = [

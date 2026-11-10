@@ -100,15 +100,15 @@ export interface FifoMarketPrefix {
   unclaimed_quote_lot_fees: u64;
 }
 
-export const FIFO_MARKET_OFFSET = 576n;
-/** The bids tree: MARKET_HEADER_SIZE + the 304-byte prefix. */
-export const BIDS_OFFSET = 880n;
+export const FIFO_MARKET_OFFSET = MARKET_HEADER_SIZE;
+/** The bids tree, after the FIFOMarket's 304-byte prefix. */
+export const BIDS_OFFSET = FIFO_MARKET_OFFSET + 304n;
 /** A sokoban RedBlackTree's own bytes before its nodes: root u32, padding [u32; 3], the allocator's size u64, bump and free-list head u32. */
 export const TREE_HEADER_SIZE = 32n;
 /** A book node: registers [u32; 4], FIFOOrderId (16), FIFORestingOrder (32). */
-export const ORDER_NODE_SIZE = 64n;
+export const ORDER_NODE_SIZE = 16n + 16n + 32n;
 /** A trader node: registers [u32; 4], Pubkey (32), TraderState (96). */
-export const TRADER_NODE_SIZE = 144n;
+export const TRADER_NODE_SIZE = 16n + 32n + 96n;
 
 /** A book's key: the price, and the sequence number (a bid's stored inverted, `!seq`, so its top bit is set). */
 export interface FIFOOrderId {

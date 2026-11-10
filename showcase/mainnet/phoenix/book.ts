@@ -38,14 +38,15 @@ import {
   type FIFORestingOrder,
   type FifoMarketPrefix,
   type MarketHeader,
+  type PhoenixMarketEvent,
   type TraderState,
   BIDS_OFFSET,
   FIFO_MARKET_OFFSET,
   asksOffset,
   tradersOffset,
 } from "./state.js";
-import { type Recorder, EVENT_ROOM, flush, recordEvent } from "./recorder.js";
-import { addBaseLots, addQuoteLots, adjustedQuoteLots, orderCmp, subBaseLots, subQuoteLots, ticksToPrice } from "./util.js";
+import { type Recorder, EVICT_EVENT_LEN, REDUCE_EVENT_LEN, makeRoom } from "./recorder.js";
+import { U64_MAX, addBaseLots, addQuoteLots, adjustedQuoteLots, orderCmp, subBaseLots, subQuoteLots, ticksToPrice } from "./util.js";
 
 /** The lots a reduction or cancel gives back to the trader's wallet: MatchingEngineResponse's *_out. */
 export interface Released {
@@ -55,9 +56,8 @@ export interface Released {
 
 /**
  * What the book work reads of the market again and again, read once: the trees' capacities and offsets, the
- * FIFOMarket's tick size and base lots per base unit. The helpers take it as `Inout<MarketShape>` though they only
- * read it: a plain struct parameter is copied at every call of a helper that also takes accounts (about 44 compute
- * units more per cancelled order), an Inout one is passed by pointer.
+ * FIFOMarket's tick size and base lots per base unit. The helpers only read it, as a plain struct parameter: one the
+ * caller owns (a local, or a parameter passed on) goes in place, by pointer, though the helpers also take accounts.
  */
 export interface MarketShape {
   bids: u64;
@@ -95,7 +95,7 @@ export function isBidSequence(seq: u64): boolean {
 }
 
 /** get_trader_index: the trader's node index in the traders tree, 0 when it holds no state. */
-export function traderIndexOf(m: Inout<MarketShape>, rest: RemainingAccounts, trader: Pubkey): u32 {
+export function traderIndexOf(m: MarketShape, rest: RemainingAccounts, trader: Pubkey): u32 {
   const traders = rbTreeAt<Pubkey, TraderState>(rest.get(2n), m.tradersAt, m.seats);
   return traders.addrOf(trader);
 }
@@ -116,15 +116,7 @@ function reducedBidQuoteLots(price: u64, tick: u64, lots: u64, perUnit: u64): u6
   return adjusted / perUnit;
 }
 
-/** A Reduce event's bytes: its PhoenixMarketEvent tag, the index (u16) and four u64s. */
-const REDUCE_EVENT_LEN = 35n;
-
-/**
- * recordEvent of a Reduce event { index, order_sequence_number, price_in_ticks, base_lots_removed,
- * base_lots_remaining }: the same bytes and the same flush, appended to the batch directly rather than built as a
- * PhoenixMarketEvent in a scratch buffer (about 100 compute units less per event; the bulk cancels record one per
- * order).
- */
+/** add_event of a Reduce event, the one the reductions and cancels record for each order. */
 function recordReduce(
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -134,19 +126,20 @@ function recordReduce(
   removed: u64,
   remaining: u64,
 ): void {
-  if (logData.length + REDUCE_EVENT_LEN > EVENT_ROOM) flush(rec, logData, rest);
-  logData.pushLE<u8>(4n); // PhoenixMarketEvent::Reduce
-  logData.pushLE(u16(rec.eventsAdded));
-  logData.pushLE(seq);
-  logData.pushLE(price);
-  logData.pushLE(removed);
-  logData.pushLE(remaining);
+  makeRoom(rec, logData, rest, REDUCE_EVENT_LEN);
+  logData.pushBorsh<PhoenixMarketEvent>({
+    kind: "Reduce",
+    index: u16(rec.eventsAdded),
+    order_sequence_number: seq,
+    price_in_ticks: price,
+    base_lots_removed: removed,
+    base_lots_remaining: remaining,
+  });
   rec.eventsAdded++;
 }
 
 /**
- * recordEvent of an ExpiredOrder event { index, maker_id, order_sequence_number, price_in_ticks, base_lots_removed }.
- * A function of its own, so that reduce_order_inner's frequent path (a Reduce for each order reduced or cancelled)
+ * add_event of an ExpiredOrder event. A function of its own, so that reduce_order_inner's frequent path (a Reduce for each order reduced or cancelled)
  * stays lean: inlined, this rare one cost every cancelled order about 5 compute units more.
  * @noinline
  */
@@ -159,7 +152,8 @@ function recordExpired(
   price: u64,
   removed: u64,
 ): void {
-  recordEvent(rec, logData, rest, {
+  makeRoom(rec, logData, rest, EVICT_EVENT_LEN);
+  logData.pushBorsh<PhoenixMarketEvent>({
     kind: "ExpiredOrder",
     index: u16(rec.eventsAdded),
     maker_id: maker,
@@ -167,6 +161,7 @@ function recordExpired(
     price_in_ticks: price,
     base_lots_removed: removed,
   });
+  rec.eventsAdded++;
 }
 
 /** What reduce_order_inner does with what it unlocks, and which event it records (its two flags, as used). */
@@ -190,7 +185,7 @@ export const EXPIRED: u8 = 2n;
  * The two flags are one ReduceMode argument: SBF passes five arguments in registers, the rest on the stack.
  */
 export function reduceOrderInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -207,14 +202,16 @@ export function reduceOrderInner(
   out.base = 0n;
   const market = rest.get(2n);
   const book = rbTreeMutAt<FIFOOrderId, FIFORestingOrder>(market, bid ? BIDS_OFFSET : m.asksAt, bid ? m.bids : m.asks, orderCmp);
-  const id: FIFOOrderId = { price_in_ticks: price, order_sequence_number: seq };
-  const order = book.get(id);
-  if (order === null) return true;
+  // `get_mut(&order_id)`, then `remove(&order_id)` for a whole order: the node found once, removed by its index (the
+  // writes of remove(key), without the second search).
+  const at = book.addrOf({ price_in_ticks: price, order_sequence_number: seq });
+  if (at === 0n) return true;
+  const order = book.nodeAt(at).value;
   const resting = order.num_base_lots;
   const removed = hasSize && size < resting ? size : resting;
   if (order.trader_index !== u64(traderIndex)) return false;
   let remaining = 0n;
-  if (removed === resting) book.remove(id);
+  if (removed === resting) book.removeAt(at);
   else {
     remaining = subBaseLots(resting, removed);
     order.num_base_lots = remaining;
@@ -255,7 +252,7 @@ export function reduceOrderInner(
  * released added to `total` (the fold's `+`, quote then base); another trader's order is skipped.
  */
 function cancelOne(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -283,7 +280,7 @@ function collect(ids: Inout<FixedVec<u16, 512>>, index: u32): void {
 
 /** Cancel the collected nodes `from`..`to` of one book, in order, each by the id its node holds. */
 function cancelCollected(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -310,7 +307,7 @@ function cancelCollected(
  * @noinline
  */
 export function cancelAllInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -348,7 +345,7 @@ export interface CancelUpTo {
  * @noinline
  */
 export function cancelUpToInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -363,7 +360,7 @@ export function cancelUpToInner(
   const book = rbTreeAt<FIFOOrderId, FIFORestingOrder>(rest.get(2n), bid ? BIDS_OFFSET : m.asksAt, bid ? m.bids : m.asks, orderCmp);
   const len = book.length;
   // Ticks::MIN for bids, Ticks::MAX for asks.
-  const limit = params.hasTick ? params.tick : bid ? 0n : 18446744073709551615n;
+  const limit = params.hasTick ? params.tick : bid ? 0n : U64_MAX;
   const search = params.hasSearch ? u64(params.search) : len;
   const count = params.hasCancel ? u64(params.cancel) : len;
   let searched = 0n;
@@ -387,7 +384,7 @@ export function cancelUpToInner(
  * dropped (the processor's filter_map), the rest cancelled in order.
  */
 export function cancelByIdInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,

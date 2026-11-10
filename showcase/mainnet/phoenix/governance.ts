@@ -102,8 +102,7 @@ export function changeMarketStatus(rest: RemainingAccounts, data: InstructionByt
     log(`Invalid market status, must have no open orders, found ${bids.length} bids and ${asks.length} asks. \nsrc/program/processor/governance.rs:132:17`);
     require(false, ProgramError.InvalidAccountData);
   }
-  const fifo = loadRawAt<FifoMarketPrefix>(market, FIFO_MARKET_OFFSET);
-  if (fifo.unclaimed_quote_lot_fees !== 0n) {
+  if (loadRawAt<FifoMarketPrefix>(market, FIFO_MARKET_OFFSET).unclaimed_quote_lot_fees !== 0n) {
     log("Invalid market status, must have no uncollected fees. \nsrc/program/processor/governance.rs:141:17");
     require(false, ProgramError.InvalidAccountData);
   }

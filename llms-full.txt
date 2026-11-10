@@ -74,8 +74,9 @@ If the build refuses something, the error points at the line and, for the usual 
   `typesol port` starts from your program's IDL; [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one
   program through the port.
 - Real programs checked against their mainnet binaries: [Showcase](#showcase-ports-checked-against-mainnet), with a
-  case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions; Raydium AMM v4, a native
-  program, down to its log lines).
+  case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions; Phoenix v1, a native
+  order book, the same on 3,404 transactions down to its event bytes; Raydium AMM v4, a native program, down to its log
+  lines).
 - To mainnet (wallet, cost, deploy, IDL, verification): [docs/mainnet.md](docs/mainnet.md).
 - With an AI coding agent: [docs/ai.md](docs/ai.md) (agent rules, [llms.txt](https://typesol.com/llms.txt), the MCP server).
 
@@ -523,7 +524,7 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   ```ts
   const data: FixedVec<u8, 1280> = fixedVec([15n]); // PhoenixInstruction::Log
   data.pushBorsh<PhoenixMarketEvent>({ kind: "Header", instruction, sequenceNumber, timestamp: now(), slot: currentSlot(), market, signer, totalEvents: 0n });
-  // … for each event: event.pushBorsh<PhoenixMarketEvent>({ kind: "Fill", index, … }); data.pushAll(event);
+  // … for each event, the batch sent first if it would not fit: data.pushBorsh<PhoenixMarketEvent>({ kind: "Fill", index, … });
   data.setLE(91n, u16(batchSize)); // total_events of this batch
   invokeInstruction(programId(), metas, data, rest, ["log", bump]);
   data.truncate(93n); // back to the header

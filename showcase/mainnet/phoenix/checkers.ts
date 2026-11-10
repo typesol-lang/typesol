@@ -261,8 +261,7 @@ export function statusName(status: u64): string {
 
 /** assert_post_allowed: Active or PostOnly. */
 export function assertPostAllowed(m: RemainingAccount): void {
-  const h = loadRaw<MarketHeader>(m);
-  const status = h.status;
+  const status = loadRaw<MarketHeader>(m).status;
   if (status !== MARKET_STATUS_ACTIVE && status !== MARKET_STATUS_POST_ONLY) {
     log(`Post only order is not allowed, market status is ${statusName(status)}. \nsrc/program/validation/checkers/phoenix_checkers.rs:82:9`);
     require(false, ProgramError.InvalidAccountData);
@@ -271,8 +270,7 @@ export function assertPostAllowed(m: RemainingAccount): void {
 
 /** assert_reduce_allowed: Active, PostOnly, Paused or Closed. */
 export function assertReduceAllowed(m: RemainingAccount): void {
-  const h = loadRaw<MarketHeader>(m);
-  const status = h.status;
+  const status = loadRaw<MarketHeader>(m).status;
   if (status === 0n || status > MARKET_STATUS_CLOSED) {
     log(`Reduce order is not allowed, market status is ${statusName(status)}. \nsrc/program/validation/checkers/phoenix_checkers.rs:59:9`);
     require(false, ProgramError.InvalidAccountData);
@@ -281,8 +279,7 @@ export function assertReduceAllowed(m: RemainingAccount): void {
 
 /** assert_cross_allowed: Active only. */
 export function assertCrossAllowed(m: RemainingAccount): void {
-  const h = loadRaw<MarketHeader>(m);
-  const status = h.status;
+  const status = loadRaw<MarketHeader>(m).status;
   if (status !== MARKET_STATUS_ACTIVE) {
     log(`FOK and IOC orders are not allowed, market status is ${statusName(status)}. \nsrc/program/validation/checkers/phoenix_checkers.rs:69:9`);
     require(false, ProgramError.InvalidAccountData);
@@ -291,8 +288,7 @@ export function assertCrossAllowed(m: RemainingAccount): void {
 
 /** assert_valid_authority. */
 export function assertValidAuthority(m: RemainingAccount, authority: Pubkey): void {
-  const h = loadRaw<MarketHeader>(m);
-  if (h.authority !== authority) {
+  if (loadRaw<MarketHeader>(m).authority !== authority) {
     log("Invalid market authority. \nsrc/program/validation/checkers/phoenix_checkers.rs:94:9");
     require(false, PhoenixError.InvalidMarketAuthority);
   }
@@ -300,8 +296,7 @@ export function assertValidAuthority(m: RemainingAccount, authority: Pubkey): vo
 
 /** assert_valid_successor. */
 export function assertValidSuccessor(m: RemainingAccount, successor: Pubkey): void {
-  const h = loadRaw<MarketHeader>(m);
-  if (h.successor !== successor) {
+  if (loadRaw<MarketHeader>(m).successor !== successor) {
     log("Invalid market successor. \nsrc/program/validation/checkers/phoenix_checkers.rs:103:9");
     require(false, PhoenixError.InvalidMarketAuthority);
   }
@@ -322,8 +317,7 @@ export function dispatchMarket(m: RemainingAccount, bids: u64, asks: u64, seats:
   const room = m.dataLen - FIFO_MARKET_OFFSET;
   if (room < size) sliceEndPanic(size, room);
   if (!initial) {
-    const fifo = loadRawAt<FifoMarketPrefix>(m, FIFO_MARKET_OFFSET);
-    if (fifo.order_sequence_number === 0n) {
+    if (loadRawAt<FifoMarketPrefix>(m, FIFO_MARKET_OFFSET).order_sequence_number === 0n) {
       log("Market is not initialized. \nsrc/program/dispatch_market.rs:79:9");
       require(false, PhoenixError.MarketUninitialized);
     }

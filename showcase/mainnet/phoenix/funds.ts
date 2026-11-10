@@ -118,7 +118,7 @@ export function processWithdraw(
   const baseLots = hasBase && baseLotsRequested < freeBase ? baseLotsRequested : freeBase;
   state.quote_lots_free = subQuoteLots(freeQuote, quoteLots);
   state.base_lots_free = subBaseLots(freeBase, baseLots);
-  if (evictSeat && isEmpty(state)) traders.remove(trader);
+  if (evictSeat && isEmpty(state)) traders.removeAt(index); // remove(&trader), at the node found above
   logComputeUnits();
   if (evictSeat && traders.addrOf(trader) !== 0n) {
     log("Trader was not evicted, there are still orders on the book. \nsrc/program/processor/withdraw.rs:87:13");

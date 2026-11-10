@@ -19,9 +19,9 @@
 // order a self trade cancels (CancelProvide) or decrements (DecrementTake). None of them claims funds. The market's
 // shape (MarketShape: tree capacities and offsets, tick size, base lots per base unit) is read on those paths only.
 //
-// Every event goes through the recorder (recordEvent; book.ts appends a Reduce to the batch itself, with the same
-// flush), which sends a batch in a Log self-CPI whenever the next event would not fit: a long match flushes in the
-// middle, before the token transfers, as Phoenix's does.
+// Every event is appended to the recorder's batch in place (makeRoom, then pushBorsh of the event), which sends the
+// batch in a Log self-CPI first whenever the event would not fit: a long match flushes in the middle, before the token
+// transfers, as Phoenix's does.
 import {
   type FixedVec,
   type Inout,
@@ -45,13 +45,14 @@ import {
   type FIFOOrderId,
   type FIFORestingOrder,
   type MarketHeader,
+  type PhoenixMarketEvent,
   type TraderState,
   BIDS_OFFSET,
   FIFO_MARKET_OFFSET,
   asksOffset,
   tradersOffset,
 } from "./state.js";
-import { type Recorder, recordEvent } from "./recorder.js";
+import { type Recorder, EVICT_EVENT_LEN, FILL_EVENT_LEN, PLACE_EVENT_LEN, SUMMARY_EVENT_LEN, TIME_IN_FORCE_EVENT_LEN, makeRoom } from "./recorder.js";
 import { type Released, EXPIRED, KEEP_FUNDS, marketShape, reduceOrderInner } from "./book.js";
 import {
   U64_MAX,
@@ -83,7 +84,7 @@ export const DECREMENT_TAKE: u8 = 2n;
 /** `u32::MAX`: the trader index of a taker with no seat on the market. */
 const NO_TRADER = 4294967295n;
 /** `u64::MAX >> 1`: the order sequence number past which no order is placed. */
-const MAX_SEQUENCE_NUMBER = 9223372036854775807n;
+const MAX_SEQUENCE_NUMBER = U64_MAX >> 1n;
 
 /**
  * An OrderPacket, flattened: every variant's fields, `kind` saying which (POST_ONLY, LIMIT, IMMEDIATE_OR_CANCEL) and
@@ -128,7 +129,7 @@ export interface Response {
 }
 
 /** InflightOrder. The two Options of the original end as `unwrap_or(0)` in the resting order: 0 is None. */
-export interface Inflight {
+interface Inflight {
   side: u8;
   self_trade_behavior: u8;
   should_terminate: boolean;
@@ -150,7 +151,7 @@ function computeFee(adjusted: u64, feeBps: u64): u64 {
   if (feeBps === 0n) return 0n;
   // Below 2^48 × 2^16 the u128 product fits a u64 and the result is the same.
   if (adjusted < 281474976710656n && feeBps < 65536n) return (adjusted * feeBps + 9999n) / 10000n;
-  return u64(((u128(adjusted) * u128(feeBps) + 9999n) / 10000n) & 18446744073709551615n);
+  return u64(((u128(adjusted) * u128(feeBps) + 9999n) / 10000n) & U64_MAX);
 }
 
 /** adjusted_quote_lot_budget_post_fee_adjustment_for_buys: `adjusted × u64::MAX / (u64::MAX + fee(u64::MAX))`. */
@@ -187,7 +188,11 @@ export function bookOffset(side: u8, bids: u64): u64 {
 
 // ---- Taking orders off (book.ts's reduce_order_inner) ---------------------------------------------------------------
 
-/** An expired order met while matching, removed whole (reduce_order_inner, EXPIRED); the market's shape is read here. */
+/**
+ * An expired order met while matching, removed whole (reduce_order_inner, EXPIRED). The market's shape is read here, on
+ * this rare path: built from match_order's locals and passed in, it saved about 33 compute units a self trade but cost
+ * match_order about 7 per fill and 14 per resting Limit order (more values held across its loop).
+ */
 function removeExpired(
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
@@ -222,7 +227,7 @@ function reduceOwn(
 // ---- Crossing and eviction -------------------------------------------------------------------------------------------
 
 /** check_for_cross's result: `crosses` and the price of the opposite order a PostOnly order would take. */
-export interface Cross {
+interface Cross {
   crosses: boolean;
   price_in_ticks: u64;
 }
@@ -285,8 +290,9 @@ function evictLeastAggressiveOrder(rest: RemainingAccounts, rec: Inout<Recorder>
     log("New order is not aggressive enough to evict an existing order");
     return;
   }
-  book.remove({ price_in_ticks: price, order_sequence_number: seq });
-  recordEvent(rec, logData, rest, {
+  book.removeAt(last.index); // remove(&order_id) of the node max() found
+  makeRoom(rec, logData, rest, EVICT_EVENT_LEN);
+  logData.pushBorsh<PhoenixMarketEvent>({
     kind: "Evict",
     index: u16(rec.eventsAdded),
     maker_id: makerId,
@@ -294,6 +300,7 @@ function evictLeastAggressiveOrder(rest: RemainingAccounts, rec: Inout<Recorder>
     price_in_ticks: price,
     base_lots_evicted: lots,
   });
+  rec.eventsAdded++;
   const fifo = loadRawAt<FifoMarketPrefix>(market, FIFO_MARKET_OFFSET);
   const state = traders.nodeAt(u32(traderIndex)).value;
   if (side === BID) {
@@ -384,8 +391,8 @@ function matchOrder(
     let matchedAdjusted = quotedAdjusted;
     let remaining = 0n;
     if (quoted <= o.base_lot_budget && quotedAdjusted <= o.adjusted_quote_lot_budget) {
-      // The whole resting order.
-      book.remove({ price_in_ticks: price, order_sequence_number: seq });
+      // The whole resting order: remove(&order_id)'s writes, at the node min() found (no second search).
+      book.removeAt(best.index);
     } else {
       // What the budget allows; the match ends here.
       matchedBase = o.adjusted_quote_lot_budget / ticksToPrice(tickSize, price);
@@ -408,7 +415,8 @@ function matchOrder(
 
     const makerIndex = u32(traderIndex & 0xffffffffn);
     if (matchedBase !== 0n) {
-      recordEvent(rec, logData, rest, {
+      makeRoom(rec, logData, rest, FILL_EVENT_LEN);
+      logData.pushBorsh<PhoenixMarketEvent>({
         kind: "Fill",
         index: u16(rec.eventsAdded),
         maker_id: traders.nodeAt(makerIndex).key,
@@ -417,6 +425,7 @@ function matchOrder(
         base_lots_filled: matchedBase,
         base_lots_remaining: remaining,
       });
+      rec.eventsAdded++;
     } else if (!o.should_terminate) {
       log("WARNING: should_terminate should always be true if matched_base_lots is zero");
     }
@@ -566,7 +575,8 @@ export function placeOrder(
       resp.num_base_lots_in = o.matched_base_lots;
       resp.num_quote_lots_out = matchedQuoteLots;
     }
-    recordEvent(rec, logData, rest, {
+    makeRoom(rec, logData, rest, SUMMARY_EVENT_LEN);
+    logData.pushBorsh<PhoenixMarketEvent>({
       kind: "FillSummary",
       index: u16(rec.eventsAdded),
       client_order_id: pk.client_order_id,
@@ -574,6 +584,7 @@ export function placeOrder(
       total_quote_lots_filled: matchedQuoteLots,
       total_fee_in_quote_lots: o.quote_lot_fees,
     });
+    rec.eventsAdded++;
   }
 
   if (takeOnly) {
@@ -607,8 +618,7 @@ export function placeOrder(
       resp.placed = true;
       resp.placed_price_in_ticks = price;
       resp.placed_order_sequence_number = seq;
-      const own = rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, bookOffset(side, n), n, orderCmp);
-      if (own.length === n) {
+      if (rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, bookOffset(side, n), n, orderCmp).length === n) {
         log("Book is full. Evicting order");
         evictLeastAggressiveOrder(rest, rec, logData, side, price);
       }
@@ -636,7 +646,8 @@ export function placeOrder(
         resp.num_base_lots_posted = addBaseLots(resp.num_base_lots_posted, restingLots);
         resp.num_free_base_lots_used = addBaseLots(resp.num_free_base_lots_used, free);
       }
-      recordEvent(rec, logData, rest, {
+      makeRoom(rec, logData, rest, PLACE_EVENT_LEN);
+      logData.pushBorsh<PhoenixMarketEvent>({
         kind: "Place",
         index: u16(rec.eventsAdded),
         order_sequence_number: seq,
@@ -644,14 +655,17 @@ export function placeOrder(
         price_in_ticks: price,
         base_lots_placed: restingLots,
       });
+      rec.eventsAdded++;
       if (lastValidSlot !== 0n || lastValidUnixTimestamp !== 0n) {
-        recordEvent(rec, logData, rest, {
+        makeRoom(rec, logData, rest, TIME_IN_FORCE_EVENT_LEN);
+        logData.pushBorsh<PhoenixMarketEvent>({
           kind: "TimeInForce",
           index: u16(rec.eventsAdded),
           order_sequence_number: seq,
           last_valid_slot: lastValidSlot,
           last_valid_unix_timestamp_in_seconds: lastValidUnixTimestamp,
         });
+        rec.eventsAdded++;
       }
       fifo.order_sequence_number = seqNumber + 1n;
     }
