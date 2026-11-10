@@ -99,7 +99,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Logging | `log("text")`, `log(value)`, `log(pubkey)` |
 | Arrays | `scores: FixedArray<u64, 8>` in account data — `.get(i)`, `.set(i, v)`, `.length`, bounds-checked; elements can be structs or strings |
 | Local arrays | `const xs = fixedArray<i64, 5>(0n)` — up to 256 elements on the stack; also a struct literal's field value (`{ prices: fixedArray<u64, 16>(0n), … }`), filled in place. Elements may be structs of fixed size or `FixedString<N>` (`fixedArray<Meta, 2>({ pubkey, isSigner: false, isWritable: true })`: the fill built once and copied into each slot), and `fixedArray<T, N>(fill)` written inline feeds a chain, a list method or `for … of` (`fixedArray<u64, 3>(2n).map((x) => x * 5n).reduce(…)`) |
-| Local lists | `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey: k, isSigner: false, isWritable: false }])`, `const buf: FixedVec<u8, 600> = fixedVec([])`, `const pair: FixedArray<Meta, 2> = fixedArray(meta)` — a FixedVec or FixedArray of integers, booleans, Pubkeys, enums, `FixedString<N>` or fixed-size structs on the stack, with `get`, `set`, `push`, `pushAll`, `pop`, `clear`, `.length`, `for … of` and the list methods; given another list (`const y: FixedVec<Pubkey, 4> = xs`) it is a copy, as a struct local is. One list holds at most 2 KiB (the 4 KiB stack frame is shared with the rest of the function): a bigger one is a compile error naming its size |
+| Local lists | `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey: k, isSigner: false, isWritable: false }])`, `const buf: FixedVec<u8, 600> = fixedVec([])`, `const pair: FixedArray<Meta, 2> = fixedArray(meta)` — a FixedVec or FixedArray of integers, booleans, Pubkeys, enums, `FixedString<N>` or fixed-size structs on the stack, with `get`, `set`, `push`, `pushAll`, `pop`, `clear`, `.length`, `for … of` and the list methods (a `FixedVec<u8, N>` is also a byte buffer: `pushLE`, `pushKey`, `pushBorsh`, `setLE`, `truncate`, see [Porting a native program](#porting-a-native-program)); given another list (`const y: FixedVec<Pubkey, 4> = xs`) it is a copy, as a struct local is. One list holds at most 2 KiB (the 4 KiB stack frame is shared with the rest of the function): a bigger one is a compile error naming its size |
 | Strings | `string` arguments and literals; `name: FixedString<32>` in account data (u32 length + 32 bytes); `===`, `byteLength(s)`, `log(s)`, `+=`, as PDA seeds; too-long writes abort (5105). A local bound to account text keeps its own copy |
 | Copies | `a.home = b.home`, `a.trail.set(0n, a.home)` copy whole structs / arrays of the same type: assignment copies (like Rust/Anchor), binding with `const` references |
 | Destructuring | `const { owner, pos: p } = acct` (or `let` for scalars to change) from a name or a field path — one declaration per name, read like `acct.owner`: scalars are copies, nested structs are references. No rest, defaults or nesting |
@@ -440,6 +440,21 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   included; the flag only lifts the up-front checks (a second `loadRawMut` of one account, at the same position or
   another, is 2040 without it). `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of
   `Mut<…>` parameters stay as they are, and programs without the flag compile exactly as before.
+- Accounts closed, reassigned and resized by hand, on remaining accounts and `AccountInfo` parameters:
+  `closeRaw(account, receiver)` is what Phoenix's Tombstone writes, in its order: `receiver.lamports +=
+  account.lamports` (checked), `account.lamports = 0`, `assign(&system_program::id())`, `realloc(0, false)`. Unlike
+  `close` the data is not zeroed first (a realloc to 0 drops it, and the runtime then accepts the new owner), so it
+  costs a few compute units whatever the account's size, and the account ends as the original's does (gone, its
+  lamports in the receiver; test/language/native-close.test.ts compares it with Phoenix's own Tombstone).
+  `assignOwner(account, owner)` is `AccountInfo::assign` (the runtime accepts it for a writable account of this program
+  whose data is empty or zeroed), and `resizeAccount(account, size)` also takes a remaining account (`realloc(size,
+  true)`: new bytes zeroed, at most 10 KiB past the size it had when the instruction started, 3016; that size is the one
+  the entrypoint records in the account's record, as solana_program 1.14's does, only in programs that resize a
+  remaining account). Without `NATIVE_ACCOUNT_WRITES` the accounts are checked as other writes the compiler cannot see
+  are: writable (3006; a parameter must be `Mut<AccountInfo>`), passed once (2040), the closed or reassigned account
+  this program's (3007), and not closed into itself (2040). With it nothing is checked and the runtime judges, as for
+  the original (`ReadonlyLamportChange`, `ExternalAccountLamportSpend`, `UnbalancedInstruction`, `ModifiedProgramId`),
+  and plain `AccountInfo` parameters are enough.
 - Errors as the original returns them: an error enum may start at code 0 (`/** @code 0 */`, Rust's
   `ProgramError::Custom(0)`, returned as Solana's CUSTOM_ZERO); `require(c, ProgramError.InvalidInstructionData)` for a
   built-in error; `panic(message, "program/src/lib.rs:12:5")` for a Rust panic (ProgramFailedToComplete, the runtime
@@ -449,10 +464,59 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   runtime's `abort` syscall, which logs "SBF program panicked" with no location; `const PANIC_ON_OVERFLOW = true`
   makes arithmetic overflow and division by zero panic as `checked_*().unwrap()` does instead of failing with 5100 /
   5101.
+- Panics as an older solana-program writes them: `export const PANIC_STYLE = "solana-1.14"` (a program built with
+  solana-program 1.14 to 1.17, whose rustc formats a panic before 1.73 did: Phoenix v1) makes `panic(message,
+  location)` log `panicked at '<message>', <location>` and then abort, so the runtime's last line is "SBF program
+  panicked" with no location, as that panic handler leaves it (`panic(null, …)` is refused there: the handler always
+  logs; without a location the TypeScript line and column are used). `PANIC_ON_OVERFLOW`'s panics abort too.
+- Overflow panics with Rust's message and location: `panicsAt("src/quantities.rs:233:1", a + b)` is `a + b` whose
+  checked arithmetic panics as Rust's overflow checks do at that location ("attempt to add with overflow"; also
+  "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the remainder
+  with a divisor of zero", "attempt to negate with overflow", "attempt to divide with overflow" and "attempt to shift
+  left / right with overflow" for a shift amount past the width), logged as `panic` logs (`PANIC_STYLE` above, else
+  the message and sol_panic_ at the location), instead of failing with 5100 / 5101; with or without
+  `PANIC_ON_OVERFLOW`, which applies outside it. Rust reports the location of the expression the operator belongs
+  to, so the wrapper goes around that expression: only the operators written inside it take the location (not those
+  of the helpers it calls), an inner `panicsAt` gives its operators their own (`panicsAt(A, x + panicsAt(B, y * z))`),
+  and as a statement it takes an assignment, `panicsAt(LOC, total += fee);`. A Rust newtype's operator panics at its
+  `impl` (Phoenix's `QuoteLots + QuoteLots` at the macro line in quantities.rs, wherever the addition is written): give
+  the port a helper, `function addQuoteLots(a: u64, b: u64): u64 { return panicsAt(QUOTE_LOTS_ADD, a + b); }`. The
+  bits `<<` loses, `**`, `mulDiv` / `mulDivCeil`, casts and u256 arithmetic keep TypeSOL's failures (Rust checks them
+  differently, or with other messages).
+  test/language/rust-panics.test.ts checks the lines against the Phoenix binary's own panics.
 - Log lines as the original writes them: `const ERROR_LOG_PREFIX = "AMM error: "` and `const PROGRAM_ERROR_LOG_PREFIX =
   "Program error: "` replace the compiler's failure line with the entrypoint's (`msg!("AMM error: {}", e)`);
   `logBase64("ray_log: ", record)` logs a struct's bytes in base64 (a native `bincode` log record);
-  `createProgramAddress(seeds, program)` is `Pubkey::create_program_address` (null for no address).
+  `createProgramAddress(seeds, program)` is `Pubkey::create_program_address` (null for no address);
+  `logComputeUnits()` is `sol_log_compute_units()`: the runtime writes "Program consumption: N units remaining" at
+  that point, as for the original (Phoenix's cancel and withdraw paths log it).
+- Byte strings built by hand (instruction data for a self-CPI, a log record, return data) in a `FixedVec<u8, N>`, a
+  local list or one in account data: `buf.pushLE(x)` appends an integer's little-endian bytes at its width (u8 … u128,
+  i8 … i128; a literal needs one: `buf.pushLE<u16>(1n)` or `buf.pushLE(u16(1n))`), `buf.pushKey(key)` a Pubkey's 32
+  bytes, `buf.pushBorsh(value)` a value's Borsh encoding with the codecs `invoke`, events and `storeBorsh` use (a
+  struct, or an object literal given its type, `buf.pushBorsh<Header>({ … })`; a data enum, its tag then the variant's
+  fields; a FixedArray; a list, its u32 count then the elements; integers, booleans, Pubkeys, strings and Options),
+  `buf.setLE(offset, x)` (or `setLE<u16>(offset, x)`) overwrites bytes within the length, as Rust's
+  `data[a..b].copy_from_slice(…)`, and `buf.truncate(n)` keeps the first `n`. Past the room (or, for `setLE` and
+  `truncate`, past the length) fails with 5104 and the length does not move. Phoenix's event recorder, which the test
+  checks byte for byte against the Phoenix binary's batches:
+
+  ```ts
+  const data: FixedVec<u8, 1280> = fixedVec([15n]); // PhoenixInstruction::Log
+  data.pushBorsh<PhoenixMarketEvent>({ kind: "Header", instruction, sequenceNumber, timestamp: now(), slot: currentSlot(), market, signer, totalEvents: 0n });
+  // … for each event: event.pushBorsh<PhoenixMarketEvent>({ kind: "Fill", index, … }); data.pushAll(event);
+  data.setLE(91n, u16(batchSize)); // total_events of this batch
+  invokeInstruction(programId(), metas, data, rest, ["log", bump]);
+  data.truncate(93n); // back to the header
+  ```
+- Return data as the original sets it: `setReturnData(bytes)` is `set_return_data(&bytes)`, the bytes as they are, from
+  the `@fallback` entry, a helper or a void instruction (Phoenix's Borsh `Vec<FIFOOrderId>` of the orders that rested,
+  built in a local `FixedVec<u8, N>`). `bytes` is a list of u8: a local FixedVec, a Vec or FixedVec in account data, or
+  the instruction data or a slice of it. The last call wins and an empty list clears it; a CPI made afterwards replaces
+  it with the callee's (call it after the last CPI, as Rust must). More than 1024 bytes fails as the Rust call does: the
+  runtime refuses it ("Return data too large (1025 > 1024)"). An instruction that returns a value cannot call it (a
+  compile error: its return value is its return data); a helper it calls may, and the instruction's return value, set
+  last, replaces what the helper set.
 
 ## Not supported yet
 
@@ -1384,6 +1448,9 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   that is not an account (a local, a `loadBorsh` local, a field of a `loadRawMut` view, a list element), with the
   aliasing rules at each call. It settles the open edge of helpers taking a writable struct that is not an account,
   which were refused; the rules (what counts as overlapping, which places may move) may still be refined.
+- For native ports (Unreleased): `setReturnData` and `logComputeUnits` in a native entry; `closeRaw`, `assignOwner`
+  and `resizeAccount` on remaining accounts; the byte builders of `FixedVec<u8, N>` (`pushLE`, `pushKey`, `pushBorsh`,
+  `setLE`, `truncate`); `PANIC_STYLE = "solana-1.14"` and `panicsAt(location, expression)`.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake); a ternary
   between remaining accounts and `AccountInfo` parameters (0.42.0).

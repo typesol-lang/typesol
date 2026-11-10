@@ -34,6 +34,29 @@ codes, and says so here.
   messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries (get 215 CU against
   384, insert 595 / 742, remove 355 / 618).
 - Programs that use none of these compile to the same C as before.
+- Native entries set their own return data and log compute units: `setReturnData(bytes)` (Rust's `set_return_data`,
+  from a list of u8: a local `FixedVec<u8, N>`, account data, the instruction data or a slice) in a `@fallback` entry,
+  its helpers and void instructions, and `logComputeUnits()` (`sol_log_compute_units`, the runtime's "Program
+  consumption: N units remaining"), which were only emitted under `--profile`. An instruction that returns a value
+  refuses `setReturnData` (its return value is its return data). Checked against the lines the Phoenix v1 binary
+  writes.
+- Native account lifecycle on remaining accounts and `AccountInfo` parameters: `closeRaw(account, receiver)` (Phoenix's
+  Tombstone: lamports to the receiver, owner to the System Program, length to 0, in that order and without zeroing the
+  data, ending as Phoenix's own Tombstone ends), `assignOwner(account, owner)` (`AccountInfo::assign`), and
+  `resizeAccount` on remaining accounts (the 10 KiB growth limit against the size the entrypoint records when the
+  instruction starts, as solana_program 1.14 records it). Checked writable, passed once and owned by this program, or
+  left to the runtime under `NATIVE_ACCOUNT_WRITES`.
+- Byte builders on `FixedVec<u8, N>` (a local list or one in account data), for byte strings a native program builds by
+  hand: `pushLE(x)` (an integer at its width), `pushKey(key)`, `pushBorsh(value)` (Borsh, with the codecs `invoke`,
+  events and `storeBorsh` use; object literals take their type, `pushBorsh<Header>({ … })`), `setLE(offset, x)` and
+  `truncate(n)`, each bounds-checked (5104) with the length moved only when everything fit. Phoenix's event recorder
+  written with them sends the same batches, byte for byte, as the Phoenix binary.
+- Rust panics as solana-program 1.14 to 1.17 leave them: `export const PANIC_STYLE = "solana-1.14"` makes `panic(message,
+  location)` log `panicked at '<message>', <location>` and abort ("SBF program panicked"), and `PANIC_ON_OVERFLOW`'s
+  panics abort too; `panicsAt(location, expression)` makes the expression's checked arithmetic panic with Rust's
+  messages ("attempt to add with overflow", "attempt to divide by zero", …) at the original's location instead of
+  failing with 5100 / 5101, in either style. Checked line for line against the Phoenix v1 binary's panics (its
+  entrypoint's assertion, and its overflow and remainder checks in initialize.rs and quantities.rs).
 
 ## 0.42.0 — 2026-11-09
 

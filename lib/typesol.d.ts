@@ -124,6 +124,12 @@ export interface Vec<T> extends ListMethods<T> {
    * grows one `push` at a time, so calling it on a Vec is a compile error.
    */
   pushAll(items: IndexedList<T>): void;
+  /** A `FixedVec<u8, N>`'s byte builders (declared here for the same reason; a compile error on a Vec). */
+  pushLE<I extends bigint = bigint>(this: Vec<u8>, value: I): void;
+  pushKey(this: Vec<u8>, key: Pubkey): void;
+  pushBorsh<V = unknown>(this: Vec<u8>, value: V): void;
+  setLE<I extends bigint = bigint>(this: Vec<u8>, offset: u64, value: I): void;
+  truncate(this: Vec<u8>, length: u64): void;
   /** Remove and return the last element, shrinking the account. */
   pop(): T;
   /** Remove every element, shrinking the account. */
@@ -150,6 +156,28 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   pushAll(items: IndexedList<T>): void;
   pop(): T;
   clear(): void;
+  /**
+   * A `FixedVec<u8, N>` as a byte buffer: append an integer's little-endian bytes at its width (`buf.pushLE(count)`
+   * with `count: u16`; a literal needs one: `buf.pushLE<u16>(1n)` or `buf.pushLE(u16(1n))`). Every byte builder
+   * fails (5104) and appends nothing when the bytes do not fit in the room left.
+   */
+  pushLE<I extends bigint = bigint>(this: FixedVec<u8, N>, value: I): void;
+  /** Append a Pubkey's 32 bytes. */
+  pushKey(this: FixedVec<u8, N>, key: Pubkey): void;
+  /**
+   * Append a value's Borsh encoding, as invoke data, events and storeBorsh encode it: a struct (an object literal
+   * takes its type: `buf.pushBorsh<Header>({ … })`), a data enum (a tag byte, then the variant's fields), a
+   * FixedArray, a list (u32 count, then the elements), an integer at its width, a boolean, a Pubkey, a string or an
+   * Option.
+   */
+  pushBorsh<V = unknown>(this: FixedVec<u8, N>, value: V): void;
+  /**
+   * Overwrite the integer at byte `offset` with `value`'s little-endian bytes (`buf.setLE<u16>(91n, count)`): within the
+   * length, 5104 past it, as Rust's `data[a..b].copy_from_slice(…)` panics there.
+   */
+  setLE<I extends bigint = bigint>(this: FixedVec<u8, N>, offset: u64, value: I): void;
+  /** Keep the first `length` bytes (5104 when `length` is past the current length). */
+  truncate(this: FixedVec<u8, N>, length: u64): void;
   [Symbol.iterator](): Iterator<T>;
   readonly __capacity?: N;
 }
@@ -926,11 +954,29 @@ export declare const AuthorityType: {
  */
 export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<Signer>): void;
 /**
- * Resize a `Mut<AccountInfo>` of this program to `newSize` bytes (Rust's `AccountInfo::resize`): the data length only,
- * the new bytes zeroed. No rent moves: fund the account first (`rentExempt(newSize)`), the runtime refuses an account
- * left short. At most 10 KiB past its size when the instruction started (3016).
+ * Resize a `Mut<AccountInfo>` or a remaining account of this program to `newSize` bytes (Rust's `AccountInfo::resize` /
+ * `realloc(newSize, true)`): the data length only, the new bytes zeroed. No rent moves: fund the account first
+ * (`rentExempt(newSize)`), the runtime refuses an account left short. At most 10 KiB past its size when the
+ * instruction started (3016). A remaining account must be writable (3006) unless the program declares
+ * `NATIVE_ACCOUNT_WRITES`, which also lets an `AccountInfo` parameter be resized without `Mut<…>`.
  */
-export declare function resizeAccount(account: Mut<AccountInfo>, newSize: u64): void;
+export declare function resizeAccount(account: RemainingAccount | Mut<AccountInfo>, newSize: u64): void;
+/**
+ * Close an account of this program as a native program does it by hand (Phoenix's Tombstone), in this order:
+ * `receiver.lamports += account.lamports`, `account.lamports = 0`, the owner set to the System Program, the data length
+ * set to 0 (`realloc(0, false)`: the bytes are not zeroed, the runtime drops them with the length). Unlike `close` it
+ * takes remaining accounts and `AccountInfo` parameters and leaves the data unwiped. Both accounts are checked writable
+ * (3006; `Mut<AccountInfo>` parameters) and passed once (2040), the account owned by this program (3007) and not the
+ * receiver itself; with `NATIVE_ACCOUNT_WRITES` nothing is checked and the runtime judges the result, as for the
+ * original.
+ */
+export declare function closeRaw(account: RemainingAccount | Mut<AccountInfo>, receiver: RemainingAccount | Mut<AccountInfo>): void;
+/**
+ * Set an account's owner in place (Rust's `AccountInfo::assign`). The runtime accepts the change, at the end of the
+ * instruction or at the next CPI, only for a writable account of this program whose data is empty or zeroed. Checked
+ * as `closeRaw` checks its account (writable, passed once, this program's), or not at all under `NATIVE_ACCOUNT_WRITES`.
+ */
+export declare function assignOwner(account: RemainingAccount | Mut<AccountInfo>, owner: Pubkey): void;
 
 /**
  * Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none).
@@ -2349,8 +2395,21 @@ export declare enum ProgramError {
  * `location` ("program/src/instruction.rs:482:17") is the place the runtime reports, as the original's panic gives it;
  * by default this source line. A `null` message logs nothing, for a program whose panic handler writes no line of its
  * own: `panic(null, "src/lib.rs:105:19")` leaves only the runtime's "SBF program Panicked in src/lib.rs at 105:19".
+ * Under `export const PANIC_STYLE = "solana-1.14"` (a program built with solana-program 1.14 to 1.17) it logs
+ * `panicked at '<message>', <location>` and aborts, so the runtime reports "SBF program panicked", as that panic
+ * handler does; a message is then required.
  */
 export declare function panic(message?: string | null, location?: string): never;
+/**
+ * `value`, with its checked arithmetic panicking as Rust's overflow checks do at `location` ("file:line:column", where
+ * the original's expression is): `panicsAt("src/quantities.rs:233:1", a + b)` logs "attempt to add with overflow"
+ * there (also "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the
+ * remainder with a divisor of zero", "attempt to negate with overflow", "attempt to divide with overflow", "attempt to
+ * shift left / right with overflow" for a shift amount past the width), as `panic` logs (see `PANIC_STYLE`), instead
+ * of failing with 5100 / 5101. Only the operators written inside it, not the helpers it calls; an inner `panicsAt`
+ * gives its own operators their own location. As a statement it takes an assignment: `panicsAt(loc, total += fee);`.
+ */
+export declare function panicsAt<T>(location: string, value: T): T;
 /**
  * Stop the program as Rust's `abort` does on SBF (the allocator's out-of-memory error, `std::process::abort`): the
  * runtime's `abort` syscall, which fails the instruction with ProgramFailedToComplete and logs "SBF program panicked"
@@ -2415,6 +2474,23 @@ export declare function emit<T>(event: T): void;
  * bytes do not decode to exactly it).
  */
 export declare function returnData<T extends bigint | boolean | Pubkey | Hash | object>(program: AccountMeta): T;
+
+/**
+ * Set this instruction's return data to `bytes` as they are (Rust's `set_return_data(&bytes)`): a list of u8 such as a
+ * local `FixedVec<u8, N>`, a Vec or FixedVec in account data, or the instruction data or a slice of it. For a native
+ * port's `@fallback` entry and helpers (`set_return_data(order_ids.try_to_vec()?.as_ref())`), and void instructions.
+ * The last call wins, and a CPI made afterwards replaces it with the callee's (call it after the last CPI, as Rust
+ * must). More than 1024 bytes fails as Rust's call does: the runtime refuses it ("Return data too large").
+ * An instruction that returns a value cannot call it (its return value is its return data); a helper it calls may, and
+ * the instruction's return value, set last, replaces what the helper set.
+ */
+export declare function setReturnData(bytes: IndexedList<u8>): void;
+
+/**
+ * Log the compute units left (Rust's `sol_log_compute_units()`): the runtime writes "Program consumption: <N> units
+ * remaining", as the original's line, at the same place.
+ */
+export declare function logComputeUnits(): void;
 
 /**
  * Verify `account.key` is the PDA for `seeds` + `bump` under this program. Any bump that gives a PDA passes (Anchor's

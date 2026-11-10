@@ -68,12 +68,20 @@
 #define TS_ERR_NO_RETURN 5114
 #define TS_ERR_ACCOUNT_MISSING 5115
 
+#ifdef TS_PANIC_ABORT
+extern __attribute__((noreturn)) void abort(void); /* declared again with the other syscalls below */
+#endif
 /* Every failure logs through this one sol_log_ call: each syscall call site costs a 16-byte relocation in the binary. */
 static __attribute__((noinline)) uint64_t ts_fail(uint64_t code, const char *msg, uint64_t len) {
   sol_log_(msg, len);
 #ifdef TS_PANIC_ON_OVERFLOW
   /* PANIC_ON_OVERFLOW: arithmetic fails as a Rust `checked_*().unwrap()` does, with a panic (ProgramFailedToComplete). */
+#ifdef TS_PANIC_ABORT
+  /* PANIC_STYLE "solana-1.14": a panic ends in the abort syscall ("SBF program panicked"), as that panic handler's. */
+  if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) abort();
+#else
   if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) sol_panic_("", 0, 0, 0);
+#endif
 #endif
 #ifdef TS_CUSTOM_ZERO
   /* An error with code 0 (a native program's first error) is returned as solana_program returns
@@ -599,6 +607,11 @@ static inline __attribute__((always_inline)) void ts_deserialize(const uint8_t *
     }
     TsAccount *a = (TsAccount *)input;
     params->ka[i] = a;
+#ifdef TS_RECORD_ENTRY_LEN
+    /* resizeAccount on a remaining account: its size now, in the record's padding, as solana_program 1.14's
+       entrypoint keeps original_data_len there for AccountInfo::realloc (ts_entry_len). */
+    *(ts_u32_unaligned *)a->padding = (uint32_t)a->data_len;
+#endif
     input = (const uint8_t *)(((uint64_t)(input + 88 + a->data_len + MAX_PERMITTED_DATA_INCREASE) + 7) & ~(uint64_t)7) + 8;
   }
   params->data_len = *(const uint64_t *)input;
@@ -1369,6 +1382,11 @@ static inline uint64_t ts_resize(TsParams *params, TsAccount *payer, TsAccount *
   acct->data_len = new_len;
   return SUCCESS;
 }
+
+#ifdef TS_RECORD_ENTRY_LEN
+/* A remaining account's data length when the instruction started (recorded by ts_deserialize). */
+static inline __attribute__((always_inline)) uint64_t ts_entry_len(const TsAccount *a) { return *(const ts_u32_unaligned *)a->padding; }
+#endif
 
 /* resizeAccount(): the data length only (AccountInfo::resize), new bytes zeroed; no rent moves. */
 static inline uint64_t ts_resize_raw(TsAccount *acct, uint64_t new_len, uint64_t entry_len) {

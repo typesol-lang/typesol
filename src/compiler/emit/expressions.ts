@@ -955,8 +955,24 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const t = this.tmp();
     const K = ts.SyntaxKind;
     this.line(`${ct} ${t};`);
-    const overflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow")`;
-    if (type.name === "u256") return this.arith256(op, left, right, node, t, overflow);
+    const failOverflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow")`;
+    if (type.name === "u256") return this.arith256(op, left, right, node, t, failOverflow);
+    // Inside panicsAt(location, …): Rust's panic, with the message its overflow checks give this operator.
+    const at = this.panicAt;
+    const rust = (message: string) => `{ ${this.panicC(message, at!).join(" ")} }`;
+    const negate = ts.isPrefixUnaryExpression(node) && node.operator === K.MinusToken;
+    const rustOverflow: Partial<Record<ts.SyntaxKind, string>> = {
+      [K.PlusToken]: "attempt to add with overflow",
+      [K.MinusToken]: negate ? "attempt to negate with overflow" : "attempt to subtract with overflow",
+      [K.AsteriskToken]: "attempt to multiply with overflow",
+      [K.SlashToken]: "attempt to divide with overflow",
+      [K.PercentToken]: "attempt to calculate the remainder with overflow",
+    };
+    const overflow = at && rustOverflow[op] ? rust(rustOverflow[op]!) : failOverflow;
+    const divZero =
+      at && (op === K.SlashToken || op === K.PercentToken)
+        ? rust(op === K.SlashToken ? "attempt to divide by zero" : "attempt to calculate the remainder with a divisor of zero")
+        : `TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero")`;
     switch (op) {
       case K.PlusToken:
         // u64 through the runtime helpers: one compare instead of a materialized carry flag on SBF.
@@ -974,7 +990,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         break;
       case K.SlashToken:
       case K.PercentToken: {
-        this.line(`if (${right.c} == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");`);
+        this.line(`if (${right.c} == 0) ${divZero};`);
         if (INT_INFO[type.name].signed) this.line(`if (${left.c} == ${intLiteral(INT_INFO[type.name].min, type.name)} && ${right.c} == -1) ${overflow};`);
         if (type.name === "u128") this.line(`${t} = ${op === K.SlashToken ? "ts_div_u128" : "ts_rem_u128"}(${left.c}, ${right.c});`);
         else this.line(`${t} = ${left.c} ${op === K.SlashToken ? "/" : "%"} ${right.c};`);
@@ -993,12 +1009,17 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const bits = INT_INFO[type.name].bytes * 8;
         const sh = this.tmp("sh");
         const rinfo = INT_INFO[right.type.name];
-        this.line(`if (${rinfo.signed ? `${right.c} < 0 || ` : ""}${right.c} >= ${bits}) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: shift amount out of range");`);
+        // Rust's shift check is the amount only; the bits `<<` loses below stay TypeSOL's failure (JS's bigint keeps them).
+        const range =
+          at !== undefined
+            ? rust(op === K.LessThanLessThanToken ? "attempt to shift left with overflow" : "attempt to shift right with overflow")
+            : `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: shift amount out of range")`;
+        this.line(`if (${rinfo.signed ? `${right.c} < 0 || ` : ""}${right.c} >= ${bits}) ${range};`);
         this.line(`uint64_t ${sh} = (uint64_t)(${right.c});`);
         if (op === K.GreaterThanGreaterThanToken) this.line(`${t} = (${ct})(${left.c} >> ${sh});`);
         else {
           this.line(`${t} = (${ct})((${unsignedC(type.name)})${left.c} << ${sh});`);
-          this.line(`if ((${ct})(${t} >> ${sh}) != ${left.c}) ${overflow};`);
+          this.line(`if ((${ct})(${t} >> ${sh}) != ${left.c}) ${failOverflow};`);
         }
         break;
       }

@@ -54,6 +54,9 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   that is not an account (a local, a `loadBorsh` local, a field of a `loadRawMut` view, a list element), with the
   aliasing rules at each call. It settles the open edge of helpers taking a writable struct that is not an account,
   which were refused; the rules (what counts as overlapping, which places may move) may still be refined.
+- For native ports (Unreleased): `setReturnData` and `logComputeUnits` in a native entry; `closeRaw`, `assignOwner`
+  and `resizeAccount` on remaining accounts; the byte builders of `FixedVec<u8, N>` (`pushLE`, `pushKey`, `pushBorsh`,
+  `setLE`, `truncate`); `PANIC_STYLE = "solana-1.14"` and `panicsAt(location, expression)`.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake); a ternary
   between remaining accounts and `AccountInfo` parameters (0.42.0).

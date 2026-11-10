@@ -86,6 +86,8 @@ const PROGRAM_ERRORS = [
 ];
 
 const LIST_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "reduce", "includes", "indexOf"]);
+/** The byte builders of a FixedVec<u8, N> (byteListMethod). */
+const BYTE_METHODS = new Set(["pushLE", "pushKey", "pushBorsh", "setLE", "truncate"]);
 
 export abstract class CallEmitter extends ExpressionEmitter {
   protected call(node: ts.CallExpression, topLevel: boolean): Value | undefined {
@@ -147,15 +149,50 @@ export abstract class CallEmitter extends ExpressionEmitter {
             'panic() takes an optional message (or null to log nothing) and an optional "file:line:column" location: string literals or string constants',
           );
         const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
-        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
-        // ported program's panic reports it, else this source line.
-        const at = args.length > 1 ? text(args[1]!)! : this.location(node);
-        const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
-        const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
-        if (msg !== undefined) this.line(`sol_log(${cString(msg)});`);
-        this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
-        this.line(`__builtin_unreachable();`);
+        if (silent && this.panicStyle())
+          this.fail(
+            args[0]!,
+            'under PANIC_STYLE "solana-1.14" a panic logs its message, as solana_program 1.14\'s panic handler always does: pass the message',
+          );
+        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"), or the panic line
+        // logs: the given one, as a ported program's panic reports it, else this source line (with its column under
+        // PANIC_STYLE, as Rust always gives one).
+        const at = args.length > 1 ? text(args[1]!)! : this.panicStyle() ? this.locationWithColumn(node) : this.location(node);
+        for (const l of this.panicC(msg, at)) this.line(l);
         return undefined;
+      }
+      case "panicsAt": {
+        // The checked arithmetic of `expression` panics as Rust's does at `location`, with Rust's messages.
+        const first = args[0];
+        const loc = first && (ts.isStringLiteralLike(first) ? first.text : ts.isIdentifier(first) ? this.model.constants.get(first.text)?.value : undefined);
+        if (args.length !== 2 || typeof loc !== "string" || !/^.+:\d+:\d+$/.test(loc))
+          this.fail(
+            node,
+            'panicsAt(location, expression) takes a "file:line:column" string literal (or string constant) and the expression whose arithmetic panics there',
+          );
+        // Prettier writes an assignment argument in parentheses: `panicsAt(loc, (total += fee))`.
+        let inner = args[1]!;
+        while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+        const outer = this.panicAt;
+        this.panicAt = loc;
+        try {
+          // A statement: an assignment, a compound assignment (`total += fee`) or ++ / --.
+          const assigns =
+            (ts.isBinaryExpression(inner) &&
+              inner.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+              inner.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            ((ts.isPrefixUnaryExpression(inner) || ts.isPostfixUnaryExpression(inner)) &&
+              (inner.operator === ts.SyntaxKind.PlusPlusToken || inner.operator === ts.SyntaxKind.MinusMinusToken));
+          if (assigns) {
+            if (!ts.isExpressionStatement(node.parent))
+              this.fail(inner, "an assignment inside panicsAt is a statement of its own: panicsAt(location, total += fee);");
+            this.expressionStatement(inner, topLevel);
+            return undefined;
+          }
+          return this.expr(inner);
+        } finally {
+          this.panicAt = outer;
+        }
       }
       case "abort": {
         // Rust's abort on SBF: the runtime's `abort` syscall ("SBF program panicked", no location, nothing logged).
@@ -670,11 +707,48 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.writeData(node);
       case "resizeAccount": {
         if (args.length !== 2) this.fail(node, "resizeAccount(account, newSize) takes the account and its new size");
-        if (!this.ix) this.fail(node, "resizeAccount() is only available in instructions");
+        // A remaining account (or a helper's RemainingAccount): its size when the instruction started is the one the
+        // entrypoint recorded in the record's padding, as solana_program 1.14's entrypoint records it for realloc.
+        const h = this.handle(args[0]!);
+        if (h) {
+          if (!this.nativeAccountWrites()) this.line(`TS_TRY(ts_check_writable(${h}));`);
+          const size = this.expect(this.expr(args[1], U64), U64, args[1]);
+          this.line(`TS_TRY(ts_resize_raw(${h}, ${size.c}, ts_entry_len(${h})));`);
+          return undefined;
+        }
+        if (!this.ix) this.fail(node, "resizeAccount() is only available in instructions (or on a remaining account a helper was given)");
         const acct = this.accountParam(args[0], "resizeAccount's account");
-        if (acct.kind.kind !== "info" || !isWritable(acct.kind)) this.fail(args[0], "resizeAccount needs a Mut<AccountInfo> parameter");
+        if (acct.kind.kind !== "info" || (!isWritable(acct.kind) && !this.nativeAccountWrites()))
+          this.fail(args[0], "resizeAccount needs a Mut<AccountInfo> parameter or a remaining account");
         const size = this.expect(this.expr(args[1], U64), U64, args[1]);
         this.line(`TS_TRY(ts_resize_raw(a_${acct.name}, ${size.c}, entry_${acct.name}));`);
+        return undefined;
+      }
+      case "closeRaw": {
+        // Phoenix's Tombstone, in its order: receiver.lamports = receiver.lamports + account.lamports;
+        // account.lamports = 0; account.assign(&system_program::id()); account.realloc(0, false). The data is not
+        // zeroed (realloc's zero_init is false): the runtime drops it with the length, and then accepts the new owner.
+        if (args.length !== 2) this.fail(node, "closeRaw(account, receiver) takes the account to close and the account that gets its lamports");
+        const a = this.inPlaceAccount(args[0]!, "closeRaw's account", true);
+        const r = this.inPlaceAccount(args[1]!, "closeRaw's receiver", false);
+        // Closing an account into itself would burn its lamports (the runtime then refuses the instruction).
+        if (!this.nativeAccountWrites()) this.line(`if (${a} == ${r}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: closeRaw's receiver is the account itself");`);
+        const sum = this.tmp("sum");
+        this.line(`uint64_t ${sum};`);
+        this.line(`if (ts_add_overflow_u64(${r}->lamports, ${a}->lamports, &${sum})) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");`);
+        this.line(`${r}->lamports = ${sum};`);
+        this.line(`${a}->lamports = 0;`);
+        this.line(`ts_memcpy(&${a}->owner, &TS_SYSTEM_PROGRAM_ID, 32);`);
+        this.line(`${a}->data_len = 0;`);
+        return undefined;
+      }
+      case "assignOwner": {
+        // AccountInfo::assign: the owner field written in place; the runtime accepts it at the end of the instruction
+        // (or at a CPI) only for an account of this program that is writable and whose data is empty or zeroed.
+        if (args.length !== 2) this.fail(node, "assignOwner(account, owner) takes the account and its new owner's address");
+        const a = this.inPlaceAccount(args[0]!, "assignOwner's account", true);
+        const owner = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
+        this.line(`ts_memcpy(&${a}->owner, ${owner.c}, 32);`);
         return undefined;
       }
       case "bigEndian":
@@ -709,6 +783,26 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "returnData":
         return this.returnData(node);
+      case "setReturnData": {
+        // Rust's set_return_data(&bytes): the bytes as they are. More than 1024 is left to the syscall, which refuses
+        // it exactly as it refuses the original's call.
+        if (args.length !== 1) this.fail(node, "setReturnData(bytes) takes one list of u8");
+        if (this.ix?.returns)
+          this.fail(
+            node,
+            `${this.ix.name} returns a value, which is its return data: return it instead of calling setReturnData (or declare the instruction void)`,
+          );
+        const what = "setReturnData takes a list of u8: a local FixedVec<u8, N>, a Vec or FixedVec in account data, or the instruction data or a slice of it";
+        const s = this.listSpan(args[0]!) ?? this.fail(args[0]!, what);
+        if (s.elem.kind !== "int" || s.elem.name !== "u8") this.fail(args[0]!, what);
+        this.line(`sol_set_return_data((const uint8_t *)${s.items}, ${s.count});`);
+        return undefined;
+      }
+      case "logComputeUnits": {
+        if (args.length) this.fail(node, "logComputeUnits() takes no arguments");
+        this.line(`sol_log_compute_units();`);
+        return undefined;
+      }
       case "programAt":
       case "sysvarAt":
         return this.programAt(node, builtin);
@@ -973,6 +1067,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
+    if (BYTE_METHODS.has(method)) return this.byteListMethod(node, method, v);
     if (info.big !== undefined) {
       const done = this.bigVecMethod(node, method, v, { stageElem, needWritable, elemPaths });
       if (done) return done.value;
@@ -1967,6 +2062,32 @@ export abstract class CallEmitter extends ExpressionEmitter {
       );
     if (write && !native) this.line(`TS_TRY(ts_check_unaliased(params, a_${acct.name}));`);
     return `a_${acct.name}`;
+  }
+
+  /**
+   * An account `closeRaw` / `assignOwner` writes in place: a remaining account (a helper's RemainingAccount, a ternary
+   * between them) or an AccountInfo parameter. Without NATIVE_ACCOUNT_WRITES it is checked as the other writes to
+   * accounts the compiler cannot see are: writable (3006; a parameter must be Mut<AccountInfo>), passed once (2040), and
+   * for `owned` this program's (3007). With the flag nothing is checked: the runtime judges the result, as it judges a
+   * native program's.
+   */
+  protected inPlaceAccount(node: ts.Expression, what: string, owned: boolean): string {
+    const native = this.nativeAccountWrites();
+    let h = this.handle(node);
+    if (!h) {
+      const acct = this.accountParam(node, what);
+      if (acct.kind.kind !== "info") this.fail(node, `${what} is a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter`);
+      if (!isWritable(acct.kind) && !native)
+        this.fail(
+          node,
+          `${acct.name} must be Mut<AccountInfo> to change it in place (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+        );
+      h = `a_${acct.name}`;
+    } else if (!native) this.line(`TS_TRY(ts_check_writable(${h}));`);
+    if (native) return h;
+    this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+    if (owned) this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    return h;
   }
 
   /** `TS_FAIL` with a built-in ProgramError (no custom code), logged as `require(…, ProgramError.X)` logs it. */
