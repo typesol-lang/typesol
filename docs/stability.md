@@ -46,6 +46,7 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
 - Failures without a log line (unreleased): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
 - `findProgramAddressWithBump` (unreleased), with `const [address, bump] = …` its only array destructuring.
+- Plain type aliases (unreleased): `type Price = u64`, replaced by the type they name.
 - Local `FixedVec` / `FixedArray` lists of structs, `FixedVec.pushAll`, the instruction data as a list (`slice`,
   `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0); local FixedVecs given for read-only
   `FixedVec<T, N>` / `Vec<T>` helper parameters (unreleased).

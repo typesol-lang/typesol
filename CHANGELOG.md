@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: plain type aliases, `type Price = u64` (or `Pubkey`, a struct, `FixedVec<u8, 32>`, `Point | null`, another
+  alias), replaced by the type they name wherever they are used, so layouts and the IDL are the type's own; exported
+  or not, imported from other files (the aliased type keeps its own file's import names). Every `type X = …` was taken
+  for a data enum, and a union of named types (`type Event = Fill | Place`) failed with "each variant is an object
+  type"; it now says to list the variants as object types or alias one type. Generic aliases and `null` among a data
+  enum's variants are refused with what to write instead (test/language/aliases.test.ts).
 - New: `const [address, bump] = findProgramAddressWithBump(seeds, program)`, Rust's `let (address, bump) =
   Pubkey::find_program_address(…)`: the canonical address and its bump from one search, where `findProgramAddress`
   and `findProgramAddressBump` searched twice (453 to 2,118 CU saved in test/language/pda-derivation.test.ts,
