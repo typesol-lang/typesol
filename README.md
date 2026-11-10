@@ -186,7 +186,7 @@ If the build refuses something, the error points at the line and, for the usual 
   program through the port.
 - Real programs checked against their mainnet binaries: [Showcase](#showcase-ports-checked-against-mainnet), with a
   case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions; Phoenix v1, a native
-  order book, the same on 3,404 transactions down to its event bytes; Raydium AMM v4, a native program, down to its log
+  order book, the same on 3,575 transactions down to its event bytes; Raydium AMM v4, a native program, down to its log
   lines).
 - To mainnet (wallet, cost, deploy, IDL, verification): [docs/mainnet.md](docs/mainnet.md).
 - With an AI coding agent: [docs/ai.md](docs/ai.md) (agent rules, [llms.txt](https://typesol.com/llms.txt), the MCP server).
@@ -221,6 +221,7 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 | **CPIs** | System, SPL Token, Token-2022 (including extension reads, metadata and token groups), ATA, Memo, Stake, Metaplex Token Metadata, Core, Bubblegum. Generic `invoke` with PDA signing (one or several PDAs per call), return data, and typed bindings generated from any Anchor IDL (`typesol cpi`) |
 | **Events** | `emit` (log-based) and `emitCpi` (Anchor `emit_cpi!`, through a self-CPI) |
 | **Crypto & oracles** | `sha256`, `keccak256`, Merkle proofs, Ed25519 and secp256k1 signature checks, Pyth pull oracle, Switchboard feeds and verifiable randomness |
+| **Native programs** | a `@fallback` entry over the raw instruction data and accounts by position, Borsh accounts (`loadBorsh`), views of account bytes in place (also at offsets known only at run time) and lib-sokoban's red-black tree over them, byte builders (`pushLE`, `pushBorsh`, …), return data, `closeRaw`, and Rust's panics and overflow messages at the original's source locations |
 | **Interfaces** | custom discriminators (`@discriminator`), so a TypeSOL program can be a Token-2022 transfer hook, with extra accounts (ExtraAccountMetaList) |
 
 The full reference, with every type, check and built-in, is in [docs/language.md](docs/language.md).

@@ -8,14 +8,27 @@ codes, and says so here.
 
 - Examples: showcase/mainnet/phoenix, a port of Phoenix v1 (Ellipsis Labs' on-chain limit order book at PhoeNiXZ8…, a
   native program, all 28 instructions), from the commit a reproducible build proves is the mainnet binary (c16694d,
-  relicensed under MIT with its sources unchanged), checked against that binary on 3,404 transactions (the original's
-  50 test functions mapped: 12 covered, 36 added as differential cases, 2 not applicable) and a random walk over two
-  order books with a balance oracle (five seeds, 21,593 transactions), with the same outcomes, log lines, event
-  batches, return data and account bytes; 14–60% of the original's compute units (a PostOnly order 6,386 against
-  20,577, a swap of 30 fills 26,362 against 61,313, cancelling 512 orders 434,128 against 760,087), 231,856 bytes
-  against 1,344,472. Its events are appended by `pushBorsh` of their literals: in the port, whose batch is an `Inout`
-  parameter, a Reduce event costs 47 CU less than the six `pushLE` calls it replaced (one room check instead of six;
-  the 19 against 16 below is a local buffer). docs/case-study-phoenix.md.
+  relicensed under MIT with its sources unchanged), checked against that binary on 3,575 transactions in five files
+  (the original's 50 test functions mapped: 11 covered, 37 added as differential cases, 2 not applicable) and a random
+  walk over two order books with a balance oracle, with the same outcomes, log lines, event batches, return data and
+  account bytes; 13–61% of the original's compute units (up to 86% at the heap limits, with hundreds of account
+  entries or a forwarding program's CPI; a PostOnly order 6,452 against 20,577, a swap of 30 fills 26,344 against
+  61,313, cancelling 512 orders 434,446 against 760,087), 256,360 bytes against 1,344,472. Phoenix's 32 KiB bump heap
+  is counted (showcase/mainnet/phoenix/heap.ts): each allocation is charged where the Rust makes it, so a transaction
+  that fills the heap (many account entries, a CPI's larger instruction data) aborts at the same allocation, after the
+  same log lines and batches; phoenix-limits.test.ts (162 transactions) compares both sides of each boundary, through
+  a forwarding caller program where a CPI is needed. What Phoenix formats only when it fails is not charged, the one
+  documented difference. A multiple-order packet passed through a CPI is decoded whatever its length, divisions by a
+  zero tick size or base lot size panic at Rust's locations, and the clock's timestamp wraps as `as u64`. Its events
+  are appended by `pushBorsh` of their literals: in the port, whose batch is an `Inout` parameter, a Reduce event costs
+  47 CU less than the six `pushLE` calls it replaced (one room check instead of six; the 19 against 16 below is a local
+  buffer). docs/case-study-phoenix.md.
+- Tests: the Phoenix files keep every compared transaction's compute units and fail unless the port uses fewer on
+  every one that succeeds (2,390 of the 3,575) and each compares exactly its expected count; the upstream cases pin
+  every refusal to the original's error and message and make the original tests' own assertions on chain. The random
+  walk draws its choices and keys from fixed seeds (1, 2 and 3, 300 steps on each market: 1,801 transactions), so a
+  seed reproduces it, and requires minimum counts of fills, evictions, expiries and fees decoded from the events. The
+  lib-sokoban traces are 21,650 operations (seeds 1–3, five key shapes, capacities 1 to 4096, fill and drain cycles).
 - Language: a top-level integer constant may be an expression over literals and constants declared before it (in its
   file or an imported one): `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT: u64 = BIDS_AT + 2n * BOOK`, with
   `+ - * / % ** & | ^ << >>`, unary `-` and `~`. It is folded when the program is compiled and inlined like a literal.
@@ -136,11 +149,12 @@ codes, and says so here.
 - New: `rbTreeAt<K, V>(acct, offset, capacity, compare?)` / `rbTreeMutAt`, lib-sokoban 0.3's `RedBlackTree<K, V, N>`
   over account bytes, byte for byte (Phoenix's order books and seats): `get`, `insert`, `remove`, `min`, `max`,
   `addrOf`, `nodeAt`, `initialize`, `length`, `capacity`, `for … of` and `reversed()`. A comparator function orders
-  the keys (called as `compare(searched, node)`), or Rust's derived order. Replayed against the crate itself on
-  1,020,000 recorded operations (capacities 1 to 512, strides 32, 64 and 144) with identical bytes after every one;
-  a further 7,320 are the committed test. sokoban's panics are logged as solana-program up to 1.17 logs a panic, with sokoban's
-  messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries (get 215 CU against
-  384, insert 595 / 742, remove 355 / 618).
+  the keys (called as `compare(searched, node)`), or Rust's derived order. Replayed against the crate itself with
+  identical bytes after every operation: the committed test's 21,650 recorded operations (seeds 1–3, capacities 1 to
+  4096, strides 32, 64 and 144; test/verification/rbtree/regenerate.sh), and, with the previous trace generator, a
+  one-off run of 1,020,000 (capacities 1 to 512). sokoban's panics are logged as solana-program up to 1.17 logs a
+  panic, with sokoban's messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries
+  (get 215 CU against 384, insert 595 / 742, remove 355 / 618).
 - Native entries set their own return data and log compute units: `setReturnData(bytes)` (Rust's `set_return_data`,
   from a list of u8: a local `FixedVec<u8, N>`, account data, the instruction data or a slice) in a `@fallback` entry,
   its helpers and void instructions, and `logComputeUnits()` (`sol_log_compute_units`, the runtime's "Program

@@ -48,8 +48,9 @@ compile to the same C as before:
 - **lib-sokoban's RedBlackTree** over account bytes, `rbTreeAt` / `rbTreeMutAt`: `get`, `insert`, `remove`, `min`,
   `max`, `addrOf`, `nodeAt`, walks both ways, with a comparator of the program (Phoenix orders bids by inverted sequence
   numbers). It runs sokoban's code statement for statement, so the bytes are the crate's: replayed against the real
-  crate on 1,020,000 recorded operations (capacities 1 to 512, strides 32, 64 and 144) with identical bytes after every
-  one, and sokoban's panics come out with its messages and source lines.
+  crate with identical bytes after every operation, on the 21,650 recorded operations of the committed test (seeds
+  1–3, capacities 1 to 4096, strides 32, 64 and 144) and, with the previous trace generator, on a one-off run of
+  1,020,000 (capacities 1 to 512); sokoban's panics come out with its messages and source lines.
 - **`removeAt(index)`**: the node `addrOf`, `min` or `max` found, removed with `remove(key)`'s writes and no second
   search (the trace replay runs again with every `remove(key)` as `removeAt(addrOf(key))`). The port uses it where
   Phoenix finds an order and then removes it: 62 to 103 compute units less per cancelled order (more in deeper books),
@@ -94,7 +95,8 @@ transaction must give:
 - the same lamports, owner and bytes in every account the transaction names (the books and the traders tree byte for
   byte, rotations and colours included).
 
-There are 3,404 such transactions in four files, on markets of 512 orders and 128 seats and of 4,096 and 8,321:
+There are 3,575 such transactions in five files, on markets of 512 orders and 128 seats and of 4,096 and 8,321 (each
+file fails unless it compares exactly its own count):
 
 - **The non-matching instructions** (`phoenix.test.ts`; 824): the entry's checks for all 28 tags, InitializeMarket with
   each of the twelve sizes and every refusal, the authority's instructions, seats, deposits and withdrawals, fees.
@@ -106,14 +108,20 @@ There are 3,404 such transactions in four files, on markets of 512 orders and 12
   copied into the port's VM, so both start from the trees Phoenix itself wrote; partial, whole and oversized reductions,
   foreign and unknown orders, every cancel form with its limits, ForceCancelOrders and EvictSeat, 90 to 512 cancels in
   one instruction, the out-of-memory abort at the 513th, books of up to 8,000 orders, the overflow and division panics.
-- **The original's own tests** (`phoenix-upstream.test.ts`; 1,073): each of the 50 test functions at c16694d (the
+- **The original's own tests** (`phoenix-upstream.test.ts`; 1,082): each of the 50 test functions at c16694d (the
   integration tests, the matching engine's unit tests, the packet decoder's) is mapped to a case
-  ([the mapping](../showcase/test/phoenix-upstream.md)): 12 were covered already, 36 are added there and run whole,
-  2 are not applicable (compile-time type checks of the quantity macros).
+  ([the mapping](../showcase/test/phoenix-upstream.md)): 11 were covered already, 37 are added there and run whole,
+  2 are not applicable (compile-time type checks of the quantity macros). Each refusal the upstream test expects is
+  pinned to the original's error and message, and the upstream test's own assertions (balances, the book, free lots,
+  the sequence number, fees) are made on chain.
+- **The limits** (`phoenix-limits.test.ts`; 162): markets with a tick size or a base lot of 0 (the divisions' panics),
+  a negative clock, multiple-order packets longer than a transaction carries, and both sides of each of the heap's
+  boundaries, through a forwarding caller program where a CPI is needed (see Differences).
 
 States no instruction reaches in a test's time (fees accrued, a sequence number near its maximum, a damaged lot size)
 are written into both VMs' bytes, and each test checks the outcome too, so that every error path is really reached.
-The port is cheaper on every one of the 2,735 compared rows.
+Every compared transaction's compute units are kept, and each file fails unless the port uses fewer on every
+transaction that succeeds: 2,390 of the 3,575.
 
 **A random walk over the order book** (`phoenix-fuzz.test.ts`, not in those counts) runs a 512/128 and a 4096/8321
 market, each book started nearly full of orders far from the action: seated makers and unseated takers deposit and
@@ -121,48 +129,55 @@ withdraw, place every kind of order with tokens or free funds, reduce and cancel
 bit-flipped ids), the authority changes seats, forces cancels, evicts, collects fees and changes the market's status,
 the clock moves on so orders expire, and some packets are corrupted. Every step goes through the same comparison, and
 an oracle checks after each that the registered traders' locked and free lots plus the uncollected fees are exactly
-what the vaults hold. A walk is 1,000 steps by default (`PHOENIX_FUZZ_STEPS`) and requires every main kind of
-instruction to succeed and each book to fill up and evict; `FUZZ_SEED` reproduces one. Five seeds (1 and
-1794299110079 at 1,000 steps, 2, 3 and 4 at 3,000; 21,593 transactions) found no difference.
+what the vaults hold. A walk's choices and every keypair come from its seed, so a seed reproduces it. By default the
+test walks seeds 1, 2 and 3 on both markets, 300 steps each (1,801 transactions), and requires minimum counts of real
+effects decoded from the event batches (fills, partial fills, orders rested, self trades, expiries, evictions, fees)
+and a minimum share of successes for every kind of instruction. `FUZZ_SEED` walks another seed and
+`PHOENIX_FUZZ_STEPS` changes the length; a walk of 1,000 steps or more must also have every main kind of instruction
+succeed and each book fill up and evict. Before the walk drew its keys from the seed, a one-off run of five seeds (1
+and 1794299110079 at 1,000 steps, 2, 3 and 4 at 3,000; 21,593 transactions) found no difference.
 
 ## Cost
 
 Compute units per transaction, mainnet original against the port, from those tests (the token CPIs are the same work
-in both; the account checks that derive PDAs vary with the bumps the keys need):
+in both; the account checks that derive PDAs vary with the bumps the keys need, each further bump about 1,500 units
+in the original and 341 in the port, and a few rows by a few dozen units from run to run: a range is what two runs of
+the five files gave, and `InitializeMarket`'s covers its twelve sizes):
 
 | Instruction | Original | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `InitializeMarket` | 78,159–89,828 | 10,923–13,312 | 14–15% |
-| `RequestSeat` | 14,900 | 4,584 | 31% |
-| `DepositFunds` | 20,441 | 6,101 | 30% |
-| `WithdrawFunds` | 17,760 | 6,146 | 35% |
-| `CollectFees` | 13,814 | 4,952 | 36% |
-| `PlaceLimitOrder`, PostOnly | 20,577 | 6,386 | 31% |
-| `PlaceLimitOrder`, Limit, resting | 23,471 | 7,315 | 31% |
-| `Swap`, 2 fills | 22,809 | 8,126 | 36% |
-| `Swap`, 30 fills | 61,313 | 26,362 | 43% |
-| `PlaceLimitOrder`, Limit through 20 fills, then resting | 108,399 | 52,869 | 49% |
-| `PlaceMultiplePostOnlyOrders`, 5 orders in 4 levels | 34,614 | 13,184 | 38% |
-| `ReduceOrder` | 15,235 | 5,128 | 34% |
-| `CancelMultipleOrdersById`, 1 order | 15,984 | 5,593 | 35% |
-| `CancelMultipleOrdersByIdWithFreeFunds`, 50 orders | 67,870 | 38,390 | 57% |
-| `CancelUpTo`, 3 orders | 18,349 | 7,212 | 39% |
-| `CancelAllOrdersWithFreeFunds`, 90 orders | 115,367 | 69,594 | 60% |
-| `EvictSeat` | 30,466 | 8,961 | 29% |
+| `InitializeMarket` | 79,146–97,353 | 10,940–15,035 | 14–15% |
+| `RequestSeat` | 14,900 | 4,599 | 31% |
+| `DepositFunds` | 20,441 | 6,176 | 30% |
+| `WithdrawFunds` | 17,760 | 6,201 | 35% |
+| `CollectFees` | 13,814 | 4,977 | 36% |
+| `PlaceLimitOrder`, PostOnly | 20,577–25,077 | 6,452–7,475 | 30–31% |
+| `PlaceLimitOrder`, Limit, resting | 21,971–23,471 | 7,066–7,407 | 32% |
+| `Swap`, 2 fills | 22,809–22,886 | 8,178–8,196 | 36% |
+| `Swap`, 30 fills | 61,313–61,390 | 26,344–26,362 | 43% |
+| `PlaceLimitOrder`, Limit through 20 fills, then resting | 108,397–114,399 | 52,894–54,260 | 47–49% |
+| `PlaceMultiplePostOnlyOrders`, 5 orders in 4 levels | 34,605–40,614 | 13,324–14,698 | 36–39% |
+| `ReduceOrder` | 15,235 | 5,170 | 34% |
+| `CancelMultipleOrdersById`, 1 order | 15,984 | 5,708 | 36% |
+| `CancelMultipleOrdersByIdWithFreeFunds`, 50 orders | 67,793–67,871 | 38,527–38,547 | 57% |
+| `CancelUpTo`, 3 orders | 18,349–18,367 | 7,312 | 40% |
+| `CancelAllOrdersWithFreeFunds`, 90 orders | 115,366 | 69,762 | 60% |
+| `EvictSeat` | 22,966–33,466 | 7,306–9,693 | 29–32% |
 
-At the extremes: a match of 300 fills in three Log batches 443,218 against 218,572 (49%); `CancelAllOrders` of 512
-orders in a 4,096 book 760,087 against 434,128 (57%), and of 200 among 8,000 orders 1,184,700 against 470,826 (40%);
-`CancelUpTo` searching 1,500 orders 1,002,321 against 458,703 (46%); the 513th collected id runs both out of memory
-after 90,220 and 30,344.
+At the extremes: a match of 300 fills in three Log batches 443,217–443,295 against 217,847–217,867 (49%);
+`CancelAllOrders` of 512 orders in a 4,096 book 760,087 against 434,446 (57%), and of 200 among 8,000 orders 1,184,623
+against 471,050 (40%); `CancelUpTo` searching 1,500 orders 1,002,398–1,002,399 against 456,958–456,960 (46%); the
+513th collected id runs both out of memory after 90,220 and 30,363.
 
-The binary is 231,856 bytes against the original's 1,344,472.
+The binary is 256,360 bytes against the original's 1,344,472.
 
 ## Differences
 
 What the port does not reproduce, and how a transaction would reach it:
 
-- **Compute.** The port spends 14–60% of the original's units, so a transaction that runs the original out of its
-  compute budget can complete in the port; the tests give both enough.
+- **Compute.** The port spends 13–61% of the original's units (up to 86% in `phoenix-limits.test.ts`, whose
+  transactions carry hundreds of account entries or go through a forwarding program), so a transaction that runs the
+  original out of its compute budget can complete in the port; the tests give both enough.
 - **Memory, counted.** Phoenix allocates on solana-program 1.14.9's bump heap: 32 KiB from the top down, never freed,
   and an allocation past it aborts with "Error: memory allocation failed, out of memory". The port keeps its own lists
   fixed and counts Phoenix's heap instead ([`heap.ts`](../showcase/mainnet/phoenix/heap.ts)), charge by charge as the
