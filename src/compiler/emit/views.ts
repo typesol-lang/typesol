@@ -7,9 +7,9 @@ import { type Local, type Ref, type Value, U32, U64, fieldC, optC, valueC } from
 /** The run-time offset views a native program reads its account with. */
 const VIEW_FNS = new Set(["loadRawAt", "loadRawMutAt", "rawArrayAt", "rawArrayMutAt", "rbTreeAt", "rbTreeMutAt"]);
 /** Tree methods that hand out a reference into a node (bound to a const, they alias the tree). */
-const TREE_REFS = new Set(["get", "remove", "min", "max", "nodeAt"]);
+const TREE_REFS = new Set(["get", "remove", "removeAt", "min", "max", "nodeAt"]);
 const TREE_METHODS =
-  "length, capacity, initialize(), get(key), insert(key, value), remove(key), min(), max(), addrOf(key), nodeAt(index), for … of and reversed()";
+  "length, capacity, initialize(), get(key), insert(key, value), remove(key), removeAt(index), min(), max(), addrOf(key), nodeAt(index), for … of and reversed()";
 
 /**
  * Views of native account data at offsets known only at run time (Phoenix's market at byte 576, its trees sized by
@@ -111,7 +111,7 @@ export abstract class ViewEmitter extends CallEmitter {
     const { h, param } = this.rawAccount(node, fn, mut);
     const off = this.u64Arg(node.arguments[1]!, "off");
     const cap = counts ? this.u64Arg(node.arguments[2]!, "cap") : undefined;
-    this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    this.line(this.viewOwnerCheck(h));
     return { h, param, off, cap };
   }
 
@@ -359,6 +359,15 @@ export abstract class ViewEmitter extends CallEmitter {
         if (method === "addrOf") return { value: { c: r, type: U32 } };
         return { value: this.nodeValue(tree, r) };
       }
+      case "removeAt": {
+        // remove(key) for a node already found (addrOf, an entry's index): the same writes, no second search.
+        arity(1, "index");
+        writes();
+        const i = this.expect(this.expr(args[0]!, U32), U32, args[0]!);
+        const r = this.tmp("rbi");
+        this.line(`uint32_t ${r} = ${inst.c}_remove_at(&${t}, ${i.c});`);
+        return { value: this.nodeValue(tree, r) };
+      }
       case "min":
       case "max": {
         arity(0, "");
@@ -407,6 +416,22 @@ export abstract class ViewEmitter extends CallEmitter {
   }
 
   protected viewRef(node: ts.Expression): Ref | undefined {
+    // `loadRaw<T>(acct).field`, `loadRawAt<T>(acct, offset).inner.b`: a read-only view read where it is made, its checks
+    // made there. A writable view claims its account once per instruction: it is bound to a const instead.
+    if (ts.isCallExpression(node)) {
+      const fn = this.exportName(node.expression);
+      if (fn === "loadRaw" || fn === "loadRawAt") {
+        const v = fn === "loadRaw" ? this.loadRaw(node, false) : this.loadRawAt(node, false);
+        const struct = (v.type as ValueType & { kind: "structRef" }).struct;
+        return { lv: `(*${v.c})`, type: { kind: "struct", name: struct }, writable: false, ...(v.bigCap ? { bigCap: v.bigCap } : {}) };
+      }
+      if (fn === "loadRawMut" || fn === "loadRawMutAt")
+        this.fail(
+          node,
+          `bind ${fn}(…) to a const first, as a writable view claims its account once per instruction: const v = ${fn}<…>(account${fn === "loadRawMutAt" ? ", offset" : ""})`,
+        );
+      return undefined;
+    }
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       return l?.type.kind === "rawArray" ? this.rawArrayRef(l) : undefined;
@@ -428,7 +453,7 @@ export abstract class ViewEmitter extends CallEmitter {
         if (l?.type.kind === "structRef" && l.type.nullable) v = { c: l.c, type: l.type };
       } else if (ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression) && this.treeOf(inner.expression.expression)) {
         const m = inner.expression.name.text;
-        if (m === "get" || m === "remove") v = this.treeCall(inner)!.value;
+        if (m === "get" || m === "remove" || m === "removeAt") v = this.treeCall(inner)!.value;
       }
       if (!v || v.type.kind !== "structRef") return undefined;
       this.line(`if (${v.c} == NULL) TS_FAIL(TS_ERR_UNWRAP, "TypeSOL: the key is not in the tree");`);
@@ -437,14 +462,24 @@ export abstract class ViewEmitter extends CallEmitter {
     return undefined;
   }
 
-  /** `rbTreeAt(…).length`, `rawArrayAt(…).get(i)`: a view used without binding it. */
+  /** `rbTreeMutAt(…).min()`, `rawArrayAt(…).get(i)`: a view used without binding it. */
   private unbound(node: ts.Expression): void {
     const fn = this.viewFn(node);
-    if (fn) this.fail(node, `bind ${fn}(…) to a const first: const v = ${fn}<…>(account, offset${fn.startsWith("load") ? "" : ", capacity"})`);
+    // loadRawAt(…).field reads in place, loadRawMutAt(…).field names its own fix (viewRef).
+    if (fn && fn !== "loadRawAt" && fn !== "loadRawMutAt")
+      this.fail(node, `bind ${fn}(…) to a const first: const v = ${fn}<…>(account, offset${fn.startsWith("load") ? "" : ", capacity"})`);
   }
 
   protected viewProperty(node: ts.PropertyAccessExpression): Value | undefined {
     const field = node.name.text;
+    // `rbTreeAt(…).length` / `.capacity`: a read-only tree made for the one read.
+    let inner: ts.Expression = node.expression;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (this.viewFn(inner) === "rbTreeAt" && (field === "length" || field === "capacity")) {
+      const t = this.tmp("rbt");
+      this.rbTreeAt(inner as ts.CallExpression, false, t);
+      return field === "length" ? { c: `TS_RBT_SIZE(${t}.base)`, type: U64 } : { c: `${t}.cap`, type: U64 };
+    }
     this.unbound(node.expression);
     const tree = this.treeOf(node.expression);
     if (tree) {

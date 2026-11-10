@@ -141,7 +141,14 @@ export interface P { a: u64; }
 export interface L { n: u64; items: BigVec<u64>; }
 import { type u64 } from "typesol";
 `;
-    expect(compileErrors(`${head}export function f(a: AccountInfo): void { log(loadRawAt<P>(a, 0n).a); }`)).toContain("bind loadRawAt(…) to a const first");
+    // a read-only view read in place; a writable one is bound first (it claims the account)
+    expect(compileErrors(`${head}export function f(a: AccountInfo): void { log(loadRawAt<P>(a, 0n).a); }`)).toBe("");
+    expect(compileErrors(`${head}export function f(a: Mut<AccountInfo>): void { loadRawMutAt<P>(a, 0n).a = 1n; }`)).toContain(
+      "bind loadRawMutAt(…) to a const first",
+    );
+    expect(compileErrors(`${head}export function f(a: AccountInfo): void { log(rawArrayAt<u64>(a, 0n, 2n).get(0n)); }`)).toContain(
+      "bind rawArrayAt(…) to a const first",
+    );
     expect(compileErrors(`${head}export function f(a: AccountInfo): void { const p = loadRawMutAt<P>(a, 0n); p.a = 1n; }`)).toContain(
       "must be Mut<AccountInfo> to load it with loadRawMutAt",
     );

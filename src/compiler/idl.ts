@@ -207,7 +207,8 @@ function nestGroups(ix: Instruction, entry: (a: Instruction["accounts"][number])
 /** Anchor IDL (spec 0.1.0) so existing Anchor / Codama clients can talk to TypeSOL programs. */
 export function buildIdl(model: ProgramModel, address: string, version = "0.1.0") {
   const structs = [...model.structs.values()];
-  const usedStructs = structs.filter((s) => model.accountStructs.has(s.name) || model.events.has(s.name) || s.size !== undefined);
+  // A struct that is not exported is its file's own (helpers and locals): not part of the program's interface.
+  const usedStructs = structs.filter((s) => !s.local && (model.accountStructs.has(s.name) || model.events.has(s.name) || s.size !== undefined));
   const idl = {
     address,
     metadata: { name: model.name, version, spec: "0.1.0", description: "Built with TypeSOL" },

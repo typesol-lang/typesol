@@ -6,6 +6,66 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: a top-level integer constant may be an expression over literals and constants declared before it (in its
+  file or an imported one): `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT: u64 = BIDS_AT + 2n * BOOK`, with
+  `+ - * / % ** & | ^ << >>`, unary `-` and `~`. It is folded when the program is compiled and inlined like a literal.
+  A typed constant is computed in its type, as Rust computes `const X: u64 = …`: every step must fit (`1n - 2n + 5n`
+  as a u64 is an error naming the step); division by zero, a negative exponent and a shift past the width are compile
+  errors too. Only literals were accepted (test/language/port-syntax.test.ts).
+- Language: a struct that is not exported (`interface Pair { … }`) is its file's own: helpers take, return and change
+  it (`Inout<Pair>`), locals hold it, and the IDL leaves it out. It failed with "structs must be exported" and a
+  misleading second error about the helper's return type. Used where the IDL describes it (account data, an
+  instruction's arguments or result, an event, an exported struct's field, a data enum's variant), it is one error
+  naming the use and the fix, `export interface Pair` (test/language/port-syntax.test.ts). A non-exported account group
+  is refused as before, with its own message.
+- Language: a read-only native view can be read where it is made: `loadRaw<Header>(market).inner.b`,
+  `loadRawAt<Prefix>(market, 576n).tick` and `rbTreeAt<K, V>(…).length` / `.capacity` ("unsupported property access"
+  and "bind … to a const first" before). A writable view (`loadRawMut`, `loadRawMutAt`) is still bound first, now
+  with the reason: it claims its account once per instruction (test/language/port-syntax.test.ts).
+- Language: a local list may hold 2 KiB of elements, its FixedVec length word aside: `const ids: FixedVec<u32, 512> =
+  fixedVec([])` (2,052 bytes, Phoenix's collected order ids) was refused. A frame that then overflows is still reported
+  by the frame check, which names the biggest locals; the refusal of a bigger list now gives the element bytes and, on
+  a declaration, the `/** @heap */` remedy (test/language/port-syntax.test.ts).
+- Language: comma-separated updates in a `for` loop, `for (let i = 0n, j = n; i < j; i++, j--)`, run in order after
+  each pass (`continue` included), and so do comma-separated assignments in its initializer; they were refused ("this
+  expression has no effect"). A comma anywhere else still is (test/language/port-syntax.test.ts).
+- Faster: `buf.pushBorsh<DataEnum>({ kind: "Reduce", … })`, a data-enum literal of a fixed-size variant, builds only
+  that variant: its fields evaluated in source order into locals, then one room check, the tag and a store of each
+  field at its offset (a variant holding a struct or FixedArray: one temporary of exactly its bytes and one copy). It
+  zeroed, filled and copied the whole enum (92 bytes for Phoenix's PhoenixMarketEvent), then wrote the tag and the
+  variant behind a switch on it: Phoenix's 35-byte Reduce event 54 → 19 CU against 16 for the same bytes by `pushLE`
+  (test/language/phx-costs.test.ts, which also checks every field kind's bytes). Changes the generated C of programs
+  that push data-enum literals (Phoenix, test/fixtures/byte-builders.ts), whose tests pass unchanged.
+- Faster: a read-only struct, FixedArray or data-enum argument of a helper that also takes accounts is copied at the
+  call only when it may be account data (a field of a view or of a loaded account), which the helper's writes could
+  change. A struct parameter of a helper that itself takes accounts, an instruction's struct argument and return data
+  are now passed in place like the caller's other owned structs (locals, helper results): they arrived as copies and
+  no account write reaches them. Phoenix's book helpers pass their MarketShape on this way, and took it as `Inout<T>`
+  only to avoid the copy (test/language/phx-costs.test.ts: 97.6 → 43.3 CU per call of a helper passing it on,
+  test/language/helper-copies.test.ts). Changes the generated C of SPL Stake Pool, Marginfi and Raydium CLMM (a copy
+  fewer at such calls), whose tests pass unchanged.
+- Faster: the owner check of native account views (`loadRaw` / `loadRawMut`, `loadRawAt`, `rawArrayAt`, `rbTreeAt` and
+  their Mut forms) remembers the last account it found this program's, until a CPI or an owner write (`assignOwner`,
+  `closeRaw`, `close`) forgets it: the same account passes again with a pointer compare instead of a 32-byte one.
+  Phoenix's helpers each view the market again, often in loops that write it, where clang could not drop the
+  repeated compare (test/language/phx-costs.test.ts: a view per pass of a writing loop 21 → 15 CU, two views 35 → 21,
+  a helper call taking the market 54 → 43). A view after the account changed hands still fails with 3007
+  (test/language/owner-cache.test.ts: after assignOwner, closeRaw and a self-CPI that assigns it). Only programs that
+  make such views carry the cache (`TS_OWNER_CACHE`, a pointer in TsParams); their generated C changes (SPL Stake
+  Pool, Raydium AMM v4, Phoenix and the test fixtures that use views), and their tests pass unchanged.
+- Faster: a RedBlackTree walk (`for (const e of tree)`, `tree.reversed()`) checks each node's index against the
+  capacity once, when it steps onto the node, instead of three times, and keeps its stack by pointer: 59 → 40 CU per
+  node for a walk summing a field of a 400-order book (test/language/phx-costs.test.ts; 18 CU less per node read-only).
+  The same panics at the same points on a damaged tree (an index past the capacity, a cycle filling the stack; both
+  now tested). Changes the generated C of programs that walk a tree (Phoenix, test/fixtures/rbtree.ts and
+  rbtree-api.ts).
+- New: `tree.removeAt(index)` on a RedBlackTree removes the node at that index (from `addrOf`, or a node's `.index`
+  from `min` / `max` / a walk) with exactly the writes `remove(node.key)` makes, without searching the tree a second
+  time: Phoenix's cancel finds the order, checks whose it is, then removes it (691 → 547 CU in
+  test/language/phx-costs.test.ts). It gives the removed value, or null for index 0 or a node in no tree (a freed one,
+  which is left as it is); past the capacity it panics as `nodeAt` does. The lib-sokoban trace replay runs a second
+  time with every `remove(key)` as `removeAt(addrOf(key))`, and the bytes after each operation are still the crate's
+  (test/verification/rbtree-trace.test.ts).
 - New: room beyond one 4 KiB stack frame. `/** @noinline */` on a helper keeps it a C function of its own, so its
   locals get their own frame instead of the instruction's it would be inlined into (3 to 5 CU per call);
   `/** @heap */` on an instruction's list or struct local keeps it on the heap (one allocation per declaration,

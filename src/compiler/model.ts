@@ -131,6 +131,8 @@ export interface StructDef {
   accountDiscriminator: number[];
   eventDiscriminator: number[];
   node: ts.InterfaceDeclaration;
+  /** Not exported (`interface Pair { … }`): its file's own, for helpers and locals, and left out of the IDL. */
+  local?: true;
   /**
    * How account data stores it: "fixed" (every field at a fixed offset, the default) or "borsh" (`@layout borsh`:
    * Anchor's bytes, where strings, Vecs and Options take only what they hold).
@@ -424,6 +426,11 @@ export interface ProgramModel {
   borshNative: Set<string>;
   /** RedBlackTree instances (key, value, comparator), filled in while emitting: their per-tree C functions. */
   rbTrees: Map<string, RbTreeInst>;
+  /**
+   * The program makes views of native accounts (loadRaw, loadRawAt, rawArrayAt, rbTreeAt and their Mut forms): their
+   * owner checks share one cache (ts_owned), forgotten at every CPI and owner write. Set before any body is emitted.
+   */
+  ownerCache?: boolean;
 }
 
 /**

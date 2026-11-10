@@ -421,7 +421,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const options = new Map<string, OptionInner>();
   const dataEnums = new Map<string, DataEnumDef>();
   const constants = new Map<string, ConstDef>();
-  const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string> }[] = [];
+  const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string>; init: ts.Expression }[] = [];
   const errors: ErrorDef[] = [];
   const functions: { node: ts.FunctionDeclaration; imports: Map<string, string> }[] = [];
   const helperNodes: HelperSource[] = [];
@@ -464,7 +464,9 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               if (el.propertyName) reporter.fail(el, `renaming imports from TypeSOL files is not supported; import ${el.propertyName.text} as is`);
           }
         } else if (ts.isInterfaceDeclaration(stmt)) {
-          if (!isExported(stmt)) reporter.fail(stmt, "structs must be exported");
+          // A struct that is not exported is the file's own (helpers, locals): it stays out of the IDL (see
+          // checkLocalStructs). An account group is part of the instructions' accounts, so it is exported.
+          if (!isExported(stmt) && isAccountGroup(stmt, imports)) reporter.fail(stmt, "account groups must be exported: export interface …");
           declare(stmt.name, file);
           // An interface of accounts is an account group (Anchor's composite `#[derive(Accounts)]` field), not a struct.
           if (isAccountGroup(stmt, imports)) groups.set(stmt.name.text, { decl: stmt, imports });
@@ -570,11 +572,17 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
                 init,
                 `only ${SILENCEABLE_PREFIXES.join(" and ")} can be null (failures that log nothing); other constants are bigint, boolean or string literals, or pubkey("…")`,
               );
-            else reporter.fail(init, 'top-level constants must be bigint, boolean or string literals, or pubkey("…")');
+            // `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT = BIDS_AT + 2n * BOOK`: integers folded here.
+            else if (isConstantExpression(init)) value = foldConstant(init, constants, reporter);
+            else
+              reporter.fail(
+                init,
+                'top-level constants are bigint, boolean or string literals, pubkey("…"), or integer expressions over literals and earlier constants (const ROOM = 1280n - 34n)',
+              );
             declare(d.name, file);
             const def: ConstDef = { name: d.name.text, value };
             constants.set(def.name, def);
-            if (d.type) pendingConstTypes.push({ def, type: d.type, imports });
+            if (d.type) pendingConstTypes.push({ def, type: d.type, imports, init });
           }
         } else {
           reporter.fail(stmt, unsupportedSyntax(stmt.kind, "top level"));
@@ -593,6 +601,11 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       if (!t || t.kind !== "int") reporter.fail(c.type, "annotate constants with an integer type, or leave the type out");
       if (typeof c.def.value !== "bigint") reporter.fail(c.type, "only integer constants take a type annotation");
       const info = INT_INFO[t.name];
+      // An expression is computed in its type, as Rust's `const X: u64 = …` is: every step must fit, not only the result.
+      const literal =
+        ts.isBigIntLiteral(c.init) ||
+        (ts.isPrefixUnaryExpression(c.init) && c.init.operator === ts.SyntaxKind.MinusToken && ts.isBigIntLiteral(c.init.operand));
+      if (!literal && isConstantExpression(c.init)) foldConstant(c.init, constants, reporter, t.name);
       if (c.def.value < info.min || c.def.value > info.max) reporter.fail(c.type, `${c.def.value} does not fit in ${t.name}`);
       c.def.type = t;
     });
@@ -955,6 +968,17 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
     reporter.error(sourceFile, "a TypeSOL program needs at least one exported function (instruction) in its entry file");
 
   const name = path.basename(sourceFile.fileName).replace(/\.ts$/, "");
+  const events = collectEvents([...functions, ...helperNodes], structs);
+  // What instructions take or return (collectStructs walks a returned struct only when given it as a reference).
+  const surface = new Set(argStructs);
+  for (const ix of instructions) {
+    if (ix.returns?.kind === "struct") collectStructs({ kind: "structRef", struct: ix.returns.name, writable: false }, structs, dataEnums, surface);
+    // An Option<Struct> argument (`p: Pair | null`): its struct too.
+    for (const a of ix.args)
+      if (a.type.kind === "optionArg" && a.type.option.inner.kind === "struct")
+        collectStructs({ kind: "structRef", struct: a.type.option.inner.name, writable: false }, structs, dataEnums, surface);
+  }
+  checkLocalStructs(structs, dataEnums, accountStructs, surface, events, reporter);
   return {
     model: {
       name: snakeCase(name).replace(/[^a-z0-9_]/g, "_"),
@@ -971,7 +995,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       dataEnums,
       options,
       constants,
-      events: collectEvents([...functions, ...helperNodes], structs),
+      events,
       accountStructs,
       foreignAccounts: new Set([...foreignStructs].filter((n) => !ownStructs.has(n))),
       argStructs,
@@ -991,6 +1015,136 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
 }
 
 /** Every struct an argument type contains (transitively), for IDL layout decisions. */
+/** An integer expression a top-level constant may be: operators, parentheses, bigint literals and names. */
+function isConstantExpression(e: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(e)) return isConstantExpression(e.expression);
+  if (ts.isBigIntLiteral(e) || ts.isIdentifier(e)) return true;
+  if (ts.isPrefixUnaryExpression(e))
+    return (e.operator === ts.SyntaxKind.MinusToken || e.operator === ts.SyntaxKind.TildeToken) && isConstantExpression(e.operand);
+  return ts.isBinaryExpression(e) && CONST_OPS.has(e.operatorToken.kind) && isConstantExpression(e.left) && isConstantExpression(e.right);
+}
+const CONST_OPS = new Set([
+  ts.SyntaxKind.PlusToken,
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+]);
+
+/**
+ * A top-level constant's integer expression, folded when the program is compiled: literals and integer constants
+ * declared before it (in this file or an imported one). JS's bigint results (division truncates, `%` keeps the
+ * dividend's sign, `>>` rounds down, as Rust's integers do). With `width` (a typed constant, `const X: u64 = …`), every
+ * step must fit in that type, as Rust computes a typed const; without one the result is a literal, checked where it is
+ * used. Division by zero, a negative exponent or shift, and a value past 256 bits are compile errors.
+ */
+function foldConstant(e: ts.Expression, constants: Map<string, ConstDef>, reporter: Reporter, width?: IntName): bigint {
+  const fit = (v: bigint, at: ts.Node): bigint => {
+    if (width) {
+      const info = INT_INFO[width];
+      if (v < info.min || v > info.max) reporter.fail(at, `${at.getText()} is ${v}, which does not fit in ${width}: the constant is computed in its type`);
+    } else if (v >= 1n << 256n || v < -(1n << 255n)) reporter.fail(at, `${at.getText()} does not fit in 256 bits`);
+    return v;
+  };
+  const fold = (n: ts.Expression): bigint => {
+    if (ts.isParenthesizedExpression(n)) return fold(n.expression);
+    if (ts.isBigIntLiteral(n)) return fit(BigInt(n.text.slice(0, -1).replace(/_/g, "")), n);
+    if (ts.isIdentifier(n)) {
+      const c = constants.get(n.text);
+      if (!c) reporter.fail(n, `${n.text} is not a top-level constant declared before this one: a constant is folded from literals and earlier constants`);
+      if (typeof c.value !== "bigint") reporter.fail(n, `${n.text} is not an integer constant`);
+      return fit(c.value, n);
+    }
+    // A negative literal is one value (i128's minimum is written -170141183460469231731687303715884105728n).
+    if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.MinusToken && ts.isBigIntLiteral(n.operand))
+      return fit(-BigInt(n.operand.text.slice(0, -1).replace(/_/g, "")), n);
+    if (ts.isPrefixUnaryExpression(n)) {
+      const v = fold(n.operand);
+      if (n.operator === ts.SyntaxKind.MinusToken) return fit(-v, n);
+      // `~x` within the type's width, as at run time; without a type, JS's -x - 1
+      if (width && !INT_INFO[width].signed) return fit(INT_INFO[width].max ^ v, n);
+      return fit(-v - 1n, n);
+    }
+    const b = n as ts.BinaryExpression;
+    const l = fold(b.left);
+    const r = fold(b.right);
+    switch (b.operatorToken.kind) {
+      case ts.SyntaxKind.PlusToken:
+        return fit(l + r, b);
+      case ts.SyntaxKind.MinusToken:
+        return fit(l - r, b);
+      case ts.SyntaxKind.AsteriskToken:
+        return fit(l * r, b);
+      case ts.SyntaxKind.SlashToken:
+      case ts.SyntaxKind.PercentToken:
+        if (r === 0n) reporter.fail(b, `${b.getText()} divides by zero`);
+        return fit(b.operatorToken.kind === ts.SyntaxKind.SlashToken ? l / r : l % r, b);
+      case ts.SyntaxKind.AsteriskAsteriskToken:
+        if (r < 0n) reporter.fail(b, `${b.getText()} has a negative exponent`);
+        if (r > 256n && l !== 0n && l !== 1n && l !== -1n) reporter.fail(b, `${b.getText()} does not fit in 256 bits`);
+        return fit(l ** r, b);
+      case ts.SyntaxKind.AmpersandToken:
+        return fit(l & r, b);
+      case ts.SyntaxKind.BarToken:
+        return fit(l | r, b);
+      case ts.SyntaxKind.CaretToken:
+        return fit(l ^ r, b);
+      default: {
+        // << and >>: an amount from 0 up to the width (256 without a type), and << may not lose bits (as at run time)
+        const bits = width ? INT_INFO[width].bytes * 8 : 256;
+        if (r < 0n || r >= BigInt(bits)) reporter.fail(b, `${b.getText()} shifts by ${r}: the amount is 0 to ${bits - 1}`);
+        return fit(b.operatorToken.kind === ts.SyntaxKind.LessThanLessThanToken ? l << r : l >> r, b);
+      }
+    }
+  };
+  return fold(e);
+}
+
+/**
+ * A struct that is not exported (`interface Pair { … }`) is its file's own: helpers, locals and other such structs use
+ * it, and the IDL leaves it out. What the IDL describes cannot hold one: account data, instruction arguments and
+ * results, events, an exported struct's fields, a data enum's variants. Each such use is one error naming the fix.
+ */
+function checkLocalStructs(
+  structs: Map<string, StructDef>,
+  dataEnums: Map<string, DataEnumDef>,
+  accountStructs: Set<string>,
+  argStructs: Set<string>,
+  events: Set<string>,
+  reporter: Reporter,
+) {
+  const local = (n: string) => structs.get(n)?.local === true;
+  const fix = (n: string, what: string) => `${n} is not exported, but ${what} uses it, which puts it in the IDL: export interface ${n}`;
+  const named = (t: FieldType): string[] =>
+    t.kind === "struct"
+      ? [t.name]
+      : t.kind === "array" || t.kind === "vec"
+        ? named(t.elem)
+        : t.kind === "option" && (t.inner.kind === "struct" || t.inner.kind === "array")
+          ? named(t.inner as FieldType)
+          : [];
+  for (const s of structs.values()) {
+    if (s.local) {
+      if (accountStructs.has(s.name)) reporter.error(s.node.name, fix(s.name, "account data"));
+      else if (argStructs.has(s.name)) reporter.error(s.node.name, fix(s.name, "an instruction's arguments or result"));
+      else if (events.has(s.name)) reporter.error(s.node.name, fix(s.name, "an event"));
+      continue;
+    }
+    for (const f of s.fields)
+      for (const n of named(f.type)) if (local(n)) reporter.error(structs.get(n)!.node.name, fix(n, `the exported struct ${s.name} (field ${f.name})`));
+  }
+  for (const e of dataEnums.values())
+    for (const v of e.variants)
+      for (const f of v.fields)
+        for (const n of named(f.type)) if (local(n)) reporter.error(structs.get(n)!.node.name, fix(n, `the data enum ${e.name} (${v.name}.${f.name})`));
+}
+
 function collectStructs(t: ValueType | FieldType, structs: Map<string, StructDef>, dataEnums: Map<string, DataEnumDef>, out: Set<string>) {
   const visitField = (f: FieldType): void => {
     if (f.kind === "struct") {
@@ -1432,6 +1586,7 @@ function analyzeStructs(
       const declared = fields.map((f) => f.name);
       structs.set(name, {
         ...(idlMeta ? { idlMeta } : {}),
+        ...((ts.getModifiers(decl) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ? {} : { local: true }),
         ...(stored.some((f, i) => f.name !== declared[i]) ? { declared } : {}),
         name,
         fields: stored,

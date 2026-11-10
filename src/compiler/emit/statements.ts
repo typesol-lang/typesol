@@ -223,7 +223,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       const init = stmt.initializer;
       if (init) {
         if (ts.isVariableDeclarationList(init)) this.variable(init);
-        else this.expressionStatement(init, false);
+        else for (const e of commaList(init)) this.expressionStatement(e, false);
       }
       this.loop(stmt.condition, stmt.statement, stmt.incrementor);
     });
@@ -305,21 +305,24 @@ export abstract class StatementEmitter extends CpiEmitter {
     const release = this.iterationClaims(stmt.statement);
     this.line(`{`);
     this.block(() => {
+      // The stack is walked with a pointer (no index arithmetic per step).
       this.line(`uint32_t ${stack}[TS_RBT_STACK];`);
-      this.line(`uint32_t ${sp} = 0;`);
+      this.line(`uint32_t *${sp} = ${stack};`);
       this.line(`uint32_t ${ptr} = TS_RBT_ROOT(${t}.base);`);
       this.line(`while (1) {`);
       this.block(() => {
+        // Each node's index is checked against the capacity once, when the walk steps onto it (the same panic, at the
+        // same point, as sokoban's indexing); popping it again reads its registers without a second check.
         this.line(`while (${ptr} != 0) {`);
-        this.line(`  if (${sp} == TS_RBT_STACK) ts_rbt_too_deep();`);
-        this.line(`  ${stack}[${sp}++] = ${ptr};`);
-        this.line(`  ${ptr} = ts_rbt_reg(&${t}, ${S}, ${ptr}, ${down});`);
+        this.line(`  if (${sp} == ${stack} + TS_RBT_STACK) ts_rbt_too_deep();`);
+        this.line(`  *${sp}++ = ${ptr};`);
+        this.line(`  ${ptr} = ((ts_u32_unaligned *)ts_rbt_node(&${t}, ${S}, ${ptr}))[${down}];`);
         this.line(`}`);
-        this.line(`if (${sp} == 0) break;`);
-        this.line(`uint32_t ${cur} = ${stack}[--${sp}];`);
-        this.line(`TsRbtEntry ${e} = {ts_rbt_node(&${t}, ${S}, ${cur}), ${cur}};`);
+        this.line(`if (${sp} == ${stack}) break;`);
+        this.line(`uint32_t ${cur} = *--${sp};`);
+        this.line(`TsRbtEntry ${e} = {ts_rbt_node_checked(&${t}, ${S}, ${cur}), ${cur}};`);
         // sokoban reads the next pointer when it yields the node, before the caller sees it.
-        this.line(`${ptr} = ts_rbt_reg(&${t}, ${S}, ${cur}, ${next});`);
+        this.line(`${ptr} = ((ts_u32_unaligned *)${e}.node)[${next}];`);
         this.scopes.at(-1)!.set((d.name as ts.Identifier).text, {
           c: e,
           type: { kind: "rbEntry", inst: tree.inst.key, writable: tree.writable },
@@ -932,7 +935,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.loops.pop();
       this.line(`${label}:;`);
       release();
-      if (step) this.expressionStatement(step, false);
+      // `i++, j--`: each update in order, all after the `continue` label.
+      if (step) for (const e of commaList(step)) this.expressionStatement(e, false);
     });
     this.line(`}`);
   }
@@ -1546,7 +1550,10 @@ export abstract class StatementEmitter extends CpiEmitter {
           for (const l of this.validation(`${c}__v`, { kind: "struct", name: S.name }, "", bad)) this.line(l.trim());
           this.line(`TSS_${S.name} *${c} = &${c}__v;`);
         }
-        this.scopes.at(-1)!.set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d });
+        // A copy of the return data: never account data (owned).
+        this.scopes
+          .at(-1)!
+          .set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
         continue;
       }
       // A local list declared with its type: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, … }])`,
@@ -1558,7 +1565,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       const heap = this.heapLocal(d, !!listType || !!structType);
       if (listType) {
         if (heap) this.checkHeapRoom(this.fieldBytes(listType), d.type!);
-        else this.checkLocalListSize(listType, d.type!);
+        else this.checkLocalListSize(listType, d.type!, undefined, true);
         let lv = c;
         if (listType.kind === "vec") this.model.localVecs.set(fixedVecC(listType), listType);
         if (heap) {
@@ -1887,4 +1894,11 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (ts.isIdentifier(target) || (value.type.kind === "string" && this.peekKind(target) === "string")) value = this.ownedString(value);
     this.line(place.write(value.c) + ";");
   }
+}
+
+/** The expressions of a comma list (`i++, j--` in a for loop's update or initializer), left to right. */
+function commaList(e: ts.Expression): ts.Expression[] {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.CommaToken) return [...commaList(e.left), ...commaList(e.right)];
+  return [e];
 }

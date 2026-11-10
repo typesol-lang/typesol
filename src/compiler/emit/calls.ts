@@ -257,6 +257,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const d = this.accountParam(args[1], "close's destination");
         if (!isWritable(d.kind)) this.fail(args[1], "the destination must be writable (Mut<...>)");
         this.line(`TS_TRY(ts_close(a_${a.name}, a_${d.name}));`);
+        this.forgetOwners();
         return undefined;
       }
       case "minimumBalance": {
@@ -744,6 +745,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`${r}->lamports = ${sum};`);
         this.line(`${a}->lamports = 0;`);
         this.line(`ts_memcpy(&${a}->owner, &TS_SYSTEM_PROGRAM_ID, 32);`);
+        this.forgetOwners();
         this.line(`${a}->data_len = 0;`);
         return undefined;
       }
@@ -754,6 +756,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const a = this.inPlaceAccount(args[0]!, "assignOwner's account", true);
         const owner = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
         this.line(`ts_memcpy(&${a}->owner, ${owner.c}, 32);`);
+        this.forgetOwners();
         return undefined;
       }
       case "bigEndian":
@@ -1926,7 +1929,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: ${fn} reads fixed layouts only`);
     if (node.arguments.length !== 1) this.fail(node, `${fn}<T>(account) takes one remaining account or AccountInfo parameter`);
     const { h, param } = this.rawAccount(node, fn, mut);
-    this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    this.line(this.viewOwnerCheck(h));
     this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
     // A BigVec's stored length must fit in the account. Its capacity is kept in a local: every access is clamped to it
     // (the length may be written again after this), without a division each time.
@@ -1940,6 +1943,20 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     if (mut) this.claimRawMut(node, h, param);
     return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut }, ...(bigCap ? { bigCap } : {}) };
+  }
+
+  /**
+   * A native account view's owner check (3007). In a program that makes such views the check goes through ts_owned: the
+   * last account found this program's passes with a pointer compare until a CPI or an owner write forgets it.
+   */
+  protected viewOwnerCheck(h: string): string {
+    const fail = `TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program")`;
+    return this.model.ownerCache ? `if (!ts_owned(params, ${h})) ${fail};` : `if (!ts_key_eq(&${h}->owner, params->program_id)) ${fail};`;
+  }
+
+  /** An owner write or a CPI: the owner checks' cache (viewOwnerCheck) is forgotten. */
+  protected forgetOwners(): void {
+    if (this.model.ownerCache) this.line(`TS_OWNER_FORGET(params);`);
   }
 
   /**

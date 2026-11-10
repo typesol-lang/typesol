@@ -123,17 +123,22 @@ export abstract class EmitterBase {
         )
           this.pendingInit.add(a.name);
       }
+      // A struct, FixedArray or data enum argument is decoded into memory of its own (`owned`: never account data, so a
+      // helper taking accounts reads it in place instead of a copy).
       for (const a of target.args)
         this.args.set(
           a.name,
           a.type.kind === "dataEnumArg"
-            ? { c: `arg_${a.name}`, type: { kind: "enumRef", name: a.type.name, writable: false }, mutable: false }
+            ? { c: `arg_${a.name}`, type: { kind: "enumRef", name: a.type.name, writable: false }, mutable: false, owned: true }
             : a.type.kind === "arrayArg"
-              ? { c: `(*arg_${a.name})`, type: a.type.array, mutable: false, readonly: true }
-              : { c: `arg_${a.name}`, type: a.type, mutable: false },
+              ? { c: `(*arg_${a.name})`, type: a.type.array, mutable: false, readonly: true, owned: true }
+              : { c: `arg_${a.name}`, type: a.type, mutable: false, ...(a.type.kind === "structRef" ? { owned: true } : {}) },
         );
     } else {
       this.helper = target;
+      // A helper that takes accounts gets its struct, FixedArray and data enum arguments as a copy or as a pointer to
+      // memory its caller owns, never account data (see snapshotPlace): `owned`, so it passes them on in place.
+      const owned = target.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining") ? { owned: true } : {};
       for (const p of target.params) {
         if (p.account) this.accounts.set(p.name, { name: p.name, index: -1, kind: p.account, node: p.node, constraints: { hasOne: [] } });
         else if (p.inout) {
@@ -148,10 +153,10 @@ export abstract class EmitterBase {
             if (elem.kind === "fstring") this.model.fstrings.add(elem.cap);
             this.args.set(p.name, { c: `(*p_${p.name})`, type: p.inout as Local["type"], mutable: false, paths, decl: p.node });
           }
-        } else if (p.type.kind === "arrayArg") this.args.set(p.name, { c: `(*p_${p.name})`, type: p.type.array, mutable: false, readonly: true });
+        } else if (p.type.kind === "arrayArg") this.args.set(p.name, { c: `(*p_${p.name})`, type: p.type.array, mutable: false, readonly: true, ...owned });
         else if (p.type.kind === "dataEnumArg")
-          this.args.set(p.name, { c: `p_${p.name}`, type: { kind: "enumRef", name: p.type.name, writable: false }, mutable: false });
-        else this.args.set(p.name, { c: `p_${p.name}`, type: p.type, mutable: false });
+          this.args.set(p.name, { c: `p_${p.name}`, type: { kind: "enumRef", name: p.type.name, writable: false }, mutable: false, ...owned });
+        else this.args.set(p.name, { c: `p_${p.name}`, type: p.type, mutable: false, ...(p.type.kind === "structRef" ? owned : {}) });
       }
     }
   }

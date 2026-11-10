@@ -101,6 +101,28 @@ export function amend(market: Mut<AccountInfo>, cap: u64, price: u64, seq: u64, 
   log(`len ${book.length}`);
 }
 
+/** Cancel the best order by its node (removeAt), or by its key (remove) when `byKey`; then a stale index and 0 change nothing. */
+export function cancelBest(market: Mut<AccountInfo>, cap: u64, byKey: boolean): void {
+  const book = rbTreeMutAt<OrderId, Resting>(market, BOOK, cap, fifo);
+  const best = book.min();
+  if (best === null) {
+    log("empty");
+    return;
+  }
+  const at = best.index;
+  const key: OrderId = { price_in_ticks: best.key.price_in_ticks, order_sequence_number: best.key.order_sequence_number };
+  if (byKey) {
+    const gone = book.remove(key);
+    log(`removed ${gone === null ? "none" : `${gone.trader_index}`} at ${at} len ${book.length}`);
+  } else {
+    const gone = book.removeAt(at);
+    log(`removed ${gone === null ? "none" : `${gone.trader_index}`} at ${at} len ${book.length}`);
+    const again = book.removeAt(at);
+    const zero = book.removeAt(0n);
+    log(`again ${again === null} zero ${zero === null} len ${book.length}`);
+  }
+}
+
 /** u64 keys and values: an equal key replaces the value (also when full), a new key on a full tree gives null. */
 export function scalars(market: Mut<AccountInfo>, cap: u64, k: u64, v: u64): void {
   const t = rbTreeMutAt<u64, u64>(market, BOOK, cap);
@@ -128,4 +150,5 @@ export function panics(): void {
   if (tag === 0n) t.initialize();
   else if (tag === 1n) t.insert(5n, 6n);
   else if (tag === 2n) log(t.nodeAt(u32(data.readU64(9n))).value);
+  else if (tag === 3n) log(t.removeAt(u32(data.readU64(9n))) === null ? "none" : "some");
 }
