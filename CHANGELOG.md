@@ -23,6 +23,12 @@ codes, and says so here.
   events and `storeBorsh` use; object literals take their type, `pushBorsh<Header>({ … })`), `setLE(offset, x)` and
   `truncate(n)`, each bounds-checked (5104) with the length moved only when everything fit. Phoenix's event recorder
   written with them sends the same batches, byte for byte, as the Phoenix binary.
+- Rust panics as solana-program 1.14 to 1.17 leave them: `export const PANIC_STYLE = "solana-1.14"` makes `panic(message,
+  location)` log `panicked at '<message>', <location>` and abort ("SBF program panicked"), and `PANIC_ON_OVERFLOW`'s
+  panics abort too; `panicsAt(location, expression)` makes the expression's checked arithmetic panic with Rust's
+  messages ("attempt to add with overflow", "attempt to divide by zero", …) at the original's location instead of
+  failing with 5100 / 5101, in either style. Checked line for line against the Phoenix v1 binary's panics (its
+  entrypoint's assertion, and its overflow and remainder checks in initialize.rs and quantities.rs).
 
 ## 0.42.0 — 2026-11-09
 

@@ -49,7 +49,7 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   "the checks stay" promise above: it only applies to programs that declare it.
 - For native ports (Unreleased): `setReturnData` and `logComputeUnits` in a native entry; `closeRaw`, `assignOwner`
   and `resizeAccount` on remaining accounts; the byte builders of `FixedVec<u8, N>` (`pushLE`, `pushKey`, `pushBorsh`,
-  `setLE`, `truncate`).
+  `setLE`, `truncate`); `PANIC_STYLE = "solana-1.14"` and `panicsAt(location, expression)`.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake); a ternary
   between remaining accounts and `AccountInfo` parameters (0.42.0).

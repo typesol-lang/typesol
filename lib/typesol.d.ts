@@ -2278,8 +2278,21 @@ export declare enum ProgramError {
  * `location` ("program/src/instruction.rs:482:17") is the place the runtime reports, as the original's panic gives it;
  * by default this source line. A `null` message logs nothing, for a program whose panic handler writes no line of its
  * own: `panic(null, "src/lib.rs:105:19")` leaves only the runtime's "SBF program Panicked in src/lib.rs at 105:19".
+ * Under `export const PANIC_STYLE = "solana-1.14"` (a program built with solana-program 1.14 to 1.17) it logs
+ * `panicked at '<message>', <location>` and aborts, so the runtime reports "SBF program panicked", as that panic
+ * handler does; a message is then required.
  */
 export declare function panic(message?: string | null, location?: string): never;
+/**
+ * `value`, with its checked arithmetic panicking as Rust's overflow checks do at `location` ("file:line:column", where
+ * the original's expression is): `panicsAt("src/quantities.rs:233:1", a + b)` logs "attempt to add with overflow"
+ * there (also "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the
+ * remainder with a divisor of zero", "attempt to negate with overflow", "attempt to divide with overflow", "attempt to
+ * shift left / right with overflow" for a shift amount past the width), as `panic` logs (see `PANIC_STYLE`), instead
+ * of failing with 5100 / 5101. Only the operators written inside it, not the helpers it calls; an inner `panicsAt`
+ * gives its own operators their own location. As a statement it takes an assignment: `panicsAt(loc, total += fee);`.
+ */
+export declare function panicsAt<T>(location: string, value: T): T;
 /**
  * Stop the program as Rust's `abort` does on SBF (the allocator's out-of-memory error, `std::process::abort`): the
  * runtime's `abort` syscall, which fails the instruction with ProgramFailedToComplete and logs "SBF program panicked"

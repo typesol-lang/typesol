@@ -54,6 +54,17 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
     if (typeof panicFlag.value !== "boolean") reporter.error(analysis.sourceFile, "PANIC_ON_OVERFLOW must be true or false");
     else if (panicFlag.value) out.push(`#define TS_PANIC_ON_OVERFLOW 1`);
   }
+  // `const PANIC_STYLE = "solana-1.14"`: panics log as solana_program 1.14's panic handler does and abort (read by the
+  // emitter); PANIC_ON_OVERFLOW's panics abort too instead of calling sol_panic_.
+  const panicStyle = model.constants.get("PANIC_STYLE");
+  if (panicStyle) {
+    if (panicStyle.value !== "solana-1.14")
+      reporter.error(
+        analysis.sourceFile,
+        "PANIC_STYLE must be \"solana-1.14\" (panics log `panicked at '<message>', <file>:<line>:<col>` and abort, as programs built with solana-program 1.14 to 1.17 do); leave it out for the default",
+      );
+    else if (panicFlag?.value === true) out.push(`#define TS_PANIC_ABORT 1`);
+  }
   // `const NATIVE_ACCOUNT_WRITES = true`: loadRawMut / storeBorsh / BigVec writes leave writability and aliasing to the
   // runtime, as a native program does (read by the emitter; nothing to define in C).
   const nativeWrites = model.constants.get("NATIVE_ACCOUNT_WRITES");

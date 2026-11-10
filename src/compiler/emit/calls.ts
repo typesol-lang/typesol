@@ -149,15 +149,50 @@ export abstract class CallEmitter extends ExpressionEmitter {
             'panic() takes an optional message (or null to log nothing) and an optional "file:line:column" location: string literals or string constants',
           );
         const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
-        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
-        // ported program's panic reports it, else this source line.
-        const at = args.length > 1 ? text(args[1]!)! : this.location(node);
-        const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
-        const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
-        if (msg !== undefined) this.line(`sol_log(${cString(msg)});`);
-        this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
-        this.line(`__builtin_unreachable();`);
+        if (silent && this.panicStyle())
+          this.fail(
+            args[0]!,
+            'under PANIC_STYLE "solana-1.14" a panic logs its message, as solana_program 1.14\'s panic handler always does: pass the message',
+          );
+        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"), or the panic line
+        // logs: the given one, as a ported program's panic reports it, else this source line (with its column under
+        // PANIC_STYLE, as Rust always gives one).
+        const at = args.length > 1 ? text(args[1]!)! : this.panicStyle() ? this.locationWithColumn(node) : this.location(node);
+        for (const l of this.panicC(msg, at)) this.line(l);
         return undefined;
+      }
+      case "panicsAt": {
+        // The checked arithmetic of `expression` panics as Rust's does at `location`, with Rust's messages.
+        const first = args[0];
+        const loc = first && (ts.isStringLiteralLike(first) ? first.text : ts.isIdentifier(first) ? this.model.constants.get(first.text)?.value : undefined);
+        if (args.length !== 2 || typeof loc !== "string" || !/^.+:\d+:\d+$/.test(loc))
+          this.fail(
+            node,
+            'panicsAt(location, expression) takes a "file:line:column" string literal (or string constant) and the expression whose arithmetic panics there',
+          );
+        // Prettier writes an assignment argument in parentheses: `panicsAt(loc, (total += fee))`.
+        let inner = args[1]!;
+        while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+        const outer = this.panicAt;
+        this.panicAt = loc;
+        try {
+          // A statement: an assignment, a compound assignment (`total += fee`) or ++ / --.
+          const assigns =
+            (ts.isBinaryExpression(inner) &&
+              inner.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+              inner.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            ((ts.isPrefixUnaryExpression(inner) || ts.isPostfixUnaryExpression(inner)) &&
+              (inner.operator === ts.SyntaxKind.PlusPlusToken || inner.operator === ts.SyntaxKind.MinusMinusToken));
+          if (assigns) {
+            if (!ts.isExpressionStatement(node.parent))
+              this.fail(inner, "an assignment inside panicsAt is a statement of its own: panicsAt(location, total += fee);");
+            this.expressionStatement(inner, topLevel);
+            return undefined;
+          }
+          return this.expr(inner);
+        } finally {
+          this.panicAt = outer;
+        }
       }
       case "abort": {
         // Rust's abort on SBF: the runtime's `abort` syscall ("SBF program panicked", no location, nothing logged).

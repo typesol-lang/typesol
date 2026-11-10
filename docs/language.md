@@ -335,6 +335,26 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   runtime's `abort` syscall, which logs "SBF program panicked" with no location; `const PANIC_ON_OVERFLOW = true`
   makes arithmetic overflow and division by zero panic as `checked_*().unwrap()` does instead of failing with 5100 /
   5101.
+- Panics as an older solana-program writes them: `export const PANIC_STYLE = "solana-1.14"` (a program built with
+  solana-program 1.14 to 1.17, whose rustc formats a panic before 1.73 did: Phoenix v1) makes `panic(message,
+  location)` log `panicked at '<message>', <location>` and then abort, so the runtime's last line is "SBF program
+  panicked" with no location, as that panic handler leaves it (`panic(null, …)` is refused there: the handler always
+  logs; without a location the TypeScript line and column are used). `PANIC_ON_OVERFLOW`'s panics abort too.
+- Overflow panics with Rust's message and location: `panicsAt("src/quantities.rs:233:1", a + b)` is `a + b` whose
+  checked arithmetic panics as Rust's overflow checks do at that location ("attempt to add with overflow"; also
+  "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the remainder
+  with a divisor of zero", "attempt to negate with overflow", "attempt to divide with overflow" and "attempt to shift
+  left / right with overflow" for a shift amount past the width), logged as `panic` logs (`PANIC_STYLE` above, else
+  the message and sol_panic_ at the location), instead of failing with 5100 / 5101; with or without
+  `PANIC_ON_OVERFLOW`, which applies outside it. Rust reports the location of the expression the operator belongs
+  to, so the wrapper goes around that expression: only the operators written inside it take the location (not those
+  of the helpers it calls), an inner `panicsAt` gives its operators their own (`panicsAt(A, x + panicsAt(B, y * z))`),
+  and as a statement it takes an assignment, `panicsAt(LOC, total += fee);`. A Rust newtype's operator panics at its
+  `impl` (Phoenix's `QuoteLots + QuoteLots` at the macro line in quantities.rs, wherever the addition is written): give
+  the port a helper, `function addQuoteLots(a: u64, b: u64): u64 { return panicsAt(QUOTE_LOTS_ADD, a + b); }`. The
+  bits `<<` loses, `**`, `mulDiv` / `mulDivCeil`, casts and u256 arithmetic keep TypeSOL's failures (Rust checks them
+  differently, or with other messages).
+  test/language/rust-panics.test.ts checks the lines against the Phoenix binary's own panics.
 - Log lines as the original writes them: `const ERROR_LOG_PREFIX = "AMM error: "` and `const PROGRAM_ERROR_LOG_PREFIX =
   "Program error: "` replace the compiler's failure line with the entrypoint's (`msg!("AMM error: {}", e)`);
   `logBase64("ray_log: ", record)` logs a struct's bytes in base64 (a native `bincode` log record);

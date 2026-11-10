@@ -76,6 +76,11 @@ export abstract class EmitterBase {
 
   /** `file.ts:line` of the statement being lowered. */
   protected where: string | undefined;
+  /**
+   * Inside `panicsAt(location, expression)`: the Rust location ("file:line:col") its checked arithmetic panics at,
+   * with Rust's messages ("attempt to add with overflow"), instead of failing with 5100 / 5101.
+   */
+  protected panicAt: string | undefined;
   protected readonly profile: boolean;
 
   constructor(analysis: Analysis, target: Instruction | Helper, opts: EmitOptions = {}) {
@@ -392,6 +397,34 @@ export abstract class EmitterBase {
     return this.model.constants.get("NATIVE_ACCOUNT_WRITES")?.value === true;
   }
 
+  /**
+   * `const PANIC_STYLE = "solana-1.14"`: a Rust panic logs what solana_program 1.14's panic handler logs (rustc before
+   * 1.73 formats it as `panicked at '<message>', <file>:<line>:<col>`) and then aborts, so the runtime reports "SBF
+   * program panicked"; by default it logs the message and calls sol_panic_ with the location.
+   */
+  protected panicStyle(): "solana-1.14" | undefined {
+    return this.model.constants.get("PANIC_STYLE")?.value === "solana-1.14" ? "solana-1.14" : undefined;
+  }
+
+  /** The C statements of a Rust panic with `message` (undefined: nothing logged) at `location` ("file:line:col"). */
+  protected panicC(message: string | undefined, location: string): string[] {
+    if (this.panicStyle()) return [`sol_log(${cString(`panicked at '${message}', ${location}`)});`, `abort();`, `__builtin_unreachable();`];
+    const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(location);
+    const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [location, "0", "0"];
+    return [
+      ...(message !== undefined ? [`sol_log(${cString(message)});`] : []),
+      `sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`,
+      `__builtin_unreachable();`,
+    ];
+  }
+
+  /** `file.ts:line:column` of a node (1-based, as Rust reports a location). */
+  protected locationWithColumn(node: ts.Node): string {
+    const sf = node.getSourceFile();
+    const lc = sf.getLineAndCharacterOfPosition(node.getStart(sf));
+    return `${sf.fileName.split("/").pop()}:${lc.line + 1}:${lc.character + 1}`;
+  }
+
   /** Whether `node` is an EpochRewards value: `epochRewards()` or a local holding one. */
   protected isEpochRewards(node: ts.Expression): boolean {
     if (ts.isParenthesizedExpression(node)) return this.isEpochRewards(node.expression);
@@ -516,6 +549,7 @@ export abstract class EmitterBase {
   protected abstract expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract callChoice(choice: FunctionChoice, args: readonly ts.Expression[], node: ts.Node): Value | undefined;
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
+  protected abstract expressionStatement(e: ts.Expression, topLevel: boolean): void;
   protected abstract byteListMethod(node: ts.CallExpression, method: string, v: Ref): Value | undefined;
   protected abstract programErrorFail(name: string, node: ts.Node): string;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
