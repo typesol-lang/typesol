@@ -46,8 +46,8 @@ export const PANIC_ON_OVERFLOW = true;
 export const NATIVE_ACCOUNT_WRITES = true;
 /**
  * Phoenix's entrypoint logs nothing when an instruction fails (what it has to say is the assert line before). The
- * compiler writes a line for every failure; these make it the bare error: the PhoenixError's text, or the
- * ProgramError's name.
+ * compiler would write a line for every failure; with these it writes none for the program's errors and the built-in
+ * ProgramErrors, as Phoenix.
  */
 export const ERROR_LOG_PREFIX = null;
 export const PROGRAM_ERROR_LOG_PREFIX = null;

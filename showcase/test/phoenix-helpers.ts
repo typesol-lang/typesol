@@ -11,9 +11,8 @@
 // - the same return data;
 // - the same lamports, owner and data in every account the transaction names, the fee payer and any others asked for.
 //
-// One difference is allowed, and checked exactly: when the program itself fails, the port's log has one more line
-// just before "Program … failed", the error's name (a ProgramError's, or the PhoenixError's text). Phoenix's
-// entrypoint returns errors without logging; the compiler logs every failure (see the port's ERROR_LOG_PREFIX).
+// Nothing else may differ. Phoenix's entrypoint returns errors without logging them, and so does the port
+// (ERROR_LOG_PREFIX and PROGRAM_ERROR_LOG_PREFIX are null), so a failure's lines are compared like any others.
 //
 // The instruction builders follow program/instruction_builders (the account lists of its create_*_instruction
 // functions) and the Borsh layouts of the processors' parameter types, for all 28 tags.
@@ -63,35 +62,7 @@ export const TREE = { root: 0, size: 16, bumpIndex: 24, freeListHead: 28, nodes:
 export const asksAt = (bids: number) => OFF.bids + 32 + 64 * bids;
 export const tradersAt = (bids: number) => OFF.bids + 2 * (32 + 64 * bids);
 
-/** PhoenixError's Display texts by code: the line the port adds when it fails with one. */
-export const PHOENIX_ERRORS = [
-  "Invalid market parameters error",
-  "Invalid market authority error",
-  "Market deserialization error",
-  "Market already initialized error",
-  "Market is not initialized error",
-  "Invalid state transition error",
-  "Invalid market signer error",
-  "Invalid lot size error",
-  "Invalid tick size error",
-  "Invalid mint error",
-  "Invalid base vault error",
-  "Invalid quote vault error",
-  "Invalid base account error",
-  "Invalid quote account error",
-  "Too many events error",
-  "New order error",
-  "Reduce order error",
-  "Cancel multiple orders error",
-  "Withdraw funds error",
-  "Remove empty orders error",
-  "Trader not found error",
-  "Invalid seat status",
-  "Failed to evict trader",
-  "Non empty scratch buffer",
-  "Failed to serialize event",
-  "Failed to flush buffer",
-] as const;
+/** PhoenixError codes by name. */
 export const E = Object.fromEntries(
   [
     "InvalidMarketParameters",
