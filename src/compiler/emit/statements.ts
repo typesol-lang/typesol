@@ -1,6 +1,6 @@
 import ts from "typescript";
-import { MAX_RETURN_DATA, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
-import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type ValueType, isScalar, optionKey, scalarSize, typeName } from "../model.js";
+import { MAX_RETURN_DATA, type TypeScope, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
+import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type ValueType, isScalar, optionKey, sameType, scalarSize, typeName } from "../model.js";
 import {
   U64,
   BOOL,
@@ -865,6 +865,47 @@ export abstract class StatementEmitter extends CpiEmitter {
    * was declared with, so a block around the call that declares the same name does not change what it reads, and
    * writes to captured `let`s are seen by the enclosing function. Returns the result (undefined for no value).
    */
+  /**
+   * An `Inout<T>` parameter of a function expanded where it is called: a pointer to the caller's place (a struct,
+   * FixedArray or FixedVec), which must be writable, bound as a reference local.
+   */
+  protected inoutBinding(p: ts.ParameterDeclaration, arg: ts.Expression, calleeScope: TypeScope, fnName: string): Local {
+    const inner = (p.type as ts.TypeReferenceNode).typeArguments?.[0];
+    if (!inner || (p.type as ts.TypeReferenceNode).typeArguments!.length !== 1)
+      this.fail(p.type!, "Inout<T> takes one type: a struct, FixedArray<T, N> or FixedVec<T, N>");
+    const saved = this.scope;
+    this.scope = calleeScope;
+    let list: ReturnType<typeof this.listAnnotation>;
+    let struct: string | undefined;
+    try {
+      list = this.listAnnotation(inner);
+      const sn = list ? undefined : structNameOf(inner, calleeScope);
+      struct = sn && this.model.structs.has(sn) ? sn : undefined;
+    } finally {
+      this.scope = saved;
+    }
+    const name = (p.name as ts.Identifier).text;
+    const c2 = `l_${name}_${this.temp++}`;
+    const extra = { paths: this.pathsOf(arg), decl: p, ...(this.throughMovableList(arg) ? { movable: true } : {}) };
+    if (struct) {
+      const place = this.structPlace(arg);
+      if (!place || place.struct !== struct)
+        this.fail(arg, `${fnName}() takes ${name} as Inout<${struct}>: pass a ${struct} place of yours (a local, a field, a list element)`);
+      if (!place.writable) this.fail(arg, `${fnName}() changes ${name} (Inout), and this place is read-only`);
+      this.line(`TSS_${struct} *${c2} = ${place.ptr};`);
+      return { c: c2, type: { kind: "structRef", struct, writable: true }, mutable: false, ...extra };
+    }
+    if (!list) this.fail(inner, `Inout<${inner.getText()}>: Inout<T> takes a struct of fixed size, a FixedArray<T, N> or a FixedVec<T, N>`);
+    const r = this.ref(arg);
+    if (!r || !sameType(r.type, list)) this.fail(arg, `${fnName}() takes ${name} as Inout<${typeName(list)}>: pass a ${typeName(list)} of yours`);
+    if (!r.writable) this.fail(arg, `${fnName}() changes ${name} (Inout): ${this.readOnly(r)}`);
+    if (list.kind === "vec") {
+      this.model.localVecs.set(fixedVecC(list), list);
+      this.line(`${fixedVecC(list)} *${c2} = &${r.lv};`);
+    } else this.line(`${storageDecl(list, `(*${c2})`)} = &${r.lv};`);
+    return { c: `(*${c2})`, type: list, mutable: false, ...extra };
+  }
+
   protected expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node, into?: Ref): Value | undefined {
     const fn = c.node;
     if (this.inlining.has(fn)) this.fail(node, `${c.name} calls itself: closures cannot be recursive`);
@@ -883,6 +924,11 @@ export abstract class StatementEmitter extends CpiEmitter {
         params.set(name, { c: "", type: BOOL, mutable: false, closure: this.closureOf(arg) });
         return;
       }
+      // `Inout<T>` (a helper expanded here because it was given a closure): the caller's place, by reference.
+      if (p.type && typesolName(p.type, calleeScope.imports) === "Inout") {
+        params.set(name, this.inoutBinding(p, arg, calleeScope, c.name));
+        return;
+      }
       const passed = ts.isIdentifier(arg) && this.lookup(arg.text) ? undefined : this.accountAt(arg);
       if (p.type && passed && !resolveValueType(p.type, calleeScope)) {
         aliases.set(name, passed);
@@ -898,6 +944,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           type: { kind: "structRef", struct: place.struct, writable: place.writable },
           mutable: false,
           paths: this.pathsOf(arg),
+          ...(this.throughMovableList(arg) ? { movable: true } : {}),
           decl: p,
         });
         return;
@@ -1293,6 +1340,11 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       const fn = ts.isCallExpression(init) ? this.exportName(init.expression) : undefined;
+      if (d.type && typesolName(d.type, this.scope.imports) === "Inout")
+        this.fail(
+          d.type,
+          "Inout<T> is for helper parameters; a local needs none (const r = acct.rec refers to that place and changes it, const copy: Rec = acct.rec is a copy)",
+        );
       // The instruction's data as sent, discriminator included (a @fallback's input): a list of u8.
       if (fn === "instructionData") {
         if ((init as ts.CallExpression).arguments.length) this.fail(init, "instructionData() takes no arguments");
@@ -1355,7 +1407,16 @@ export abstract class StatementEmitter extends CpiEmitter {
           const h = /^\(\(TSS_\w+ \*\)\((\w+)->data \+ 8\)\)$/.exec(t.c)?.[1];
           if (h) loaded = { handle: h, struct: t.type.struct, mut: fn === "loadAccountMut" };
         }
-        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded, ...(t.bigCap ? { bigCap: t.bigCap } : {}) });
+        this.scopes.at(-1)!.set(name, {
+          c,
+          type: t.type,
+          mutable: false,
+          paths: [`@${c}`],
+          decl: d,
+          loaded,
+          ...(fn === "loadRaw" || fn === "loadRawMut" ? { view: true } : {}),
+          ...(t.bigCap ? { bigCap: t.bigCap } : {}),
+        });
         continue;
       }
       // A local decoded from an account's Borsh bytes: `const pool = loadBorsh<StakePool>(acct)` (a copy, as Rust's).
@@ -1463,6 +1524,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           type: { kind: "structRef", struct: target.struct, writable: target.writable },
           mutable: false,
           paths: owned ? [`@${c}`] : this.pathsOf(init),
+          ...(!owned && this.throughMovableList(init) ? { movable: true } : {}),
           decl: d,
           ...(owned ? { owned } : {}),
         });

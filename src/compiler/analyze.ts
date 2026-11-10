@@ -105,6 +105,7 @@ const TYPE_EXPORTS = new Set([
   "AccountInfo",
   "Account",
   "Mut",
+  "Inout",
   "Init",
   "Seed",
   "TokenAccount",
@@ -1705,6 +1706,7 @@ function analyzeHelper(
       paramShape(p, reporter);
       // `p_<name>__n` carries a SignerSeeds count: "__" in a name could collide with it.
       if (p.name.text.includes("__") || p.name.text.includes("$")) reporter.error(p.name, `"${p.name.text}": "__" and "$" are reserved in names`);
+      if (typesolName(p.type, scope.imports) === "Inout") return inoutParam(p, reporter, scope, structs);
       const type = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
       if (type?.kind === "optionArg")
         reporter.fail(p.type, "helpers take the struct itself: check the Option argument is not null and pass it (or its fields)");
@@ -1740,6 +1742,71 @@ function analyzeHelper(
       return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
     });
   return { name, display, params, returns, node: fn, statements: bodyStatements(fn, !returns), imports: scope.imports };
+}
+
+/**
+ * A helper parameter typed `Inout<T>`: a place of the caller's that the helper may change, passed as a pointer. T is a
+ * fixed-size struct, a FixedArray or a FixedVec, which JS passes by reference too; values (integers, Pubkeys, strings,
+ * Options) JS copies, so they are refused with what to write instead.
+ */
+function inoutParam(
+  p: ts.ParameterDeclaration & { name: ts.Identifier; type: ts.TypeNode },
+  reporter: Reporter,
+  scope: TypeScope,
+  structs: Map<string, StructDef>,
+): Helper["params"][number] {
+  const name = p.name.text;
+  const args = (p.type as ts.TypeReferenceNode).typeArguments ?? [];
+  if (args.length !== 1) reporter.fail(p.type, "Inout<T> takes one type: a struct, FixedArray<T, N> or FixedVec<T, N>");
+  const t = args[0]!;
+  const list = typesolName(t, scope.imports);
+  if (list === "FixedVec") {
+    const [e, n] = (t as ts.TypeReferenceNode).typeArguments ?? [];
+    const cap = numericLiteralArg(n);
+    let elem: FieldType | undefined = e && resolveScalarType(e, scope);
+    if (!elem && e && typesolName(e, scope.imports) === "FixedString") {
+      const fcap = numericLiteralArg((e as ts.TypeReferenceNode).typeArguments?.[0]);
+      if (fcap !== undefined && Number.isInteger(fcap) && fcap >= 1 && fcap <= MAX_STRING_CAP) elem = { kind: "fstring", cap: fcap };
+    }
+    if (!elem && e) {
+      const s = structs.get(structNameOf(e, scope) ?? "");
+      if (s && s.size !== undefined && !s.vec && !heapVecOf(s)) elem = { kind: "struct", name: s.name };
+    }
+    if (!elem || cap === undefined || !Number.isInteger(cap) || cap < 1)
+      reporter.fail(t, "Inout<FixedVec<T, N>>: T is an integer, boolean, Pubkey, enum, FixedString<N> or a struct of fixed size, N a literal of at least 1");
+    return { name, type: { kind: "vecArg", elem, cap }, inout: { kind: "vec", elem, cap }, node: p };
+  }
+  const agg = resolveArgAggregate(t, scope, structs);
+  if (agg?.kind === "structRef") return { name, type: { ...agg, writable: true }, inout: { kind: "struct", name: agg.struct }, node: p };
+  if (agg?.kind === "arrayArg") return { name, type: agg, inout: agg.array, node: p };
+  const what = t.getText();
+  const scalar = resolveScalarType(t, scope);
+  if (scalar || t.kind === ts.SyntaxKind.StringKeyword || optionInner(t, scope) || list === "FixedString")
+    reporter.fail(
+      p.type,
+      `Inout<${what}>: a ${scalar ? typeName(scalar) : what} is a value, which JS copies into a function too, so the helper cannot change the caller's. Return the new value (x = f(x)), or keep it in a struct and take Inout<ThatStruct>`,
+    );
+  if (list === "Vec" || list === "BigVec")
+    reporter.fail(
+      p.type,
+      `Inout<${what}>: a growable list's elements move when it grows; take Inout<FixedVec<T, N>> (fixed room), the struct holding a BigVec's view stays in the function that loaded it`,
+    );
+  if (list && ACCOUNT_TYPES.has(list))
+    reporter.fail(
+      p.type,
+      `Inout<${what}>: accounts are passed as they are (Mut<T> is already written in place); Inout<T> takes a struct, FixedArray or FixedVec`,
+    );
+  const s = structs.get(structNameOf(t, scope) ?? "");
+  if (s)
+    reporter.fail(
+      p.type,
+      s.bigVec
+        ? `Inout<${s.name}>: ${s.name} ends in a BigVec, whose room depends on its account; pass the account (RemainingAccount) and load it with loadRawMut in the helper, or pass the fields the helper changes`
+        : `Inout<${s.name}>: ${s.name} has variable-size fields; Inout<T> takes a struct of fixed size`,
+    );
+  if (ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) && scope.dataEnums?.has(t.typeName.text))
+    reporter.fail(p.type, `Inout<${what}>: a data enum cannot be passed to change yet; keep it in a struct and take Inout<ThatStruct>`);
+  reporter.fail(p.type, `Inout<${what}>: Inout<T> takes a struct of fixed size, a FixedArray<T, N> or a FixedVec<T, N>`);
 }
 
 /** A function's statements; an arrow's expression body is a `return expr;` (or `expr;` when it returns void). */
@@ -2429,6 +2496,11 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     );
   if (typesolName(node, imports) === "BigVec")
     reporter.fail(node, "BigVec<T> is the last field of a native account's struct (read with loadRaw), not an argument; a list argument is a Vec<T>");
+  if (typesolName(node, imports) === "Inout")
+    reporter.fail(
+      node,
+      "Inout<T> is for helper parameters (a place of the caller's the helper may change); an instruction takes struct arguments by value and accounts as Mut<T>",
+    );
   reporter.fail(
     node,
     "parameter type must be an integer, boolean, Pubkey, string, or an account type (Signer, Account<T>, Mut<T>, Init<T>, AccountInfo, TokenAccount, Mint, SystemProgram, TokenProgram, Token2022Program, TokenInterface, Program<...>)",

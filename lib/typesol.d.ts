@@ -895,6 +895,17 @@ export type Account<T> = Readonly<T> & AccountMeta;
  */
 export type Mut<T, E = never> = T & AccountMeta;
 
+/**
+ * A helper parameter the helper may change in place (Rust's `&mut T`): `function addEvent(rec: Inout<Recorder>, e:
+ * Event): void`. The helper gets the caller's place itself, not a copy, and the caller sees its writes after the call,
+ * as JS shares an object passed to a function. `T` is a fixed-size struct, a `FixedArray<T, N>` or a `FixedVec<T, N>`
+ * (whose `push`, `pop` and `clear` the caller sees too). The caller passes a writable place: a local struct or list,
+ * a `loadBorsh` local, a field of a `Mut<T>` account or of a `loadRawMut` view, a list element (`book.levels.get(i)`)
+ * or another `Inout` parameter. Two arguments of one call may not overlap. Other struct parameters stay read-only.
+ * Integers are values in JS too: return the new value, or wrap it in a struct.
+ */
+export type Inout<T> = T;
+
 /** A PDA seed: a string, a Pubkey, a Hash (its 32 bytes), an integer (at its width) or a unit enum value (one byte). */
 export type Seed = string | Pubkey | Hash | bigint | number;
 

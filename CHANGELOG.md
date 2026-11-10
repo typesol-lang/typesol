@@ -6,6 +6,22 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: `Inout<T>` helper parameters, Rust's `&mut T`. `function addEvent(rec: Inout<Recorder>, e: Event): void`
+  gets the caller's place itself (a pointer, never a copy) and may change it; the caller sees the writes after the
+  call, as JS shares an object passed to a function. `T` is a fixed-size struct, `FixedArray<T, N>` or
+  `FixedVec<T, N>` (`push` / `pop` / `clear` included); the argument is a writable place: a local struct or list, a
+  `loadBorsh` local, a field of a `Mut<T>` account or of a `loadRawMut` view, a list element, another `Inout`
+  parameter. Until now helpers could only change accounts (`Mut<T>`), so ports inlined their mutating helpers (an
+  order book's matching engine and event recorder cannot sensibly be inlined). At each call no other argument may
+  share storage with an Inout one (two elements of one list count as one place), an element of a Vec or BigVec is
+  refused when the call may move it, and a reference into the place read after the call is refused; places that may
+  be one account only at run time (two `Dup` accounts, two `loadRawMut` views under `NATIVE_ACCOUNT_WRITES`) are
+  compared before the call (2040). Integers, Pubkeys, strings and Options are refused with a hint (JS copies values
+  too: return the new one, or keep it in a struct). About the compute units of the same code written inline
+  (test/language/inout.test.ts). Writing to a read-only helper parameter now says to declare it `Inout<T>`.
+  docs/language.md (`Inout<T>` parameters), docs/stability.md (Experimental; the open edge of helpers taking a
+  writable struct that is not an account is settled). Programs that do not use it compile to the same C.
+
 ## 0.42.0 — 2026-11-09
 
 SPL Stake Pool ported in full, the native program behind most liquid staking tokens, from the tag a reproducible build

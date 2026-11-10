@@ -29,7 +29,7 @@ export abstract class AliasEmitter extends EmitterBase {
     if (ts.isParenthesizedExpression(node)) return this.pathsOf(node.expression);
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
-      if (l) return l.paths ?? (l.type.kind === "array" ? [`@${l.c}`] : undefined);
+      if (l) return l.paths ?? (l.type.kind === "array" || l.type.kind === "vec" ? [`@${l.c}`] : undefined);
       return this.accounts.has(node.text) ? [node.text] : undefined;
     }
     if (ts.isPropertyAccessExpression(node)) {
@@ -39,6 +39,9 @@ export abstract class AliasEmitter extends EmitterBase {
     }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "get")
       return this.pathsOf(node.expression.expression)?.map((p) => `${p}[]`);
+    // `big.slice(a, b)` is a view of the list's own elements: the same storage.
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "slice")
+      return this.pathsOf(node.expression.expression);
     if (ts.isConditionalExpression(node)) {
       const a = this.pathsOf(node.whenTrue);
       const b = this.pathsOf(node.whenFalse);
@@ -62,8 +65,8 @@ export abstract class AliasEmitter extends EmitterBase {
         this.fail(
           at,
           helper
-            ? `"${name}" still refers to data in ${hit}, and ${helper}() may replace it (then "${name}" would read the new value; in JS it keeps the old one). Copy the fields you need into locals first`
-            : `"${name}" still refers to ${hit}; replacing it here would change what "${name}" reads (in JS it keeps the old value). Copy the fields you need into locals first`,
+            ? `"${name}" still refers to data in ${this.showPath(hit)}, and ${helper}() may replace it (then "${name}" would read the new value; in JS it keeps the old one). Copy the fields you need into locals first`
+            : `"${name}" still refers to ${this.showPath(hit)}; replacing it here would change what "${name}" reads (in JS it keeps the old value). Copy the fields you need into locals first`,
         );
       }
   }
@@ -112,6 +115,71 @@ export abstract class AliasEmitter extends EmitterBase {
     visit(scope);
     return found;
   }
+
+  /**
+   * A helper given a place to change (`Inout<T>`) may replace what is stored inside it (`rec.inner = { … }`,
+   * `rec.items.pop()`), so a reference into it that is read after the call would read the new value where JS keeps the
+   * old object. References to the place itself (or to what holds it) see the same object as JS does, so only those
+   * strictly inside it are refused.
+   */
+  protected assertNothingInside(place: string[], at: ts.Node, helper: string, arg: string) {
+    for (const scope of this.scopes)
+      for (const [name, l] of scope) {
+        if (!l.paths || !l.decl) continue;
+        const hit = place.find((r) => l.paths!.some((p) => p.startsWith(`${r}.`) || p.startsWith(`${r}[]`)));
+        if (!hit || !this.usedAfter(l.decl, at)) continue;
+        this.fail(
+          at,
+          `"${name}" refers to data inside ${arg}, which ${helper}() may change in place (Inout); if it replaced that data, "${name}" would read the new value where JS keeps the old one. Copy the fields you need into locals before the call, or read them through ${arg} after it`,
+        );
+      }
+  }
+
+  /** A storage path as the source names it: `@<C local>.x` becomes `<its name>.x` (`@p_rec.items[]` → `rec.items[]`). */
+  protected showPath(path: string): string {
+    if (!path.startsWith("@")) return path;
+    const c = /^@(\w+)/.exec(path)?.[1];
+    for (const s of [...this.scopes].reverse().concat(this.args))
+      for (const [name, l] of s) if (c && (l.c === c || l.c === `(*${c})`)) return name + path.slice(c.length + 1);
+    return path;
+  }
+
+  /** Whether two places share storage: the same path, or one inside the other. */
+  protected placesOverlap(a: string[], b: string[]): boolean {
+    const inside = (x: string, y: string) => x === y || x.startsWith(`${y}.`) || x.startsWith(`${y}[]`);
+    return a.some((x) => b.some((y) => inside(x, y) || inside(y, x)));
+  }
+
+  /**
+   * Whether a place is reached through an element of a list whose elements can move: a growable Vec of an account (a
+   * push or pop of it, or of a Vec stored before it, moves them), a heap Vec (`@layout borsh`) or a BigVec (`retain`
+   * shifts them). FixedVec and FixedArray elements stay where they are.
+   */
+  protected throughMovableList(node: ts.Expression): boolean {
+    for (let n: ts.Expression = node; ;) {
+      if (ts.isParenthesizedExpression(n)) n = n.expression;
+      else if (ts.isConditionalExpression(n)) return this.throughMovableList(n.whenTrue) || this.throughMovableList(n.whenFalse);
+      else if (ts.isPropertyAccessExpression(n)) n = n.expression;
+      else if (ts.isNonNullExpression(n)) n = n.expression;
+      else if (
+        ts.isCallExpression(n) &&
+        ts.isPropertyAccessExpression(n.expression) &&
+        (n.expression.name.text === "get" || n.expression.name.text === "slice")
+      ) {
+        const base: ts.Expression = n.expression.expression;
+        // A list reached through another call (`a.get(i).get(j)`, `big.slice(s, e).get(i)`) is judged by the list under
+        // it, walked next; it is not probed itself (a probed slice would keep a view whose lines were dropped).
+        if (!ts.isCallExpression(base)) {
+          const t = this.peekType(base);
+          if (t?.kind === "vec" && t.cap === undefined) return true;
+        }
+        n = base;
+      } else if (ts.isIdentifier(n)) return !!this.lookup(n.text)?.movable;
+      else return false;
+    }
+  }
+
+  protected abstract peekType(node: ts.Expression): FieldType | undefined;
 
   /** Whether a place goes through a Vec element (`v.get(i).x`, `v.get(i)`). */
   protected writesThroughVec(node: ts.Expression): boolean {

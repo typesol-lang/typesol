@@ -280,6 +280,11 @@ export interface HelperParam {
   /** `{ kind: "account" }` for account parameters (then `account` says which kind). */
   type: ValueType;
   account?: ParamKind;
+  /**
+   * `Inout<T>`: the caller's place itself, which the helper may change (a pointer, never a copy). `type` is then a
+   * writable structRef, an arrayArg, or (for a FixedVec) a vecArg standing in for the place; code reads `inout` first.
+   */
+  inout?: FieldType & { kind: "struct" | "array" | "vec" };
   node: ts.ParameterDeclaration;
 }
 

@@ -138,6 +138,10 @@ export interface Local {
   /** For struct / data-enum references: the storage paths they alias (e.g. "book.asks[]"), and the declaration. */
   paths?: string[];
   decl?: ts.VariableDeclaration | ts.ParameterDeclaration;
+  /** A struct reference into an element of a list whose elements can move (a growable Vec, a heap Vec, a BigVec). */
+  movable?: boolean;
+  /** A `loadRaw` / `loadRawMut` view (under NATIVE_ACCOUNT_WRITES two views may share bytes). */
+  view?: boolean;
   /** A local closure (`const f = (…) => …` reading the enclosing function's variables), expanded where it is called. */
   closure?: Closure;
   /**
@@ -356,7 +360,9 @@ export function helperSignature(h: Helper): string {
       if (p.account.kind === "account" && p.account.struct.layout === "borsh") params.push(`TSS_${p.account.struct.name} *d_${p.name}`);
       // A writable account with a growable Vec: its length at instruction entry, for push / pop / clear.
       if (p.account.kind === "account" && p.account.mut && p.account.struct.vec) params.push(`uint64_t entry_${p.name}`);
-    } else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
+    } else if (p.inout?.kind === "vec")
+      params.push(`${fixedVecC(p.inout)} *p_${p.name}`); // the caller's list itself (Inout<FixedVec<T, N>>)
+    else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
     // The remaining accounts: the index of the first one among the instruction's accounts.
     else if (p.type.kind === "remaining") params.push(`uint64_t p_${p.name}`);
     else if (p.type.kind === "pubkey")

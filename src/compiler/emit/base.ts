@@ -12,7 +12,19 @@ import {
   type ValueType,
   isScalar,
 } from "../model.js";
-import { type Value, type Ref, type Local, type Closure, type FunctionChoice, isStable, cString, valueC, type EmitOptions, type CpiProgram } from "./shared.js";
+import {
+  type Value,
+  type Ref,
+  type Local,
+  type Closure,
+  type FunctionChoice,
+  isStable,
+  cString,
+  valueC,
+  fixedVecC,
+  type EmitOptions,
+  type CpiProgram,
+} from "./shared.js";
 
 /**
  * State of one function being lowered, and the primitives every layer uses: emitting lines, temporaries,
@@ -119,7 +131,19 @@ export abstract class EmitterBase {
       this.helper = target;
       for (const p of target.params) {
         if (p.account) this.accounts.set(p.name, { name: p.name, index: -1, kind: p.account, node: p.node, constraints: { hasOne: [] } });
-        else if (p.type.kind === "arrayArg") this.args.set(p.name, { c: `(*p_${p.name})`, type: p.type.array, mutable: false, readonly: true });
+        else if (p.inout) {
+          // Inout<T>: the caller's place, read and written through its pointer. Its paths let the aliasing rules see
+          // references into it (`const e = rec.items.get(i)` before `rec.items.pop()`).
+          const paths = [`@p_${p.name}`];
+          if (p.inout.kind === "struct")
+            this.args.set(p.name, { c: `p_${p.name}`, type: { kind: "structRef", struct: p.inout.name, writable: true }, mutable: false, paths, decl: p.node });
+          else {
+            if (p.inout.kind === "vec") this.model.localVecs.set(fixedVecC(p.inout), p.inout);
+            const elem = p.inout.elem;
+            if (elem.kind === "fstring") this.model.fstrings.add(elem.cap);
+            this.args.set(p.name, { c: `(*p_${p.name})`, type: p.inout as Local["type"], mutable: false, paths, decl: p.node });
+          }
+        } else if (p.type.kind === "arrayArg") this.args.set(p.name, { c: `(*p_${p.name})`, type: p.type.array, mutable: false, readonly: true });
         else if (p.type.kind === "dataEnumArg")
           this.args.set(p.name, { c: `p_${p.name}`, type: { kind: "enumRef", name: p.type.name, writable: false }, mutable: false });
         else this.args.set(p.name, { c: `p_${p.name}`, type: p.type, mutable: false });
