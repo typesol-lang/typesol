@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- Faster: a read-only struct, FixedArray or data-enum argument of a helper that also takes accounts is copied at the
+  call only when it may be account data (a field of a view or of a loaded account), which the helper's writes could
+  change. A struct parameter of a helper that itself takes accounts, an instruction's struct argument and return data
+  are now passed in place like the caller's other owned structs (locals, helper results): they arrived as copies and
+  no account write reaches them. Phoenix's book helpers pass their MarketShape on this way, and took it as `Inout<T>`
+  only to avoid the copy (test/language/phx-costs.test.ts: 97.6 → 43.3 CU per call of a helper passing it on,
+  test/language/struct-args.test.ts). Changes the generated C of SPL Stake Pool, Marginfi and Raydium CLMM (a copy
+  fewer at such calls), whose tests pass unchanged.
 - Faster: the owner check of native account views (`loadRaw` / `loadRawMut`, `loadRawAt`, `rawArrayAt`, `rbTreeAt` and
   their Mut forms) remembers the last account it found this program's, until a CPI or an owner write (`assignOwner`,
   `closeRaw`, `close`) forgets it: the same account passes again with a pointer compare instead of a 32-byte one.

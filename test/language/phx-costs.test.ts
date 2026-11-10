@@ -100,6 +100,9 @@ describe("Phoenix's hot paths", () => {
     // compare (ts_owned). Before: 21.0, 35.0, 54.4 and 97.6 CU per pass.
     expect(views[0]).toBeLessThan(17);
     expect(views[1]).toBeLessThan(25);
+    // A helper passing its struct parameter on to another helper taking accounts: in place, not copied (97.6 CU per
+    // pass before, against 54.4 for the direct call).
+    expect(views[3] - views[2]).toBeLessThan(5);
     const ev0 = (await run(30, 0, 0, 0, 0)).cu;
     const evB = await run(30, 0, 0, 0, 100);
     const evL = await run(31, 0, 0, 0, 100);

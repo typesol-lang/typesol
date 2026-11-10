@@ -1549,7 +1549,10 @@ export abstract class StatementEmitter extends CpiEmitter {
           for (const l of this.validation(`${c}__v`, { kind: "struct", name: S.name }, "", bad)) this.line(l.trim());
           this.line(`TSS_${S.name} *${c} = &${c}__v;`);
         }
-        this.scopes.at(-1)!.set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d });
+        // A copy of the return data: never account data (owned).
+        this.scopes
+          .at(-1)!
+          .set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
         continue;
       }
       // A local list declared with its type: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, … }])`,
