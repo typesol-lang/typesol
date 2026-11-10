@@ -3,7 +3,9 @@
 //
 // Taking orders off the books (state/markets/fifo.rs): reduce_order_inner, which reduces or removes one resting
 // order, records a Reduce (or ExpiredOrder) event, unlocks what the order held and optionally claims it, and the
-// cancels built on it: cancel_multiple_orders_by_id_inner, cancel_all_orders_inner and cancel_up_to_inner.
+// cancels built on it: cancel_multiple_orders_by_id_inner, cancel_all_orders_inner and cancel_up_to_inner. The
+// matching engine (matching.ts) takes orders off through the same reduce_order_inner: the expired orders it meets
+// (match_order, check_for_cross) and its own orders a self trade cancels or decrements.
 //
 // Phoenix first collects the ids to cancel in a heap Vec (FIFOOrderId, 16 bytes, grown by doubling from 4 under
 // solana-program's bump allocator, which never frees), then cancels them one by one, each looked up again by its id.
@@ -149,11 +151,49 @@ function recordReduce(
 }
 
 /**
+ * recordEvent of an ExpiredOrder event { index, maker_id, order_sequence_number, price_in_ticks, base_lots_removed }.
+ * A function of its own, so that reduce_order_inner's frequent path (a Reduce for each order reduced or cancelled)
+ * stays lean: inlined, this rare one cost every cancelled order about 5 compute units more.
+ * @noinline
+ */
+function recordExpired(
+  rec: Inout<Recorder>,
+  logData: Inout<FixedVec<u8, 1280>>,
+  rest: RemainingAccounts,
+  maker: Pubkey,
+  seq: u64,
+  price: u64,
+  removed: u64,
+): void {
+  recordEvent(rec, logData, rest, {
+    kind: "ExpiredOrder",
+    index: u16(rec.eventsAdded),
+    maker_id: maker,
+    order_sequence_number: seq,
+    price_in_ticks: price,
+    base_lots_removed: removed,
+  });
+}
+
+/** What reduce_order_inner does with what it unlocks, and which event it records (its two flags, as used). */
+export type ReduceMode = u8;
+/** Leave the unlocked lots free on the market (`claim_funds` false): the WithFreeFunds forms, a self trade. */
+export const KEEP_FUNDS: u8 = 0n;
+/** Claim them back out of the free funds into `out` (`claim_funds`): the plain reduce and cancel forms. */
+export const CLAIM_FUNDS: u8 = 1n;
+/**
+ * An expired order the matching engine meets (`order_is_expired`, no claim): removed whole (callers pass no size,
+ * which comes to the same), an ExpiredOrder event naming its maker instead of a Reduce.
+ */
+export const EXPIRED: u8 = 2n;
+
+/**
  * reduce_order_inner: the order (price, seq) on the bid or ask book, if it is there, reduced by `size` (all of it
  * when `hasSize` is false or the size covers it, which removes it from the book), its Reduce event recorded, what it
- * held unlocked into the trader's free funds and, with `claim`, claimed back out of them into `out`. An order that is
- * not on the book releases nothing; one of another trader is None (false). `expired` is the matching engine's case:
- * the whole order is removed and an ExpiredOrder event names its maker.
+ * held unlocked into the trader's free funds and, with CLAIM_FUNDS, claimed back out of them into `out`. An order that
+ * is not on the book releases nothing; one of another trader is None (false). The reductions and cancels call it,
+ * and the matching engine for the expired orders it meets (EXPIRED) and for the taker's own order in a self trade.
+ * The two flags are one ReduceMode argument: SBF passes five arguments in registers, the rest on the stack.
  */
 export function reduceOrderInner(
   m: Inout<MarketShape>,
@@ -166,8 +206,7 @@ export function reduceOrderInner(
   bid: boolean,
   hasSize: boolean,
   size: u64,
-  expired: boolean,
-  claim: boolean,
+  mode: ReduceMode,
   out: Inout<Released>,
 ): boolean {
   out.quote = 0n;
@@ -178,9 +217,8 @@ export function reduceOrderInner(
   const order = book.get(id);
   if (order === null) return true;
   const resting = order.num_base_lots;
-  let removed = hasSize && size < resting ? size : resting;
+  const removed = hasSize && size < resting ? size : resting;
   if (order.trader_index !== u64(traderIndex)) return false;
-  if (expired) removed = resting;
   let remaining = 0n;
   if (removed === resting) book.remove(id);
   else {
@@ -188,16 +226,8 @@ export function reduceOrderInner(
     order.num_base_lots = remaining;
   }
   const traders = rbTreeMutAt<Pubkey, TraderState>(market, m.tradersAt, m.seats);
-  if (expired) {
-    recordEvent(rec, logData, rest, {
-      kind: "ExpiredOrder",
-      index: u16(rec.eventsAdded),
-      maker_id: traders.nodeAt(traderIndex).key,
-      order_sequence_number: seq,
-      price_in_ticks: price,
-      base_lots_removed: removed,
-    });
-  } else recordReduce(rec, logData, rest, seq, price, removed, remaining);
+  if (mode === EXPIRED) recordExpired(rec, logData, rest, traders.nodeAt(traderIndex).key, seq, price, removed);
+  else recordReduce(rec, logData, rest, seq, price, removed, remaining);
 
   // Unlock: a bid held quote lots, an ask base lots.
   const state = traders.nodeAt(traderIndex).value;
@@ -212,8 +242,10 @@ export function reduceOrderInner(
     state.base_lots_locked = subBaseLots(state.base_lots_locked, removed);
     state.base_lots_free = addBaseLots(state.base_lots_free, removed);
   }
-  // claim_funds_inner (no eviction): at most what is free.
-  if (claim) {
+  // claim_funds_inner (no eviction): at most what is free. Its None for a market whose sequence number is 0 cannot
+  // happen here: dispatchLoadedMarket refuses such a market before any reduce or cancel, and placeOrder before
+  // matching.
+  if (mode === CLAIM_FUNDS) {
     const quoteFree = state.quote_lots_free;
     const baseFree = state.base_lots_free;
     out.quote = quoteLots < quoteFree ? quoteLots : quoteFree;
@@ -236,11 +268,11 @@ function cancelOne(
   traderIndex: u32,
   price: u64,
   seq: u64,
-  claim: boolean,
+  mode: ReduceMode,
   total: Inout<Released>,
 ): void {
   const one: Released = { quote: 0n, base: 0n };
-  if (reduceOrderInner(m, rest, rec, logData, traderIndex, price, seq, isBidSequence(seq), false, 0n, false, claim, one)) {
+  if (reduceOrderInner(m, rest, rec, logData, traderIndex, price, seq, isBidSequence(seq), false, 0n, mode, one)) {
     total.quote = addQuoteLots(total.quote, one.quote);
     total.base = addBaseLots(total.base, one.base);
   }
@@ -266,7 +298,7 @@ function cancelCollected(
   ids: FixedVec<u16, 512>,
   from: u64,
   to: u64,
-  claim: boolean,
+  mode: ReduceMode,
   total: Inout<Released>,
 ): void {
   const book = rbTreeAt<FIFOOrderId, FIFORestingOrder>(rest.get(2n), bid ? BIDS_OFFSET : m.asksAt, bid ? m.bids : m.asks, orderCmp);
@@ -274,7 +306,7 @@ function cancelCollected(
     const node = book.nodeAt(u32(ids.get(i)));
     const price = node.key.price_in_ticks;
     const seq = node.key.order_sequence_number;
-    cancelOne(m, rest, rec, logData, traderIndex, price, seq, claim, total);
+    cancelOne(m, rest, rec, logData, traderIndex, price, seq, mode, total);
   }
 }
 
@@ -289,7 +321,7 @@ export function cancelAllInner(
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
   traderIndex: u32,
-  claim: boolean,
+  mode: ReduceMode,
   total: Inout<Released>,
 ): void {
   const market = rest.get(2n);
@@ -300,8 +332,8 @@ export function cancelAllInner(
   const bidCount = ids.length;
   const asks = rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, m.asksAt, m.asks, orderCmp);
   for (const e of asks) if (e.value.trader_index === owner && e.value.num_base_lots > 0n) collect(ids, e.index);
-  cancelCollected(m, rest, rec, logData, traderIndex, true, ids, 0n, bidCount, claim, total);
-  cancelCollected(m, rest, rec, logData, traderIndex, false, ids, bidCount, ids.length, claim, total);
+  cancelCollected(m, rest, rec, logData, traderIndex, true, ids, 0n, bidCount, mode, total);
+  cancelCollected(m, rest, rec, logData, traderIndex, false, ids, bidCount, ids.length, mode, total);
 }
 
 /** CancelUpToParams, decoded. */
@@ -328,7 +360,7 @@ export function cancelUpToInner(
   logData: Inout<FixedVec<u8, 1280>>,
   traderIndex: u32,
   params: CancelUpTo,
-  claim: boolean,
+  mode: ReduceMode,
   total: Inout<Released>,
 ): void {
   const ids: FixedVec<u16, 512> = fixedVec([]);
@@ -352,7 +384,7 @@ export function cancelUpToInner(
       if (ids.length === count) break;
     }
   }
-  cancelCollected(m, rest, rec, logData, traderIndex, bid, ids, 0n, ids.length, claim, total);
+  cancelCollected(m, rest, rec, logData, traderIndex, bid, ids, 0n, ids.length, mode, total);
 }
 
 /**
@@ -368,14 +400,14 @@ export function cancelByIdInner(
   data: InstructionBytes,
   count: u64,
   traderIndex: u32,
-  claim: boolean,
+  mode: ReduceMode,
   total: Inout<Released>,
 ): void {
   for (let i = 0n; i < count; i++) {
     const at = 5n + 17n * i;
     const seq = data.readU64(at + 9n);
     if ((data.readU8(at) === 0n) !== isBidSequence(seq)) continue;
-    cancelOne(m, rest, rec, logData, traderIndex, data.readU64(at + 1n), seq, claim, total);
+    cancelOne(m, rest, rec, logData, traderIndex, data.readU64(at + 1n), seq, mode, total);
   }
 }
 

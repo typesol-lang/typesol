@@ -14,8 +14,14 @@
 // in every market InitializeMarket accepts (the tick size is a multiple of it), so their "Expected clean division"
 // warning is never logged.
 //
-// Every event goes through the recorder (recordEvent), which sends a batch in a Log self-CPI whenever the next event
-// would not fit: a long match flushes in the middle, before the token transfers, as Phoenix's does.
+// Orders leave the book through book.ts's reduceOrderInner (reduce_order_inner), shared with the reductions and
+// cancels: an expired order met while matching or checking for a cross (an ExpiredOrder event), and the taker's own
+// order a self trade cancels (CancelProvide) or decrements (DecrementTake). None of them claims funds. The market's
+// shape (MarketShape: tree capacities and offsets, tick size, base lots per base unit) is read on those paths only.
+//
+// Every event goes through the recorder (recordEvent; book.ts appends a Reduce to the batch itself, with the same
+// flush), which sends a batch in a Log self-CPI whenever the next event would not fit: a long match flushes in the
+// middle, before the token transfers, as Phoenix's does.
 import {
   type FixedVec,
   type Inout,
@@ -46,6 +52,7 @@ import {
   tradersOffset,
 } from "./state.js";
 import { type Recorder, recordEvent } from "./recorder.js";
+import { type Released, EXPIRED, KEEP_FUNDS, marketShape, reduceOrderInner } from "./book.js";
 import { U64_MAX, addBaseLots, addQuoteLots, emptyTraderState, orderCmp, subBaseLots, subQuoteLots } from "./util.js";
 
 /** Side, as OrderPacket carries it. */
@@ -104,13 +111,6 @@ export interface Response {
   placed: boolean;
   placed_price_in_ticks: u64;
   placed_order_sequence_number: u64;
-}
-
-/** What reduce_order_inner returns: None (`ok` false), or the lots a claim released (MatchingEngineResponse::new_withdraw). */
-export interface Released {
-  ok: boolean;
-  num_quote_lots_out: u64;
-  num_base_lots_out: u64;
 }
 
 /** InflightOrder. The two Options of the original end as `unwrap_or(0)` in the resting order: 0 is None. */
@@ -201,86 +201,38 @@ export function bookOffset(side: u8, bids: u64): u64 {
   return side === BID ? BIDS_OFFSET : asksOffset(bids);
 }
 
-// ---- Reducing an order (reduce_order_inner, claim_funds_inner) ---------------------------------------------------
+// ---- Taking orders off (book.ts's reduce_order_inner) ---------------------------------------------------------------
 
-/**
- * reduce_order_inner: take up to `size` lots (all of them without `hasSize`, or when the order expired) off order
- * (price, seq) of `side`, which must be `traderIndex`'s (None otherwise); a missing order is Some with nothing done.
- * Records an ExpiredOrder (with the maker's key) for an expired order, else a Reduce; unlocks the lots, and with
- * `claimFunds` claims them (claim_funds_inner) into the result.
- */
-export function reduceOrderInner(
+/** An expired order met while matching, removed whole (reduce_order_inner, EXPIRED); the market's shape is read here. */
+function removeExpired(
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
-  traderIndex: u64,
+  traderIndex: u32,
   price: u64,
   seq: u64,
-  side: u8,
+  bid: boolean,
+): boolean {
+  const m = marketShape(rest);
+  const none: Released = { quote: 0n, base: 0n };
+  return reduceOrderInner(m, rest, rec, logData, traderIndex, price, seq, bid, false, 0n, EXPIRED, none);
+}
+
+/** The taker's own resting order in a self trade: cancelled, or reduced by `size`, without claiming its funds. */
+function reduceOwn(
+  rest: RemainingAccounts,
+  rec: Inout<Recorder>,
+  logData: Inout<FixedVec<u8, 1280>>,
+  traderIndex: u32,
+  price: u64,
+  seq: u64,
+  bid: boolean,
   hasSize: boolean,
   size: u64,
-  orderIsExpired: boolean,
-  claimFunds: boolean,
-): Released {
-  const market = rest.get(2n);
-  const h = loadRaw<MarketHeader>(market);
-  const n = h.market_size_params.bids_size;
-  const traders = rbTreeMutAt<Pubkey, TraderState>(market, tradersOffset(n), h.market_size_params.num_seats);
-  const makerId = traders.nodeAt(u32(traderIndex)).key;
-  const book = rbTreeMutAt<FIFOOrderId, FIFORestingOrder>(market, bookOffset(side, n), n, orderCmp);
-  const id: FIFOOrderId = { price_in_ticks: price, order_sequence_number: seq };
-  const order = book.get(id);
-  if (order === null) return { ok: true, num_quote_lots_out: 0n, num_base_lots_out: 0n };
-  const lots = order.num_base_lots;
-  let removed = hasSize && size < lots ? size : lots;
-  if (order.trader_index !== traderIndex) return { ok: false, num_quote_lots_out: 0n, num_base_lots_out: 0n };
-  if (orderIsExpired) removed = lots;
-  let remaining = 0n;
-  if (removed === lots) book.remove(id);
-  else {
-    order.num_base_lots = subBaseLots(lots, removed);
-    remaining = order.num_base_lots;
-  }
-  if (orderIsExpired) {
-    recordEvent(rec, logData, rest, {
-      kind: "ExpiredOrder",
-      index: u16(rec.eventsAdded),
-      maker_id: makerId,
-      order_sequence_number: seq,
-      price_in_ticks: price,
-      base_lots_removed: removed,
-    });
-  } else {
-    recordEvent(rec, logData, rest, {
-      kind: "Reduce",
-      index: u16(rec.eventsAdded),
-      order_sequence_number: seq,
-      price_in_ticks: price,
-      base_lots_removed: removed,
-      base_lots_remaining: remaining,
-    });
-  }
-  const fifo = loadRawMutAt<FifoMarketPrefix>(market, FIFO_MARKET_OFFSET);
-  const state = traders.nodeAt(u32(traderIndex)).value;
-  let quoteLots = 0n;
-  let baseLots = 0n;
-  if (side === BID) {
-    quoteLots = quoteLotsFor(price, fifo.tick_size_in_quote_lots_per_base_unit, removed, fifo.base_lots_per_base_unit);
-    state.quote_lots_locked = subQuoteLots(state.quote_lots_locked, quoteLots);
-    state.quote_lots_free = addQuoteLots(state.quote_lots_free, quoteLots);
-  } else {
-    baseLots = removed;
-    state.base_lots_locked = subBaseLots(state.base_lots_locked, baseLots);
-    state.base_lots_free = addBaseLots(state.base_lots_free, baseLots);
-  }
-  if (!claimFunds) return { ok: true, num_quote_lots_out: 0n, num_base_lots_out: 0n };
-  // claim_funds_inner(trader, Some(quote), Some(base), false).
-  if (fifo.order_sequence_number === 0n) return { ok: false, num_quote_lots_out: 0n, num_base_lots_out: 0n };
-  const quoteClaimed = quoteLots < state.quote_lots_free ? quoteLots : state.quote_lots_free;
-  const baseClaimed = baseLots < state.base_lots_free ? baseLots : state.base_lots_free;
-  state.quote_lots_free = subQuoteLots(state.quote_lots_free, quoteClaimed);
-  state.base_lots_free = subBaseLots(state.base_lots_free, baseClaimed);
-  return { ok: true, num_quote_lots_out: quoteClaimed, num_base_lots_out: baseClaimed };
+): boolean {
+  const m = marketShape(rest);
+  const none: Released = { quote: 0n, base: 0n };
+  return reduceOrderInner(m, rest, rec, logData, traderIndex, price, seq, bid, hasSize, size, KEEP_FUNDS, none);
 }
 
 // ---- Crossing and eviction -------------------------------------------------------------------------------------------
@@ -317,7 +269,7 @@ function checkForCross(
     const seq = best.key.order_sequence_number;
     if (best.value.num_base_lots > 0n) {
       if (!isExpired(best.value, slot, unixTimestamp)) return { crosses: true, price_in_ticks: price };
-      if (!reduceOrderInner(rest, rec, logData, best.value.trader_index & 0xffffffffn, price, seq, opposite, false, 0n, true, false).ok) break;
+      if (!removeExpired(rest, rec, logData, u32(best.value.trader_index & 0xffffffffn), price, seq, opposite === BID)) break;
     } else {
       log("WARNING: Empty order found in check_for_cross");
       book.remove({ price_in_ticks: price, order_sequence_number: seq });
@@ -397,6 +349,7 @@ function matchOrder(
   const baseLotsPerBaseUnit = fifo.base_lots_per_base_unit;
   const book = rbTreeMutAt<FIFOOrderId, FIFORestingOrder>(market, offset, n, orderCmp);
   const traders = rbTreeMutAt<Pubkey, TraderState>(market, tradersOffset(n), h.market_size_params.num_seats);
+  const bidBook = opposite === BID;
   let total = 0n;
   while (o.base_lot_budget > 0n && o.adjusted_quote_lot_budget > 0n && o.match_limit > 0n && !o.should_terminate) {
     const best = book.min();
@@ -416,7 +369,7 @@ function matchOrder(
     }
     const traderIndex = best.value.trader_index;
     if (isExpired(best.value, slot, unixTimestamp)) {
-      if (!reduceOrderInner(rest, rec, logData, traderIndex & 0xffffffffn, price, seq, opposite, false, 0n, true, false).ok) return false;
+      if (!removeExpired(rest, rec, logData, u32(traderIndex & 0xffffffffn), price, seq, bidBook)) return false;
       o.match_limit -= 1n;
       continue;
     }
@@ -424,14 +377,14 @@ function matchOrder(
     if (traderIndex === currentTraderIndex) {
       if (o.self_trade_behavior === ABORT) return false;
       if (o.self_trade_behavior === CANCEL_PROVIDE) {
-        if (!reduceOrderInner(rest, rec, logData, currentTraderIndex, price, seq, opposite, false, 0n, false, false).ok) return false;
+        if (!reduceOwn(rest, rec, logData, u32(currentTraderIndex), price, seq, bidBook, false, 0n)) return false;
         o.match_limit -= 1n;
       } else {
         // DecrementTake: the resting order and the budgets go down by what would have matched.
         let removed = o.adjusted_quote_lot_budget / ticksToPrice(tickSize, price);
         if (o.base_lot_budget < removed) removed = o.base_lot_budget;
         if (quoted < removed) removed = quoted;
-        if (!reduceOrderInner(rest, rec, logData, currentTraderIndex, price, seq, opposite, true, removed, false, false).ok) return false;
+        if (!reduceOwn(rest, rec, logData, u32(currentTraderIndex), price, seq, bidBook, true, removed)) return false;
         o.base_lot_budget = o.base_lot_budget > removed ? o.base_lot_budget - removed : 0n;
         const adjusted = adjustedQuoteLots(ticksToPrice(tickSize, price), removed);
         o.adjusted_quote_lot_budget = o.adjusted_quote_lot_budget > adjusted ? o.adjusted_quote_lot_budget - adjusted : 0n;

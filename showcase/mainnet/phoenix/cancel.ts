@@ -22,6 +22,8 @@ import { processWithdraw } from "./funds.js";
 import {
   type CancelUpTo,
   type Released,
+  CLAIM_FUNDS,
+  KEEP_FUNDS,
   cancelAllInner,
   cancelByIdInner,
   cancelUpToInner,
@@ -101,8 +103,7 @@ export function reduceOrder(
     data.readU8(1n) === 0n,
     true,
     data.readU64(18n),
-    false,
-    withdraw,
+    withdraw ? CLAIM_FUNDS : KEEP_FUNDS,
     released,
   );
   require(ok, PhoenixError.ReduceOrderError);
@@ -119,7 +120,7 @@ export function cancelAllOrders(rest: RemainingAccounts, rec: Inout<Recorder>, l
   // A trader with no state on the market cancels nothing (unwrap_or_default).
   const m = marketShape(rest);
   const traderIndex = traderIndexOf(m, rest, rest.get(3n).key);
-  if (traderIndex !== 0n) cancelAllInner(m, rest, rec, logData, traderIndex, withdraw, released);
+  if (traderIndex !== 0n) cancelAllInner(m, rest, rec, logData, traderIndex, withdraw ? CLAIM_FUNDS : KEEP_FUNDS, released);
   logComputeUnits();
   finish(rest, withdraw, TRADER_VAULTS, released);
 }
@@ -170,7 +171,7 @@ function cancelOrders(
   const released: Released = { quote: 0n, base: 0n };
   const m = marketShape(rest);
   const traderIndex = traderIndexOf(m, rest, rest.get(traderAt).key);
-  if (traderIndex !== 0n) cancelUpToInner(m, rest, rec, logData, traderIndex, params, withdraw, released);
+  if (traderIndex !== 0n) cancelUpToInner(m, rest, rec, logData, traderIndex, params, withdraw ? CLAIM_FUNDS : KEEP_FUNDS, released);
   logComputeUnits();
   finish(rest, withdraw, vaults, released);
 }
@@ -208,7 +209,7 @@ export function cancelMultipleOrdersById(
   const released: Released = { quote: 0n, base: 0n };
   const m = marketShape(rest);
   const traderIndex = traderIndexOf(m, rest, rest.get(3n).key);
-  if (traderIndex !== 0n) cancelByIdInner(m, rest, rec, logData, data, count, traderIndex, withdraw, released);
+  if (traderIndex !== 0n) cancelByIdInner(m, rest, rec, logData, data, count, traderIndex, withdraw ? CLAIM_FUNDS : KEEP_FUNDS, released);
   logComputeUnits();
   finish(rest, withdraw, TRADER_VAULTS, released);
 }
