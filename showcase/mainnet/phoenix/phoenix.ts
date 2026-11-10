@@ -122,36 +122,36 @@ export function process(): void {
       break;
     case 4n:
       log("PhoenixInstruction::ReduceOrder");
-      reduceOrder();
+      reduceOrder(rest, data, rec, logData, true);
       break;
     case 5n:
       log("PhoenixInstruction::ReduceOrderWithFreeFunds");
-      reduceOrder();
+      reduceOrder(rest, data, rec, logData, false);
       break;
     case 6n:
       log("PhoenixInstruction::CancelAllOrders");
-      cancelAllOrders();
+      cancelAllOrders(rest, rec, logData, true);
       break;
     case 7n:
       log("PhoenixInstruction::CancelAllOrdersWithFreeFunds");
-      cancelAllOrders();
+      cancelAllOrders(rest, rec, logData, false);
       break;
     case 8n:
       // (Phoenix logs CancelUpTo under this name.)
       log("PhoenixInstruction::CancelMultipleOrders");
-      cancelUpTo();
+      cancelUpTo(rest, data, rec, logData, true);
       break;
     case 9n:
       log("PhoenixInstruction::CancelUpToWithFreeFunds");
-      cancelUpTo();
+      cancelUpTo(rest, data, rec, logData, false);
       break;
     case 10n:
       log("PhoenixInstruction::CancelMultipleOrdersById");
-      cancelMultipleOrdersById();
+      cancelMultipleOrdersById(rest, data, rec, logData, true);
       break;
     case 11n:
       log("PhoenixInstruction::CancelMultipleOrdersByIdWithFreeFunds");
-      cancelMultipleOrdersById();
+      cancelMultipleOrdersById(rest, data, rec, logData, false);
       break;
     case 12n:
       log("PhoenixInstruction::WithdrawFunds");
@@ -163,11 +163,11 @@ export function process(): void {
       break;
     case 107n:
       log("PhoenixInstruction::ForceCancelOrders");
-      forceCancelOrders();
+      forceCancelOrders(rest, data, rec, logData);
       break;
     case 106n:
       log("PhoenixInstruction::EvictSeat");
-      evictSeat();
+      evictSeat(rest);
       break;
     case 101n:
       log("PhoenixInstruction::ClaimAuthority");
