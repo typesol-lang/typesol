@@ -41,19 +41,22 @@ import { LOG_AUTHORITY_BUMP, LOG_AUTHORITY_ID, PHOENIX_ID } from "./util.js";
 const MAX_INNER_INSTRUCTION_SIZE = 1280n;
 /** The bytes of the Log instruction's one AccountMeta (LOG_IX_ACCOUNT_META_SIZE). */
 const LOG_IX_ACCOUNT_META_SIZE = 34n;
-/** The room the batch's data has: MAX_INNER_INSTRUCTION_SIZE less LOG_IX_ACCOUNT_META_SIZE (book.ts's Reduce events). */
-export const EVENT_ROOM = 1246n;
-/** [15] and the Borsh header. */
-export const HEADER_LEN = 93n;
-/** The largest event, a Fill (MAX_EVENT_SIZE): an event's bytes fit a FixedVec<u8, 67>. */
-export const MAX_EVENT_SIZE = 67n;
+/** The room the batch's data has (book.ts's Reduce events). */
+export const EVENT_ROOM = MAX_INNER_INSTRUCTION_SIZE - LOG_IX_ACCOUNT_META_SIZE;
+/**
+ * [15] and the Borsh header: the PhoenixMarketEvent tag, the instruction (u8), the sequence number, timestamp and slot
+ * (8 bytes each), the market and the signer, total_events (u16).
+ */
+export const HEADER_LEN = 1n + 1n + 1n + 3n * 8n + 2n * 32n + 2n;
+/** The largest event, a Fill (MAX_EVENT_SIZE): tag, index (u16), maker, four u64s; an event fits a FixedVec<u8, 67>. */
+export const MAX_EVENT_SIZE = 1n + 2n + 32n + 4n * 8n;
 
 /** PhoenixInstruction tags the recorder itself needs. */
 export const TAG_LOG = 15n;
 export const TAG_CHANGE_MARKET_STATUS = 103n;
 
 /** An AccountMeta of a CPI built by hand. */
-export interface Meta {
+interface Meta {
   pubkey: Pubkey;
   isSigner: boolean;
   isWritable: boolean;
@@ -115,14 +118,14 @@ export function flush(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, res
  * largest event fits, it is written straight into the batch (the same bytes, no flush either way).
  */
 export function recordEvent(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, rest: RemainingAccounts, event: PhoenixMarketEvent): void {
-  if (data.length + MAX_EVENT_SIZE + LOG_IX_ACCOUNT_META_SIZE <= MAX_INNER_INSTRUCTION_SIZE) {
+  if (data.length + MAX_EVENT_SIZE <= EVENT_ROOM) {
     data.pushBorsh(event);
     rec.eventsAdded++;
     return;
   }
   const scratch: FixedVec<u8, 67> = fixedVec([]);
   scratch.pushBorsh(event);
-  if (data.length + scratch.length + LOG_IX_ACCOUNT_META_SIZE > MAX_INNER_INSTRUCTION_SIZE) flush(rec, data, rest);
+  if (data.length + scratch.length > EVENT_ROOM) flush(rec, data, rest);
   data.pushAll(scratch);
   rec.eventsAdded++;
 }

@@ -64,8 +64,7 @@ export function changeFeeRecipient(rest: RemainingAccounts): void {
   need(rest, 5n);
   const previousSigned = rest.length > 5n ? isSignerWithKey(rest.get(5n), h.fee_recipient) : false;
   dispatchLoadedMarket(market);
-  const fifo = loadRawAt<FifoMarketPrefix>(market, FIFO_MARKET_OFFSET);
-  if (fifo.unclaimed_quote_lot_fees > 0n && !previousSigned) {
+  if (loadRawAt<FifoMarketPrefix>(market, FIFO_MARKET_OFFSET).unclaimed_quote_lot_fees > 0n && !previousSigned) {
     log("Previous fee recipient must sign if there are uncollected fees. \nsrc/program/processor/fees.rs:81:9");
     require(false, ProgramError.MissingRequiredSignature);
   }

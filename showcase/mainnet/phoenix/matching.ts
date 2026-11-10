@@ -83,7 +83,7 @@ export const DECREMENT_TAKE: u8 = 2n;
 /** `u32::MAX`: the trader index of a taker with no seat on the market. */
 const NO_TRADER = 4294967295n;
 /** `u64::MAX >> 1`: the order sequence number past which no order is placed. */
-const MAX_SEQUENCE_NUMBER = 9223372036854775807n;
+const MAX_SEQUENCE_NUMBER = U64_MAX >> 1n;
 
 /**
  * An OrderPacket, flattened: every variant's fields, `kind` saying which (POST_ONLY, LIMIT, IMMEDIATE_OR_CANCEL) and
@@ -128,7 +128,7 @@ export interface Response {
 }
 
 /** InflightOrder. The two Options of the original end as `unwrap_or(0)` in the resting order: 0 is None. */
-export interface Inflight {
+interface Inflight {
   side: u8;
   self_trade_behavior: u8;
   should_terminate: boolean;
@@ -150,7 +150,7 @@ function computeFee(adjusted: u64, feeBps: u64): u64 {
   if (feeBps === 0n) return 0n;
   // Below 2^48 × 2^16 the u128 product fits a u64 and the result is the same.
   if (adjusted < 281474976710656n && feeBps < 65536n) return (adjusted * feeBps + 9999n) / 10000n;
-  return u64(((u128(adjusted) * u128(feeBps) + 9999n) / 10000n) & 18446744073709551615n);
+  return u64(((u128(adjusted) * u128(feeBps) + 9999n) / 10000n) & U64_MAX);
 }
 
 /** adjusted_quote_lot_budget_post_fee_adjustment_for_buys: `adjusted × u64::MAX / (u64::MAX + fee(u64::MAX))`. */
@@ -222,7 +222,7 @@ function reduceOwn(
 // ---- Crossing and eviction -------------------------------------------------------------------------------------------
 
 /** check_for_cross's result: `crosses` and the price of the opposite order a PostOnly order would take. */
-export interface Cross {
+interface Cross {
   crosses: boolean;
   price_in_ticks: u64;
 }
@@ -607,8 +607,7 @@ export function placeOrder(
       resp.placed = true;
       resp.placed_price_in_ticks = price;
       resp.placed_order_sequence_number = seq;
-      const own = rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, bookOffset(side, n), n, orderCmp);
-      if (own.length === n) {
+      if (rbTreeAt<FIFOOrderId, FIFORestingOrder>(market, bookOffset(side, n), n, orderCmp).length === n) {
         log("Book is full. Evicting order");
         evictLeastAggressiveOrder(rest, rec, logData, side, price);
       }

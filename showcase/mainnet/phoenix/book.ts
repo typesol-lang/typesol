@@ -45,7 +45,7 @@ import {
   tradersOffset,
 } from "./state.js";
 import { type Recorder, EVENT_ROOM, flush, recordEvent } from "./recorder.js";
-import { addBaseLots, addQuoteLots, adjustedQuoteLots, orderCmp, subBaseLots, subQuoteLots, ticksToPrice } from "./util.js";
+import { U64_MAX, addBaseLots, addQuoteLots, adjustedQuoteLots, orderCmp, subBaseLots, subQuoteLots, ticksToPrice } from "./util.js";
 
 /** The lots a reduction or cancel gives back to the trader's wallet: MatchingEngineResponse's *_out. */
 export interface Released {
@@ -116,7 +116,7 @@ function reducedBidQuoteLots(price: u64, tick: u64, lots: u64, perUnit: u64): u6
 }
 
 /** A Reduce event's bytes: its PhoenixMarketEvent tag, the index (u16) and four u64s. */
-const REDUCE_EVENT_LEN = 35n;
+const REDUCE_EVENT_LEN = 1n + 2n + 4n * 8n;
 
 /**
  * recordEvent of a Reduce event { index, order_sequence_number, price_in_ticks, base_lots_removed,
@@ -364,7 +364,7 @@ export function cancelUpToInner(
   const book = rbTreeAt<FIFOOrderId, FIFORestingOrder>(rest.get(2n), bid ? BIDS_OFFSET : m.asksAt, bid ? m.bids : m.asks, orderCmp);
   const len = book.length;
   // Ticks::MIN for bids, Ticks::MAX for asks.
-  const limit = params.hasTick ? params.tick : bid ? 0n : 18446744073709551615n;
+  const limit = params.hasTick ? params.tick : bid ? 0n : U64_MAX;
   const search = params.hasSearch ? u64(params.search) : len;
   const count = params.hasCancel ? u64(params.cancel) : len;
   let searched = 0n;
