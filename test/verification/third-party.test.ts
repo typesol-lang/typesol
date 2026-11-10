@@ -25,7 +25,12 @@ describe("third-party binaries in test/programs", () => {
         rows.some((r) => r.file === f),
         `${f} in SOURCES.md`,
       ).toBe(true);
-    for (const r of rows.filter((x) => x.kept)) expect(r.licence, r.file).toBe("Apache-2.0");
+    // Kept binaries are Apache-2.0 (one shared licence text) or MIT (each with its own copyright notice, as MIT asks).
+    for (const r of rows.filter((x) => x.kept)) {
+      expect(["Apache-2.0", "MIT"], r.file).toContain(r.licence);
+      if (r.licence === "MIT")
+        expect(existsSync(`${dir}LICENSE-MIT-${r.file.replace(/\.so$/, "").replace(/_/g, "-")}.txt`), `${r.file}'s MIT licence text`).toBe(true);
+    }
     expect(kept.size).toBeGreaterThan(5);
     expect(existsSync(`${dir}LICENSE-Apache-2.0.txt`)).toBe(true);
   });
