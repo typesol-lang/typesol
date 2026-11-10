@@ -9,7 +9,7 @@
 // Accounts, after the entry's four (program, log authority, market, signer):
 // - CollectFees: the fee recipient's quote token account, the quote vault, SPL Token;
 // - ChangeFeeRecipient (signer: the authority): the new recipient, then optionally the current one (signing).
-import { type FifoMarketPrefix, type MarketHeader, FIFO_MARKET_OFFSET } from "./state.js";
+import { type FifoMarketPrefix, type MarketHeader, type PhoenixMarketEvent, FIFO_MARKET_OFFSET } from "./state.js";
 import {
   type FixedVec,
   type Inout,
@@ -26,7 +26,7 @@ import {
   require,
   u16,
 } from "typesol";
-import { type Recorder, recordEvent } from "./recorder.js";
+import { type Recorder, FEE_EVENT_LEN, makeRoom } from "./recorder.js";
 import { assertValidAuthority, checkTokenAccountOwner, checkTokenProgram, checkVault, dispatchLoadedMarket, isSignerWithKey } from "./checkers.js";
 import { sendFromVault } from "./funds.js";
 import { addQuoteLots, decimalString, need, quoteLotsToAtoms } from "./util.js";
@@ -48,7 +48,9 @@ export function collectFees(rest: RemainingAccounts, rec: Inout<Recorder>, data:
   const quoteLots = fifo.unclaimed_quote_lot_fees;
   fifo.collected_quote_lot_fees = addQuoteLots(fifo.collected_quote_lot_fees, quoteLots);
   fifo.unclaimed_quote_lot_fees = 0n;
-  recordEvent(rec, data, rest, { kind: "Fee", index: u16(rec.eventsAdded), fees_collected_in_quote_lots: quoteLots });
+  makeRoom(rec, data, rest, FEE_EVENT_LEN);
+  data.pushBorsh<PhoenixMarketEvent>({ kind: "Fee", index: u16(rec.eventsAdded), fees_collected_in_quote_lots: quoteLots });
+  rec.eventsAdded++;
 
   const quoteAtoms = quoteLotsToAtoms(quoteLots, h.quote_lot_size);
   log(`Collected ${decimalString(quoteAtoms, h.quote_params.decimals)} in fees`);

@@ -45,7 +45,7 @@ import {
   asksOffset,
   tradersOffset,
 } from "./state.js";
-import { type Recorder, EVENT_ROOM, flush, recordEvent } from "./recorder.js";
+import { type Recorder, EVICT_EVENT_LEN, REDUCE_EVENT_LEN, makeRoom } from "./recorder.js";
 import { U64_MAX, addBaseLots, addQuoteLots, adjustedQuoteLots, orderCmp, subBaseLots, subQuoteLots, ticksToPrice } from "./util.js";
 
 /** The lots a reduction or cancel gives back to the trader's wallet: MatchingEngineResponse's *_out. */
@@ -116,13 +116,7 @@ function reducedBidQuoteLots(price: u64, tick: u64, lots: u64, perUnit: u64): u6
   return adjusted / perUnit;
 }
 
-/** A Reduce event's bytes: its PhoenixMarketEvent tag, the index (u16) and four u64s. */
-const REDUCE_EVENT_LEN = 1n + 2n + 4n * 8n;
-
-/**
- * recordEvent of a Reduce event: the same bytes and the same flush, the event written straight into the batch (one
- * room check, then its fields) rather than built in a scratch buffer first; the bulk cancels record one per order.
- */
+/** add_event of a Reduce event, the one the reductions and cancels record for each order. */
 function recordReduce(
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -132,7 +126,7 @@ function recordReduce(
   removed: u64,
   remaining: u64,
 ): void {
-  if (logData.length + REDUCE_EVENT_LEN > EVENT_ROOM) flush(rec, logData, rest);
+  makeRoom(rec, logData, rest, REDUCE_EVENT_LEN);
   logData.pushBorsh<PhoenixMarketEvent>({
     kind: "Reduce",
     index: u16(rec.eventsAdded),
@@ -145,8 +139,7 @@ function recordReduce(
 }
 
 /**
- * recordEvent of an ExpiredOrder event { index, maker_id, order_sequence_number, price_in_ticks, base_lots_removed }.
- * A function of its own, so that reduce_order_inner's frequent path (a Reduce for each order reduced or cancelled)
+ * add_event of an ExpiredOrder event. A function of its own, so that reduce_order_inner's frequent path (a Reduce for each order reduced or cancelled)
  * stays lean: inlined, this rare one cost every cancelled order about 5 compute units more.
  * @noinline
  */
@@ -159,7 +152,8 @@ function recordExpired(
   price: u64,
   removed: u64,
 ): void {
-  recordEvent(rec, logData, rest, {
+  makeRoom(rec, logData, rest, EVICT_EVENT_LEN);
+  logData.pushBorsh<PhoenixMarketEvent>({
     kind: "ExpiredOrder",
     index: u16(rec.eventsAdded),
     maker_id: maker,
@@ -167,6 +161,7 @@ function recordExpired(
     price_in_ticks: price,
     base_lots_removed: removed,
   });
+  rec.eventsAdded++;
 }
 
 /** What reduce_order_inner does with what it unlocks, and which event it records (its two flags, as used). */

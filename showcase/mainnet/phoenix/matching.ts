@@ -19,9 +19,9 @@
 // order a self trade cancels (CancelProvide) or decrements (DecrementTake). None of them claims funds. The market's
 // shape (MarketShape: tree capacities and offsets, tick size, base lots per base unit) is read on those paths only.
 //
-// Every event goes through the recorder (recordEvent; book.ts appends a Reduce to the batch itself, with the same
-// flush), which sends a batch in a Log self-CPI whenever the next event would not fit: a long match flushes in the
-// middle, before the token transfers, as Phoenix's does.
+// Every event is appended to the recorder's batch in place (makeRoom, then pushBorsh of the event), which sends the
+// batch in a Log self-CPI first whenever the event would not fit: a long match flushes in the middle, before the token
+// transfers, as Phoenix's does.
 import {
   type FixedVec,
   type Inout,
@@ -45,13 +45,14 @@ import {
   type FIFOOrderId,
   type FIFORestingOrder,
   type MarketHeader,
+  type PhoenixMarketEvent,
   type TraderState,
   BIDS_OFFSET,
   FIFO_MARKET_OFFSET,
   asksOffset,
   tradersOffset,
 } from "./state.js";
-import { type Recorder, recordEvent } from "./recorder.js";
+import { type Recorder, EVICT_EVENT_LEN, FILL_EVENT_LEN, PLACE_EVENT_LEN, SUMMARY_EVENT_LEN, TIME_IN_FORCE_EVENT_LEN, makeRoom } from "./recorder.js";
 import { type Released, EXPIRED, KEEP_FUNDS, marketShape, reduceOrderInner } from "./book.js";
 import {
   U64_MAX,
@@ -286,7 +287,8 @@ function evictLeastAggressiveOrder(rest: RemainingAccounts, rec: Inout<Recorder>
     return;
   }
   book.removeAt(last.index); // remove(&order_id) of the node max() found
-  recordEvent(rec, logData, rest, {
+  makeRoom(rec, logData, rest, EVICT_EVENT_LEN);
+  logData.pushBorsh<PhoenixMarketEvent>({
     kind: "Evict",
     index: u16(rec.eventsAdded),
     maker_id: makerId,
@@ -294,6 +296,7 @@ function evictLeastAggressiveOrder(rest: RemainingAccounts, rec: Inout<Recorder>
     price_in_ticks: price,
     base_lots_evicted: lots,
   });
+  rec.eventsAdded++;
   const fifo = loadRawAt<FifoMarketPrefix>(market, FIFO_MARKET_OFFSET);
   const state = traders.nodeAt(u32(traderIndex)).value;
   if (side === BID) {
@@ -408,7 +411,8 @@ function matchOrder(
 
     const makerIndex = u32(traderIndex & 0xffffffffn);
     if (matchedBase !== 0n) {
-      recordEvent(rec, logData, rest, {
+      makeRoom(rec, logData, rest, FILL_EVENT_LEN);
+      logData.pushBorsh<PhoenixMarketEvent>({
         kind: "Fill",
         index: u16(rec.eventsAdded),
         maker_id: traders.nodeAt(makerIndex).key,
@@ -417,6 +421,7 @@ function matchOrder(
         base_lots_filled: matchedBase,
         base_lots_remaining: remaining,
       });
+      rec.eventsAdded++;
     } else if (!o.should_terminate) {
       log("WARNING: should_terminate should always be true if matched_base_lots is zero");
     }
@@ -566,7 +571,8 @@ export function placeOrder(
       resp.num_base_lots_in = o.matched_base_lots;
       resp.num_quote_lots_out = matchedQuoteLots;
     }
-    recordEvent(rec, logData, rest, {
+    makeRoom(rec, logData, rest, SUMMARY_EVENT_LEN);
+    logData.pushBorsh<PhoenixMarketEvent>({
       kind: "FillSummary",
       index: u16(rec.eventsAdded),
       client_order_id: pk.client_order_id,
@@ -574,6 +580,7 @@ export function placeOrder(
       total_quote_lots_filled: matchedQuoteLots,
       total_fee_in_quote_lots: o.quote_lot_fees,
     });
+    rec.eventsAdded++;
   }
 
   if (takeOnly) {
@@ -635,7 +642,8 @@ export function placeOrder(
         resp.num_base_lots_posted = addBaseLots(resp.num_base_lots_posted, restingLots);
         resp.num_free_base_lots_used = addBaseLots(resp.num_free_base_lots_used, free);
       }
-      recordEvent(rec, logData, rest, {
+      makeRoom(rec, logData, rest, PLACE_EVENT_LEN);
+      logData.pushBorsh<PhoenixMarketEvent>({
         kind: "Place",
         index: u16(rec.eventsAdded),
         order_sequence_number: seq,
@@ -643,14 +651,17 @@ export function placeOrder(
         price_in_ticks: price,
         base_lots_placed: restingLots,
       });
+      rec.eventsAdded++;
       if (lastValidSlot !== 0n || lastValidUnixTimestamp !== 0n) {
-        recordEvent(rec, logData, rest, {
+        makeRoom(rec, logData, rest, TIME_IN_FORCE_EVENT_LEN);
+        logData.pushBorsh<PhoenixMarketEvent>({
           kind: "TimeInForce",
           index: u16(rec.eventsAdded),
           order_sequence_number: seq,
           last_valid_slot: lastValidSlot,
           last_valid_unix_timestamp_in_seconds: lastValidUnixTimestamp,
         });
+        rec.eventsAdded++;
       }
       fifo.order_sequence_number = seqNumber + 1n;
     }

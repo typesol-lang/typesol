@@ -10,8 +10,10 @@
 //
 // 93 bytes of header, `total_events` (bytes 91..93) patched with the batch's own count before each send. An event is
 // appended unless the data would then pass the 1280-byte inner-instruction limit (with 34 bytes for the one account
-// meta), in which case the batch is sent first. When the instruction ends, the market's sequence number goes up by one
-// and what is left is sent, always at least one batch (an instruction with no events sends the bare header).
+// meta), in which case the batch is sent first (makeRoom). The code that records an event appends it in place with
+// pushBorsh of its PhoenixMarketEvent literal, which writes only that variant: Phoenix serializes each event into a
+// scratch buffer first, the same bytes. When the instruction ends, the market's sequence number goes up by one and what
+// is left is sent, always at least one batch (an instruction with no events sends the bare header).
 //
 // The entry owns the recorder's state (a Recorder) and the Log instruction's data (a FixedVec<u8, 1280> on its
 // stack); the helpers that record take both as `Inout<…>` (Rust's `&mut EventRecorder`), with the instruction's
@@ -41,15 +43,24 @@ import { LOG_AUTHORITY_BUMP, LOG_AUTHORITY_ID, PHOENIX_ID } from "./util.js";
 const MAX_INNER_INSTRUCTION_SIZE = 1280n;
 /** The bytes of the Log instruction's one AccountMeta (LOG_IX_ACCOUNT_META_SIZE). */
 const LOG_IX_ACCOUNT_META_SIZE = 34n;
-/** The room the batch's data has (book.ts's Reduce events). */
+/** The room the batch's data has: an event is appended while it fits (makeRoom). */
 export const EVENT_ROOM = MAX_INNER_INSTRUCTION_SIZE - LOG_IX_ACCOUNT_META_SIZE;
 /**
  * [15] and the Borsh header: the PhoenixMarketEvent tag, the instruction (u8), the sequence number, timestamp and slot
  * (8 bytes each), the market and the signer, total_events (u16).
  */
 export const HEADER_LEN = 1n + 1n + 1n + 3n * 8n + 2n * 32n + 2n;
-/** The largest event, a Fill (MAX_EVENT_SIZE): tag, index (u16), maker, four u64s; an event fits a FixedVec<u8, 67>. */
-export const MAX_EVENT_SIZE = 1n + 2n + 32n + 4n * 8n;
+/**
+ * Each event's bytes, the PhoenixMarketEvent tag and the index (u16) first: the room makeRoom asks for. The largest is a
+ * Fill (MAX_EVENT_SIZE).
+ */
+export const FILL_EVENT_LEN = 1n + 2n + 32n + 4n * 8n; // maker, sequence number, price, lots filled, lots remaining
+export const REDUCE_EVENT_LEN = 1n + 2n + 4n * 8n; // sequence number, price, lots removed, lots remaining
+export const PLACE_EVENT_LEN = 1n + 2n + 8n + 16n + 8n + 8n; // sequence number, client order id, price, lots
+export const SUMMARY_EVENT_LEN = 1n + 2n + 16n + 3n * 8n; // client order id, base lots, quote lots, fee
+export const TIME_IN_FORCE_EVENT_LEN = 1n + 2n + 3n * 8n; // sequence number, last valid slot and timestamp
+export const EVICT_EVENT_LEN = 1n + 2n + 32n + 3n * 8n; // maker, sequence number, price, lots (ExpiredOrder too)
+export const FEE_EVENT_LEN = 1n + 2n + 8n; // fees collected
 
 /** PhoenixInstruction tags the recorder itself needs. */
 export const TAG_LOG = 15n;
@@ -113,21 +124,13 @@ export function flush(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, res
 }
 
 /**
- * EventRecorder::add_event: `event`'s index must already be `rec.eventsAdded` (`set_index`). It is serialized into a
- * scratch buffer; the batch so far is sent first when the event would take the data past the limit. While even the
- * largest event fits, it is written straight into the batch (the same bytes, no flush either way).
+ * EventRecorder::add_event, its flush: the batch so far is sent first when an event of `len` bytes would take the data
+ * past the limit. The caller then appends the event, `data.pushBorsh<PhoenixMarketEvent>({ kind: …, index:
+ * u16(rec.eventsAdded), … })` (which writes only that variant's bytes, straight into the batch, where add_event
+ * serializes the event into a scratch buffer first: the same bytes), and counts it, `rec.eventsAdded++`.
  */
-export function recordEvent(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, rest: RemainingAccounts, event: PhoenixMarketEvent): void {
-  if (data.length + MAX_EVENT_SIZE <= EVENT_ROOM) {
-    data.pushBorsh(event);
-    rec.eventsAdded++;
-    return;
-  }
-  const scratch: FixedVec<u8, 67> = fixedVec([]);
-  scratch.pushBorsh(event);
-  if (data.length + scratch.length > EVENT_ROOM) flush(rec, data, rest);
-  data.pushAll(scratch);
-  rec.eventsAdded++;
+export function makeRoom(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, rest: RemainingAccounts, len: u64): void {
+  if (data.length + len > EVENT_ROOM) flush(rec, data, rest);
 }
 
 /**
