@@ -285,7 +285,7 @@ function evictLeastAggressiveOrder(rest: RemainingAccounts, rec: Inout<Recorder>
     log("New order is not aggressive enough to evict an existing order");
     return;
   }
-  book.remove({ price_in_ticks: price, order_sequence_number: seq });
+  book.removeAt(last.index); // remove(&order_id) of the node max() found
   recordEvent(rec, logData, rest, {
     kind: "Evict",
     index: u16(rec.eventsAdded),
@@ -384,8 +384,8 @@ function matchOrder(
     let matchedAdjusted = quotedAdjusted;
     let remaining = 0n;
     if (quoted <= o.base_lot_budget && quotedAdjusted <= o.adjusted_quote_lot_budget) {
-      // The whole resting order.
-      book.remove({ price_in_ticks: price, order_sequence_number: seq });
+      // The whole resting order: remove(&order_id)'s writes, at the node min() found (no second search).
+      book.removeAt(best.index);
     } else {
       // What the budget allows; the match ends here.
       matchedBase = o.adjusted_quote_lot_budget / ticksToPrice(tickSize, price);

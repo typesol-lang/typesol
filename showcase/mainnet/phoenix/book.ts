@@ -55,9 +55,8 @@ export interface Released {
 
 /**
  * What the book work reads of the market again and again, read once: the trees' capacities and offsets, the
- * FIFOMarket's tick size and base lots per base unit. The helpers take it as `Inout<MarketShape>` though they only
- * read it: a plain struct parameter is copied at every call of a helper that also takes accounts (about 44 compute
- * units more per cancelled order), an Inout one is passed by pointer.
+ * FIFOMarket's tick size and base lots per base unit. The helpers only read it, as a plain struct parameter: one the
+ * caller owns (a local, or a parameter passed on) goes in place, by pointer, though the helpers also take accounts.
  */
 export interface MarketShape {
   bids: u64;
@@ -95,7 +94,7 @@ export function isBidSequence(seq: u64): boolean {
 }
 
 /** get_trader_index: the trader's node index in the traders tree, 0 when it holds no state. */
-export function traderIndexOf(m: Inout<MarketShape>, rest: RemainingAccounts, trader: Pubkey): u32 {
+export function traderIndexOf(m: MarketShape, rest: RemainingAccounts, trader: Pubkey): u32 {
   const traders = rbTreeAt<Pubkey, TraderState>(rest.get(2n), m.tradersAt, m.seats);
   return traders.addrOf(trader);
 }
@@ -190,7 +189,7 @@ export const EXPIRED: u8 = 2n;
  * The two flags are one ReduceMode argument: SBF passes five arguments in registers, the rest on the stack.
  */
 export function reduceOrderInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -207,14 +206,16 @@ export function reduceOrderInner(
   out.base = 0n;
   const market = rest.get(2n);
   const book = rbTreeMutAt<FIFOOrderId, FIFORestingOrder>(market, bid ? BIDS_OFFSET : m.asksAt, bid ? m.bids : m.asks, orderCmp);
-  const id: FIFOOrderId = { price_in_ticks: price, order_sequence_number: seq };
-  const order = book.get(id);
-  if (order === null) return true;
+  // `get_mut(&order_id)`, then `remove(&order_id)` for a whole order: the node found once, removed by its index (the
+  // writes of remove(key), without the second search).
+  const at = book.addrOf({ price_in_ticks: price, order_sequence_number: seq });
+  if (at === 0n) return true;
+  const order = book.nodeAt(at).value;
   const resting = order.num_base_lots;
   const removed = hasSize && size < resting ? size : resting;
   if (order.trader_index !== u64(traderIndex)) return false;
   let remaining = 0n;
-  if (removed === resting) book.remove(id);
+  if (removed === resting) book.removeAt(at);
   else {
     remaining = subBaseLots(resting, removed);
     order.num_base_lots = remaining;
@@ -255,7 +256,7 @@ export function reduceOrderInner(
  * released added to `total` (the fold's `+`, quote then base); another trader's order is skipped.
  */
 function cancelOne(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -283,7 +284,7 @@ function collect(ids: Inout<FixedVec<u16, 512>>, index: u32): void {
 
 /** Cancel the collected nodes `from`..`to` of one book, in order, each by the id its node holds. */
 function cancelCollected(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -310,7 +311,7 @@ function cancelCollected(
  * @noinline
  */
 export function cancelAllInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -348,7 +349,7 @@ export interface CancelUpTo {
  * @noinline
  */
 export function cancelUpToInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
@@ -387,7 +388,7 @@ export function cancelUpToInner(
  * dropped (the processor's filter_map), the rest cancelled in order.
  */
 export function cancelByIdInner(
-  m: Inout<MarketShape>,
+  m: MarketShape,
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
   logData: Inout<FixedVec<u8, 1280>>,
