@@ -79,6 +79,20 @@ ${body}`);
     expect(f(`export type E = { kind: "P"; p: Pair } | { kind: "N" };\nexport function g(e: E): void {}`)).toBe(fix("the data enum E (P.p)"));
   });
 
+  it("folds top-level constants computed from literals and earlier constants, checked when compiled", async () => {
+    // (32 + 256) + 1246 × 2, 2^63 / 2^60, 1246 % 7, 0x00ff & ~0xf0 in u16
+    expect(await u64("consts", {})).toBe(288n + 2492n + 8n + 0n + 0x0fn);
+    const f = (decls: string) => compileErrors(`import { type u8, type u64, log } from "typesol";\n${decls}\nexport function f(): void { log(X); }`);
+    expect(f(`const A = 7n;\nconst X = (A + 1n) * 2n - A / 2n;`)).toBe("");
+    expect(f(`const X: u8 = 200n + 100n;`)).toContain("200n + 100n is 300, which does not fit in u8: the constant is computed in its type");
+    expect(f(`const X: u64 = 1n - 2n + 5n;`)).toContain("1n - 2n is -1, which does not fit in u64");
+    expect(f(`const X = 5n / (3n - 3n);`)).toContain("5n / (3n - 3n) divides by zero");
+    expect(f(`const X: u64 = 1n << 64n;`)).toContain("1n << 64n shifts by 64: the amount is 0 to 63");
+    expect(f(`const X = 2n ** -1n;`)).toContain("has a negative exponent");
+    expect(f(`const S = "seed";\nconst X = S + 1n;`)).toMatch(/S is not an integer constant|not assignable/);
+    expect(f(`const X = 1n + g();\nfunction g(): u64 { return 1n; }`)).toContain("integer expressions over literals and earlier constants");
+  });
+
   it("a comma anywhere else is still refused", () => {
     const f = (body: string) => compileErrors(`import { type u64 } from "typesol";\nexport function f(a: u64): void { let x = a; let y = a; ${body} }`);
     expect(f(`x++, y++;`)).toContain("this expression has no effect");

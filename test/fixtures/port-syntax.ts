@@ -1,6 +1,7 @@
 // Forms a native port writes as the Rust reads (test/language/port-syntax.test.ts): for loops with two counters, a
-// local list of 2 KiB of elements, reads through a view without binding it, a struct of the file's own for helpers.
-import { type AccountInfo, type FixedVec, type Inout, fixedVec, loadRaw, loadRawAt, rbTreeAt, u32, u64 } from "typesol";
+// local list of 2 KiB of elements, reads through a view without binding it, a struct of the file's own for helpers,
+// top-level constants computed from others.
+import { type AccountInfo, type FixedVec, type Inout, type u16, fixedVec, loadRaw, loadRawAt, rbTreeAt, u32, u64 } from "typesol";
 
 export interface Inner {
   a: u64;
@@ -64,4 +65,15 @@ export function pairs(x: u64): u64 {
   bump(p);
   const q: Pair = { a: 1n, b: 2n };
   return p.a + p.b + q.b;
+}
+
+/** Constants folded when the program is compiled, from literals and earlier constants. */
+const BOOK = 32n + 64n * 4n;
+const EVENT_ROOM = 1280n - 34n;
+const ASKS_AT: u64 = BOOK + EVENT_ROOM * 2n;
+const TOP: u64 = 1n << 63n;
+const LOW_BITS: u16 = (0xffffn ^ 0xff00n) & ~0xf0n;
+
+export function consts(): u64 {
+  return ASKS_AT + TOP / (1n << 60n) + (EVENT_ROOM % 7n) + u64(LOW_BITS);
 }

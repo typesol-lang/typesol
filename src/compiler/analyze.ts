@@ -421,7 +421,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const options = new Map<string, OptionInner>();
   const dataEnums = new Map<string, DataEnumDef>();
   const constants = new Map<string, ConstDef>();
-  const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string> }[] = [];
+  const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string>; init: ts.Expression }[] = [];
   const errors: ErrorDef[] = [];
   const functions: { node: ts.FunctionDeclaration; imports: Map<string, string> }[] = [];
   const helperNodes: HelperSource[] = [];
@@ -572,11 +572,17 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
                 init,
                 `only ${SILENCEABLE_PREFIXES.join(" and ")} can be null (failures that log nothing); other constants are bigint, boolean or string literals, or pubkey("…")`,
               );
-            else reporter.fail(init, 'top-level constants must be bigint, boolean or string literals, or pubkey("…")');
+            // `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT = BIDS_AT + 2n * BOOK`: integers folded here.
+            else if (isConstantExpression(init)) value = foldConstant(init, constants, reporter);
+            else
+              reporter.fail(
+                init,
+                'top-level constants are bigint, boolean or string literals, pubkey("…"), or integer expressions over literals and earlier constants (const ROOM = 1280n - 34n)',
+              );
             declare(d.name, file);
             const def: ConstDef = { name: d.name.text, value };
             constants.set(def.name, def);
-            if (d.type) pendingConstTypes.push({ def, type: d.type, imports });
+            if (d.type) pendingConstTypes.push({ def, type: d.type, imports, init });
           }
         } else {
           reporter.fail(stmt, unsupportedSyntax(stmt.kind, "top level"));
@@ -595,6 +601,8 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       if (!t || t.kind !== "int") reporter.fail(c.type, "annotate constants with an integer type, or leave the type out");
       if (typeof c.def.value !== "bigint") reporter.fail(c.type, "only integer constants take a type annotation");
       const info = INT_INFO[t.name];
+      // An expression is computed in its type, as Rust's `const X: u64 = …` is: every step must fit, not only the result.
+      if (isConstantExpression(c.init)) foldConstant(c.init, constants, reporter, t.name);
       if (c.def.value < info.min || c.def.value > info.max) reporter.fail(c.type, `${c.def.value} does not fit in ${t.name}`);
       c.def.type = t;
     });
@@ -999,6 +1007,97 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
 }
 
 /** Every struct an argument type contains (transitively), for IDL layout decisions. */
+/** An integer expression a top-level constant may be: operators, parentheses, bigint literals and names. */
+function isConstantExpression(e: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(e)) return isConstantExpression(e.expression);
+  if (ts.isBigIntLiteral(e) || ts.isIdentifier(e)) return true;
+  if (ts.isPrefixUnaryExpression(e))
+    return (e.operator === ts.SyntaxKind.MinusToken || e.operator === ts.SyntaxKind.TildeToken) && isConstantExpression(e.operand);
+  return ts.isBinaryExpression(e) && CONST_OPS.has(e.operatorToken.kind) && isConstantExpression(e.left) && isConstantExpression(e.right);
+}
+const CONST_OPS = new Set([
+  ts.SyntaxKind.PlusToken,
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+]);
+
+/**
+ * A top-level constant's integer expression, folded when the program is compiled: literals and integer constants
+ * declared before it (in this file or an imported one). JS's bigint results (division truncates, `%` keeps the
+ * dividend's sign, `>>` rounds down, as Rust's integers do). With `width` (a typed constant, `const X: u64 = …`), every
+ * step must fit in that type, as Rust computes a typed const; without one the result is a literal, checked where it is
+ * used. Division by zero, a negative exponent or shift, and a value past 256 bits are compile errors.
+ */
+function foldConstant(e: ts.Expression, constants: Map<string, ConstDef>, reporter: Reporter, width?: IntName): bigint {
+  const fit = (v: bigint, at: ts.Node): bigint => {
+    if (width) {
+      const info = INT_INFO[width];
+      if (v < info.min || v > info.max) reporter.fail(at, `${at.getText()} is ${v}, which does not fit in ${width}: the constant is computed in its type`);
+    } else if (v >= 1n << 256n || v < -(1n << 255n)) reporter.fail(at, `${at.getText()} does not fit in 256 bits`);
+    return v;
+  };
+  const fold = (n: ts.Expression): bigint => {
+    if (ts.isParenthesizedExpression(n)) return fold(n.expression);
+    if (ts.isBigIntLiteral(n)) return fit(BigInt(n.text.slice(0, -1).replace(/_/g, "")), n);
+    if (ts.isIdentifier(n)) {
+      const c = constants.get(n.text);
+      if (!c) reporter.fail(n, `${n.text} is not a top-level constant declared before this one: a constant is folded from literals and earlier constants`);
+      if (typeof c.value !== "bigint") reporter.fail(n, `${n.text} is not an integer constant`);
+      return fit(c.value, n);
+    }
+    // A negative literal is one value (i128's minimum is written -170141183460469231731687303715884105728n).
+    if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.MinusToken && ts.isBigIntLiteral(n.operand))
+      return fit(-BigInt(n.operand.text.slice(0, -1).replace(/_/g, "")), n);
+    if (ts.isPrefixUnaryExpression(n)) {
+      const v = fold(n.operand);
+      if (n.operator === ts.SyntaxKind.MinusToken) return fit(-v, n);
+      // `~x` within the type's width, as at run time; without a type, JS's -x - 1
+      if (width && !INT_INFO[width].signed) return fit(INT_INFO[width].max ^ v, n);
+      return fit(-v - 1n, n);
+    }
+    const b = n as ts.BinaryExpression;
+    const l = fold(b.left);
+    const r = fold(b.right);
+    switch (b.operatorToken.kind) {
+      case ts.SyntaxKind.PlusToken:
+        return fit(l + r, b);
+      case ts.SyntaxKind.MinusToken:
+        return fit(l - r, b);
+      case ts.SyntaxKind.AsteriskToken:
+        return fit(l * r, b);
+      case ts.SyntaxKind.SlashToken:
+      case ts.SyntaxKind.PercentToken:
+        if (r === 0n) reporter.fail(b, `${b.getText()} divides by zero`);
+        return fit(b.operatorToken.kind === ts.SyntaxKind.SlashToken ? l / r : l % r, b);
+      case ts.SyntaxKind.AsteriskAsteriskToken:
+        if (r < 0n) reporter.fail(b, `${b.getText()} has a negative exponent`);
+        if (r > 256n && l !== 0n && l !== 1n && l !== -1n) reporter.fail(b, `${b.getText()} does not fit in 256 bits`);
+        return fit(l ** r, b);
+      case ts.SyntaxKind.AmpersandToken:
+        return fit(l & r, b);
+      case ts.SyntaxKind.BarToken:
+        return fit(l | r, b);
+      case ts.SyntaxKind.CaretToken:
+        return fit(l ^ r, b);
+      default: {
+        // << and >>: an amount from 0 up to the width (256 without a type), and << may not lose bits (as at run time)
+        const bits = width ? INT_INFO[width].bytes * 8 : 256;
+        if (r < 0n || r >= BigInt(bits)) reporter.fail(b, `${b.getText()} shifts by ${r}: the amount is 0 to ${bits - 1}`);
+        return fit(b.operatorToken.kind === ts.SyntaxKind.LessThanLessThanToken ? l << r : l >> r, b);
+      }
+    }
+  };
+  return fold(e);
+}
+
 /**
  * A struct that is not exported (`interface Pair { … }`) is its file's own: helpers, locals and other such structs use
  * it, and the IDL leaves it out. What the IDL describes cannot hold one: account data, instruction arguments and

@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: a top-level integer constant may be an expression over literals and constants declared before it (in its
+  file or an imported one): `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT: u64 = BIDS_AT + 2n * BOOK`, with
+  `+ - * / % ** & | ^ << >>`, unary `-` and `~`. It is folded when the program is compiled and inlined like a literal.
+  A typed constant is computed in its type, as Rust computes `const X: u64 = …`: every step must fit (`1n - 2n + 5n`
+  as a u64 is an error naming the step); division by zero, a negative exponent and a shift past the width are compile
+  errors too. Only literals were accepted (test/language/port-syntax.test.ts).
 - Language: a struct that is not exported (`interface Pair { … }`) is its file's own: helpers take, return and change
   it (`Inout<Pair>`), locals hold it, and the IDL leaves it out. It failed with "structs must be exported" and a
   misleading second error about the helper's return type. Used where the IDL describes it (account data, an
