@@ -47,6 +47,10 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - `NATIVE_ACCOUNT_WRITES` (0.42.0): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
   (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside
   "the checks stay" promise above: it only applies to programs that declare it.
+- `Inout<T>` helper parameters (unreleased): a helper that changes a struct, FixedArray or FixedVec of the caller's
+  that is not an account (a local, a `loadBorsh` local, a field of a `loadRawMut` view, a list element), with the
+  aliasing rules at each call. It settles the open edge of helpers taking a writable struct that is not an account,
+  which were refused; the rules (what counts as overlapping, which places may move) may still be refined.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake); a ternary
   between remaining accounts and `AccountInfo` parameters (0.42.0).
@@ -61,7 +65,6 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - **An external audit** of the compiler and runtime ([audit package](audit.md)), its findings fixed and published.
 - **Settle the open edges**, each either supported or refused with a clear error:
   - a struct holding a FixedVec as both an argument and account data (two layouts, one IDL type);
-  - helpers that take a writable struct which is not an account (a `loadRaw` view, a local), now refused;
   - `require` with an error code computed at run time that is 0: fails as an overflow (5100) today, where a native
     program returns CUSTOM_ZERO;
   - which experimental parts above become stable, and which stay outside the 1.0 promise.

@@ -140,6 +140,7 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 | a closure `\|x\| x + offset`, `let fee = \|x: u64\| x / 100;` | `const f = (x: u64): u64 => x + offset` (it may read and write the function's variables), `const fee = (x: u64): u64 => x / 100n;` |
 | `x.unwrap_or(d)` | `x ?? d` |
 | `fn max<T: PartialOrd>(a: T, b: T) -> T` | `function max<T extends bigint>(a: T, b: T): T` (one copy per type used) |
+| `fn add_event(rec: &mut EventRecorder, e: &Event)` | `function addEvent(rec: Inout<EventRecorder>, e: Event): void` (structs, FixedArray and FixedVec; a `&mut u64` becomes a returned value or a struct field) |
 
 ## Tooling
 
