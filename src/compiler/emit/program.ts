@@ -58,6 +58,8 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   // runtime, as a native program does (read by the emitter; nothing to define in C).
   const nativeWrites = model.constants.get("NATIVE_ACCOUNT_WRITES");
   if (nativeWrites && typeof nativeWrites.value !== "boolean") reporter.error(analysis.sourceFile, "NATIVE_ACCOUNT_WRITES must be true or false");
+  // resizeAccount on a remaining account: the entrypoint records every account's size when the instruction starts.
+  if ([...helperBodies, ...ixBodies].some((b) => b.includes("ts_entry_len("))) out.push(`#define TS_RECORD_ENTRY_LEN 1`);
   // An error with code 0 must not return 0 (success): see ts_fail.
   if ([...model.errorEnums.values()].some((m) => [...m.values()].some((e) => e.code === 0))) out.push(`#define TS_CUSTOM_ZERO 1`);
   out.push(`#include "typesol_rt.h"`, "");

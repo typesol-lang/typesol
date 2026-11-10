@@ -12,6 +12,12 @@ codes, and says so here.
   consumption: N units remaining"), which were only emitted under `--profile`. An instruction that returns a value
   refuses `setReturnData` (its return value is its return data). Checked against the lines the Phoenix v1 binary
   writes.
+- Native account lifecycle on remaining accounts and `AccountInfo` parameters: `closeRaw(account, receiver)` (Phoenix's
+  Tombstone: lamports to the receiver, owner to the System Program, length to 0, in that order and without zeroing the
+  data, ending as Phoenix's own Tombstone ends), `assignOwner(account, owner)` (`AccountInfo::assign`), and
+  `resizeAccount` on remaining accounts (the 10 KiB growth limit against the size the entrypoint records when the
+  instruction starts, as solana_program 1.14 records it). Checked writable, passed once and owned by this program, or
+  left to the runtime under `NATIVE_ACCOUNT_WRITES`.
 
 ## 0.42.0 — 2026-11-09
 

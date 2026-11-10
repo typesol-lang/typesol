@@ -670,11 +670,48 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.writeData(node);
       case "resizeAccount": {
         if (args.length !== 2) this.fail(node, "resizeAccount(account, newSize) takes the account and its new size");
-        if (!this.ix) this.fail(node, "resizeAccount() is only available in instructions");
+        // A remaining account (or a helper's RemainingAccount): its size when the instruction started is the one the
+        // entrypoint recorded in the record's padding, as solana_program 1.14's entrypoint records it for realloc.
+        const h = this.handle(args[0]!);
+        if (h) {
+          if (!this.nativeAccountWrites()) this.line(`TS_TRY(ts_check_writable(${h}));`);
+          const size = this.expect(this.expr(args[1], U64), U64, args[1]);
+          this.line(`TS_TRY(ts_resize_raw(${h}, ${size.c}, ts_entry_len(${h})));`);
+          return undefined;
+        }
+        if (!this.ix) this.fail(node, "resizeAccount() is only available in instructions (or on a remaining account a helper was given)");
         const acct = this.accountParam(args[0], "resizeAccount's account");
-        if (acct.kind.kind !== "info" || !isWritable(acct.kind)) this.fail(args[0], "resizeAccount needs a Mut<AccountInfo> parameter");
+        if (acct.kind.kind !== "info" || (!isWritable(acct.kind) && !this.nativeAccountWrites()))
+          this.fail(args[0], "resizeAccount needs a Mut<AccountInfo> parameter or a remaining account");
         const size = this.expect(this.expr(args[1], U64), U64, args[1]);
         this.line(`TS_TRY(ts_resize_raw(a_${acct.name}, ${size.c}, entry_${acct.name}));`);
+        return undefined;
+      }
+      case "closeRaw": {
+        // Phoenix's Tombstone, in its order: receiver.lamports = receiver.lamports + account.lamports;
+        // account.lamports = 0; account.assign(&system_program::id()); account.realloc(0, false). The data is not
+        // zeroed (realloc's zero_init is false): the runtime drops it with the length, and then accepts the new owner.
+        if (args.length !== 2) this.fail(node, "closeRaw(account, receiver) takes the account to close and the account that gets its lamports");
+        const a = this.rawAccount(args[0]!, "closeRaw's account", true);
+        const r = this.rawAccount(args[1]!, "closeRaw's receiver", false);
+        // Closing an account into itself would burn its lamports (the runtime then refuses the instruction).
+        if (!this.nativeAccountWrites()) this.line(`if (${a} == ${r}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: closeRaw's receiver is the account itself");`);
+        const sum = this.tmp("sum");
+        this.line(`uint64_t ${sum};`);
+        this.line(`if (ts_add_overflow_u64(${r}->lamports, ${a}->lamports, &${sum})) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");`);
+        this.line(`${r}->lamports = ${sum};`);
+        this.line(`${a}->lamports = 0;`);
+        this.line(`ts_memcpy(&${a}->owner, &TS_SYSTEM_PROGRAM_ID, 32);`);
+        this.line(`${a}->data_len = 0;`);
+        return undefined;
+      }
+      case "assignOwner": {
+        // AccountInfo::assign: the owner field written in place; the runtime accepts it at the end of the instruction
+        // (or at a CPI) only for an account of this program that is writable and whose data is empty or zeroed.
+        if (args.length !== 2) this.fail(node, "assignOwner(account, owner) takes the account and its new owner's address");
+        const a = this.rawAccount(args[0]!, "assignOwner's account", true);
+        const owner = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
+        this.line(`ts_memcpy(&${a}->owner, ${owner.c}, 32);`);
         return undefined;
       }
       case "bigEndian":
@@ -1966,6 +2003,32 @@ export abstract class CallEmitter extends ExpressionEmitter {
       );
     if (write && !native) this.line(`TS_TRY(ts_check_unaliased(params, a_${acct.name}));`);
     return `a_${acct.name}`;
+  }
+
+  /**
+   * An account `closeRaw` / `assignOwner` writes in place: a remaining account (a helper's RemainingAccount, a ternary
+   * between them) or an AccountInfo parameter. Without NATIVE_ACCOUNT_WRITES it is checked as the other writes to
+   * accounts the compiler cannot see are: writable (3006; a parameter must be Mut<AccountInfo>), passed once (2040), and
+   * for `owned` this program's (3007). With the flag nothing is checked: the runtime judges the result, as it judges a
+   * native program's.
+   */
+  protected rawAccount(node: ts.Expression, what: string, owned: boolean): string {
+    const native = this.nativeAccountWrites();
+    let h = this.handle(node);
+    if (!h) {
+      const acct = this.accountParam(node, what);
+      if (acct.kind.kind !== "info") this.fail(node, `${what} is a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter`);
+      if (!isWritable(acct.kind) && !native)
+        this.fail(
+          node,
+          `${acct.name} must be Mut<AccountInfo> to change it in place (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+        );
+      h = `a_${acct.name}`;
+    } else if (!native) this.line(`TS_TRY(ts_check_writable(${h}));`);
+    if (native) return h;
+    this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+    if (owned) this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    return h;
   }
 
   /** `TS_FAIL` with a built-in ProgramError (no custom code), logged as `require(…, ProgramError.X)` logs it. */

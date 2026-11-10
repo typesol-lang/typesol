@@ -128,3 +128,22 @@ export function tooFewAccounts(m: PhoenixMarket, tag: number): Promise<Result> {
   };
   return send(m.svm, m.payer, [ix]);
 }
+
+/** Phoenix's MarketStatus (a Borsh enum): the byte ChangeMarketStatus takes. */
+export const MarketStatus = { Uninitialized: 0, Active: 1, PostOnly: 2, Paused: 3, Closed: 4, Tombstoned: 5 } as const;
+
+/** ChangeMarketStatus (tag 103) by the market authority (the payer); `receiver` gets a tombstoned market's lamports. */
+export function changeMarketStatus(m: PhoenixMarket, status: number, receiver?: Address): Promise<Result> {
+  const ix: Instruction = {
+    programAddress: PHOENIX,
+    accounts: [
+      meta(PHOENIX, AccountRole.READONLY),
+      meta(m.logAuthority, AccountRole.READONLY),
+      meta(m.market, AccountRole.WRITABLE),
+      meta(m.payer.address, AccountRole.READONLY_SIGNER, m.payer),
+      ...(receiver ? [meta(receiver, AccountRole.WRITABLE)] : []),
+    ] as Instruction["accounts"],
+    data: new Uint8Array([103, status]),
+  };
+  return send(m.svm, m.payer, [ix]);
+}

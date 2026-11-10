@@ -820,11 +820,29 @@ export declare const AuthorityType: {
  */
 export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<Signer>): void;
 /**
- * Resize a `Mut<AccountInfo>` of this program to `newSize` bytes (Rust's `AccountInfo::resize`): the data length only,
- * the new bytes zeroed. No rent moves: fund the account first (`rentExempt(newSize)`), the runtime refuses an account
- * left short. At most 10 KiB past its size when the instruction started (3016).
+ * Resize a `Mut<AccountInfo>` or a remaining account of this program to `newSize` bytes (Rust's `AccountInfo::resize` /
+ * `realloc(newSize, true)`): the data length only, the new bytes zeroed. No rent moves: fund the account first
+ * (`rentExempt(newSize)`), the runtime refuses an account left short. At most 10 KiB past its size when the
+ * instruction started (3016). A remaining account must be writable (3006) unless the program declares
+ * `NATIVE_ACCOUNT_WRITES`, which also lets an `AccountInfo` parameter be resized without `Mut<…>`.
  */
-export declare function resizeAccount(account: Mut<AccountInfo>, newSize: u64): void;
+export declare function resizeAccount(account: RemainingAccount | Mut<AccountInfo>, newSize: u64): void;
+/**
+ * Close an account of this program as a native program does it by hand (Phoenix's Tombstone), in this order:
+ * `receiver.lamports += account.lamports`, `account.lamports = 0`, the owner set to the System Program, the data length
+ * set to 0 (`realloc(0, false)`: the bytes are not zeroed, the runtime drops them with the length). Unlike `close` it
+ * takes remaining accounts and `AccountInfo` parameters and leaves the data unwiped. Both accounts are checked writable
+ * (3006; `Mut<AccountInfo>` parameters) and passed once (2040), the account owned by this program (3007) and not the
+ * receiver itself; with `NATIVE_ACCOUNT_WRITES` nothing is checked and the runtime judges the result, as for the
+ * original.
+ */
+export declare function closeRaw(account: RemainingAccount | Mut<AccountInfo>, receiver: RemainingAccount | Mut<AccountInfo>): void;
+/**
+ * Set an account's owner in place (Rust's `AccountInfo::assign`). The runtime accepts the change, at the end of the
+ * instruction or at the next CPI, only for a writable account of this program whose data is empty or zeroed. Checked
+ * as `closeRaw` checks its account (writable, passed once, this program's), or not at all under `NATIVE_ACCOUNT_WRITES`.
+ */
+export declare function assignOwner(account: RemainingAccount | Mut<AccountInfo>, owner: Pubkey): void;
 
 /**
  * Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none).

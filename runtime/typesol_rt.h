@@ -599,6 +599,11 @@ static inline __attribute__((always_inline)) void ts_deserialize(const uint8_t *
     }
     TsAccount *a = (TsAccount *)input;
     params->ka[i] = a;
+#ifdef TS_RECORD_ENTRY_LEN
+    /* resizeAccount on a remaining account: its size now, in the record's padding, as solana_program 1.14's
+       entrypoint keeps original_data_len there for AccountInfo::realloc (ts_entry_len). */
+    *(ts_u32_unaligned *)a->padding = (uint32_t)a->data_len;
+#endif
     input = (const uint8_t *)(((uint64_t)(input + 88 + a->data_len + MAX_PERMITTED_DATA_INCREASE) + 7) & ~(uint64_t)7) + 8;
   }
   params->data_len = *(const uint64_t *)input;
@@ -1369,6 +1374,11 @@ static inline uint64_t ts_resize(TsParams *params, TsAccount *payer, TsAccount *
   acct->data_len = new_len;
   return SUCCESS;
 }
+
+#ifdef TS_RECORD_ENTRY_LEN
+/* A remaining account's data length when the instruction started (recorded by ts_deserialize). */
+static inline __attribute__((always_inline)) uint64_t ts_entry_len(const TsAccount *a) { return *(const ts_u32_unaligned *)a->padding; }
+#endif
 
 /* resizeAccount(): the data length only (AccountInfo::resize), new bytes zeroed; no rent moves. */
 static inline uint64_t ts_resize_raw(TsAccount *acct, uint64_t new_len, uint64_t entry_len) {

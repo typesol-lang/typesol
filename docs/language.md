@@ -311,6 +311,21 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   included; the flag only lifts the up-front checks (a second `loadRawMut` of one account, at the same position or
   another, is 2040 without it). `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of
   `Mut<…>` parameters stay as they are, and programs without the flag compile exactly as before.
+- Accounts closed, reassigned and resized by hand, on remaining accounts and `AccountInfo` parameters:
+  `closeRaw(account, receiver)` is what Phoenix's Tombstone writes, in its order: `receiver.lamports +=
+  account.lamports` (checked), `account.lamports = 0`, `assign(&system_program::id())`, `realloc(0, false)`. Unlike
+  `close` the data is not zeroed first (a realloc to 0 drops it, and the runtime then accepts the new owner), so it
+  costs a few compute units whatever the account's size, and the account ends as the original's does (gone, its
+  lamports in the receiver; test/language/native-close.test.ts compares it with Phoenix's own Tombstone).
+  `assignOwner(account, owner)` is `AccountInfo::assign` (the runtime accepts it for a writable account of this program
+  whose data is empty or zeroed), and `resizeAccount(account, size)` also takes a remaining account (`realloc(size,
+  true)`: new bytes zeroed, at most 10 KiB past the size it had when the instruction started, 3016; that size is the one
+  the entrypoint records in the account's record, as solana_program 1.14's does, only in programs that resize a
+  remaining account). Without `NATIVE_ACCOUNT_WRITES` the accounts are checked as other writes the compiler cannot see
+  are: writable (3006; a parameter must be `Mut<AccountInfo>`), passed once (2040), the closed or reassigned account
+  this program's (3007), and not closed into itself (2040). With it nothing is checked and the runtime judges, as for
+  the original (`ReadonlyLamportChange`, `ExternalAccountLamportSpend`, `UnbalancedInstruction`, `ModifiedProgramId`),
+  and plain `AccountInfo` parameters are enough.
 - Errors as the original returns them: an error enum may start at code 0 (`/** @code 0 */`, Rust's
   `ProgramError::Custom(0)`, returned as Solana's CUSTOM_ZERO); `require(c, ProgramError.InvalidInstructionData)` for a
   built-in error; `panic(message, "program/src/lib.rs:12:5")` for a Rust panic (ProgramFailedToComplete, the runtime
