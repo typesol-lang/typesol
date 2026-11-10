@@ -403,6 +403,12 @@ export abstract class StorageEmitter extends AliasEmitter {
   protected readOnly(r: Ref): string {
     if (r.account) return `"${r.account.name}" is read-only; declare it Mut<...>`;
     if (r.lv.startsWith("(*arg_") || r.lv.startsWith("arg_")) return "instruction arguments are read-only; copy the value into a local first";
+    // An element of a Vec argument (or of a helper's Vec parameter): a view into the instruction data.
+    if (/^\(\([\w ]+\*\)(arg|p)_\w+\.ptr\)\[/.test(r.lv))
+      return "Vec arguments are read-only (a view of the instruction data); copy the element into a local first";
+    const param = /^\(\*p_(\w+)\)/.exec(r.lv)?.[1];
+    if (param && this.helper?.params.some((p) => p.name === param && !p.inout))
+      return `helper parameters are read-only: declare ${param} as Inout<T> to change the caller's value in place, or copy it into a local first`;
     return "this is read-only: it was loaded with loadAccount() (use loadAccountMut()) or comes from a read-only account";
   }
 
@@ -768,6 +774,11 @@ export abstract class StorageEmitter extends AliasEmitter {
   /** The kind of storage an expression names (struct, array, dataEnum…), without emitting code or failing. */
   protected peekKind(node: ts.Expression): FieldType["kind"] | undefined {
     return this.probe(() => this.ref(node))?.type.kind;
+  }
+
+  /** The type of the storage an expression names, without emitting code or failing. */
+  protected peekType(node: ts.Expression): FieldType | undefined {
+    return this.probe(() => this.ref(node))?.type;
   }
 
   protected place(node: ts.Expression): { type: ValueType; read: string; write: (c: string) => string } {

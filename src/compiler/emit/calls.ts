@@ -2177,6 +2177,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         values.push(takesAccounts ? this.ownedString(raw) : raw);
       }
     });
+    if (h.params.some((p) => p.inout))
+      this.checkInoutCall(
+        node,
+        h,
+        argNodes,
+        pieces.map((x) => (typeof x === "string" ? x : undefined)),
+      );
     // A helper that takes a writable struct account may replace anything stored in it (see assertNotAliased).
     for (const [i, p] of h.params.entries())
       if (p.account && p.account.kind === "account" && p.account.mut && ts.isIdentifier(argNodes[i]))
@@ -2231,6 +2238,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (p.account.kind === "account" && p.account.mut && p.account.struct.vec) return `a_${acct.name}, entry_${acct.name}`;
       return `a_${acct.name}`;
     }
+    if (p.inout) return this.inoutArg(h, p, n);
     switch (p.type.kind) {
       case "signerSeeds": {
         const seeds = this.signerSeedsArg(n);
@@ -2270,6 +2278,136 @@ export abstract class CallEmitter extends ExpressionEmitter {
       default:
         return this.expect(this.expr(n, p.type), p.type, n);
     }
+  }
+
+  /**
+   * An `Inout<T>` argument: a pointer to the caller's place itself (never a copy), which must be writable. A literal
+   * (`f({ … })`, `fixedArray(…)`) is built in a local of its own, as JS passes a fresh object; a ternary must pick
+   * between two places (a literal branch would be a copy the helper's writes never reach).
+   */
+  protected inoutArg(h: Helper, p: Helper["params"][number], n: ts.Expression): string {
+    const want = p.inout!;
+    const what = `Inout<${typeName(want)}>`;
+    let bare = n;
+    while (ts.isParenthesizedExpression(bare)) bare = bare.expression;
+    if (want.kind !== "vec" && (ts.isObjectLiteralExpression(bare) || (ts.isCallExpression(bare) && this.exportName(bare.expression) === "fixedArray")))
+      return this.literalArg(n, want)!;
+    if (ts.isConditionalExpression(bare)) {
+      if (want.kind !== "struct") this.fail(n, `${h.display}() takes ${p.name} as ${what}: pass the list itself, not a choice between lists`);
+      const place = this.structPlace(bare);
+      if (!place)
+        this.fail(n, `${h.display}() takes ${p.name} as ${what}: both branches must be ${want.name} places (a local, a field, a list element), not values`);
+      if (place.struct !== want.name) this.fail(n, `${h.display}() takes ${p.name} as ${what}; this is a ${place.struct}`);
+      if (!place.writable) this.fail(n, `${h.display}() changes ${p.name} (Inout), and a branch of this choice is read-only`);
+      return place.ptr;
+    }
+    let r = this.ref(n);
+    // A narrowed Option<Struct> / Option<FixedArray> place (`c.opt !== null` before it): the value inside it.
+    if (r && r.type.kind === "option" && sameType(r.type.inner as FieldType, want)) r = this.someValue(r);
+    if (!r || !sameType(r.type, want)) {
+      const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
+      if (l?.type.kind === "vecArg" || l?.type.kind === "optionArg")
+        this.fail(n, `${h.display}() changes ${p.name} (Inout): instruction arguments are read-only; copy the value into a local first`);
+      this.fail(n, `${h.display}() takes ${p.name} as ${what}: pass a ${typeName(want)} place of yours (a local, a field, a list element) for it to change`);
+    }
+    if (!r.writable) this.fail(n, `${h.display}() changes ${p.name} (Inout): ${this.readOnly(r)}`);
+    if (r.vec?.slice) this.fail(n, `${h.display}() takes ${p.name} as ${what}: pass the list, not a slice of it`);
+    return `(&${r.lv})`;
+  }
+
+  /**
+   * The rules of a call with `Inout<T>` arguments, so the helper's pointer is the only way to the place while it runs
+   * (Rust's one `&mut` at a time) and stays valid: no other argument may share storage with an Inout one (two places,
+   * one inside the other, the same list's elements whatever their indexes, an account and a place in it); a place in
+   * a list whose elements can move is refused when the call may move them; a reference into the place read after the
+   * call is refused (the helper may replace what it points at). Places whose roots differ but may be the same bytes at
+   * run time (two `Dup<…>` accounts, two loadRawMut views under NATIVE_ACCOUNT_WRITES, a helper's account parameters)
+   * are compared at run time (2040).
+   */
+  protected checkInoutCall(node: ts.CallExpression, h: Helper, argNodes: readonly ts.Expression[], passed: (string | undefined)[]) {
+    const show = (e: ts.Expression) => {
+      try {
+        return e.getText();
+      } catch {
+        return "this argument";
+      }
+    };
+    const fresh = (e: ts.Expression): boolean => {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      // A literal, or a struct a helper returns: a value of its own that nothing else reaches.
+      if (ts.isObjectLiteralExpression(e)) return true;
+      if (!ts.isCallExpression(e)) return false;
+      return this.exportName(e.expression) === "fixedArray" || this.helperOf(e)?.returns?.kind === "struct";
+    };
+    // Each argument passed by reference (Inout, read-only structs and lists, accounts, loaded structs) and its storage.
+    const refs: { i: number; inout: boolean; paths: string[] }[] = [];
+    h.params.forEach((p, i) => {
+      const n = argNodes[i]!;
+      if (p.inout) {
+        const paths = this.pathsOf(n);
+        if (!paths && !fresh(n))
+          this.fail(n, `${h.display}() changes ${p.name} (Inout): pass a local, a field path or a list element (bind anything else to a const first)`);
+        if (paths) refs.push({ i, inout: true, paths });
+        return;
+      }
+      const byRef = p.account || p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg";
+      const paths = byRef ? this.pathsOf(n) : undefined;
+      if (paths) refs.push({ i, inout: false, paths });
+    });
+    for (let a = 0; a < refs.length; a++)
+      for (let b = a + 1; b < refs.length; b++) {
+        const x = refs[a]!;
+        const y = refs[b]!;
+        if ((!x.inout && !y.inout) || !this.placesOverlap(x.paths, y.paths)) continue;
+        const [w, o] = x.inout ? [x, y] : [y, x];
+        const wn = show(argNodes[w.i]!);
+        const on = show(argNodes[o.i]!);
+        const op = h.params[o.i]!;
+        const why = `${wn} and ${on} share storage, and ${h.display}() changes ${h.params[w.i]!.name} (Inout) in place: while it runs, its parameter must be the only way to that place`;
+        if (op.inout)
+          this.fail(
+            argNodes[Math.max(w.i, o.i)]!,
+            `${why}. Two elements of one list count as one place whatever their indexes; pass what holds both, or copy one into a local and store it back after the call`,
+          );
+        if (op.account) this.fail(argNodes[o.i]!, `${why}. Pass the account alone and reach ${wn} through it in the helper, or pass only ${wn}`);
+        this.fail(argNodes[o.i]!, `${why}. Copy ${on} into a local first (const copy: T = ${on}) and pass the copy`);
+      }
+    for (const r of refs) {
+      if (!r.inout) continue;
+      const n = argNodes[r.i]!;
+      if (this.throughMovableList(n) && this.mayResizeVecs(node))
+        this.fail(
+          n,
+          `${show(n)} is in a list whose elements move when it grows, shrinks or is filtered (a Vec or BigVec), and ${h.display}() may do that (it takes writable or remaining accounts) while it holds ${show(n)}; copy the element into a local (const e: T = …), pass the local and store it back after the call`,
+        );
+      this.assertNothingInside(r.paths, node, h.display, show(n));
+    }
+    // Different roots that may still be the same bytes: compared at run time.
+    const root = (p: string) => p.split(/[.[]/)[0]!;
+    const local = (c: string) => {
+      for (const s of [...this.scopes, this.args]) for (const l of s.values()) if (l.c === c) return l;
+      return undefined;
+    };
+    const mayShare = (a: string, b: string): boolean => {
+      if (a === b) return false;
+      const acct = (r: string) => (r.startsWith("@") ? undefined : this.accounts.get(r));
+      const view = (r: string) => (r.startsWith("@") && local(r.slice(1))?.view ? r : undefined);
+      const [aa, ba] = [acct(a), acct(b)];
+      if (aa && ba) return aa.index === -1 || ba.index === -1 || !!aa.constraints.dup || !!ba.constraints.dup;
+      if (!this.nativeAccountWrites()) return false;
+      return !!((aa || view(a)) && (ba || view(b)));
+    };
+    const inouts = refs.filter((r) => r.inout && passed[r.i]);
+    for (let a = 0; a < inouts.length; a++)
+      for (let b = a + 1; b < inouts.length; b++) {
+        const x = inouts[a]!;
+        const y = inouts[b]!;
+        if (!x.paths.some((p) => y.paths.some((q) => mayShare(root(p), root(q))))) continue;
+        const [pa, pb] = [passed[x.i]!, passed[y.i]!];
+        this.line(
+          `if ((uint8_t *)${pa} < (uint8_t *)${pb} + sizeof(*${pb}) && (uint8_t *)${pb} < (uint8_t *)${pa} + sizeof(*${pa})) TS_FAIL(TS_ERR_DUPLICATE_MUT, ${cString(`TypeSOL: ${h.display}() was given ${show(argNodes[x.i]!)} and ${show(argNodes[y.i]!)}, which share storage`)});`,
+        );
+      }
   }
 
   /**
