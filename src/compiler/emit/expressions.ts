@@ -250,6 +250,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       const k = this.model.constants.get(node.text);
       if (k) {
         if (typeof k.value === "boolean") return { c: k.value ? "true" : "false", type: BOOL };
+        if (k.value === null) this.fail(node, `${k.name} = null only tells failures to log nothing; it is not a value`);
         if (typeof k.value === "object") return { c: `(&TSK_${k.name})`, type: PUBKEY };
         if (typeof k.value === "string") {
           const len = Buffer.byteLength(k.value, "utf8");
@@ -595,7 +596,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isIdentifier(e) && !this.lookup(e.text)) {
       const k = this.model.constants.get(e.text);
       if (k && typeof k.value === "string") return k.value;
-      if (k && typeof k.value === "object") return base58(Uint8Array.from(k.value.pubkey));
+      if (k && typeof k.value === "object" && k.value !== null) return base58(Uint8Array.from(k.value.pubkey));
     }
     return undefined;
   }

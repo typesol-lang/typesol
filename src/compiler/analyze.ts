@@ -408,6 +408,9 @@ function programFiles(program: ts.Program, entry: string): ts.SourceFile[] {
   return order;
 }
 
+/** The failure-line constants that may be `null`: such failures return their error without logging anything. */
+const SILENCEABLE_PREFIXES = ["ERROR_LOG_PREFIX", "PROGRAM_ERROR_LOG_PREFIX"];
+
 export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const entryPath = path.resolve(entry);
   checkImports(entryPath, files);
@@ -425,6 +428,9 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const interfaces: { decl: ts.InterfaceDeclaration; imports: Map<string, string> }[] = [];
   const groups: AccountGroups = new Map();
   const aliases: { decl: ts.TypeAliasDeclaration; imports: Map<string, string> }[] = [];
+  /** `type Price = u64`: plain aliases (not data enums) and the imports of the file declaring each. */
+  const simpleAliases = new Map<ts.TypeAliasDeclaration, Map<string, string>>();
+  const fileImports = new Map<ts.SourceFile, Map<string, string>>();
   /** Program-wide names (structs, enums, helpers) -> declaring file, for collision errors. */
   const declared = new Map<string, string>();
   let entryImports = new Map<string, string>();
@@ -442,6 +448,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   for (const file of programFiles(program, entryPath)) {
     const isEntry = file === sourceFile;
     const imports = new Map<string, string>();
+    fileImports.set(file, imports);
     if (isEntry) entryImports = imports;
     for (const stmt of file.statements) {
       reporter.guard(() => {
@@ -463,9 +470,21 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
           if (isAccountGroup(stmt, imports)) groups.set(stmt.name.text, { decl: stmt, imports });
           else interfaces.push({ decl: stmt, imports });
         } else if (ts.isTypeAliasDeclaration(stmt)) {
-          if (!isExported(stmt)) reporter.fail(stmt, "data enums (type X = { kind: ... } | ...) must be exported");
           declare(stmt.name, file);
-          aliases.push({ decl: stmt, imports });
+          const shape = aliasShape(stmt.type);
+          if (stmt.typeParameters?.length)
+            reporter.fail(stmt, shape === "alias" ? "type aliases cannot be generic: name one type, type Price = u64" : "data enums cannot be generic");
+          if (shape === "mixed")
+            reporter.fail(
+              stmt.type,
+              'a union of named types is not a data enum: list the variants as object types (type Event = { kind: "Fill"; price: u64 } | { kind: "Place"; … }), or alias a single type (type Price = u64, type Maybe = Point | null)',
+            );
+          // `type Price = u64`: another name for a type, replaced by that type wherever it is used (substituteAliases).
+          if (shape === "alias") simpleAliases.set(stmt, imports);
+          else {
+            if (!isExported(stmt)) reporter.fail(stmt, "data enums (type X = { kind: ... } | ...) must be exported");
+            aliases.push({ decl: stmt, imports });
+          }
         } else if (ts.isEnumDeclaration(stmt)) {
           if (!isExported(stmt)) reporter.fail(stmt, "enums must be exported");
           declare(stmt.name, file);
@@ -542,6 +561,15 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               value = -BigInt(init.operand.text.slice(0, -1).replace(/_/g, ""));
             else if (init.kind === ts.SyntaxKind.TrueKeyword || init.kind === ts.SyntaxKind.FalseKeyword) value = init.kind === ts.SyntaxKind.TrueKeyword;
             else if (ts.isStringLiteral(init)) value = init.text;
+            // `const ERROR_LOG_PREFIX = null`: failures log nothing, as a native program returning an error.
+            else if (init.kind === ts.SyntaxKind.NullKeyword && SILENCEABLE_PREFIXES.includes(d.name.text)) {
+              if (d.type) reporter.fail(d.type, `leave the type out: const ${d.name.text} = null`);
+              value = null;
+            } else if (init.kind === ts.SyntaxKind.NullKeyword)
+              reporter.fail(
+                init,
+                `only ${SILENCEABLE_PREFIXES.join(" and ")} can be null (failures that log nothing); other constants are bigint, boolean or string literals, or pubkey("…")`,
+              );
             else reporter.fail(init, 'top-level constants must be bigint, boolean or string literals, or pubkey("…")');
             declare(d.name, file);
             const def: ConstDef = { name: d.name.text, value };
@@ -558,6 +586,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const fstrings = new Set<number>();
   const fixedVecs = new Map<string, FieldType & { kind: "vec" }>();
   const scopeFor = (imports: Map<string, string>): TypeScope => ({ imports, enums, options, dataEnums });
+  if (simpleAliases.size) substituteAliases(program, entryPath, simpleAliases, fileImports, reporter);
   for (const c of pendingConstTypes) {
     reporter.guard(() => {
       const t = resolveScalarType(c.type, scopeFor(c.imports));
@@ -1118,6 +1147,119 @@ function numericLiteralArg(node: ts.TypeNode | undefined): number | undefined {
 }
 
 /**
+ * What a `type X = …` declares: a data enum (object types, `{ kind: "A"; … } | { kind: "B" }`), an alias of one type
+ * (`u64`, `Point`, `FixedVec<u8, 32>`, `Point | null`), or a union mixing named types, which is neither.
+ */
+function aliasShape(t: ts.TypeNode): "dataEnum" | "alias" | "mixed" {
+  while (ts.isParenthesizedTypeNode(t)) t = t.type;
+  if (ts.isTypeLiteralNode(t)) return "dataEnum";
+  if (!ts.isUnionTypeNode(t)) return "alias";
+  const members = t.types.filter((m) => !(ts.isLiteralTypeNode(m) && m.literal.kind === ts.SyntaxKind.NullKeyword));
+  if (members.every((m) => ts.isTypeLiteralNode(m))) return "dataEnum";
+  // `Point | null` (an Option) is one type; two named types are not.
+  return members.length === 1 && !members.some((m) => ts.isTypeLiteralNode(m)) ? "alias" : "mixed";
+}
+
+/**
+ * Replace every use of a plain alias (`type Price = u64`) in the program's files by the type it names, so everything
+ * after sees the type itself. The checker says which declaration a name refers to (a type parameter or a local name
+ * may hide an alias). The aliased type keeps its own file's names: the TypeSOL imports it needs are added to the using
+ * file's (the same name meaning two things there is an error).
+ */
+function substituteAliases(
+  program: ts.Program,
+  entry: string,
+  simple: Map<ts.TypeAliasDeclaration, Map<string, string>>,
+  fileImports: Map<ts.SourceFile, Map<string, string>>,
+  reporter: Reporter,
+): void {
+  const checker = program.getTypeChecker();
+  const aliasOf = (ref: ts.TypeReferenceNode): ts.TypeAliasDeclaration | undefined => {
+    if (!ts.isIdentifier(ref.typeName) || ref.typeArguments?.length) return undefined;
+    let sym = checker.getSymbolAtLocation(ref.typeName);
+    if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+    const decl = sym?.declarations?.find((x): x is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(x) && simple.has(x));
+    return decl;
+  };
+  // The type an alias stands for, itself without aliases (`type A = B; type B = u64`).
+  const resolved = new Map<ts.TypeAliasDeclaration, ts.TypeNode>();
+  const resolving = new Set<ts.TypeAliasDeclaration>();
+  const target = (decl: ts.TypeAliasDeclaration): ts.TypeNode => {
+    const done = resolved.get(decl);
+    if (done) return done;
+    if (resolving.has(decl)) reporter.fail(decl.name, `type ${decl.name.text} refers to itself`);
+    resolving.add(decl);
+    let t = decl.type;
+    while (ts.isParenthesizedTypeNode(t)) t = t.type;
+    if (ts.isTypeReferenceNode(t) && aliasOf(t)) t = target(aliasOf(t)!);
+    else replaceAliases(t);
+    resolving.delete(decl);
+    resolved.set(decl, t);
+    return t;
+  };
+  const replaceAliases = (root: ts.Node): void => {
+    const found: { ref: ts.TypeReferenceNode; decl: ts.TypeAliasDeclaration }[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isTypeAliasDeclaration(n) && simple.has(n)) return; // resolved on its own
+      if (ts.isTypeReferenceNode(n)) {
+        const decl = aliasOf(n);
+        if (decl) {
+          found.push({ ref: n, decl });
+          return;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(root);
+    for (const { ref, decl } of found)
+      reporter.guard(() => {
+        const to = target(decl);
+        if (!replaceChild(ref.parent, ref, to)) reporter.fail(ref, `type ${decl.name.text} cannot be used here; write the type it names`);
+        // The names the aliased type uses, from its own file's imports, become the using file's too.
+        const from = simple.get(decl)!;
+        const into = fileImports.get(ref.getSourceFile());
+        if (!into || into === from) return;
+        const names = new Set<string>();
+        const collect = (n: ts.Node): void => {
+          if (ts.isIdentifier(n)) names.add(n.text);
+          ts.forEachChild(n, collect);
+        };
+        collect(to);
+        for (const name of names) {
+          const meant = from.get(name);
+          if (meant === undefined) continue;
+          const here = into.get(name);
+          if (here !== undefined && here !== meant)
+            reporter.fail(ref, `type ${decl.name.text} uses ${name} (${meant} from "typesol"), which names ${here} in this file; rename one import`);
+          into.set(name, meant);
+        }
+      });
+  };
+  for (const file of programFiles(program, entry)) replaceAliases(file);
+}
+
+/** Put `to` where `from` is among `parent`'s children (a property or an element of a node list). */
+function replaceChild(parent: ts.Node, from: ts.Node, to: ts.Node): boolean {
+  const p = parent as unknown as Record<string, unknown>;
+  for (const key of Object.keys(p)) {
+    if (key === "parent") continue;
+    const v = p[key];
+    if (v === from) {
+      p[key] = to;
+      return true;
+    }
+    if (Array.isArray(v)) {
+      const i = v.indexOf(from);
+      if (i >= 0) {
+        (v as unknown[])[i] = to;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Resolve every exported interface. Field types may name other interfaces, so names are
  * collected first; sizes are computed after, rejecting cycles.
  */
@@ -1311,7 +1453,8 @@ function analyzeStructs(
       const members = ts.isUnionTypeNode(decl.type) ? decl.type.types : [decl.type];
       const variants: DataEnumDef["variants"] = [];
       for (const m of members) {
-        if (!ts.isTypeLiteralNode(m)) reporter.fail(m, 'each variant is an object type: { kind: "Name"; field: Type }');
+        if (!ts.isTypeLiteralNode(m))
+          reporter.fail(m, 'each variant of a data enum is an object type, { kind: "Name"; field: Type } (null is not a variant: use Option<Enum>)');
         let vname: string | undefined;
         const fields: StructField[] = [];
         for (const p of m.members) {
@@ -1747,7 +1890,18 @@ function analyzeHelper(
         reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
       return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
     });
-  return { name, display, params, returns, node: fn, statements: bodyStatements(fn, !returns), imports: scope.imports };
+  // `/** @noinline */` on the function (or on the `const f = …` declaring an arrow).
+  const noinline = [fn, ...(ts.isVariableDeclaration(fn.parent) ? [fn.parent] : [])].some((n) => ts.getJSDocTags(n).some((t) => t.tagName.text === "noinline"));
+  return {
+    name,
+    display,
+    params,
+    returns,
+    node: fn,
+    statements: bodyStatements(fn, !returns),
+    imports: scope.imports,
+    ...(noinline ? { noinline } : {}),
+  };
 }
 
 /**

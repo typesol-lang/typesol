@@ -145,7 +145,7 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
     if (ts.isIdentifier(el) && !this.lookup(el.text)) {
       const k = this.model.constants.get(el.text);
       if (k && typeof k.value === "string") return { kind: "const", value: [...Buffer.from(k.value, "utf8")] };
-      if (k && typeof k.value === "object") return { kind: "const", value: k.value.pubkey };
+      if (k && typeof k.value === "object" && k.value !== null) return { kind: "const", value: k.value.pubkey };
       if (k && typeof k.value === "bigint") {
         // Little-endian two's complement in the constant's width (16 bytes for u128/i128), as the program hashes it.
         const bytes = k.type ? scalarSize(k.type) : 8;

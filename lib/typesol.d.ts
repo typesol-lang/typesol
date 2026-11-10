@@ -851,6 +851,12 @@ export declare function createProgramAddress(seeds: Seed[], program: Pubkey): Pu
 export declare function logBase64(prefix: string, value: object): void;
 /** The bump of that canonical program address (`Pubkey::find_program_address(seeds, program).1`), to sign with it. */
 export declare function findProgramAddressBump(seeds: Seed[], program: Pubkey): u8;
+/**
+ * The canonical program address and its bump from one search (Rust's `let (address, bump) =
+ * Pubkey::find_program_address(seeds, program)`), where `findProgramAddress` and `findProgramAddressBump` would search
+ * twice: bind both, `const [address, bump] = findProgramAddressWithBump(["seat", market, trader], PHOENIX_ID)`.
+ */
+export declare function findProgramAddressWithBump(seeds: Seed[], program: Pubkey): [address: Pubkey, bump: u8];
 /** This program's address (`crate::ID`). */
 export declare function programId(): Pubkey;
 /**

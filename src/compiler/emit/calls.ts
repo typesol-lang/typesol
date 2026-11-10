@@ -118,7 +118,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
               "require's error is a string literal, a member of an error enum (CounterError.X) or a u32 code; a template string or string variable is not: give the message to an error enum member",
             );
           const code = v.literal !== undefined ? this.literal(v.literal, U32, args[1]) : this.expect(v, U32, args[1]);
-          this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
+          if (this.quietErrors()) this.line(`if (!${cond.c}) return ts_fail_code_quiet(${code.c});`);
+          else this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
           return undefined;
         }
         // A built-in ProgramError: its u64 form (the index shifted into the high 32 bits), as solana_program returns it.
@@ -129,9 +130,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         const err = this.errorRef(args[1]);
         // `const ERROR_LOG_PREFIX = "AMM error: "`: the program's errors log as its native entrypoint logs them.
+        // `const ERROR_LOG_PREFIX = null`: nothing logged, only the code returned.
         const prefix = this.model.constants.get("ERROR_LOG_PREFIX")?.value;
         const text = typeof prefix === "string" ? `${prefix}${err.msg}` : `Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`;
-        this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
+        if (prefix === null) this.line(`if (!${cond.c}) return ts_fail_quiet(${err.code});`);
+        else this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
         return undefined;
       }
       case "panic": {
@@ -661,6 +664,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`ts_log_base64(${cString(prefix)}, ${Buffer.byteLength(prefix)}, (const uint8_t *)${place.ptr}, sizeof(TSS_${sd.name}));`);
         return undefined;
       }
+      case "findProgramAddressWithBump":
+        this.fail(node, "bind both results where it is called: const [address, bump] = findProgramAddressWithBump(seeds, program)");
       case "findProgramAddress": {
         // Pubkey::find_program_address(seeds, program).0: the canonical PDA of any program.
         if (args.length !== 2) this.fail(node, "findProgramAddress(seeds, program) takes the seeds and the program's address");
@@ -1774,7 +1779,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
     const text = typeof pre === "string" ? `${pre}${PROGRAM_ERRORS[err]}` : `TypeSOL: not ${what}`;
     const bad = id ? `!ts_key_eq(&${h}->key, &${id})` : `!ts_is_token_program(&${h}->key)`;
-    this.line(`if (${bad}) TS_FAIL(((uint64_t)${err + 2}) << 32, ${cString(text)});`);
+    this.line(`if (${bad}) ${this.programFail(`((uint64_t)${err + 2}) << 32`, text)};`);
     if (kind.kind === "stakeHistory") this.line(`if (${h}->data_len < 8) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: not the StakeHistory sysvar's data");`);
     return { c: h, type: { kind: "account", program: kind } };
   }
@@ -2096,7 +2101,18 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
     const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
     const text = typeof pre === "string" ? `${pre}${name}` : `Error: ${name} (${this.location(node)})`;
-    return `TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)})`;
+    return this.programFail(`((uint64_t)${idx + 2}) << 32`, text);
+  }
+
+  /** A failure with a built-in ProgramError's code: logged with `text`, or nothing under `PROGRAM_ERROR_LOG_PREFIX = null`. */
+  protected programFail(code: string, text: string): string {
+    if (this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value === null) return `return ts_fail_quiet(${code})`;
+    return `TS_FAIL(${code}, ${cString(text)})`;
+  }
+
+  /** `const ERROR_LOG_PREFIX = null`: the program's own errors (and codes returned by its helpers) log nothing. */
+  protected quietErrors(): boolean {
+    return this.model.constants.get("ERROR_LOG_PREFIX")?.value === null;
   }
 
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
@@ -2208,6 +2224,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected helperWithClosure(node: ts.CallExpression): { value: Value | undefined } | undefined {
     const g = this.givenClosure(node);
     if (!g) return undefined;
+    const tagged = [g.node, ...(ts.isVariableDeclaration(g.node.parent) ? [g.node.parent] : [])];
+    if (tagged.some((n) => ts.getJSDocTags(n).some((t) => t.tagName.text === "noinline")))
+      this.fail(node, `${g.display}() is @noinline, but given a closure it is expanded where it is called: pass a named function`);
     // Type parameters: bound from the call (as an instance would be) while the body is expanded.
     const saved = this.scope;
     if (g.typeParams.length) {
@@ -2414,8 +2433,16 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
         // An Option<Vec<T>> argument passes as its list once checked against null (TypeScript narrows it).
         const t = l?.type.kind === "vecArg" && l.type.optional ? { ...l.type, optional: undefined } : l?.type;
-        if (!l || !t || !sameType(t, p.type)) this.fail(n, `expected a ${typeName(p.type)} instruction argument`);
-        return l.c;
+        if (l && t && sameType(t, p.type)) return l.c;
+        // A list of the caller's (a local FixedVec or FixedArray, a field of a local struct, or one in account data): a
+        // read-only view of its elements, passed by pointer.
+        const view = this.listViewArg(n, p.type, h);
+        if (view) return view;
+        const what = p.type.elem.kind === "int" && p.type.elem.name === "u8" && p.type.cap === undefined ? "list of u8" : `list of ${typeName(p.type.elem)}`;
+        this.fail(
+          n,
+          `expected a ${what}: an instruction argument, the instruction data or a slice of it, or a FixedVec / FixedArray of ${typeName(p.type.elem)} (a local, a field)`,
+        );
       }
       default:
         return this.expect(this.expr(n, p.type), p.type, n);
@@ -2492,7 +2519,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (paths) refs.push({ i, inout: true, paths });
         return;
       }
-      const byRef = p.account || p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg";
+      const byRef = p.account || p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg" || p.type.kind === "vecArg";
       const paths = byRef ? this.pathsOf(n) : undefined;
       if (paths) refs.push({ i, inout: false, paths });
     });
@@ -2591,6 +2618,71 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
     this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
     return t;
+  }
+
+  /**
+   * A FixedVec or FixedArray of `elem` given for a read-only list parameter: a `TS_VecArg` view of its elements (the
+   * length as it is at the call). A list this function holds (a local, a field of a struct it owns) is read in place;
+   * one in account data is copied first when the helper takes accounts, as a struct argument is (the helper may write
+   * the account). Undefined when `n` is not such a list.
+   */
+  protected listViewArg(n: ts.Expression, want: ValueType & { kind: "vecArg" }, h: Helper): string | undefined {
+    const r = this.probe(() => this.ref(n));
+    if (!r) return undefined;
+    const elem = want.elem;
+    // A FixedVec<T, N> parameter holds at most N elements: a list with room for more is refused here, as an
+    // instruction argument with more is refused when decoded.
+    const holds = r.type.kind === "vec" ? r.type.cap : r.type.kind === "array" ? r.type.len : undefined;
+    if (want.cap !== undefined && holds !== undefined && holds > want.cap && (r.type.kind === "vec" || r.type.kind === "array") && sameType(r.type.elem, elem))
+      this.fail(
+        n,
+        `${h.display}() takes at most ${want.cap} elements here (FixedVec<${typeName(elem)}, ${want.cap}>) and this list holds up to ${holds}: declare the parameter FixedVec<${typeName(elem)}, ${holds}> (or InstructionBytes / Vec<${typeName(elem)}>, no limit)`,
+      );
+    let items: string;
+    let count: string;
+    let room: number;
+    if (r.type.kind === "vec" && r.type.cap !== undefined && !r.type.heap && !r.type.big && !r.type.raw && r.vec && !r.vec.slice) {
+      if (!sameType(r.type.elem, elem)) return undefined;
+      const fresh = this.ref(n)!;
+      items = fresh.vec!.items;
+      count = vecCount(fresh.vec!);
+      room = r.type.cap;
+    } else if (r.type.kind === "array") {
+      if (!sameType(r.type.elem, elem)) return undefined;
+      items = this.ref(n)!.lv;
+      count = String(r.type.len);
+      room = r.type.len;
+    } else return undefined;
+    const size = this.fieldBytes(elem);
+    const t = this.tmp("lview");
+    if (h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining") && !this.callerHoldsList(n)) {
+      // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
+      const buf = this.tmp("argl");
+      this.hoistLazy(buf, (v) => `uint8_t *${v}`);
+      this.line(`if (${buf} == NULL) TS_TRY(ts_alloc(${room * size}, &${buf}));`);
+      this.line(`TS_VecArg ${t} = {${buf}, (uint32_t)${count}};`);
+      this.line(`ts_memcpy_bulk(${buf}, (const uint8_t *)${items}, (uint64_t)${t}.len * ${size});`);
+      return t;
+    }
+    this.line(`TS_VecArg ${t} = {(const uint8_t *)${items}, (uint32_t)${count}};`);
+    return t;
+  }
+
+  /** Whether `node` is a list this function holds on its stack (a local list, a field of a struct it owns), not account data. */
+  protected callerHoldsList(node: ts.Expression): boolean {
+    let n: ts.Expression = node;
+    for (;;) {
+      if (ts.isParenthesizedExpression(n)) n = n.expression;
+      else if (ts.isPropertyAccessExpression(n)) n = n.expression;
+      else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "get") n = n.expression.expression;
+      else break;
+    }
+    if (!ts.isIdentifier(n)) return false;
+    const l = this.lookup(n.text);
+    if (!l) return false;
+    // A declared list local has no storage paths; an Inout parameter's (`@p_x`) may be account data.
+    if ((l.type.kind === "vec" || l.type.kind === "array") && !l.paths && !l.readonly) return true;
+    return !!l.owned;
   }
 
   /** Whether `node` is (part of) a struct value this function owns: `h`, `h.inner`, `h.list.get(i)`. */

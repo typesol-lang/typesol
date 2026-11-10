@@ -96,6 +96,24 @@ static __attribute__((noinline, unused)) uint64_t ts_fail_code(uint32_t code, co
   return ts_fail(code ? code : TS_ERR_OVERFLOW, msg, sol_strlen(msg));
 }
 
+/* A failure that logs nothing (`const ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`): the code ts_fail
+ * would return, as a native program returns an error its own checks already explained (or never explain). */
+static inline __attribute__((always_inline, unused)) uint64_t ts_fail_quiet(uint64_t code) {
+#ifdef TS_PANIC_ON_OVERFLOW
+#ifdef TS_PANIC_ABORT
+  if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) abort();
+#else
+  if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) sol_panic_("", 0, 0, 0);
+#endif
+#endif
+#ifdef TS_CUSTOM_ZERO
+  if (code == 0) return (uint64_t)1 << 32;
+#endif
+  return code;
+}
+/* ts_fail_code's quiet form: a code computed at run time, 0 failing as an overflow. */
+static inline __attribute__((always_inline, unused)) uint64_t ts_fail_code_quiet(uint32_t code) { return ts_fail_quiet(code ? code : TS_ERR_OVERFLOW); }
+
 #define TS_TRY(expr)                 \
   do {                               \
     uint64_t ts_r_ = (expr);         \
@@ -1806,6 +1824,22 @@ extern void sol_memcpy_(void *dst, const void *src, uint64_t n);
 #define TS_MEMCPY_SYSCALL_MIN 32
 static inline __attribute__((always_inline)) void ts_memcpy_bulk(void *dst, const void *src, uint64_t n) {
   if (n >= TS_MEMCPY_SYSCALL_MIN) sol_memcpy_(dst, src, n);
+  else ts_memcpy(dst, src, n);
+}
+/* The memset syscall, for zeroing large regions (a local FixedVec's free slots, so bytes past its length read as zero
+ * wherever its whole layout is copied: account data, events): max(10, n / 250) CU plus the call, against n / 8 stores
+ * for ts_memzero's words (constant sizes unroll), so regions under 128 bytes keep the stores. */
+extern void sol_memset_(void *dst, uint8_t c, uint64_t n);
+#define TS_MEMSET_SYSCALL_MIN 128
+static inline __attribute__((always_inline, unused)) void ts_memzero_bulk(void *dst, uint64_t n) {
+  if (n >= TS_MEMSET_SYSCALL_MIN) sol_memset_(dst, 0, n);
+  else ts_memzero(dst, n);
+}
+/* A copy of a size known when compiling (a whole local FixedVec): the syscall from TS_MEMCPY_CONST_MIN bytes, where
+ * the unrolled words (a load and a store per 8 bytes) cost more than the call. */
+#define TS_MEMCPY_CONST_MIN 128
+static inline __attribute__((always_inline, unused)) void ts_memcpy_const(void *dst, const void *src, uint64_t n) {
+  if (n >= TS_MEMCPY_CONST_MIN) sol_memcpy_(dst, src, n);
   else ts_memcpy(dst, src, n);
 }
 /* A BigVec's room: a BigVec struct is only ever a loadRaw view, which sits at a TsAccount's data, right after its

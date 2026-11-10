@@ -156,7 +156,8 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   for (const e of model.dataEnums.values()) deps({ kind: "dataEnum", name: e.name });
   for (const t of model.localVecs.values()) deps(t);
 
-  for (const k of model.constants.values()) if (typeof k.value === "object") out.push(`static const SolPubkey TSK_${k.name} = {${cBytes(k.value.pubkey)}};`);
+  for (const k of model.constants.values())
+    if (typeof k.value === "object" && k.value !== null) out.push(`static const SolPubkey TSK_${k.name} = {${cBytes(k.value.pubkey)}};`);
   out.push(...emitBorshCodecs(model), ...emitNativeBorshCodecs(model));
   const helpers = [...model.helpers.values()];
   for (const h of helpers) out.push(helperSignature(h) + ";");

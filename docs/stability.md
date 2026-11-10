@@ -44,8 +44,13 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - The built-in RedBlackTree (unreleased): `rbTreeAt` / `rbTreeMutAt`, lib-sokoban 0.3's byte layout and algorithms,
   its panics in solana-program 1.14–1.17's format.
 - `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
+- Failures without a log line (unreleased): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
+- `findProgramAddressWithBump` (unreleased), with `const [address, bump] = …` its only array destructuring.
+- Plain type aliases (unreleased): `type Price = u64`, replaced by the type they name.
+- Stack room (unreleased): `/** @noinline */` helpers and `/** @heap */` locals.
 - Local `FixedVec` / `FixedArray` lists of structs, `FixedVec.pushAll`, the instruction data as a list (`slice`,
-  `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0).
+  `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0); local FixedVecs given for read-only
+  `FixedVec<T, N>` / `Vec<T>` helper parameters (unreleased).
 - `epochRewards()` and `EpochRewards` (0.42.0): the EpochRewards sysvar through its syscall.
 - `NATIVE_ACCOUNT_WRITES` (0.42.0): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
   (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside

@@ -4,6 +4,7 @@ import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type Valu
 import {
   U64,
   BOOL,
+  PUBKEY,
   type Value,
   type Local,
   type Closure,
@@ -883,7 +884,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     this.checkLocalListSize(t, init, "the new list");
     this.model.localVecs.set(fixedVecC(t), t);
     const pad = "  ".repeat(this.indent);
-    this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero(&${c}, sizeof(${c}));`;
+    this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero_bulk(&${c}, sizeof(${c}));`;
     return t;
   }
   /** The element type of a Vec, FixedArray, FixedVec or Vec argument. */
@@ -1378,6 +1379,10 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.destructure(list, d, d.name, d.initializer, topLevel);
         continue;
       }
+      if (ts.isArrayBindingPattern(d.name)) {
+        this.addressAndBump(d, d.name, mutable);
+        continue;
+      }
       if (!ts.isIdentifier(d.name) || !d.initializer) this.fail(d, "declare one plain name with an initializer");
       // A local function is a helper of its own (lifted when the program was analyzed): nothing to run here.
       if (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) {
@@ -1402,6 +1407,12 @@ export abstract class StatementEmitter extends CpiEmitter {
       const c = `l_${name}_${this.temp++}`;
 
       const init = d.initializer;
+      // `/** @heap */` names a list or struct type (checked again where such locals are made).
+      if (
+        [d, d.parent?.parent].some((n) => n && ts.getJSDocTags(n).some((t) => t.tagName.text === "heap")) &&
+        !(d.type && (["FixedVec", "FixedArray"].includes(typesolName(d.type, this.scope.imports) ?? "") || structNameOf(d.type, this.scope)))
+      )
+        this.heapLocal(d, false);
       // Run-time offset views (loadRawAt, rawArrayAt, rbTreeAt) and references into a tree's nodes (views.ts).
       if (this.bindView(d, init, name, c, mutable)) continue;
       // A function as a value: another name for one (`const h = g`), or the one a function returns (`adder(5n)`).
@@ -1541,25 +1552,41 @@ export abstract class StatementEmitter extends CpiEmitter {
       // A local list declared with its type: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, … }])`,
       // `const buf: FixedVec<u8, 600> = fixedVec([])`, or a copy of another list (a Vec argument, instruction data).
       const listType = d.type ? this.listAnnotation(d.type) : undefined;
-      if (listType) {
-        this.checkLocalListSize(listType, d.type!);
-        if (listType.kind === "vec") {
-          this.model.localVecs.set(fixedVecC(listType), listType);
-          this.line(`${fixedVecC(listType)} ${c};`);
-          this.line(`ts_memzero(&${c}, sizeof(${c}));`);
-        } else this.line(`${storageDecl(listType, c)};`);
-        this.writeAggregate({ lv: c, type: listType, writable: true }, init, true);
-        this.scopes.at(-1)!.set(name, { c, type: listType, mutable });
-        continue;
-      }
       // Struct values: `const p: Point = { x, y }` (or a copy of another Point) is a local of its own.
       const structType = d.type && structNameOf(d.type, this.scope) ? this.model.structs.get(structNameOf(d.type, this.scope)!) : undefined;
+      // `/** @heap */`: the local lives on the heap instead of the 4 KiB stack frame.
+      const heap = this.heapLocal(d, !!listType || !!structType);
+      if (listType) {
+        if (heap) this.checkHeapRoom(this.fieldBytes(listType), d.type!);
+        else this.checkLocalListSize(listType, d.type!);
+        let lv = c;
+        if (listType.kind === "vec") this.model.localVecs.set(fixedVecC(listType), listType);
+        if (heap) {
+          // One allocation per declaration and instruction (a loop reuses it): the heap is never freed.
+          this.hoistLazy(c, (n) => (listType.kind === "vec" ? `${fixedVecC(listType)} *${n}` : storageDecl(listType, `(*${n})`)));
+          this.line(`if (${c} == NULL) TS_TRY(ts_alloc(sizeof(*${c}), (uint8_t **)&${c}));`);
+          lv = `(*${c})`;
+        } else this.line(listType.kind === "vec" ? `${fixedVecC(listType)} ${c};` : `${storageDecl(listType, c)};`);
+        // A literal zeroes its own free slots; anything else (a copy of another list) may fill only the first ones.
+        if (listType.kind === "vec" && !this.isListLiteral(init)) this.line(`ts_memzero_bulk(&${lv}, sizeof(${lv}));`);
+        this.writeAggregate({ lv, type: listType, writable: true }, init, true);
+        this.scopes.at(-1)!.set(name, { c: lv, type: listType, mutable });
+        continue;
+      }
       if (structType) {
         if (mutable) this.fail(d, "bind struct values with const (their fields can still be updated)");
         if (structType.size === undefined || structType.vec) this.fail(d.type!, `${structType.name} has variable-size fields and cannot be a local`);
-        this.line(`TSS_${structType.name} ${c}__v;`);
-        this.writeAggregate({ lv: `${c}__v`, type: { kind: "struct", name: structType.name }, writable: true }, init, true);
-        this.line(`TSS_${structType.name} *${c} = &${c}__v;`);
+        if (heap) {
+          this.checkHeapRoom(structType.size, d.type!);
+          this.hoistLazy(`${c}__h`, (n) => `TSS_${structType.name} *${n}`);
+          this.line(`if (${c}__h == NULL) TS_TRY(ts_alloc(sizeof(TSS_${structType.name}), (uint8_t **)&${c}__h));`);
+          this.writeAggregate({ lv: `(*${c}__h)`, type: { kind: "struct", name: structType.name }, writable: true }, init, true);
+          this.line(`TSS_${structType.name} *${c} = ${c}__h;`);
+        } else {
+          this.line(`TSS_${structType.name} ${c}__v;`);
+          this.writeAggregate({ lv: `${c}__v`, type: { kind: "struct", name: structType.name }, writable: true }, init, true);
+          this.line(`TSS_${structType.name} *${c} = &${c}__v;`);
+        }
         this.scopes
           .at(-1)!
           .set(name, { c, type: { kind: "structRef", struct: structType.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
@@ -1633,6 +1660,65 @@ export abstract class StatementEmitter extends CpiEmitter {
       const owned = type.kind === "structRef" && ts.isCallExpression(init) && !!this.helperOf(init);
       this.scopes.at(-1)!.set(name, { c, type, mutable, ...(owned ? { paths: [`@${c}`], owned } : {}) });
     }
+  }
+
+  /**
+   * Whether a declaration is `/** @heap *\/`: a local list or struct kept on the heap (the bump allocator) rather
+   * than in the function's 4 KiB stack frame. Only in an instruction, which runs once per instruction: a helper may
+   * run any number of times and the heap is never freed.
+   */
+  protected heapLocal(d: ts.VariableDeclaration, aggregate: boolean): boolean {
+    const tag = [d, d.parent?.parent].flatMap((n) => (n ? ts.getJSDocTags(n) : [])).find((t) => t.tagName.text === "heap");
+    if (!tag) return false;
+    if (!aggregate) this.fail(d, "@heap is for a local list or struct declared with its type (const buf: FixedVec<u8, 1024> = …)");
+    if (this.helper)
+      this.fail(
+        d,
+        "@heap locals belong to instructions: a helper may run many times per instruction and the heap is never freed; declare it in the instruction and pass it (Inout<T>)",
+      );
+    return true;
+  }
+
+  /** A `@heap` local must fit in the heap (32 KiB, or HEAP_SIZE_KIB), which other allocations share. */
+  protected checkHeapRoom(bytes: number, at: ts.Node): void {
+    const kib = this.model.constants.get("HEAP_SIZE_KIB")?.value;
+    const room = (typeof kib === "bigint" ? Number(kib) : 32) * 1024 - 8;
+    if (bytes > room) this.fail(at, `this local takes ${bytes} bytes and the heap holds ${room} (raise HEAP_SIZE_KIB, at most 256)`);
+  }
+
+  /**
+   * `const [address, bump] = findProgramAddressWithBump(seeds, program)`: Rust's `let (address, bump) =
+   * Pubkey::find_program_address(…)`, both from one search (the only array destructuring the language has).
+   */
+  protected addressAndBump(d: ts.VariableDeclaration, pattern: ts.ArrayBindingPattern, mutable: boolean) {
+    const init = d.initializer;
+    const call = init && ts.isCallExpression(init) && this.exportName(init.expression) === "findProgramAddressWithBump" ? init : undefined;
+    if (!call) this.fail(d.name, "array destructuring is only for const [address, bump] = findProgramAddressWithBump(seeds, program)");
+    if (mutable) this.fail(d, "bind them with const: const [address, bump] = findProgramAddressWithBump(seeds, program)");
+    if (d.type) this.fail(d.type, "leave the type out: the address is a Pubkey and the bump a u8");
+    if (pattern.elements.length > 2) this.fail(pattern, "findProgramAddressWithBump gives two values: const [address, bump] = …");
+    const names: (string | undefined)[] = pattern.elements.map((el) => {
+      if (ts.isOmittedExpression(el)) return undefined;
+      if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name))
+        this.fail(el, "name the address and the bump: const [address, bump] = findProgramAddressWithBump(seeds, program)");
+      const name = el.name.text;
+      if (this.scopes.at(-1)!.has(name)) this.fail(el.name, `"${name}" is already declared`);
+      if (this.accounts.has(name) || this.args.has(name) || this.isGroup(name))
+        this.fail(el.name, `"${name}" shadows the parameter "${name}"; use another name`);
+      return name;
+    });
+    if (call.arguments.length !== 2) this.fail(call, "findProgramAddressWithBump(seeds, program) takes the seeds and the program's address");
+    const seeds = this.seeds(call.arguments[0]!, 0);
+    const program = this.expect(this.expr(call.arguments[1]!, PUBKEY), PUBKEY, call.arguments[1]!);
+    const [address, bump] = names;
+    const key = address ? `l_${address}_${this.temp++}` : this.tmp("pda");
+    const b = bump ? `l_${bump}_${this.temp++}` : this.tmp("bump");
+    this.line(`SolPubkey ${key}; uint8_t ${b};`);
+    this.line(
+      `if (ts_find_pda(${seeds.name}, ${seeds.count}, ${program.c}, &${key}, &${b}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no program address for these seeds");`,
+    );
+    if (address) this.scopes.at(-1)!.set(address, { c: key, type: PUBKEY, mutable: false });
+    if (bump) this.scopes.at(-1)!.set(bump, { c: b, type: { kind: "int", name: "u8" }, mutable: false });
   }
 
   /**

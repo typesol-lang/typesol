@@ -6,6 +6,44 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: room beyond one 4 KiB stack frame. `/** @noinline */` on a helper keeps it a C function of its own, so its
+  locals get their own frame instead of the instruction's it would be inlined into (3 to 5 CU per call);
+  `/** @heap */` on an instruction's list or struct local keeps it on the heap (one allocation per declaration,
+  reused by a loop; 17 to 19 CU). A native port's entry holding a 1,284-byte log buffer could not also build a second
+  one, or the order ids after its recorder's last CPI (test/fixtures/frames.ts: 4,672 bytes inlined). The frame-size
+  error now lists the biggest locals from clang's frame layout (names and the source line near each; unnamed slots
+  with the locals of the helpers inlined there) and names both remedies (test/language/stack-limit.test.ts).
+- Language: plain type aliases, `type Price = u64` (or `Pubkey`, a struct, `FixedVec<u8, 32>`, `Point | null`, another
+  alias), replaced by the type they name wherever they are used, so layouts and the IDL are the type's own; exported
+  or not, imported from other files (the aliased type keeps its own file's import names). Every `type X = …` was taken
+  for a data enum, and a union of named types (`type Event = Fill | Place`) failed with "each variant is an object
+  type"; it now says to list the variants as object types or alias one type. Generic aliases and `null` among a data
+  enum's variants are refused with what to write instead (test/language/aliases.test.ts).
+- New: `const [address, bump] = findProgramAddressWithBump(seeds, program)`, Rust's `let (address, bump) =
+  Pubkey::find_program_address(…)`: the canonical address and its bump from one search, where `findProgramAddress`
+  and `findProgramAddressBump` searched twice (453 to 2,118 CU saved in test/language/pda-derivation.test.ts,
+  depending on how many bumps the search tries). `[, bump]` keeps only the bump; any other use is a compile error
+  showing the form.
+- Language: a read-only `FixedVec<T, N>` (or `Vec<T>`) helper parameter takes the caller's own lists, as the language
+  reference said helpers do: a local FixedVec, a FixedVec field of a local struct or of account data, passed as a view
+  of its elements by pointer (nothing copied; a list in account data is copied first when the helper also takes
+  accounts, as a struct argument is). It was refused ("expected a Vec<u8> instruction argument"), so ports wrote the
+  helper with `Inout<T>`. A list with room for more than N elements is refused with the parameter to declare, and a
+  list given for an `Inout` parameter of the same call too (test/language/list-params.test.ts).
+- Faster: a local `FixedVec` is set up in about constant compute units. `fixedVec([])` of 1280 bytes zeroed the list
+  twice (1,436 CU in test/language/fixedvec-setup.test.ts, now 152 with the rest of the instruction); `fixedVec([15n])`
+  also built and copied a temporary (3,216 → 155); a FixedVec field in a struct literal zeroed and copied a temporary,
+  doubling the stack (2,571 → 153). The free slots are now zeroed once, by the memset syscall from 128 bytes
+  (`ts_memzero_bulk`), and the elements are written in place; `list = fixedVec([…])` still builds in a temporary (its
+  elements may read the old list) but zeroes and copies it with the syscalls. The free slots stay zero, since a list's
+  whole layout is copied into account data and events. Changes the generated C of programs with local FixedVecs
+  (Phoenix, SPL Stake Pool, Marginfi, coral multisig, favorites and seven test fixtures), whose tests pass unchanged.
+- New: `const ERROR_LOG_PREFIX = null` / `const PROGRAM_ERROR_LOG_PREFIX = null`: failures return their error and log
+  nothing, as a native program's do when its own checks already logged (Phoenix). `ERROR_LOG_PREFIX = null` covers
+  `require(…, MyError.X)` and codes computed at run time, `PROGRAM_ERROR_LOG_PREFIX = null` built-in ProgramErrors
+  (`require(…, ProgramError.X)`, `loadBorsh`, views) and `programAt` / `sysvarAt`. With `""` a failure still logged
+  "Program log: " plus the message; now it costs 105 to 124 CU less (test/language/quiet-errors.test.ts). Only these
+  two constants may be `null`. Programs that do not use it compile to the same C.
 - Language: `Inout<T>` helper parameters, Rust's `&mut T`. `function addEvent(rec: Inout<Recorder>, e: Event): void`
   gets the caller's place itself (a pointer, never a copy) and may change it; the caller sees the writes after the
   call, as JS shares an object passed to a function. `T` is a fixed-size struct, `FixedArray<T, N>` or
