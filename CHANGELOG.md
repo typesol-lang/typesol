@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: showcase/mainnet/phoenix, a port of Phoenix v1 (Ellipsis Labs' on-chain limit order book at PhoeNiXZ8…, a
+  native program, all 28 instructions), from the commit a reproducible build proves is the mainnet binary (c16694d,
+  relicensed under MIT with its sources unchanged), checked against that binary on 3,404 transactions (the original's
+  50 test functions mapped: 12 covered, 36 added as differential cases, 2 not applicable) and a random walk over two
+  order books with a balance oracle (five seeds, 21,593 transactions), with the same outcomes, log lines, event
+  batches, return data and account bytes; 14–60% of the original's compute units (a PostOnly order 6,386 against
+  20,577, a swap of 30 fills 26,362 against 61,313, cancelling 512 orders 434,128 against 760,087), 231,856 bytes
+  against 1,344,472. docs/case-study-phoenix.md.
 - Language: a top-level integer constant may be an expression over literals and constants declared before it (in its
   file or an imported one): `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT: u64 = BIDS_AT + 2n * BOOK`, with
   `+ - * / % ** & | ^ << >>`, unary `-` and `~`. It is folded when the program is compiled and inlined like a literal.
@@ -40,10 +48,10 @@ codes, and says so here.
   call only when it may be account data (a field of a view or of a loaded account), which the helper's writes could
   change. A struct parameter of a helper that itself takes accounts, an instruction's struct argument and return data
   are now passed in place like the caller's other owned structs (locals, helper results): they arrived as copies and
-  no account write reaches them. Phoenix's book helpers pass their MarketShape on this way, and took it as `Inout<T>`
-  only to avoid the copy (test/language/phx-costs.test.ts: 97.6 → 43.3 CU per call of a helper passing it on,
-  test/language/helper-copies.test.ts). Changes the generated C of SPL Stake Pool, Marginfi and Raydium CLMM (a copy
-  fewer at such calls), whose tests pass unchanged.
+  no account write reaches them. Phoenix's book helpers now take their MarketShape as a plain struct, where they took
+  it as `Inout<T>` only to avoid the copy (test/language/phx-costs.test.ts: 97.6 → 43.3 CU per call of a helper
+  passing it on, test/language/helper-copies.test.ts). Changes the generated C of SPL Stake Pool, Marginfi and Raydium
+  CLMM (a copy fewer at such calls), whose tests pass unchanged.
 - Faster: the owner check of native account views (`loadRaw` / `loadRawMut`, `loadRawAt`, `rawArrayAt`, `rbTreeAt` and
   their Mut forms) remembers the last account it found this program's, until a CPI or an owner write (`assignOwner`,
   `closeRaw`, `close`) forgets it: the same account passes again with a pointer compare instead of a 32-byte one.
@@ -131,7 +139,6 @@ codes, and says so here.
   a further 7,320 are the committed test. sokoban's panics are logged as solana-program up to 1.17 logs a panic, with sokoban's
   messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries (get 215 CU against
   384, insert 595 / 742, remove 355 / 618).
-- Programs that use none of these compile to the same C as before.
 - Native entries set their own return data and log compute units: `setReturnData(bytes)` (Rust's `set_return_data`,
   from a list of u8: a local `FixedVec<u8, N>`, account data, the instruction data or a slice) in a `@fallback` entry,
   its helpers and void instructions, and `logComputeUnits()` (`sol_log_compute_units`, the runtime's "Program
@@ -155,6 +162,8 @@ codes, and says so here.
   messages ("attempt to add with overflow", "attempt to divide by zero", …) at the original's location instead of
   failing with 5100 / 5101, in either style. Checked line for line against the Phoenix v1 binary's panics (its
   entrypoint's assertion, and its overflow and remainder checks in initialize.rs and quantities.rs).
+- Programs that use none of the new features above compile to the same C as before; the "Faster" entries name the
+  programs whose generated C they change.
 
 ## 0.42.0 — 2026-11-09
 
