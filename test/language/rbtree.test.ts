@@ -189,6 +189,20 @@ describe("RedBlackTree", () => {
       "index out of bounds: the len is 3 but the index is 3', src/node_allocator.rs:255:10",
     );
     ok(await run(Buffer.concat([Buffer.from([2]), u64(3), u64(3)])));
+    // a walk of a damaged tree: a register past the capacity panics as indexing does, a cycle when the stack is full
+    const damaged = async (left: number) => {
+      await fresh(3);
+      const raw = bytes();
+      raw.writeUInt32LE(1, BOOK); // root: node 1
+      raw.writeUInt32LE(left, BOOK + 32); // node 1's left register
+      d.svm.setAccount({ address: market, lamports: 1_000_000_000n, programAddress: d.programId, executable: false, data: raw } as never);
+      return call("post", { cap: new BN(3), prices: new BN(0), count: new BN(0), bid: false });
+    };
+    panicked(await damaged(4), "index out of bounds: the len is 3 but the index is 3', src/node_allocator.rs:255:10");
+    panicked(await damaged(1), "TypeSOL: RedBlackTree deeper than a red-black tree can be', rbtree");
+    market = (await generateKeyPairSigner()).address;
+    d.svm.setAccount({ address: market, lamports: 1_000_000_000n, programAddress: d.programId, executable: false, data: Buffer.alloc(32 + 3 * 32) } as never);
+    ok(await run(Buffer.concat([Buffer.from([0]), u64(3)])));
     // removeAt past the capacity panics as nodeAt does; 0 is no node
     panicked(
       await run(Buffer.concat([Buffer.from([3]), u64(3), u64(4)])),

@@ -1944,6 +1944,11 @@ static inline __attribute__((always_inline)) uint8_t *ts_rbt_node(const TsRbt *t
   return t->base + 32 + ((uint64_t)i - 1) * stride;
 }
 /* allocator.get_register / set_register / connect: SENTINEL reads 0 and ignores writes. */
+/* Node i's first byte, for an index already checked against the capacity (a walk checks each node once, when it
+   steps onto it). */
+static inline __attribute__((always_inline)) uint8_t *ts_rbt_node_checked(const TsRbt *t, uint64_t stride, uint32_t i) {
+  return t->base + 32 + ((uint64_t)i - 1) * stride;
+}
 static inline __attribute__((always_inline)) uint32_t ts_rbt_reg(const TsRbt *t, uint64_t stride, uint32_t i, uint32_t r) {
   return i ? ((ts_u32_unaligned *)ts_rbt_node(t, stride, i))[r] : 0;
 }

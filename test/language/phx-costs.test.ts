@@ -65,6 +65,8 @@ describe("Phoenix's hot paths", () => {
     const base = (await run(9)).cu;
     const walk = await run(6);
     expect(walk.a).toBe(BigInt(ORDERS));
+    // 59 CU per node before (three bounds checks per node, the stack by index): one check per node now.
+    expect((walk.cu - base) / ORDERS).toBeLessThan(45);
     const rev = await run(7);
     const ro = await run(10);
     const mid = orders[200]!;

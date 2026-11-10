@@ -305,21 +305,24 @@ export abstract class StatementEmitter extends CpiEmitter {
     const release = this.iterationClaims(stmt.statement);
     this.line(`{`);
     this.block(() => {
+      // The stack is walked with a pointer (no index arithmetic per step).
       this.line(`uint32_t ${stack}[TS_RBT_STACK];`);
-      this.line(`uint32_t ${sp} = 0;`);
+      this.line(`uint32_t *${sp} = ${stack};`);
       this.line(`uint32_t ${ptr} = TS_RBT_ROOT(${t}.base);`);
       this.line(`while (1) {`);
       this.block(() => {
+        // Each node's index is checked against the capacity once, when the walk steps onto it (the same panic, at the
+        // same point, as sokoban's indexing); popping it again reads its registers without a second check.
         this.line(`while (${ptr} != 0) {`);
-        this.line(`  if (${sp} == TS_RBT_STACK) ts_rbt_too_deep();`);
-        this.line(`  ${stack}[${sp}++] = ${ptr};`);
-        this.line(`  ${ptr} = ts_rbt_reg(&${t}, ${S}, ${ptr}, ${down});`);
+        this.line(`  if (${sp} == ${stack} + TS_RBT_STACK) ts_rbt_too_deep();`);
+        this.line(`  *${sp}++ = ${ptr};`);
+        this.line(`  ${ptr} = ((ts_u32_unaligned *)ts_rbt_node(&${t}, ${S}, ${ptr}))[${down}];`);
         this.line(`}`);
-        this.line(`if (${sp} == 0) break;`);
-        this.line(`uint32_t ${cur} = ${stack}[--${sp}];`);
-        this.line(`TsRbtEntry ${e} = {ts_rbt_node(&${t}, ${S}, ${cur}), ${cur}};`);
+        this.line(`if (${sp} == ${stack}) break;`);
+        this.line(`uint32_t ${cur} = *--${sp};`);
+        this.line(`TsRbtEntry ${e} = {ts_rbt_node_checked(&${t}, ${S}, ${cur}), ${cur}};`);
         // sokoban reads the next pointer when it yields the node, before the caller sees it.
-        this.line(`${ptr} = ts_rbt_reg(&${t}, ${S}, ${cur}, ${next});`);
+        this.line(`${ptr} = ((ts_u32_unaligned *)${e}.node)[${next}];`);
         this.scopes.at(-1)!.set((d.name as ts.Identifier).text, {
           c: e,
           type: { kind: "rbEntry", inst: tree.inst.key, writable: tree.writable },

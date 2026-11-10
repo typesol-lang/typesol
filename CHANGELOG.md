@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- Faster: a RedBlackTree walk (`for (const e of tree)`, `tree.reversed()`) checks each node's index against the
+  capacity once, when it steps onto the node, instead of three times, and keeps its stack by pointer: 59 → 40 CU per
+  node for a walk summing a field of a 400-order book (test/language/phx-costs.test.ts; 18 CU less per node read-only).
+  The same panics at the same points on a damaged tree (an index past the capacity, a cycle filling the stack; both
+  now tested). Changes the generated C of programs that walk a tree (Phoenix, test/fixtures/rbtree.ts and
+  rbtree-api.ts).
 - New: `tree.removeAt(index)` on a RedBlackTree removes the node at that index (from `addrOf`, or a node's `.index`
   from `min` / `max` / a walk) with exactly the writes `remove(node.key)` makes, without searching the tree a second
   time: Phoenix's cancel finds the order, checks whose it is, then removes it (691 → 547 CU in
