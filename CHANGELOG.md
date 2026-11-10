@@ -15,7 +15,7 @@ codes, and says so here.
   `addrOf`, `nodeAt`, `initialize`, `length`, `capacity`, `for … of` and `reversed()`. A comparator function orders
   the keys (called as `compare(searched, node)`), or Rust's derived order. Replayed against the crate itself on
   1,020,000 recorded operations (capacities 1 to 512, strides 32, 64 and 144) with identical bytes after every one;
-  7,320 of them are a test. sokoban's panics are logged as solana-program up to 1.17 logs a panic, with sokoban's
+  a further 7,320 are the committed test. sokoban's panics are logged as solana-program up to 1.17 logs a panic, with sokoban's
   messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries (get 215 CU against
   384, insert 595 / 742, remove 355 / 618).
 - Programs that use none of these compile to the same C as before.
