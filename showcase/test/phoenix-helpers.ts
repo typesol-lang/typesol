@@ -546,7 +546,12 @@ export class Diff {
     const port = (await deployFile(PORT, { programId: PROGRAM })).svm;
     const original = new LiteSVM();
     original.addProgram(PROGRAM, new Uint8Array(readFileSync(ORIGINAL)));
-    for (const vm of [original, port]) vm.setClock(new Clock(SLOT, UNIX_TIMESTAMP - 1000n, 580n, 581n, UNIX_TIMESTAMP));
+    // No log limit: the runtime truncates a transaction's log at 10,000 bytes, and where it cuts depends on the
+    // "consumed N of M compute units" lines, whose N differ by design (a transaction of 12 orders reaches it).
+    for (const vm of [original, port]) {
+      vm.setClock(new Clock(SLOT, UNIX_TIMESTAMP - 1000n, 580n, 581n, UNIX_TIMESTAMP));
+      vm.withLogBytesLimit();
+    }
     return new Diff(original, port);
   }
 
@@ -708,6 +713,98 @@ export class Diff {
     return t;
   }
 }
+
+// ---- Reading the market ------------------------------------------------------------------------------------------------
+
+/** Both VMs' Clock moved to `slot` and `unixTimestamp`. */
+export function setClock(d: Diff, slot: bigint, unixTimestamp: bigint): void {
+  for (const vm of d.vms) vm.setClock(new Clock(slot, unixTimestamp - 1000n, 580n, 581n, unixTimestamp));
+}
+
+/** SetComputeUnitLimit (Compute Budget). */
+export const computeUnits = (units: number): Instruction => ({
+  programAddress: address("ComputeBudget111111111111111111111111111111"),
+  accounts: [],
+  data: new Uint8Array([2, ...u32(units)]),
+});
+
+/** A sokoban tree's node indexes in order (the in-order walk over the node registers from the root). */
+function walk(data: Buffer, at: number, stride: number): number[] {
+  const node = (i: number) => at + TREE.nodes + (i - 1) * stride;
+  const out: number[] = [];
+  const stack: number[] = [];
+  let cur = data.readUInt32LE(at + TREE.root);
+  while (stack.length > 0 || cur !== 0) {
+    if (cur !== 0) {
+      stack.push(cur);
+      cur = data.readUInt32LE(node(cur));
+      continue;
+    }
+    const i = stack.pop()!;
+    out.push(i);
+    cur = data.readUInt32LE(node(i) + 4);
+  }
+  return out;
+}
+
+/** A resting order as the book holds it (its node index, key and value). */
+export interface RestingOrder {
+  index: number;
+  price: bigint;
+  /** The stored sequence number (a bid's inverted). */
+  seq: bigint;
+  trader: bigint;
+  lots: bigint;
+  lastValidSlot: bigint;
+  lastValidUnixTimestamp: bigint;
+}
+
+/** A book's orders, best first, from the market's bytes. */
+export function restingOrders(data: Buffer, m: Market, side: 0 | 1): RestingOrder[] {
+  const at = side === 0 ? OFF.bids : asksAt(m.bids);
+  return walk(data, at, 64).map((index) => {
+    const n = at + TREE.nodes + (index - 1) * 64;
+    return {
+      index,
+      price: data.readBigUInt64LE(n + 16),
+      seq: data.readBigUInt64LE(n + 24),
+      trader: data.readBigUInt64LE(n + 32),
+      lots: data.readBigUInt64LE(n + 40),
+      lastValidSlot: data.readBigUInt64LE(n + 48),
+      lastValidUnixTimestamp: data.readBigUInt64LE(n + 56),
+    };
+  });
+}
+
+/** A registered trader: its node index in the traders tree, key and TraderState. */
+export interface TraderEntry {
+  index: number;
+  key: Buffer;
+  quoteLocked: bigint;
+  quoteFree: bigint;
+  baseLocked: bigint;
+  baseFree: bigint;
+}
+
+/** The traders tree's entries (only the nodes the tree links: a freed node keeps its old key and state). */
+export function registeredTraders(data: Buffer, m: Market): TraderEntry[] {
+  const at = tradersAt(m.bids);
+  return walk(data, at, 144).map((index) => {
+    const n = at + TREE.nodes + (index - 1) * 144;
+    return {
+      index,
+      key: data.subarray(n + 16, n + 48),
+      quoteLocked: data.readBigUInt64LE(n + 48),
+      quoteFree: data.readBigUInt64LE(n + 56),
+      baseLocked: data.readBigUInt64LE(n + 64),
+      baseFree: data.readBigUInt64LE(n + 72),
+    };
+  });
+}
+
+/** A trader's entry in the traders tree, if registered. */
+export const traderEntry = (data: Buffer, m: Market, trader: Address): TraderEntry | undefined =>
+  registeredTraders(data, m).find((t) => t.key.equals(key(trader)));
 
 /** The CU table: each compared transaction, the original's and the port's compute units. */
 export function cuTable(diffs: Diff[], title: string): string {
