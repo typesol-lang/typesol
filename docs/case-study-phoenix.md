@@ -59,13 +59,14 @@ compile to the same C as before:
   loops that write it.
 - **Data enums by `pushBorsh`, straight-line**: `data.pushBorsh<PhoenixMarketEvent>({ kind: "Fill", … })` writes only
   that variant, one room check and a store per field. Every event is appended to the batch this way: 47 compute units
-  less per Reduce event than six `pushLE` calls, 55 to 70 less per Fill, Place, FillSummary, Evict or ExpiredOrder than
-  serializing the whole enum.
+  less per Reduce event than the six `pushLE` calls it replaced, each of which checked the room of the batch (an
+  `Inout` parameter) on its own, and 55 to 70 less per Fill, Place, FillSummary, Evict or ExpiredOrder than serializing
+  the whole enum.
 - **Struct arguments in place**: an owned struct (a local, a parameter passed on) goes to a helper that takes accounts by
   pointer, so the book helpers take their MarketShape as a plain struct, not `Inout<T>`.
 - **`Inout<T>`** helper parameters (Rust's `&mut`: the recorder and its 1,280-byte batch passed down the matching
   engine), **`/** @noinline */`** and **`/** @heap */`** (room beyond one 4 KiB stack frame), local lists of 2 KiB
-  (the 512 collected order ids).
+  (asked for by a 2,052-byte list of collected order ids; the port keeps the 512 ids as u16 node indices).
 - **Native-program foundations**: `loadRawAt` / `loadRawMutAt` (a struct at a run-time offset), `NATIVE_ACCOUNT_WRITES`
   (views of one account written in place, judged by the runtime), byte builders (`pushLE`, `pushKey`, `pushBorsh`,
   `setLE`, `truncate`) and `invokeInstruction` for the Log self-CPI, `setReturnData` and `logComputeUnits`, `closeRaw`

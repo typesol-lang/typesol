@@ -13,7 +13,9 @@ codes, and says so here.
   order books with a balance oracle (five seeds, 21,593 transactions), with the same outcomes, log lines, event
   batches, return data and account bytes; 14–60% of the original's compute units (a PostOnly order 6,386 against
   20,577, a swap of 30 fills 26,362 against 61,313, cancelling 512 orders 434,128 against 760,087), 231,856 bytes
-  against 1,344,472. docs/case-study-phoenix.md.
+  against 1,344,472. Its events are appended by `pushBorsh` of their literals: in the port, whose batch is an `Inout`
+  parameter, a Reduce event costs 47 CU less than the six `pushLE` calls it replaced (one room check instead of six;
+  the 19 against 16 below is a local buffer). docs/case-study-phoenix.md.
 - Language: a top-level integer constant may be an expression over literals and constants declared before it (in its
   file or an imported one): `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT: u64 = BIDS_AT + 2n * BOOK`, with
   `+ - * / % ** & | ^ << >>`, unary `-` and `~`. It is folded when the program is compiled and inlined like a literal.

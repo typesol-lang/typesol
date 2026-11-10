@@ -188,7 +188,11 @@ export function bookOffset(side: u8, bids: u64): u64 {
 
 // ---- Taking orders off (book.ts's reduce_order_inner) ---------------------------------------------------------------
 
-/** An expired order met while matching, removed whole (reduce_order_inner, EXPIRED); the market's shape is read here. */
+/**
+ * An expired order met while matching, removed whole (reduce_order_inner, EXPIRED). The market's shape is read here, on
+ * this rare path: built from match_order's locals and passed in, it saved about 33 compute units a self trade but cost
+ * match_order about 7 per fill and 14 per resting Limit order (more values held across its loop).
+ */
 function removeExpired(
   rest: RemainingAccounts,
   rec: Inout<Recorder>,
