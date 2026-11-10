@@ -1,0 +1,14 @@
+# The lib-sokoban 0.3.0 trace oracle (see src/main.rs). Built only to regenerate ../traces.jsonl; the tests do not
+# need Rust. Offline, point the crate at a local copy: [patch.crates-io] lib-sokoban = { path = "…/lib-sokoban-0.3.0" }.
+[package]
+name = "rbt-oracle"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+lib-sokoban = "=0.3.0"
+bytemuck = { version = "1.11", features = ["derive"] }
+sha2 = "0.10"
+
+[workspace]
