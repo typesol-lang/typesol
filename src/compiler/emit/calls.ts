@@ -86,6 +86,8 @@ const PROGRAM_ERRORS = [
 ];
 
 const LIST_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "reduce", "includes", "indexOf"]);
+/** The byte builders of a FixedVec<u8, N> (byteListMethod). */
+const BYTE_METHODS = new Set(["pushLE", "pushKey", "pushBorsh", "setLE", "truncate"]);
 
 export abstract class CallEmitter extends ExpressionEmitter {
   protected call(node: ts.CallExpression, topLevel: boolean): Value | undefined {
@@ -1020,6 +1022,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
+    if (BYTE_METHODS.has(method)) return this.byteListMethod(node, method, v);
     if (info.big !== undefined) {
       const done = this.bigVecMethod(node, method, v, { stageElem, needWritable, elemPaths });
       if (done) return done.value;

@@ -124,6 +124,12 @@ export interface Vec<T> extends ListMethods<T> {
    * grows one `push` at a time, so calling it on a Vec is a compile error.
    */
   pushAll(items: IndexedList<T>): void;
+  /** A `FixedVec<u8, N>`'s byte builders (declared here for the same reason; a compile error on a Vec). */
+  pushLE<I extends bigint = bigint>(this: Vec<u8>, value: I): void;
+  pushKey(this: Vec<u8>, key: Pubkey): void;
+  pushBorsh<V = unknown>(this: Vec<u8>, value: V): void;
+  setLE<I extends bigint = bigint>(this: Vec<u8>, offset: u64, value: I): void;
+  truncate(this: Vec<u8>, length: u64): void;
   /** Remove and return the last element, shrinking the account. */
   pop(): T;
   /** Remove every element, shrinking the account. */
@@ -150,6 +156,28 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   pushAll(items: IndexedList<T>): void;
   pop(): T;
   clear(): void;
+  /**
+   * A `FixedVec<u8, N>` as a byte buffer: append an integer's little-endian bytes at its width (`buf.pushLE(count)`
+   * with `count: u16`; a literal needs one: `buf.pushLE<u16>(1n)` or `buf.pushLE(u16(1n))`). Every byte builder
+   * fails (5104) and appends nothing when the bytes do not fit in the room left.
+   */
+  pushLE<I extends bigint = bigint>(this: FixedVec<u8, N>, value: I): void;
+  /** Append a Pubkey's 32 bytes. */
+  pushKey(this: FixedVec<u8, N>, key: Pubkey): void;
+  /**
+   * Append a value's Borsh encoding, as invoke data, events and storeBorsh encode it: a struct (an object literal
+   * takes its type: `buf.pushBorsh<Header>({ … })`), a data enum (a tag byte, then the variant's fields), a
+   * FixedArray, a list (u32 count, then the elements), an integer at its width, a boolean, a Pubkey, a string or an
+   * Option.
+   */
+  pushBorsh<V = unknown>(this: FixedVec<u8, N>, value: V): void;
+  /**
+   * Overwrite the integer at byte `offset` with `value`'s little-endian bytes (`buf.setLE<u16>(91n, count)`): within the
+   * length, 5104 past it, as Rust's `data[a..b].copy_from_slice(…)` panics there.
+   */
+  setLE<I extends bigint = bigint>(this: FixedVec<u8, N>, offset: u64, value: I): void;
+  /** Keep the first `length` bytes (5104 when `length` is past the current length). */
+  truncate(this: FixedVec<u8, N>, length: u64): void;
   [Symbol.iterator](): Iterator<T>;
   readonly __capacity?: N;
 }

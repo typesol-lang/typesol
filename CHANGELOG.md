@@ -18,6 +18,11 @@ codes, and says so here.
   `resizeAccount` on remaining accounts (the 10 KiB growth limit against the size the entrypoint records when the
   instruction starts, as solana_program 1.14 records it). Checked writable, passed once and owned by this program, or
   left to the runtime under `NATIVE_ACCOUNT_WRITES`.
+- Byte builders on `FixedVec<u8, N>` (a local list or one in account data), for byte strings a native program builds by
+  hand: `pushLE(x)` (an integer at its width), `pushKey(key)`, `pushBorsh(value)` (Borsh, with the codecs `invoke`,
+  events and `storeBorsh` use; object literals take their type, `pushBorsh<Header>({ … })`), `setLE(offset, x)` and
+  `truncate(n)`, each bounds-checked (5104) with the length moved only when everything fit. Phoenix's event recorder
+  written with them sends the same batches, byte for byte, as the Phoenix binary.
 
 ## 0.42.0 — 2026-11-09
 
