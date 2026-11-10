@@ -265,7 +265,8 @@ function checkForCross(
 /**
  * evict_least_aggressive_order: the book's last order goes (an Evict event with its maker's key; its lots unlocked)
  * when the new order at `placedPrice` is more aggressive. Its result is not used: when nothing is evicted the insert
- * that follows finds the book full.
+ * that follows finds the book full. Not reduce_order_inner: Phoenix writes it on its own, its event is an Evict and
+ * its division another `#[track_caller]` site (fifo.rs:1182).
  */
 function evictLeastAggressiveOrder(rest: RemainingAccounts, rec: Inout<Recorder>, logData: Inout<FixedVec<u8, 1280>>, side: u8, placedPrice: u64): void {
   const market = rest.get(2n);
