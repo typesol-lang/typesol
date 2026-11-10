@@ -47,8 +47,10 @@ describe("type aliases", () => {
     expect(b.last.small).toBe(3);
   });
 
-  it("leave no trace in the IDL", () => {
-    const idl = buildIdl(generate(FIXTURE).model, "11111111111111111111111111111111");
+  it("leave no trace in the IDL, and compile the same each time (the sources are parsed again per build)", () => {
+    const first = generate(FIXTURE);
+    expect(generate(FIXTURE).c).toBe(first.c);
+    const idl = buildIdl(first.model, "11111111111111111111111111111111");
     const types = Object.fromEntries(idl.types!.map((t) => [t.name, t]));
     expect(JSON.stringify(types.Order)).toContain('"type":"u64"');
     expect(JSON.stringify(types.Order)).toContain("FixedOption_s_Point");
