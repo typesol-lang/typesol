@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `const [address, bump] = findProgramAddressWithBump(seeds, program)`, Rust's `let (address, bump) =
+  Pubkey::find_program_address(…)`: the canonical address and its bump from one search, where `findProgramAddress`
+  and `findProgramAddressBump` searched twice (453 to 2,118 CU saved in test/language/pda-derivation.test.ts,
+  depending on how many bumps the search tries). `[, bump]` keeps only the bump; any other use is a compile error
+  showing the form.
 - Language: a read-only `FixedVec<T, N>` (or `Vec<T>`) helper parameter takes the caller's own lists, as the language
   reference said helpers do: a local FixedVec, a FixedVec field of a local struct or of account data, passed as a view
   of its elements by pointer (nothing copied; a list in account data is copied first when the helper also takes

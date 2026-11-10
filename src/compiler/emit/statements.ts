@@ -4,6 +4,7 @@ import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type Valu
 import {
   U64,
   BOOL,
+  PUBKEY,
   type Value,
   type Local,
   type Closure,
@@ -1378,6 +1379,10 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.destructure(list, d, d.name, d.initializer, topLevel);
         continue;
       }
+      if (ts.isArrayBindingPattern(d.name)) {
+        this.addressAndBump(d, d.name, mutable);
+        continue;
+      }
       if (!ts.isIdentifier(d.name) || !d.initializer) this.fail(d, "declare one plain name with an initializer");
       // A local function is a helper of its own (lifted when the program was analyzed): nothing to run here.
       if (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) {
@@ -1634,6 +1639,41 @@ export abstract class StatementEmitter extends CpiEmitter {
       const owned = type.kind === "structRef" && ts.isCallExpression(init) && !!this.helperOf(init);
       this.scopes.at(-1)!.set(name, { c, type, mutable, ...(owned ? { paths: [`@${c}`], owned } : {}) });
     }
+  }
+
+  /**
+   * `const [address, bump] = findProgramAddressWithBump(seeds, program)`: Rust's `let (address, bump) =
+   * Pubkey::find_program_address(…)`, both from one search (the only array destructuring the language has).
+   */
+  protected addressAndBump(d: ts.VariableDeclaration, pattern: ts.ArrayBindingPattern, mutable: boolean) {
+    const init = d.initializer;
+    const call = init && ts.isCallExpression(init) && this.exportName(init.expression) === "findProgramAddressWithBump" ? init : undefined;
+    if (!call) this.fail(d.name, "array destructuring is only for const [address, bump] = findProgramAddressWithBump(seeds, program)");
+    if (mutable) this.fail(d, "bind them with const: const [address, bump] = findProgramAddressWithBump(seeds, program)");
+    if (d.type) this.fail(d.type, "leave the type out: the address is a Pubkey and the bump a u8");
+    if (pattern.elements.length > 2) this.fail(pattern, "findProgramAddressWithBump gives two values: const [address, bump] = …");
+    const names: (string | undefined)[] = pattern.elements.map((el) => {
+      if (ts.isOmittedExpression(el)) return undefined;
+      if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name))
+        this.fail(el, "name the address and the bump: const [address, bump] = findProgramAddressWithBump(seeds, program)");
+      const name = el.name.text;
+      if (this.scopes.at(-1)!.has(name)) this.fail(el.name, `"${name}" is already declared`);
+      if (this.accounts.has(name) || this.args.has(name) || this.isGroup(name))
+        this.fail(el.name, `"${name}" shadows the parameter "${name}"; use another name`);
+      return name;
+    });
+    if (call.arguments.length !== 2) this.fail(call, "findProgramAddressWithBump(seeds, program) takes the seeds and the program's address");
+    const seeds = this.seeds(call.arguments[0]!, 0);
+    const program = this.expect(this.expr(call.arguments[1]!, PUBKEY), PUBKEY, call.arguments[1]!);
+    const [address, bump] = names;
+    const key = address ? `l_${address}_${this.temp++}` : this.tmp("pda");
+    const b = bump ? `l_${bump}_${this.temp++}` : this.tmp("bump");
+    this.line(`SolPubkey ${key}; uint8_t ${b};`);
+    this.line(
+      `if (ts_find_pda(${seeds.name}, ${seeds.count}, ${program.c}, &${key}, &${b}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no program address for these seeds");`,
+    );
+    if (address) this.scopes.at(-1)!.set(address, { c: key, type: PUBKEY, mutable: false });
+    if (bump) this.scopes.at(-1)!.set(bump, { c: b, type: { kind: "int", name: "u8" }, mutable: false });
   }
 
   /**

@@ -664,6 +664,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`ts_log_base64(${cString(prefix)}, ${Buffer.byteLength(prefix)}, (const uint8_t *)${place.ptr}, sizeof(TSS_${sd.name}));`);
         return undefined;
       }
+      case "findProgramAddressWithBump":
+        this.fail(node, "bind both results where it is called: const [address, bump] = findProgramAddressWithBump(seeds, program)");
       case "findProgramAddress": {
         // Pubkey::find_program_address(seeds, program).0: the canonical PDA of any program.
         if (args.length !== 2) this.fail(node, "findProgramAddress(seeds, program) takes the seeds and the program's address");
