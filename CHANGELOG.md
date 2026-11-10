@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: room beyond one 4 KiB stack frame. `/** @noinline */` on a helper keeps it a C function of its own, so its
+  locals get their own frame instead of the instruction's it would be inlined into (3 to 5 CU per call);
+  `/** @heap */` on an instruction's list or struct local keeps it on the heap (one allocation per declaration,
+  reused by a loop; 17 to 19 CU). A native port's entry holding a 1,284-byte log buffer could not also build a second
+  one, or the order ids after its recorder's last CPI (test/fixtures/frames.ts: 4,672 bytes inlined). The frame-size
+  error now lists the biggest locals from clang's frame layout (names and the source line near each; unnamed slots
+  with the locals of the helpers inlined there) and names both remedies (test/language/stack-limit.test.ts).
 - Language: plain type aliases, `type Price = u64` (or `Pubkey`, a struct, `FixedVec<u8, 32>`, `Point | null`, another
   alias), replaced by the type they name wherever they are used, so layouts and the IDL are the type's own; exported
   or not, imported from other files (the aliased type keeps its own file's import names). Every `type X = …` was taken

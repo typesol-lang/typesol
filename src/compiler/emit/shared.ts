@@ -380,7 +380,7 @@ export function helperSignature(h: Helper): string {
   }
   if (h.returns)
     params.push(h.returns.kind === "struct" ? `TSS_${h.returns.name} *ret` : h.returns.kind === "string" ? `TS_Str *ret` : `${scalarC(h.returns)} *ret`);
-  return `static uint64_t fn_${h.name}(${params.join(", ")})`;
+  return `${h.noinline ? "__attribute__((noinline)) " : ""}static uint64_t fn_${h.name}(${params.join(", ")})`;
 }
 
 export interface EmitOptions {

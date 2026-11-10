@@ -326,13 +326,17 @@ export interface Helper {
   fnArgIndexes?: number[];
   /** The declaring file's `typesol` imports (local name -> export name). */
   imports: Map<string, string>;
+  /** `/** @noinline *\/`: a C function of its own that clang never inlines, so its locals get a stack frame of their own. */
+  noinline?: boolean;
 }
 
 /** A top-level compile-time constant. `type` is set when annotated (`const FEE: u16 = 30n`). */
 export interface ConstDef {
   name: string;
-  /** `{ pubkey }` for `const ADMIN = pubkey("…")`: the decoded 32 bytes. */
-  /** `null` only for ERROR_LOG_PREFIX / PROGRAM_ERROR_LOG_PREFIX: failures that log nothing. */
+  /**
+   * `{ pubkey }` for `const ADMIN = pubkey("…")`: the decoded 32 bytes; `null` only for ERROR_LOG_PREFIX /
+   * PROGRAM_ERROR_LOG_PREFIX (failures that log nothing).
+   */
   value: bigint | boolean | string | { pubkey: number[] } | null;
   type?: ScalarType;
 }

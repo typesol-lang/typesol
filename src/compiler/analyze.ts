@@ -1890,7 +1890,18 @@ function analyzeHelper(
         reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
       return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
     });
-  return { name, display, params, returns, node: fn, statements: bodyStatements(fn, !returns), imports: scope.imports };
+  // `/** @noinline */` on the function (or on the `const f = …` declaring an arrow).
+  const noinline = [fn, ...(ts.isVariableDeclaration(fn.parent) ? [fn.parent] : [])].some((n) => ts.getJSDocTags(n).some((t) => t.tagName.text === "noinline"));
+  return {
+    name,
+    display,
+    params,
+    returns,
+    node: fn,
+    statements: bodyStatements(fn, !returns),
+    imports: scope.imports,
+    ...(noinline ? { noinline } : {}),
+  };
 }
 
 /**

@@ -2224,6 +2224,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected helperWithClosure(node: ts.CallExpression): { value: Value | undefined } | undefined {
     const g = this.givenClosure(node);
     if (!g) return undefined;
+    const tagged = [g.node, ...(ts.isVariableDeclaration(g.node.parent) ? [g.node.parent] : [])];
+    if (tagged.some((n) => ts.getJSDocTags(n).some((t) => t.tagName.text === "noinline")))
+      this.fail(node, `${g.display}() is @noinline, but given a closure it is expanded where it is called: pass a named function`);
     // Type parameters: bound from the call (as an instance would be) while the body is expanded.
     const saved = this.scope;
     if (g.typeParams.length) {
