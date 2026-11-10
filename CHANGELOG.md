@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: a read-only `FixedVec<T, N>` (or `Vec<T>`) helper parameter takes the caller's own lists, as the language
+  reference said helpers do: a local FixedVec, a FixedVec field of a local struct or of account data, passed as a view
+  of its elements by pointer (nothing copied; a list in account data is copied first when the helper also takes
+  accounts, as a struct argument is). It was refused ("expected a Vec<u8> instruction argument"), so ports wrote the
+  helper with `Inout<T>`. A list with room for more than N elements is refused with the parameter to declare, and a
+  list given for an `Inout` parameter of the same call too (test/language/list-params.test.ts).
 - Faster: a local `FixedVec` is set up in about constant compute units. `fixedVec([])` of 1280 bytes zeroed the list
   twice (1,436 CU in test/language/fixedvec-setup.test.ts, now 152 with the rest of the instruction); `fixedVec([15n])`
   also built and copied a temporary (3,216 → 155); a FixedVec field in a struct literal zeroed and copied a temporary,

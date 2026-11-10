@@ -2428,8 +2428,16 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
         // An Option<Vec<T>> argument passes as its list once checked against null (TypeScript narrows it).
         const t = l?.type.kind === "vecArg" && l.type.optional ? { ...l.type, optional: undefined } : l?.type;
-        if (!l || !t || !sameType(t, p.type)) this.fail(n, `expected a ${typeName(p.type)} instruction argument`);
-        return l.c;
+        if (l && t && sameType(t, p.type)) return l.c;
+        // A list of the caller's (a local FixedVec or FixedArray, a field of a local struct, or one in account data): a
+        // read-only view of its elements, passed by pointer.
+        const view = this.listViewArg(n, p.type, h);
+        if (view) return view;
+        const what = p.type.elem.kind === "int" && p.type.elem.name === "u8" && p.type.cap === undefined ? "list of u8" : `list of ${typeName(p.type.elem)}`;
+        this.fail(
+          n,
+          `expected a ${what}: an instruction argument, the instruction data or a slice of it, or a FixedVec / FixedArray of ${typeName(p.type.elem)} (a local, a field)`,
+        );
       }
       default:
         return this.expect(this.expr(n, p.type), p.type, n);
@@ -2506,7 +2514,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (paths) refs.push({ i, inout: true, paths });
         return;
       }
-      const byRef = p.account || p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg";
+      const byRef = p.account || p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg" || p.type.kind === "vecArg";
       const paths = byRef ? this.pathsOf(n) : undefined;
       if (paths) refs.push({ i, inout: false, paths });
     });
@@ -2605,6 +2613,71 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
     this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
     return t;
+  }
+
+  /**
+   * A FixedVec or FixedArray of `elem` given for a read-only list parameter: a `TS_VecArg` view of its elements (the
+   * length as it is at the call). A list this function holds (a local, a field of a struct it owns) is read in place;
+   * one in account data is copied first when the helper takes accounts, as a struct argument is (the helper may write
+   * the account). Undefined when `n` is not such a list.
+   */
+  protected listViewArg(n: ts.Expression, want: ValueType & { kind: "vecArg" }, h: Helper): string | undefined {
+    const r = this.probe(() => this.ref(n));
+    if (!r) return undefined;
+    const elem = want.elem;
+    // A FixedVec<T, N> parameter holds at most N elements: a list with room for more is refused here, as an
+    // instruction argument with more is refused when decoded.
+    const holds = r.type.kind === "vec" ? r.type.cap : r.type.kind === "array" ? r.type.len : undefined;
+    if (want.cap !== undefined && holds !== undefined && holds > want.cap && (r.type.kind === "vec" || r.type.kind === "array") && sameType(r.type.elem, elem))
+      this.fail(
+        n,
+        `${h.display}() takes at most ${want.cap} elements here (FixedVec<${typeName(elem)}, ${want.cap}>) and this list holds up to ${holds}: declare the parameter FixedVec<${typeName(elem)}, ${holds}> (or InstructionBytes / Vec<${typeName(elem)}>, no limit)`,
+      );
+    let items: string;
+    let count: string;
+    let room: number;
+    if (r.type.kind === "vec" && r.type.cap !== undefined && !r.type.heap && !r.type.big && !r.type.raw && r.vec && !r.vec.slice) {
+      if (!sameType(r.type.elem, elem)) return undefined;
+      const fresh = this.ref(n)!;
+      items = fresh.vec!.items;
+      count = vecCount(fresh.vec!);
+      room = r.type.cap;
+    } else if (r.type.kind === "array") {
+      if (!sameType(r.type.elem, elem)) return undefined;
+      items = this.ref(n)!.lv;
+      count = String(r.type.len);
+      room = r.type.len;
+    } else return undefined;
+    const size = this.fieldBytes(elem);
+    const t = this.tmp("lview");
+    if (h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining") && !this.callerHoldsList(n)) {
+      // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
+      const buf = this.tmp("argl");
+      this.hoistLazy(buf, (v) => `uint8_t *${v}`);
+      this.line(`if (${buf} == NULL) TS_TRY(ts_alloc(${room * size}, &${buf}));`);
+      this.line(`TS_VecArg ${t} = {${buf}, (uint32_t)${count}};`);
+      this.line(`ts_memcpy_bulk(${buf}, (const uint8_t *)${items}, (uint64_t)${t}.len * ${size});`);
+      return t;
+    }
+    this.line(`TS_VecArg ${t} = {(const uint8_t *)${items}, (uint32_t)${count}};`);
+    return t;
+  }
+
+  /** Whether `node` is a list this function holds on its stack (a local list, a field of a struct it owns), not account data. */
+  protected callerHoldsList(node: ts.Expression): boolean {
+    let n: ts.Expression = node;
+    for (;;) {
+      if (ts.isParenthesizedExpression(n)) n = n.expression;
+      else if (ts.isPropertyAccessExpression(n)) n = n.expression;
+      else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "get") n = n.expression.expression;
+      else break;
+    }
+    if (!ts.isIdentifier(n)) return false;
+    const l = this.lookup(n.text);
+    if (!l) return false;
+    // A declared list local has no storage paths; an Inout parameter's (`@p_x`) may be account data.
+    if ((l.type.kind === "vec" || l.type.kind === "array") && !l.paths && !l.readonly) return true;
+    return !!l.owned;
   }
 
   /** Whether `node` is (part of) a struct value this function owns: `h`, `h.inner`, `h.list.get(i)`. */

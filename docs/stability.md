@@ -46,7 +46,8 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
 - Failures without a log line (unreleased): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
 - Local `FixedVec` / `FixedArray` lists of structs, `FixedVec.pushAll`, the instruction data as a list (`slice`,
-  `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0).
+  `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0); local FixedVecs given for read-only
+  `FixedVec<T, N>` / `Vec<T>` helper parameters (unreleased).
 - `epochRewards()` and `EpochRewards` (0.42.0): the EpochRewards sysvar through its syscall.
 - `NATIVE_ACCOUNT_WRITES` (0.42.0): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
   (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside
