@@ -1565,7 +1565,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       const heap = this.heapLocal(d, !!listType || !!structType);
       if (listType) {
         if (heap) this.checkHeapRoom(this.fieldBytes(listType), d.type!);
-        else this.checkLocalListSize(listType, d.type!);
+        else this.checkLocalListSize(listType, d.type!, undefined, true);
         let lv = c;
         if (listType.kind === "vec") this.model.localVecs.set(fixedVecC(listType), listType);
         if (heap) {

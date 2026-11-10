@@ -129,12 +129,19 @@ export abstract class StorageEmitter extends AliasEmitter {
 
   /**
    * A local list lives in the function's stack frame (4 KiB on SBPF v0, shared with every other local and the helpers
-   * clang inlines): one list may take at most 2 KiB, so the failure is a clear compile error, not clang's frame error.
+   * clang inlines): one list's elements may take at most 2 KiB, so the failure is a clear compile error, not clang's
+   * frame error. A FixedVec's u32 length is not counted: `FixedVec<u32, 512>` (2,052 bytes) is 2 KiB of elements, and
+   * a frame that then overflows is reported by the frame check, which names the biggest locals.
    */
-  protected checkLocalListSize(t: FieldType & { kind: "vec" | "array" }, at: ts.Node, what = typeName(t)): void {
+  protected checkLocalListSize(t: FieldType & { kind: "vec" | "array" }, at: ts.Node, what = typeName(t), declared = false): void {
     const bytes = this.fieldBytes(t);
+    const elements = t.kind === "vec" ? bytes - 4 : bytes;
     const smaller = t.kind === "vec" ? "FixedVec<T, N>" : "FixedArray<T, N>";
-    if (bytes > 2048) this.fail(at, `${what} takes ${bytes} bytes; locals live on the 4 KiB stack, so keep it under 2 KiB (a smaller ${smaller})`);
+    if (elements > 2048)
+      this.fail(
+        at,
+        `${what} takes ${bytes} bytes; locals live on the 4 KiB stack, so keep it under 2 KiB of elements (${elements} here: a smaller ${smaller}${declared ? ", or /** @heap */ on the declaration to keep it on the heap" : ""})`,
+      );
   }
 
   /**

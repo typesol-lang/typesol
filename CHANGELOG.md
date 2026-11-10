@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: a local list may hold 2 KiB of elements, its FixedVec length word aside: `const ids: FixedVec<u32, 512> =
+  fixedVec([])` (2,052 bytes, Phoenix's collected order ids) was refused. A frame that then overflows is still reported
+  by the frame check, which names the biggest locals; the refusal of a bigger list now gives the element bytes and, on
+  a declaration, the `/** @heap */` remedy (test/language/port-syntax.test.ts).
 - Language: comma-separated updates in a `for` loop, `for (let i = 0n, j = n; i < j; i++, j--)`, run in order after
   each pass (`continue` included), and so do comma-separated assignments in its initializer; they were refused ("this
   expression has no effect"). A comma anywhere else still is (test/language/port-syntax.test.ts).
@@ -22,7 +26,7 @@ codes, and says so here.
   are now passed in place like the caller's other owned structs (locals, helper results): they arrived as copies and
   no account write reaches them. Phoenix's book helpers pass their MarketShape on this way, and took it as `Inout<T>`
   only to avoid the copy (test/language/phx-costs.test.ts: 97.6 → 43.3 CU per call of a helper passing it on,
-  test/language/struct-args.test.ts). Changes the generated C of SPL Stake Pool, Marginfi and Raydium CLMM (a copy
+  test/language/helper-copies.test.ts). Changes the generated C of SPL Stake Pool, Marginfi and Raydium CLMM (a copy
   fewer at such calls), whose tests pass unchanged.
 - Faster: the owner check of native account views (`loadRaw` / `loadRawMut`, `loadRawAt`, `rawArrayAt`, `rbTreeAt` and
   their Mut forms) remembers the last account it found this program's, until a CPI or an owner write (`assignOwner`,

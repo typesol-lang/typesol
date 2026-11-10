@@ -27,6 +27,17 @@ describe("port syntax", () => {
     expect(await u64("triangle", { n: new BN(5) })).toBe(15n);
   });
 
+  it("a local list may hold 2 KiB of elements, its length word aside", async () => {
+    // 0 + 3 + … + 3 × 511, plus the length
+    expect(await u64("collect", { n: new BN(512) })).toBe(3n * ((511n * 512n) / 2n) + 512n);
+    const f = (decl: string) =>
+      compileErrors(`import { type FixedVec, type u8, fixedVec, log } from "typesol";\nexport function f(): void {\n  ${decl}\n  log(xs.length);\n}`);
+    expect(f(`const xs: FixedVec<u8, 2049> = fixedVec([]);`)).toContain(
+      "FixedVec<u8, 2049> takes 2053 bytes; locals live on the 4 KiB stack, so keep it under 2 KiB of elements (2049 here: a smaller FixedVec<T, N>, or /** @heap */ on the declaration to keep it on the heap)",
+    );
+    expect(f(`/** @heap */ const xs: FixedVec<u8, 2049> = fixedVec([]);`)).toBe("");
+  });
+
   it("a comma anywhere else is still refused", () => {
     const f = (body: string) => compileErrors(`import { type u64 } from "typesol";\nexport function f(a: u64): void { let x = a; let y = a; ${body} }`);
     expect(f(`x++, y++;`)).toContain("this expression has no effect");
