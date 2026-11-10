@@ -2,10 +2,10 @@ import ts from "typescript";
 import { argIdlName, fieldIdlName, snakeCase } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type IdlSeed, type IntName, isScalar, scalarSize, typeName } from "../model.js";
 import { accountLimit, MAX_SEEDS, U64, type Value, type CpiAcct, isStable, cString, scalarStorageC, optC } from "./shared.js";
-import { CallEmitter } from "./calls.js";
+import { ViewEmitter } from "./views.js";
 
 /** Seeds and signer seeds, the byte buffers and Borsh serialization every CPI builds on, remaining-account ranges. */
-export abstract class CpiCoreEmitter extends CallEmitter {
+export abstract class CpiCoreEmitter extends ViewEmitter {
   /**
    * Lower a seeds array literal into a `SolSignerSeed[]` with `extra` spare slots. Also describes
    * the seeds in Anchor IDL terms when every element is a constant, an argument or an account path.

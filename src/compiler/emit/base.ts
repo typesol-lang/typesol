@@ -518,6 +518,12 @@ export abstract class EmitterBase {
   protected abstract listMethod(node: ts.CallExpression, method: string): Value | undefined;
   protected abstract programErrorFail(name: string, node: ts.Node): string;
   protected abstract isPipeline(e: ts.Expression): e is ts.CallExpression;
+  /** views.ts: a RedBlackTree method call, or undefined when `node` is not one. */
+  protected abstract treeCall(node: ts.CallExpression): { value: Value | undefined } | undefined;
+  /** views.ts: the place a RawArray, a tree node's `.key` / `.value` or a narrowed tree result names. */
+  protected abstract viewRef(node: ts.Expression): Ref | undefined;
+  /** views.ts: `.length` / `.capacity` of a tree, `.index` of a tree node. */
+  protected abstract viewProperty(node: ts.PropertyAccessExpression): Value | undefined;
   protected abstract closureOf(arg: ts.Expression): Closure;
 
   /** The arguments and accounts code written here can name (what a closure written here keeps). */

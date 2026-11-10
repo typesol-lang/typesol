@@ -115,6 +115,8 @@ export interface Ref {
     big?: string;
     /** `bigVec.slice(start, end)`: a view of some of its elements (`len` is then a value, not the stored length). */
     slice?: boolean;
+    /** A `rawArrayAt` view (with `big` and `slice`): `len` its run-time count, nothing stored. */
+    raw?: boolean;
     /** Growable Vecs stored after this one move when it grows or shrinks: where its elements end, and their paths. */
     tail?: { end: string; dataEnd: string; paths: string[] };
   };
@@ -227,6 +229,12 @@ export function valueC(t: ValueType): string {
       return "TsEpochRewards";
     case "structRef":
       return `TSS_${t.struct} *`;
+    case "rawArray":
+      return `${fieldC(t.elem)} *`;
+    case "rbTree":
+      return "TsRbt";
+    case "rbEntry":
+      return "TsRbtEntry";
     case "enumRef":
     case "dataEnumArg":
       return `TSE_${t.name} *`;

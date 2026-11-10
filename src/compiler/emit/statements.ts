@@ -242,6 +242,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.fail(stmt.initializer, "write for (const x of list): one const name, no type annotation");
     if (this.isRemaining(stmt.expression)) this.fail(stmt.expression, "iterate remaining accounts with for (let i = 0n; i < rest.length; i++) and rest.get(i)");
     if (ts.isArrayLiteralExpression(stmt.expression) && this.functionList(stmt.expression)) return this.forOfFunctions(stmt, d!.name as ts.Identifier);
+    if (this.treeForOf(stmt, d!)) return;
     // Synthetic `list.length` / `list.get(i)` nodes placed at the loop, so errors and checks point at the source.
     const f = ts.factory;
     const index = `__of${this.temp++}`;
@@ -267,6 +268,82 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`}`);
       this.loops.pop();
     });
+  }
+
+  /**
+   * `for (const e of tree)` / `for (const e of tree.reversed())` over a RedBlackTree: lib-sokoban's in-order
+   * iterator (a stack of nodes, left registers down, then the right one), smallest key first or, reversed, largest
+   * first. `e` is the node (`e.key`, `e.value`, `e.index`), each read where it lies. The body may change values
+   * but not the tree's structure (insert / remove / initialize on it are compile errors, as Rust's borrow forbids).
+   */
+  protected treeForOf(stmt: ts.ForOfStatement, d: ts.VariableDeclaration): boolean {
+    let src = stmt.expression;
+    while (ts.isParenthesizedExpression(src)) src = src.expression;
+    let reversed = false;
+    if (
+      ts.isCallExpression(src) &&
+      ts.isPropertyAccessExpression(src.expression) &&
+      src.expression.name.text === "reversed" &&
+      this.treeOf(src.expression.expression)
+    ) {
+      if (src.arguments.length) this.fail(src, "reversed() takes no arguments");
+      reversed = true;
+      src = src.expression.expression;
+    }
+    const tree = this.treeOf(src);
+    if (!tree) return false;
+    const t = tree.local.c;
+    const S = tree.inst.stride;
+    const [down, next] = reversed ? ["TS_RBT_RIGHT", "TS_RBT_LEFT"] : ["TS_RBT_LEFT", "TS_RBT_RIGHT"];
+    const stack = this.tmp("rbs");
+    const sp = this.tmp("rbsp");
+    const ptr = this.tmp("rbp");
+    const cur = this.tmp("rbc");
+    const e = this.tmp("rbe");
+    const label = this.tmp("ts_continue_");
+    const release = this.iterationClaims(stmt.statement);
+    this.line(`{`);
+    this.block(() => {
+      this.line(`uint32_t ${stack}[TS_RBT_STACK];`);
+      this.line(`uint32_t ${sp} = 0;`);
+      this.line(`uint32_t ${ptr} = TS_RBT_ROOT(${t}.base);`);
+      this.line(`while (1) {`);
+      this.block(() => {
+        this.line(`while (${ptr} != 0) {`);
+        this.line(`  if (${sp} == TS_RBT_STACK) ts_rbt_too_deep();`);
+        this.line(`  ${stack}[${sp}++] = ${ptr};`);
+        this.line(`  ${ptr} = ts_rbt_reg(&${t}, ${S}, ${ptr}, ${down});`);
+        this.line(`}`);
+        this.line(`if (${sp} == 0) break;`);
+        this.line(`uint32_t ${cur} = ${stack}[--${sp}];`);
+        this.line(`TsRbtEntry ${e} = {ts_rbt_node(&${t}, ${S}, ${cur}), ${cur}};`);
+        // sokoban reads the next pointer when it yields the node, before the caller sees it.
+        this.line(`${ptr} = ts_rbt_reg(&${t}, ${S}, ${cur}, ${next});`);
+        this.scopes.at(-1)!.set((d.name as ts.Identifier).text, {
+          c: e,
+          type: { kind: "rbEntry", inst: tree.inst.key, writable: tree.writable },
+          mutable: false,
+          paths: [`@${t}[]`],
+          decl: d,
+        });
+        const walking = !this.iteratingTrees.has(t);
+        this.iteratingTrees.add(t);
+        this.loops.push(label);
+        try {
+          this.line(`{`);
+          this.block(() => this.body(stmt.statement));
+          this.line(`}`);
+        } finally {
+          this.loops.pop();
+          if (walking) this.iteratingTrees.delete(t);
+        }
+        this.line(`${label}:;`);
+        release();
+      });
+      this.line(`}`);
+    });
+    this.line(`}`);
+    return true;
   }
 
   /** The functions a list literal names (`[f, g]`: closures, helpers or choices), or undefined when it holds anything else. */
@@ -1278,6 +1355,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       const c = `l_${name}_${this.temp++}`;
 
       const init = d.initializer;
+      // Run-time offset views (loadRawAt, rawArrayAt, rbTreeAt) and references into a tree's nodes (views.ts).
+      if (this.bindView(d, init, name, c, mutable)) continue;
       // A function as a value: another name for one (`const h = g`), or the one a function returns (`adder(5n)`).
       const made = ts.isCallExpression(init) ? this.madeFunction(init) : undefined;
       const alias = ts.isIdentifier(init) ? this.functionNamed(init) : undefined;

@@ -3,6 +3,7 @@ import { type FieldType, type StructDef } from "../model.js";
 import { accountLimit, cBytes, scalarStorageC, optC, storageDecl, helperSignature, fieldC, fixedVecC, laterVecC, type EmitOptions } from "./shared.js";
 import { FunctionEmitter } from "./function.js";
 import { emitBorshCodecs, emitNativeBorshCodecs } from "./borsh.js";
+import { emitRbTrees } from "./rbtree.js";
 
 /**
  * The whole C translation unit: type declarations (structs, options, enums, events), every helper and instruction
@@ -147,6 +148,8 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   const helpers = [...model.helpers.values()];
   for (const h of helpers) out.push(helperSignature(h) + ";");
   if (helpers.length) out.push("");
+  // RedBlackTree instances: after the helper prototypes (a comparator is a helper), before the code that uses them.
+  out.push(...emitRbTrees(model));
   out.push(...helperBodies, ...ixBodies);
 
   const limit = accountLimit(model);
