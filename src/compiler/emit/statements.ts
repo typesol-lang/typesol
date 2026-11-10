@@ -223,7 +223,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       const init = stmt.initializer;
       if (init) {
         if (ts.isVariableDeclarationList(init)) this.variable(init);
-        else this.expressionStatement(init, false);
+        else for (const e of commaList(init)) this.expressionStatement(e, false);
       }
       this.loop(stmt.condition, stmt.statement, stmt.incrementor);
     });
@@ -935,7 +935,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.loops.pop();
       this.line(`${label}:;`);
       release();
-      if (step) this.expressionStatement(step, false);
+      // `i++, j--`: each update in order, all after the `continue` label.
+      if (step) for (const e of commaList(step)) this.expressionStatement(e, false);
     });
     this.line(`}`);
   }
@@ -1893,4 +1894,11 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (ts.isIdentifier(target) || (value.type.kind === "string" && this.peekKind(target) === "string")) value = this.ownedString(value);
     this.line(place.write(value.c) + ";");
   }
+}
+
+/** The expressions of a comma list (`i++, j--` in a for loop's update or initializer), left to right. */
+function commaList(e: ts.Expression): ts.Expression[] {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.CommaToken) return [...commaList(e.left), ...commaList(e.right)];
+  return [e];
 }

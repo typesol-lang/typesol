@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: comma-separated updates in a `for` loop, `for (let i = 0n, j = n; i < j; i++, j--)`, run in order after
+  each pass (`continue` included), and so do comma-separated assignments in its initializer; they were refused ("this
+  expression has no effect"). A comma anywhere else still is (test/language/port-syntax.test.ts).
 - Faster: `buf.pushBorsh<DataEnum>({ kind: "Reduce", … })`, a data-enum literal of a fixed-size variant, builds only
   that variant: its fields evaluated in source order into locals, then one room check, the tag and a store of each
   field at its offset (a variant holding a struct or FixedArray: one temporary of exactly its bytes and one copy). It
