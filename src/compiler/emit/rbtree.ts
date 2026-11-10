@@ -103,7 +103,8 @@ function helperCompare(t: RbTreeInst): string[] {
   return [
     `${scalarC(ret)} r;`,
     `TS_TRY(fn_${h.name}(params, ${arg("a")}, ${arg("b")}, &r));`,
-    INT_INFO[ret.name].signed ? `*out = r < 0 ? -1 : r > 0 ? 1 : 0;` : `*out = r > 0 ? 1 : 0;`,
+    // Signed: an unsigned result is refused where the tree is made (views.ts), as it could never say "less".
+    `*out = r < 0 ? -1 : r > 0 ? 1 : 0;`,
     `return SUCCESS;`,
   ];
 }

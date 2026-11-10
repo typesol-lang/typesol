@@ -19,9 +19,6 @@ const TREE_METHODS =
  * with the owner, writability and claim checks of loadRaw / loadRawMut.
  */
 export abstract class ViewEmitter extends CallEmitter {
-  /** C names of the trees a `for … of` is walking: their structure may not change in the loop (Rust's borrow). */
-  protected iteratingTrees = new Set<string>();
-
   /** The view function a call names (loadRawAt …), or undefined. */
   protected viewFn(node: ts.Expression): string | undefined {
     while (ts.isParenthesizedExpression(node)) node = node.expression;
@@ -49,16 +46,18 @@ export abstract class ViewEmitter extends CallEmitter {
     if (fn) {
       if (mutable) this.fail(d, `bind ${fn}(…) with const`);
       const call = init as ts.CallExpression;
+      // Views of account data (two may share bytes under NATIVE_ACCOUNT_WRITES), each ended by a resize of its account.
+      const view = { view: true, viewAcct: this.viewAccountKey(call.arguments[0]!), decl: d };
       if (fn === "loadRawAt" || fn === "loadRawMutAt") {
         const v = this.loadRawAt(call, fn === "loadRawMutAt");
         this.line(`${valueC(v.type)}${c} = ${v.c};`);
-        this.scopes.at(-1)!.set(name, { c, type: v.type, mutable: false, paths: [`@${c}`], decl: d });
+        this.scopes.at(-1)!.set(name, { c, type: v.type, mutable: false, paths: [`@${c}`], ...view });
       } else if (fn === "rawArrayAt" || fn === "rawArrayMutAt") {
         const type = this.rawArrayAt(call, fn === "rawArrayMutAt", c);
-        this.scopes.at(-1)!.set(name, { c, type, mutable: false, paths: [`@${c}`], decl: d });
+        this.scopes.at(-1)!.set(name, { c, type, mutable: false, paths: [`@${c}`], ...view });
       } else {
         const type = this.rbTreeAt(call, fn === "rbTreeMutAt", c);
-        this.scopes.at(-1)!.set(name, { c, type, mutable: false });
+        this.scopes.at(-1)!.set(name, { c, type, mutable: false, ...view });
       }
       return true;
     }
@@ -204,11 +203,17 @@ export abstract class ViewEmitter extends CallEmitter {
     const stride = 16 + ks + vs;
     // sokoban's assert_proper_alignment, and the padding Rust's repr(C) RBNode { key, value } would hold: TypeSOL
     // structs are packed, so the bytes match only when there is none (spell padding out as fields, as Rust ports do).
-    if (stride % 8)
-      this.fail(
-        node,
-        `a node is 16 + ${ks} + ${vs} = ${stride} bytes, not a multiple of 8 (sokoban asserts it): add ${8 - (stride % 8)} bytes of padding to ${typeName(value)}`,
-      );
+    if (stride % 8) {
+      const pad = 8 - (stride % 8);
+      // Padding is spelled out as fields, so it goes in a struct: the value's, else the key's, else one to wrap the value.
+      const where =
+        value.kind === "struct"
+          ? `add ${pad} bytes of padding to ${typeName(value)}`
+          : key.kind === "struct"
+            ? `add ${pad} bytes of padding to ${typeName(key)}`
+            : `a ${typeName(value)} value has no room for padding: make the value a struct holding it and ${pad} bytes of padding fields`;
+      this.fail(node, `a node is 16 + ${ks} + ${vs} = ${stride} bytes, not a multiple of 8 (sokoban asserts it): ${where}`);
+    }
     if (ks % this.alignOf(key) || vs % this.alignOf(value) || ks % this.alignOf(value))
       this.fail(
         node,
@@ -228,6 +233,13 @@ export abstract class ViewEmitter extends CallEmitter {
         this.fail(
           cmpNode,
           `${compare.display} must take two ${typeName(key)} keys and return an integer (negative, 0 or positive): (a: ${typeName(key)}, b: ${typeName(key)}) => i8`,
+        );
+      // An unsigned result can never say "less", so every search would go one way and the tree would be out of order.
+      const ret = compare.returns as { kind: "int"; name: keyof typeof INT_INFO };
+      if (!INT_INFO[ret.name].signed)
+        this.fail(
+          cmpNode,
+          `${compare.display} returns ${ret.name}, which cannot be negative: a comparator returns a signed integer (negative when a sorts first, 0, positive), (a: ${typeName(key)}, b: ${typeName(key)}) => i8`,
         );
     } else {
       const why = this.unordered(key);
@@ -322,6 +334,12 @@ export abstract class ViewEmitter extends CallEmitter {
           node,
           `${method}() would change the tree a for … of is walking: collect the keys in the loop, then ${method} after it (as Rust's borrow requires)`,
         );
+      for (const walked of this.iteratingTrees.values())
+        if (this.mayBeSameAccount(walked.acct, local.viewAcct ?? "?"))
+          this.fail(
+            node,
+            `${method}() changes a tree that may be ${walked.name}, which a for … of is walking (a view of an account that may be the same one): collect the keys in the loop, then ${method} after it (as Rust's borrow requires)`,
+          );
     };
     switch (method) {
       case "initialize": {

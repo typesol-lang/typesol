@@ -2,7 +2,7 @@ import ts from "typescript";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CompileError, Reporter, type Diagnostic } from "./diagnostics.js";
+import { CompileError, Reporter, type Diagnostic, markAliasUse } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
 import { hintForTypeScript, unsupportedSyntax } from "./hints.js";
@@ -421,7 +421,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const options = new Map<string, OptionInner>();
   const dataEnums = new Map<string, DataEnumDef>();
   const constants = new Map<string, ConstDef>();
-  const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string>; init: ts.Expression }[] = [];
+  const pendingConstTypes: { def: ConstDef; type?: ts.TypeNode; imports: Map<string, string>; init: ts.Expression }[] = [];
   const errors: ErrorDef[] = [];
   const functions: { node: ts.FunctionDeclaration; imports: Map<string, string> }[] = [];
   const helperNodes: HelperSource[] = [];
@@ -582,7 +582,9 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
             declare(d.name, file);
             const def: ConstDef = { name: d.name.text, value };
             constants.set(def.name, def);
-            if (d.type) pendingConstTypes.push({ def, type: d.type, imports, init });
+            // Typed constants are folded again in their type below; untyped expressions are kept in order with them, as
+            // they may use one whose value that changes (`~` within an unsigned width).
+            if (d.type || (typeof value === "bigint" && isConstantExpression(init))) pendingConstTypes.push({ def, type: d.type, imports, init });
           }
         } else {
           reporter.fail(stmt, unsupportedSyntax(stmt.kind, "top level"));
@@ -595,8 +597,18 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const fixedVecs = new Map<string, FieldType & { kind: "vec" }>();
   const scopeFor = (imports: Map<string, string>): TypeScope => ({ imports, enums, options, dataEnums });
   if (simpleAliases.size) substituteAliases(program, entryPath, simpleAliases, fileImports, reporter);
+  // Constants whose typed value differs from the first, untyped fold: untyped expressions using them are folded again.
+  const refolded = new Set<string>();
+  const uses = (e: ts.Node): boolean => (ts.isIdentifier(e) && refolded.has(e.text)) || !!ts.forEachChild(e, (n) => uses(n) || undefined);
   for (const c of pendingConstTypes) {
     reporter.guard(() => {
+      if (!c.type) {
+        if (!uses(c.init)) return;
+        const v = foldConstant(c.init, constants, reporter);
+        if (v !== c.def.value) refolded.add(c.def.name);
+        c.def.value = v;
+        return;
+      }
       const t = resolveScalarType(c.type, scopeFor(c.imports));
       if (!t || t.kind !== "int") reporter.fail(c.type, "annotate constants with an integer type, or leave the type out");
       if (typeof c.def.value !== "bigint") reporter.fail(c.type, "only integer constants take a type annotation");
@@ -605,7 +617,12 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       const literal =
         ts.isBigIntLiteral(c.init) ||
         (ts.isPrefixUnaryExpression(c.init) && c.init.operator === ts.SyntaxKind.MinusToken && ts.isBigIntLiteral(c.init.operand));
-      if (!literal && isConstantExpression(c.init)) foldConstant(c.init, constants, reporter, t.name);
+      // The typed fold is the value (`~1n` is 254 in a u8, not -2).
+      if (!literal && isConstantExpression(c.init)) {
+        const v = foldConstant(c.init, constants, reporter, t.name);
+        if (v !== c.def.value) refolded.add(c.def.name);
+        c.def.value = v;
+      }
       if (c.def.value < info.min || c.def.value > info.max) reporter.fail(c.type, `${c.def.value} does not fit in ${t.name}`);
       c.def.type = t;
     });
@@ -1368,7 +1385,7 @@ function substituteAliases(
     for (const { ref, decl } of found)
       reporter.guard(() => {
         const to = target(decl);
-        if (!replaceChild(ref.parent, ref, to)) reporter.fail(ref, `type ${decl.name.text} cannot be used here; write the type it names`);
+        if (!replaceChild(ref.parent, ref, copyForUse(to, ref))) reporter.fail(ref, `type ${decl.name.text} cannot be used here; write the type it names`);
         // The names the aliased type uses, from its own file's imports, become the using file's too.
         const from = simple.get(decl)!;
         const into = fileImports.get(ref.getSourceFile());
@@ -1390,6 +1407,38 @@ function substituteAliases(
       });
   };
   for (const file of programFiles(program, entry)) replaceAliases(file);
+}
+
+/**
+ * A copy of an alias's type for one use of it: the same nodes field by field (positions, text and parents still in the
+ * alias's file, so names and source text read as before), but objects of their own, recorded as standing for `use`, so
+ * a diagnostic about the type is reported where the alias is used rather than at its declaration.
+ */
+function copyForUse(node: ts.Node, use: ts.Node, parent: ts.Node = node.parent): ts.Node {
+  const copy = Object.assign(Object.create(Object.getPrototypeOf(node) as object) as ts.Node, node);
+  (copy as { parent: ts.Node }).parent = parent;
+  markAliasUse(copy, use);
+  const nodes = new Set<ts.Node>();
+  const lists = new Set<ts.NodeArray<ts.Node>>();
+  ts.forEachChild(
+    node,
+    (n) => void nodes.add(n),
+    (l) => void lists.add(l),
+  );
+  const fields = copy as unknown as Record<string, unknown>;
+  for (const key of Object.keys(fields)) {
+    if (key === "parent") continue;
+    const v = fields[key];
+    if (nodes.has(v as ts.Node)) fields[key] = copyForUse(v as ts.Node, use, copy);
+    else if (lists.has(v as ts.NodeArray<ts.Node>)) {
+      const l = v as ts.NodeArray<ts.Node>;
+      fields[key] = Object.assign(
+        l.map((n) => copyForUse(n, use, copy)),
+        { pos: l.pos, end: l.end, hasTrailingComma: l.hasTrailingComma },
+      );
+    }
+  }
+  return copy;
 }
 
 /** Put `to` where `from` is among `parent`'s children (a property or an element of a node list). */

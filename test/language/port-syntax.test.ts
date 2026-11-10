@@ -1,8 +1,12 @@
 // Forms native ports write as the Rust reads (test/fixtures/port-syntax.ts): comma-separated for-loop updates and
 // initializers.
 import { generateKeyPairSigner } from "@solana/kit";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { generate } from "../../src/compiler/index.js";
 import { BN, compileErrors, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
 
 describe("port syntax", () => {
@@ -92,6 +96,32 @@ ${body}`);
     expect(f(`const X = 2n ** -1n;`)).toContain("has a negative exponent");
     expect(f(`const S = "seed";\nconst X = S + 1n;`)).toMatch(/S is not an integer constant|not assignable/);
     expect(f(`const X = 1n + g();\nfunction g(): u64 { return 1n; }`)).toContain("integer expressions over literals and earlier constants");
+  });
+
+  it("a typed constant is the value folded in its type: ~ within an unsigned width, out-of-range results still refused", () => {
+    const value = (decls: string) => {
+      const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-const-"));
+      try {
+        writeFileSync(
+          path.join(dir, "p.ts"),
+          `import { type u8, type u16, type u32, type u64, type u128, log } from "typesol";\n${decls}\nexport function f(): void { log(X); }`,
+        );
+        return /ts_str_u(?:64|128)\(\(uint(?:64|128)_t\)\((\w+?)U?LL\)/.exec(generate(path.join(dir, "p.ts")).c)?.[1];
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    const f = (decls: string) =>
+      compileErrors(`import { type u8, type u16, type u32, type u64, type u128, log } from "typesol";\n${decls}\nexport function f(): void { log(X); }`);
+    expect(value(`const X: u8 = ~1n;`)).toBe("254");
+    expect(value(`const X: u16 = ~1n;`)).toBe("65534");
+    expect(value(`const X: u32 = ~0n;`)).toBe("4294967295");
+    expect(value(`const X: u64 = ~1n;`)).toBe("18446744073709551614");
+    // An untyped constant over a typed one uses the typed value.
+    expect(value(`const A: u8 = ~1n;\nconst X = A + 1n;`)).toBe("255");
+    expect(f(`const X: u128 = ~5n;`)).toBe("");
+    expect(f(`const X: u8 = ~1n + 2n;`)).toContain("~1n + 2n is 256, which does not fit in u8: the constant is computed in its type");
+    expect(f(`const X: u8 = ~1n;\nconst Y: u8 = X + 2n;`)).toContain("X + 2n is 256, which does not fit in u8: the constant is computed in its type");
   });
 
   it("a comma anywhere else is still refused", () => {

@@ -331,7 +331,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           decl: d,
         });
         const walking = !this.iteratingTrees.has(t);
-        this.iteratingTrees.add(t);
+        this.iteratingTrees.set(t, { name: src.getText(), acct: tree.local.viewAcct ?? "?" });
         this.loops.push(label);
         try {
           this.line(`{`);
@@ -1508,7 +1508,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           paths: [`@${c}`],
           decl: d,
           loaded,
-          ...(fn === "loadRaw" || fn === "loadRawMut" ? { view: true } : {}),
+          ...(fn === "loadRaw" || fn === "loadRawMut" ? { view: true, viewAcct: this.viewAccountKey((init as ts.CallExpression).arguments[0]!) } : {}),
           ...(t.bigCap ? { bigCap: t.bigCap } : {}),
         });
         continue;
@@ -1658,6 +1658,20 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (type.kind === "remaining") {
         if (mutable) this.fail(d, "bind remainingAccounts() with const");
         this.scopes.at(-1)!.set(name, { c: v.c, type, mutable: false });
+        continue;
+      }
+      // A tree node reached any other way than `const e = tree.min()` (`c ? t.min() : t.max()`, `t.get(k)!`): it
+      // aliases the tree like the direct form, so it keeps the paths it may name; one whose tree is unknown is refused.
+      if (type.kind === "rbEntry" || (type.kind === "structRef" && type.nullable)) {
+        if (mutable) this.fail(d, "bind a tree node with const: it refers to a node of the tree");
+        const paths = this.pathsOf(init);
+        if (!paths)
+          this.fail(
+            init,
+            "this refers to a node of a tree, and which tree is not clear here: bind the tree's own call to a const (const e = tree.min(), const o = tree.get(key))",
+          );
+        this.line(`${valueC(type)} ${c} = ${v.c};`);
+        this.scopes.at(-1)!.set(name, { c, type, mutable: false, paths, decl: d });
         continue;
       }
       if ((type.kind === "account" || type.kind === "structRef") && mutable) this.fail(d, "bind accounts with const");

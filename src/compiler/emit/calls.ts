@@ -713,6 +713,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.writeData(node);
       case "resizeAccount": {
         if (args.length !== 2) this.fail(node, "resizeAccount(account, newSize) takes the account and its new size");
+        this.assertNoViewAfter(this.viewAccountKey(args[0]!), node, "resizeAccount()");
         // A remaining account (or a helper's RemainingAccount): its size when the instruction started is the one the
         // entrypoint recorded in the record's padding, as solana_program 1.14's entrypoint records it for realloc.
         const h = this.handle(args[0]!);
@@ -735,6 +736,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         // account.lamports = 0; account.assign(&system_program::id()); account.realloc(0, false). The data is not
         // zeroed (realloc's zero_init is false): the runtime drops it with the length, and then accepts the new owner.
         if (args.length !== 2) this.fail(node, "closeRaw(account, receiver) takes the account to close and the account that gets its lamports");
+        this.assertNoViewAfter(this.viewAccountKey(args[0]!), node, "closeRaw()");
         const a = this.inPlaceAccount(args[0]!, "closeRaw's account", true);
         const r = this.inPlaceAccount(args[1]!, "closeRaw's receiver", false);
         // Closing an account into itself would burn its lamports (the runtime then refuses the instruction).
@@ -2233,6 +2235,38 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return found;
   }
 
+  /** Whether a helper's body (or a helper it calls) closes or resizes an account: closeRaw / resizeAccount. */
+  private helperResizes(body: ts.Node): boolean {
+    return this.helperCalls(body, ["closeRaw", "resizeAccount"]);
+  }
+
+  /** Whether a helper's body (or a helper it calls) makes a writable tree view, which may change a tree's structure. */
+  private helperMakesMutTree(body: ts.Node): boolean {
+    return this.helperCalls(body, ["rbTreeMutAt"]);
+  }
+
+  /** Whether a helper's body (or a helper it calls) calls one of these built-ins. */
+  private helperCalls(body: ts.Node, builtins: string[], seen = new Set<ts.Node>()): boolean {
+    if (seen.has(body)) return false;
+    seen.add(body);
+    let found = false;
+    const visit = (n: ts.Node) => {
+      if (found) return;
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+        const fn = this.exportName(n.expression);
+        if (fn && builtins.includes(fn)) found = true;
+        else {
+          const name = calleeName(n.expression, this.model.helperDecls, this.checker);
+          const callee = name ? (this.model.generics.get(name)?.node ?? this.model.helpers.get(name)?.node) : undefined;
+          if (callee && this.helperCalls(callee, builtins, seen)) found = true;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return found;
+  }
+
   /**
    * A helper given a closure (a function that reads the caller's variables) for a function parameter: a closure only
    * runs where it is declared, so the helper is expanded here, like a closure, with the closure bound to the
@@ -2342,6 +2376,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // A helper that takes accounts may change account data, so account text it gets is copied first.
     // A RemainingAccount(s) parameter counts: the helper may load and write a struct through it.
     const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining");
+    // A helper that closes or resizes an account it is given ends the caller's views of it (any account it may be).
+    if (takesAccounts && this.helperResizes(h.node)) this.assertNoViewAfter("?", node, `${h.display}() (it may close or resize an account it is given)`);
+    // Nor may a helper change a tree of an account a for … of is walking.
+    if (takesAccounts && this.iteratingTrees.size && this.helperMakesMutTree(h.node))
+      this.fail(
+        node,
+        `${h.display}() takes accounts and makes an rbTreeMutAt view, so it may change the tree a for … of is walking (${[...this.iteratingTrees.values()].map((w) => w.name).join(", ")}): collect what it needs in the loop, then call it after`,
+      );
     const values: Value[] = [];
     const pieces: (number | string)[] = [];
     h.params.forEach((p, i) => {
@@ -2583,15 +2625,38 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!this.nativeAccountWrites()) return false;
       return !!((aa || view(a)) && (ba || view(b)));
     };
-    const inouts = refs.filter((r) => r.inout && passed[r.i]);
-    for (let a = 0; a < inouts.length; a++)
-      for (let b = a + 1; b < inouts.length; b++) {
-        const x = inouts[a]!;
-        const y = inouts[b]!;
-        if (!x.paths.some((p) => y.paths.some((q) => mayShare(root(p), root(q))))) continue;
-        const [pa, pb] = [passed[x.i]!, passed[y.i]!];
+    // A read-only argument beside an Inout one may also be the same bytes: an account the runtime does not keep apart
+    // from a writable one (a read-only parameter is not checked against the writable ones).
+    const readOnlyAccount = (r: string) => {
+      const a = r.startsWith("@") ? undefined : this.accounts.get(r);
+      return !!a && !isWritable(a.kind);
+    };
+    const mayShareRead = (a: string, b: string): boolean =>
+      mayShare(a, b) || (a !== b && !!this.accounts.get(a) && !!this.accounts.get(b) && (readOnlyAccount(a) || readOnlyAccount(b)));
+    // The bytes an argument is passed as, when they are the caller's own: a place's pointer, an account's data, a list
+    // view's elements. A copy taken for the call (a helper that takes accounts gets one) shares nothing.
+    const bytes = (r: (typeof refs)[number]): { lo: string; hi: string } | undefined => {
+      const v = passed[r.i];
+      if (!v) return undefined;
+      const p = h.params[r.i]!;
+      if (r.inout || (v.startsWith("(&") && (p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg")))
+        return { lo: `(uint8_t *)${v}`, hi: `(uint8_t *)${v} + sizeof(*${v})` };
+      if (p.account && /^\w+$/.test(v)) return { lo: `${v}->data`, hi: `${v}->data + ${v}->data_len` };
+      if (p.type.kind === "vecArg" && /^\w+$/.test(v) && !h.params.some((q) => q.account || q.type.kind === "account" || q.type.kind === "remaining"))
+        return { lo: `${v}.ptr`, hi: `${v}.ptr + (uint64_t)${v}.len * ${this.fieldBytes(p.type.elem)}` };
+      return undefined;
+    };
+    for (let a = 0; a < refs.length; a++)
+      for (let b = a + 1; b < refs.length; b++) {
+        const x = refs[a]!;
+        const y = refs[b]!;
+        if (!x.inout && !y.inout) continue;
+        const share = x.inout && y.inout ? mayShare : mayShareRead;
+        if (!x.paths.some((p) => y.paths.some((q) => share(root(p), root(q))))) continue;
+        const [bx, by] = [bytes(x), bytes(y)];
+        if (!bx || !by) continue;
         this.line(
-          `if ((uint8_t *)${pa} < (uint8_t *)${pb} + sizeof(*${pb}) && (uint8_t *)${pb} < (uint8_t *)${pa} + sizeof(*${pa})) TS_FAIL(TS_ERR_DUPLICATE_MUT, ${cString(`TypeSOL: ${h.display}() was given ${show(argNodes[x.i]!)} and ${show(argNodes[y.i]!)}, which share storage`)});`,
+          `if (${bx.lo} < ${by.hi} && ${by.lo} < ${bx.hi}) TS_FAIL(TS_ERR_DUPLICATE_MUT, ${cString(`TypeSOL: ${h.display}() was given ${show(argNodes[x.i]!)} and ${show(argNodes[y.i]!)}, which share storage`)});`,
         );
       }
   }

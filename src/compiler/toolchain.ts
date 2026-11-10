@@ -105,6 +105,8 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     const layoutFlags = cflags.filter((f) => f !== "-Werror" && !f.startsWith("-Wframe-larger-than"));
     const res = spawnSync(tc.clang, [...layoutFlags, ...incs, "-g", "-w", "-Rpass-analysis=stack-frame-layout", "-o", obj, "-c", cFile], {
       encoding: "utf8",
+      // A large program's remarks (one per function, every slot listed) run past the default 1 MiB.
+      maxBuffer: 256 * 1024 * 1024,
     });
     rmSync(obj, { force: true });
     throw stackError(message, frameLayouts(res.stderr ?? ""), readFileSync(cFile, "utf8"));
@@ -282,7 +284,7 @@ export function stackError(message: string, layouts = new Map<string, FrameSlot[
 
 function run(cmd: string, args: string[]) {
   try {
-    execFileSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
   } catch (e) {
     const err = e as { stderr?: Buffer; stdout?: Buffer };
     throw new Error(`${path.basename(cmd)} failed:\n${err.stderr?.toString() ?? ""}${err.stdout?.toString() ?? ""}`);

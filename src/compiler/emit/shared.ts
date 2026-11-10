@@ -142,8 +142,10 @@ export interface Local {
   decl?: ts.VariableDeclaration | ts.ParameterDeclaration;
   /** A struct reference into an element of a list whose elements can move (a growable Vec, a heap Vec, a BigVec). */
   movable?: boolean;
-  /** A `loadRaw` / `loadRawMut` view (under NATIVE_ACCOUNT_WRITES two views may share bytes). */
+  /** A native view (`loadRaw`, `loadRawMutAt`, `rawArrayMutAt`, `rbTreeMutAt` …): under NATIVE_ACCOUNT_WRITES two views may share bytes. */
   view?: boolean;
+  /** For a native view: the account it reads (see `viewAccountKey`), so closeRaw / resizeAccount can end it. */
+  viewAcct?: string;
   /** A local closure (`const f = (…) => …` reading the enclosing function's variables), expanded where it is called. */
   closure?: Closure;
   /**

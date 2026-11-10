@@ -164,6 +164,47 @@ codes, and says so here.
   messages ("attempt to add with overflow", "attempt to divide by zero", …) at the original's location instead of
   failing with 5100 / 5101, in either style. Checked line for line against the Phoenix v1 binary's panics (its
   entrypoint's assertion, and its overflow and remainder checks in initialize.rs and quantities.rs).
+- Fixed: a tree comparator returning an unsigned integer (`function cmp(a: u64, b: u64): u8`) was accepted and could
+  never report "less", so every search went one way and the tree was silently out of order. It is a compile error
+  naming the type; a comparator returns a signed integer (test/language/rbtree.test.ts).
+- Fixed: two writable views of one account's bytes through `loadRawMutAt`, `rawArrayMutAt` or `rbTreeMutAt` passed as
+  two `Inout` arguments under `NATIVE_ACCOUNT_WRITES` were not compared at run time (only `loadRawMut` views were), so
+  overlapping places reached the helper. They are compared before the call as `loadRawMut` views are: 2040 when they
+  overlap (test/language/inout.test.ts, test/fixtures/inout-views.ts).
+- Fixed: an `Inout` argument was compared at run time only with other `Inout` arguments, so a read-only argument that
+  is the same bytes (`h(a.s, b.s)` with two `Dup` accounts that are one, a place of a writable account beside a
+  read-only account that is the same, two native views) changed under the helper as it wrote. Every argument passed
+  in place is now compared with the `Inout` one when their roots may be one account (2040 when they overlap); calls
+  whose arguments cannot alias, and arguments copied for the call, are not compared, so no existing program changed
+  (test/language/inout.test.ts, test/fixtures/inout-share.ts).
+- Fixed: a tree node bound any other way than directly (`const e = c ? t.min() : t.max()`, `const v = t.get(k)!`)
+  escaped the rule that a reference into a tree is not used after an `insert`; it compiled and could read a reused
+  node. It refers to the tree like the direct form (`"e" still refers to t`), and binding one with `let` is refused
+  (test/language/rbtree.test.ts).
+- Fixed: a typed constant kept the value folded without its type, so `const T: u8 = ~1n` failed with "-2 does not fit
+  in u8" although `~` within a u8 is 254. The value is the one folded in its type, and an untyped constant using it
+  gets that value; out-of-range results are still refused (test/language/port-syntax.test.ts).
+- Fixed: a problem with an aliased type (`export type Buf = BigVec<u64>` used as an argument in another file) was
+  reported at the alias's declaration, once, instead of where it is used. Each use now gets its own report at the use
+  (test/language/aliases.test.ts).
+- Fixed: a view made before `closeRaw` or `resizeAccount` of its account (`const v = t.get(1n)!`, a `rawArrayMutAt`)
+  could still be used after it, its bounds checked against the old length, so writes landed past the new end and reads
+  were stale. Using one after either, or after a helper that may close or resize an account it is given, is a compile
+  error saying to take the view again (test/language/raw-views.test.ts).
+- Fixed: the rule that a `for … of` over a tree may not change its structure was kept per variable, so another view
+  of the same tree (`const t2 = rbTreeMutAt(…same account and offset…)`) could remove from it during the walk. It is
+  kept per account: no tree view of an account that may be the walked one's may insert, remove or initialize in the
+  loop, nor may a helper that takes accounts and makes an `rbTreeMutAt` view be called there
+  (test/language/rbtree.test.ts).
+- Language: a reference into a local `FixedVec` (`const e = xs.get(0n)`) read after the element is replaced
+  (`xs.set(0n, { … })`, `pop`, `clear`) is refused as one into account data is (`"e" still refers to xs[]`); before, a
+  local FixedVec's elements had no storage path and the read compiled, seeing the new value where JS keeps the old
+  object (test/language/fixedvec.test.ts). Such messages also name a `@heap` list as the source does (they printed its C
+  name).
+- Diagnostics: a node size that is not a multiple of 8 with a scalar value (`rbTreeMutAt<u64, u32>`) says to make the
+  value a struct with padding fields, not to add padding to `u32`; the stack-frame report after an overflowing build
+  reads clang's remarks without the 1 MiB output limit, which cut them short on large programs
+  (test/language/rbtree.test.ts).
 - Programs that use none of the new features above compile to the same C as before; the "Faster" entries name the
   programs whose generated C they change.
 

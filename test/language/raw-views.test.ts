@@ -166,4 +166,30 @@ import { type u64 } from "typesol";
       "is a list",
     );
   });
+
+  it("a view made before closeRaw / resizeAccount of its account is not used after it", () => {
+    const head = `import { type AccountInfo, type Mut, type RemainingAccount, type u64, closeRaw, loadRawMut, loadRawMutAt, rawArrayMutAt, rbTreeMutAt, remainingAccounts, resizeAccount, log } from "typesol";
+export const NATIVE_ACCOUNT_WRITES = true;
+export interface P { a: u64; b: u64; }
+function shrink(acct: RemainingAccount): void { resizeAccount(acct, 0n); }
+`;
+    const f = (body: string) => compileErrors(`${head}export function f(acct: Mut<AccountInfo>, r: Mut<AccountInfo>): void { ${body} }`);
+    const after = (name: string, what: string) =>
+      `"${name}" reads account data through a view made before ${what}, which changes the account's length: a view checks its bounds when it is made, so "${name}" could reach past the new end. Take the view again after ${what} and read through the new one`;
+    expect(f(`const t = rbTreeMutAt<u64, P>(acct, 0n, 4n); const v = t.get(1n)!; closeRaw(acct, r); v.a = 5n;`)).toBe(after("v", "closeRaw()"));
+    expect(f(`const arr = rawArrayMutAt<u64>(acct, 0n, 8n); resizeAccount(acct, 8n); arr.set(3n, 1n);`)).toBe(after("arr", "resizeAccount()"));
+    expect(f(`const p = loadRawMutAt<P>(acct, 8n); resizeAccount(acct, 8n); log(p.a);`)).toBe(after("p", "resizeAccount()"));
+    expect(f(`const p = loadRawMut<P>(acct); const q = p; resizeAccount(acct, 8n); log(q.a);`)).toBe(after("q", "resizeAccount()"));
+    expect(f(`const t = rbTreeMutAt<u64, P>(acct, 0n, 4n); resizeAccount(acct, 0n); log(t.length);`)).toBe(after("t", "resizeAccount()"));
+    // Under NATIVE_ACCOUNT_WRITES another account may be the same one; a helper that resizes ends every view.
+    expect(f(`const p = loadRawMutAt<P>(r, 8n); resizeAccount(acct, 8n); log(p.a);`)).toBe(after("p", "resizeAccount()"));
+    expect(f(`const p = loadRawMutAt<P>(acct, 8n); shrink(remainingAccounts().get(0n)); log(p.a);`)).toBe(
+      after("p", "shrink() (it may close or resize an account it is given)"),
+    );
+    // Used before only, or taken again after: fine.
+    expect(f(`const p = loadRawMutAt<P>(acct, 8n); p.a = 1n; resizeAccount(acct, 16n); const q = loadRawMutAt<P>(acct, 0n); q.b = 2n;`)).toBe("");
+    expect(f(`for (let i = 0n; i < 2n; i++) { const p = loadRawMutAt<P>(acct, 0n); p.a = i; resizeAccount(acct, 16n); }`)).toBe("");
+    // A view made outside a loop that resizes is read again on the next pass.
+    expect(f(`const p = loadRawMutAt<P>(acct, 0n); for (let i = 0n; i < 2n; i++) { p.a = i; resizeAccount(acct, 16n); }`)).toBe(after("p", "resizeAccount()"));
+  });
 });

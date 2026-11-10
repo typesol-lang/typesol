@@ -288,7 +288,9 @@ export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): 
  * `loadRaw` / `loadRawMut` at a byte offset known only at run time (a native account whose parts start where its header
  * says: Phoenix's market at byte 576). Owned by this program (3007); `offset + size(T)` within the data, checked once
  * here (ProgramError::AccountDataTooSmall); `loadRawMutAt` writable and claimed as `loadRawMut` is (2040; neither with
- * `NATIVE_ACCOUNT_WRITES`). Bind it with const: `const market = loadRawMutAt<FifoMarket>(acct, 576n)`.
+ * `NATIVE_ACCOUNT_WRITES`). Bind it with const: `const market = loadRawMutAt<FifoMarket>(acct, 576n)`. A view (this one,
+ * `rawArrayAt`, `rbTreeAt` and what is read through them) is not used after `closeRaw` or `resizeAccount` of an account
+ * it may view, since its bounds were checked against the old length: take it again after (a compile error says so).
  */
 export declare function loadRawAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Account<T>;
 export declare function loadRawMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Mut<T>;
@@ -340,7 +342,8 @@ export interface RedBlackTree<K, V> {
   /**
    * Insert, or replace the value of an equal key (keeping its node). The node index, or null when a new key finds the
    * tree full (nothing written); a tree that is empty takes the key without that check, as sokoban's does.
-   * References into the tree's nodes (`get`, `min`, entries) cannot be used after an insert (a freed node may be reused).
+   * References into the tree's nodes (`get`, `min`, entries, however bound: `c ? t.min() : t.max()`, `t.get(k)!`)
+   * cannot be used after an insert (a freed node may be reused).
    */
   insert(key: K, value: V): u32 | null;
   /** Remove `key`: its value (a struct in place in the freed node, which keeps its bytes until reused), or null. */
@@ -361,7 +364,11 @@ export interface RedBlackTree<K, V> {
   nodeAt(index: u32): RbEntry<K, V>;
   /** `for (const e of tree.reversed())`: from the largest key down. */
   reversed(): Iterable<RbEntry<K, V>>;
-  /** `for (const e of tree)`: from the smallest key up, `break` and `continue` as in any loop. */
+  /**
+   * `for (const e of tree)`: from the smallest key up, `break` and `continue` as in any loop. The body may change values
+   * but not insert, remove or initialize on this tree or on any tree view of an account that may be this one (another
+   * view of the same tree), nor call a helper that takes accounts and makes an `rbTreeMutAt` view.
+   */
   [Symbol.iterator](): Iterator<RbEntry<K, V>>;
 }
 /** A RedBlackTree of a read-only view (`rbTreeAt`): read, never changed. */
@@ -380,7 +387,7 @@ export interface ReadonlyRedBlackTree<K, V> {
  * lib-sokoban 0.3's RedBlackTree<K, V, capacity> at a run-time byte offset (see RedBlackTree): owned by this program
  * (3007), its 32 + capacity × (16 + size(K) + size(V)) bytes within the data (ProgramError::AccountDataTooSmall),
  * `rbTreeMutAt` writable and claimed as `loadRawMut` is. `compare`, a function of the program `(a: K, b: K) => i8`
- * (negative: a first), orders the keys; it is called as compare(searchedKey, nodeKey), so an order that depends on the
+ * (negative: a first; any signed integer type, an unsigned result is refused as it could never say "less"), orders the keys; it is called as compare(searchedKey, nodeKey), so an order that depends on the
  * left key (Phoenix's FIFOOrderId: bids descending, asks ascending, by the sequence number's top bit) works as in
  * Rust. Without it, keys are ordered as Rust's derived Ord orders them.
  */
@@ -970,7 +977,8 @@ export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<S
  * `realloc(newSize, true)`): the data length only, the new bytes zeroed. No rent moves: fund the account first
  * (`rentExempt(newSize)`), the runtime refuses an account left short. At most 10 KiB past its size when the
  * instruction started (3016). A remaining account must be writable (3006) unless the program declares
- * `NATIVE_ACCOUNT_WRITES`, which also lets an `AccountInfo` parameter be resized without `Mut<…>`.
+ * `NATIVE_ACCOUNT_WRITES`, which also lets an `AccountInfo` parameter be resized without `Mut<…>`. A view of the
+ * account made before (`loadRawMutAt`, `rbTreeMutAt` …) is not used after it: take the view again.
  */
 export declare function resizeAccount(account: RemainingAccount | Mut<AccountInfo>, newSize: u64): void;
 /**
@@ -980,7 +988,7 @@ export declare function resizeAccount(account: RemainingAccount | Mut<AccountInf
  * takes remaining accounts and `AccountInfo` parameters and leaves the data unwiped. Both accounts are checked writable
  * (3006; `Mut<AccountInfo>` parameters) and passed once (2040), the account owned by this program (3007) and not the
  * receiver itself; with `NATIVE_ACCOUNT_WRITES` nothing is checked and the runtime judges the result, as for the
- * original.
+ * original. A view of the account made before is not used after it.
  */
 export declare function closeRaw(account: RemainingAccount | Mut<AccountInfo>, receiver: RemainingAccount | Mut<AccountInfo>): void;
 /**
@@ -1065,7 +1073,10 @@ export type Mut<T, E = never> = T & AccountMeta;
  * as JS shares an object passed to a function. `T` is a fixed-size struct, a `FixedArray<T, N>` or a `FixedVec<T, N>`
  * (whose `push`, `pop` and `clear` the caller sees too). The caller passes a writable place: a local struct or list,
  * a `loadBorsh` local, a field of a `Mut<T>` account or of a `loadRawMut` view, a list element (`book.levels.get(i)`)
- * or another `Inout` parameter. Two arguments of one call may not overlap. Other struct parameters stay read-only.
+ * or another `Inout` parameter. Two arguments of one call may not overlap: places that may be the same bytes only at
+ * run time (two `Dup` accounts, a writable and a read-only account, two native views under `NATIVE_ACCOUNT_WRITES`) are
+ * compared before the call, an Inout one with every other argument passed in place (2040 when they overlap). Other
+ * struct parameters stay read-only.
  * Integers are values in JS too: return the new value, or wrap it in a struct.
  */
 export type Inout<T> = T;
@@ -2418,7 +2429,8 @@ export declare function panic(message?: string | null, location?: string): never
  * there (also "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the
  * remainder with a divisor of zero", "attempt to negate with overflow", "attempt to divide with overflow", "attempt to
  * shift left / right with overflow" for a shift amount past the width), as `panic` logs (see `PANIC_STYLE`), instead
- * of failing with 5100 / 5101. Only the operators written inside it, not the helpers it calls; an inner `panicsAt`
+ * of failing with 5100 / 5101. Only the operators written inside it, not the helpers it calls; u256 arithmetic, `**`,
+ * `mulDiv`, casts and the bits `<<` loses keep TypeSOL's failures (Rust checks them otherwise, or with other messages); an inner `panicsAt`
  * gives its own operators their own location. As a statement it takes an assignment: `panicsAt(loc, total += fee);`.
  */
 export declare function panicsAt<T>(location: string, value: T): T;

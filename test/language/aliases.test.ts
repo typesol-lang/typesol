@@ -98,4 +98,30 @@ describe("type aliases", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("report a problem with an aliased type where the alias is used, not where it is declared", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-alias-"));
+    try {
+      writeFileSync(path.join(dir, "lib.ts"), `import { type BigVec, type u64 } from "typesol";\nexport type Buf = BigVec<u64>;\n`);
+      writeFileSync(
+        path.join(dir, "main.ts"),
+        `import { type u64 } from "typesol";\nimport { type Buf } from "./lib.js";\n\nexport function g(y: u64, z: Buf): void {}\nexport function h(z: Buf): void {}\n`,
+      );
+      let diagnostics: { file: string; line: number; column: number; message: string }[] = [];
+      try {
+        generate(path.join(dir, "main.ts"));
+      } catch (e) {
+        if (!(e instanceof CompileError)) throw e;
+        diagnostics = e.diagnostics;
+      }
+      const bigVec = "BigVec<T> is the last field of a native account's struct (read with loadRaw), not an argument; a list argument is a Vec<T>";
+      // Each use gets its own report, at the use.
+      expect(diagnostics.map((d) => [path.basename(d.file), d.line, d.column, d.message])).toEqual([
+        ["main.ts", 4, 30, bigVec],
+        ["main.ts", 5, 22, bigVec],
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

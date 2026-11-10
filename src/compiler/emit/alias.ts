@@ -2,6 +2,9 @@ import ts from "typescript";
 import { type FieldType, isWritable } from "../model.js";
 import { EmitterBase } from "./base.js";
 
+/** A tree's methods other than get that return a node of it. */
+const TREE_NODE_METHODS = new Set(["min", "max", "nodeAt", "remove", "removeAt"]);
+
 /**
  * Aliasing, in one place. A struct read from account data is a reference into that data, not a copy, so code that
  * replaces or moves the data under a reference still in use would let it read a value JS would not show. The rules:
@@ -19,6 +22,13 @@ import { EmitterBase } from "./base.js";
  * unless `Dup<…>` allows it for in-place accounts.
  */
 export abstract class AliasEmitter extends EmitterBase {
+  /**
+   * The trees a `for … of` is walking, by C name, with the account each views: no tree view that may be the same tree
+   * (the same local, or another view of an account that may be the walked one's) may change its structure in the
+   * loop (Rust's borrow).
+   */
+  protected iteratingTrees = new Map<string, { name: string; acct: string }>();
+
   protected abstract peekKind(node: ts.Expression): FieldType["kind"] | undefined;
 
   /**
@@ -26,10 +36,10 @@ export abstract class AliasEmitter extends EmitterBase {
    * a reference local -> the paths it aliases, a ternary -> both sides. Undefined when unknown.
    */
   protected pathsOf(node: ts.Expression): string[] | undefined {
-    if (ts.isParenthesizedExpression(node)) return this.pathsOf(node.expression);
+    if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) return this.pathsOf(node.expression);
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
-      if (l) return l.paths ?? (l.type.kind === "array" || l.type.kind === "vec" ? [`@${l.c}`] : undefined);
+      if (l) return l.paths ?? (l.type.kind === "array" || l.type.kind === "vec" || l.type.kind === "rbTree" ? [`@${l.c}`] : undefined);
       return this.accounts.has(node.text) ? [node.text] : undefined;
     }
     if (ts.isPropertyAccessExpression(node)) {
@@ -39,6 +49,12 @@ export abstract class AliasEmitter extends EmitterBase {
     }
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "get")
       return this.pathsOf(node.expression.expression)?.map((p) => `${p}[]`);
+    // A tree's methods that hand out a node (`t.min()`, `t.nodeAt(i)`, `t.remove(k)`): a reference into its nodes.
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && TREE_NODE_METHODS.has(node.expression.name.text)) {
+      const base = node.expression.expression;
+      const l = ts.isIdentifier(base) ? this.lookup(base.text) : undefined;
+      if (l?.type.kind === "rbTree") return [`@${l.c}[]`];
+    }
     // `big.slice(a, b)` is a view of the list's own elements: the same storage.
     if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === "slice")
       return this.pathsOf(node.expression.expression);
@@ -135,10 +151,53 @@ export abstract class AliasEmitter extends EmitterBase {
       }
   }
 
+  /**
+   * The account a native view's first argument names, as `viewAcct` records it: a declared parameter's name, or "?"
+   * when it is not one (a remaining account, a choice between accounts).
+   */
+  protected viewAccountKey(node: ts.Expression): string {
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return ts.isIdentifier(node) && !this.lookup(node.text) && this.accounts.has(node.text) ? node.text : "?";
+  }
+
+  /**
+   * Whether two accounts `viewAccountKey` named may be one account at run time: the same name, one not a declared
+   * parameter, or two parameters the runtime does not keep apart (a helper's, any two under NATIVE_ACCOUNT_WRITES, a
+   * read-only or Dup one; function.ts refuses two writable parameters naming one account otherwise).
+   */
+  protected mayBeSameAccount(a: string, b: string): boolean {
+    if (a === b || a === "?" || b === "?" || this.nativeAccountWrites()) return true;
+    const [x, y] = [this.accounts.get(a), this.accounts.get(b)];
+    if (!x || !y || x.index === -1 || y.index === -1) return true;
+    return !(isWritable(x.kind) && isWritable(y.kind) && !x.constraints.dup && !y.constraints.dup);
+  }
+
+  /**
+   * `closeRaw(acct, …)` / `resizeAccount(acct, n)` (or a helper that may do either, `target` "?"): a view checks its
+   * bounds once, when it is made, so a view of the account made before (and anything read through it) would reach past
+   * the account's new end afterwards. Refused when it is used later; the fix is to take the view again.
+   */
+  protected assertNoViewAfter(target: string, at: ts.Node, what: string): void {
+    const dead = new Set<string>();
+    for (const scope of this.scopes) for (const l of scope.values()) if (l.viewAcct !== undefined && this.mayBeSameAccount(l.viewAcct, target)) dead.add(l.c);
+    if (!dead.size) return;
+    for (const scope of this.scopes)
+      for (const [name, l] of scope) {
+        if (!l.decl) continue;
+        const hit = dead.has(l.c) || !!l.paths?.some((p) => p.startsWith("@") && dead.has(p.slice(1).split(/[.[]/)[0]!));
+        if (!hit || !this.usedAfter(l.decl, at)) continue;
+        this.fail(
+          at,
+          `"${name}" reads account data through a view made before ${what}, which changes the account's length: a view checks its bounds when it is made, so "${name}" could reach past the new end. Take the view again after ${what} and read through the new one`,
+        );
+      }
+  }
+
   /** A storage path as the source names it: `@<C local>.x` becomes `<its name>.x` (`@p_rec.items[]` → `rec.items[]`). */
   protected showPath(path: string): string {
     if (!path.startsWith("@")) return path;
-    const c = /^@(\w+)/.exec(path)?.[1];
+    // A @heap local is named through its pointer: `@(*l_x)`.
+    const c = /^@(\(\*\w+\)|\w+)/.exec(path)?.[1];
     for (const s of [...this.scopes].reverse().concat(this.args))
       for (const [name, l] of s) if (c && (l.c === c || l.c === `(*${c})`)) return name + path.slice(c.length + 1);
     return path;

@@ -180,6 +180,113 @@ describe("Inout<T> under NATIVE_ACCOUNT_WRITES", () => {
   });
 });
 
+describe("Inout<T> beside a read-only argument that may be the same account", () => {
+  let d: Deployed;
+  let payer: KeyPairSigner;
+  let other: KeyPairSigner;
+  let mine: Address;
+  let theirs: Address;
+  beforeAll(async () => {
+    d = await deployFile(fileURLToPath(new URL("../fixtures/inout-share.ts", import.meta.url)));
+    payer = await fundedSigner(d.svm);
+    other = await fundedSigner(d.svm);
+    for (const s of [payer, other]) {
+      const [l] = await pda(d.programId, ["ledger", s.address]);
+      expectOk(
+        await send(d.svm, s, [
+          ix(d, "create", {}, [{ address: s.address, signer: s, writable: true }, { address: l, writable: true }, { address: SYSTEM_PROGRAM }]),
+        ]),
+      );
+      if (s === payer) mine = l;
+      else theirs = l;
+    }
+  });
+  const run = (name: string, a: Address, b: Address, bWritable = true) =>
+    send(d.svm, payer, [
+      ix(d, name, {}, [
+        { address: a, writable: true },
+        { address: b, writable: bWritable },
+      ]),
+    ]);
+
+  it("passes two different accounts and refuses one account passed twice (2040)", async () => {
+    expect(said(await run("stamp_dup", mine, theirs))).toContain("Program log: stamped 1");
+    const same = await run("stamp_dup", mine, mine);
+    expect(customError(same)).toBe(2040);
+    expect(logs(same).join("\n")).toContain("stamp() was given a.rec and b.rec, which share storage");
+  });
+
+  it("compares a writable account's place with a read-only account's", async () => {
+    // stamp_dup above set mine's count to 5.
+    expect(said(await run("stamp_read", theirs, mine, false))).toContain("Program log: stamped 5");
+    const same = await run("stamp_read", mine, mine, false);
+    expect(customError(same)).toBe(2040);
+    expect(logs(same).join("\n")).toContain("stamp() was given a.rec and b.rec, which share storage");
+  });
+});
+
+describe("Inout<T> through run-time offset views under NATIVE_ACCOUNT_WRITES", () => {
+  let d: Deployed;
+  let payer: KeyPairSigner;
+  beforeAll(async () => {
+    d = await deployFile(fileURLToPath(new URL("../fixtures/inout-views.ts", import.meta.url)));
+    payer = await fundedSigner(d.svm);
+  });
+  const account = async (data: Buffer) => {
+    const a = (await generateKeyPairSigner()).address;
+    d.svm.setAccount({ address: a, lamports: 1_000_000_000n, programAddress: d.programId, executable: false, data: new Uint8Array(data) } as never);
+    return a;
+  };
+  const call = (data: Buffer, accounts: Address[]) =>
+    send(d.svm, payer, [
+      {
+        programAddress: d.programId,
+        accounts: accounts.map((address) => ({ address, role: AccountRole.WRITABLE })),
+        data: new Uint8Array(data),
+      } as Instruction,
+    ]);
+  const offsets = (tag: number, a: number, b: number) => Buffer.concat([Buffer.from([tag]), u64s(a, b)]);
+
+  it("two loadRawMutAt views of one account: apart they pass, overlapping they fail (2040)", async () => {
+    const a = await account(u64s(1, 2, 3, 4));
+    expect(said(await call(offsets(0, 0, 16), [a]))).toContain("Program log: views 4 0");
+    for (const [x, y] of [
+      [0, 0],
+      [0, 8],
+      [8, 0],
+    ]) {
+      const r = await call(offsets(0, x!, y!), [a]);
+      expect(customError(r)).toBe(2040);
+      expect(logs(r).join("\n")).toContain("both() was given p and q, which share storage");
+    }
+  });
+
+  it("an Inout view beside a read-only view of the same bytes fails (2040)", async () => {
+    const a = await account(u64s(1, 2, 3, 4));
+    expect(said(await call(offsets(1, 0, 16), [a]))).toContain("Program log: stamped 3");
+    const r = await call(offsets(1, 16, 16), [a]);
+    expect(customError(r)).toBe(2040);
+    expect(logs(r).join("\n")).toContain("stamp() was given p and q, which share storage");
+  });
+
+  it("elements of two rawArrayMutAt views and nodes of two rbTreeMutAt views: compared too", async () => {
+    const a = await account(u64s(1, 2, 3, 4));
+    const b = await account(u64s(5, 6, 7, 8));
+    expect(said(await call(Buffer.from([2]), [a, b]))).toContain("Program log: arrays 6");
+    const arrays = await call(Buffer.from([2]), [a, a]);
+    expect(customError(arrays)).toBe(2040);
+    expect(logs(arrays).join("\n")).toContain("both() was given xs.get(0n) and ys.get(0n), which share storage");
+    const t = await account(Buffer.alloc(32 + 2 * (16 + 8 + 16)));
+    const u = await account(Buffer.alloc(32 + 2 * (16 + 8 + 16)));
+    expectOk(await call(Buffer.from([3]), [t]));
+    expectOk(await call(Buffer.from([3]), [u]));
+    expect(said(await call(Buffer.from([4]), [t, u]))).toContain("Program log: trees 6");
+    const trees = await call(Buffer.from([4]), [t, t]);
+    expect(customError(trees)).toBe(2040);
+    expect(logs(trees).join("\n")).toContain("both() was given t.get(1n)! and u.get(1n)!, which share storage");
+  });
+});
+
 describe("Inout<T> compile errors", () => {
   const program = (decls: string, body: string, params = "") => `
 import { type AccountInfo, type Account, type Inout, type FixedArray, type FixedVec, type Mut, type Signer, type SystemProgram, type Vec, type BigVec, type Pubkey, type u8, type u64, fixedVec, loadRaw, loadRawMut, remainingAccounts } from "typesol";

@@ -263,6 +263,75 @@ function bad(a: u64, b: u64): i8 { return 0n; }
     );
   });
 
+  it("refuses a comparator whose result cannot be negative", () => {
+    const f = (ret: string) =>
+      compileErrors(`import { type AccountInfo, type Mut, type i8, type i64, type u8, type u64, rbTreeMutAt, log } from "typesol";
+function cmp(a: u64, b: u64): ${ret} { return a < b ? ${ret.startsWith("u") ? "0n" : "-1n"} : a > b ? 1n : 0n; }
+export function f(acct: Mut<AccountInfo>): void { const t = rbTreeMutAt<u64, u64>(acct, 0n, 4n, cmp); log(t.length); }`);
+    expect(f("i8")).toBe("");
+    expect(f("i64")).toBe("");
+    for (const u of ["u8", "u64"])
+      expect(f(u)).toContain(
+        `cmp returns ${u}, which cannot be negative: a comparator returns a signed integer (negative when a sorts first, 0, positive), (a: u64, b: u64) => i8`,
+      );
+  });
+
+  it("a node reached through a ternary or a non-null assertion still refers to the tree", () => {
+    const head = `import { type AccountInfo, type Mut, type u64, rbTreeMutAt, log } from "typesol";
+export interface V { x: u64; y: u64; }
+`;
+    const f = (body: string) =>
+      compileErrors(`${head}export function f(a: Mut<AccountInfo>, c: boolean): void { const t = rbTreeMutAt<u64, V>(a, 0n, 4n); ${body} }`);
+    const still = (name: string) =>
+      `"${name}" still refers to t; replacing it here would change what "${name}" reads (in JS it keeps the old value). Copy the fields you need into locals first`;
+    expect(f(`const e = c ? t.min() : t.max(); t.remove(1n); t.insert(2n, { x: 1n, y: 2n }); if (e !== null) log(e.value.x);`)).toBe(still("e"));
+    expect(f(`const e = c ? t.nodeAt(1n) : t.nodeAt(2n); t.insert(2n, { x: 1n, y: 2n }); log(e.value.x);`)).toBe(still("e"));
+    expect(f(`const v = t.get(1n)!; t.insert(2n, { x: 1n, y: 2n }); log(v.x);`)).toBe(still("v"));
+    expect(f(`const o = t.get(1n); const v = o!; t.insert(2n, { x: 1n, y: 2n }); log(v.x);`)).toBe(still("v"));
+    expect(f(`let e = c ? t.min() : t.max(); if (e !== null) log(e.value.x);`)).toContain("bind a tree node with const: it refers to a node of the tree");
+    // Read before the change: fine.
+    expect(f(`const e = c ? t.min() : t.max(); if (e !== null) log(e.value.x); t.insert(2n, { x: 1n, y: 2n });`)).toBe("");
+  });
+
+  it("refuses changing any tree that may be the one a for … of is walking", () => {
+    const head = `import { type AccountInfo, type Mut, type RemainingAccount, type u64, rbTreeMutAt, remainingAccounts, log } from "typesol";
+export const NATIVE_ACCOUNT_WRITES = true;
+export interface V { x: u64; y: u64; }
+function poke(acct: RemainingAccount): void { const t = rbTreeMutAt<u64, V>(acct, 0n, 4n); t.remove(1n); }
+function look(acct: RemainingAccount): u64 { return acct.lamports; }
+`;
+    const f = (body: string) =>
+      compileErrors(
+        `${head}export function f(a: Mut<AccountInfo>, b: Mut<AccountInfo>): void { const r = remainingAccounts().get(0n); const t = rbTreeMutAt<u64, V>(a, 0n, 4n); ${body} }`,
+      );
+    const walking = (method: string) =>
+      `${method}() changes a tree that may be t, which a for … of is walking (a view of an account that may be the same one): collect the keys in the loop, then ${method} after it (as Rust's borrow requires)`;
+    expect(f(`const t2 = rbTreeMutAt<u64, V>(a, 0n, 4n); for (const e of t) { t2.remove(e.key); }`)).toBe(walking("remove"));
+    expect(f(`const t2 = rbTreeMutAt<u64, V>(a, 64n, 4n); for (const e of t.reversed()) { t2.insert(e.key, { x: 1n, y: 2n }); }`)).toBe(walking("insert"));
+    // Under NATIVE_ACCOUNT_WRITES another account parameter may be the same account.
+    expect(f(`const t2 = rbTreeMutAt<u64, V>(b, 0n, 4n); for (const e of t) { t2.initialize(); }`)).toBe(walking("initialize"));
+    expect(f(`for (const e of t) { poke(r); }`)).toBe(
+      "poke() takes accounts and makes an rbTreeMutAt view, so it may change the tree a for … of is walking (t): collect what it needs in the loop, then call it after",
+    );
+    // Changes after the walk, values in it, and helpers that make no writable tree: fine.
+    expect(f(`const t2 = rbTreeMutAt<u64, V>(a, 0n, 4n); for (const e of t) { log(e.key); } t2.remove(1n);`)).toBe("");
+    expect(f(`const t2 = rbTreeMutAt<u64, V>(a, 0n, 4n); for (const e of t) { e.value.x = 1n; } poke(r);`)).toBe("");
+    expect(f(`for (const e of t) { log(look(r)); }`)).toBe("");
+  });
+
+  it("names where a node's padding goes", () => {
+    const f = (k: string, v: string) =>
+      compileErrors(`import { type AccountInfo, type Mut, type u32, type u64, rbTreeMutAt, log } from "typesol";
+export interface K4 { a: u32; }
+export interface V4 { a: u32; }
+export function f(acct: Mut<AccountInfo>): void { const t = rbTreeMutAt<${k}, ${v}>(acct, 0n, 4n); log(t.length); }`);
+    expect(f("u64", "V4")).toContain("a node is 16 + 8 + 4 = 28 bytes, not a multiple of 8 (sokoban asserts it): add 4 bytes of padding to V4");
+    expect(f("K4", "u64")).toContain("a node is 16 + 4 + 8 = 28 bytes, not a multiple of 8 (sokoban asserts it): add 4 bytes of padding to K4");
+    expect(f("u64", "u32")).toContain(
+      "a node is 16 + 8 + 4 = 28 bytes, not a multiple of 8 (sokoban asserts it): a u32 value has no room for padding: make the value a struct holding it and 4 bytes of padding fields",
+    );
+  });
+
   it("the language reference's example compiles", () => {
     expect(
       compileErrors(`import { type AccountInfo, type Pubkey, type i8, type u64, rbTreeMutAt } from "typesol";

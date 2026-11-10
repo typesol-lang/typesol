@@ -22,7 +22,22 @@ export function formatDiagnostic(d: Diagnostic): string {
   return `${d.file}:${d.line}:${d.column} - error: ${d.message}`;
 }
 
+/** Copies of a type alias's nodes put in place of one use of it, with that use (see substituteAliases). */
+const aliasUses = new WeakMap<ts.Node, ts.Node>();
+
+export function markAliasUse(copy: ts.Node, use: ts.Node): void {
+  aliasUses.set(copy, use);
+}
+
 export function diagnosticAt(node: ts.Node, message: string): Diagnostic {
+  // A problem with an aliased type is reported where the alias is used.
+  for (let n: ts.Node | undefined = node; n; n = n.parent) {
+    const use = aliasUses.get(n);
+    if (use) {
+      node = use;
+      break;
+    }
+  }
   const sf = node.getSourceFile();
   const start = node.getStart(sf);
   const { line, character } = sf.getLineAndCharacterOfPosition(start);

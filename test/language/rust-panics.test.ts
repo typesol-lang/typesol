@@ -1,8 +1,12 @@
 // PANIC_STYLE "solana-1.14" and panicsAt (test/fixtures/rust-panics.ts, rust-panics-default.ts): Rust's panic lines,
 // compared line for line with the panics of the Phoenix v1 binary (solana-program 1.14).
 import { type KeyPairSigner } from "@solana/kit";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { generate } from "../../src/compiler/index.js";
 import { type Deployed, compileErrors, customError, deployFile, expectOk, fundedSigner, send } from "../harness.js";
 import { PHOENIX, type Result, errOf, initializeMarket, logsOf, phoenixMarket, tooFewAccounts } from "../phoenix-helpers.js";
 
@@ -134,6 +138,31 @@ describe("Rust panics: PANIC_STYLE and panicsAt", () => {
     expect(div.failed).toBe("Program <program> failed: SBF program Panicked in src/quantities.rs at 240:1");
     expect(customError(await call(dflt, [1, ...args(U64_MAX, 1n)]))).toBe(5100);
     expect(customError(await call(dflt, [3, ...args(1n, 0n)]))).toBe(5101);
+  });
+
+  it("keeps TypeSOL's failure for u256 arithmetic inside panicsAt, as documented (a Rust U256 type panics with messages of its own)", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-u256-"));
+    try {
+      const file = path.join(dir, "p.ts");
+      writeFileSync(
+        file,
+        `import { type u64, type u128, log, panicsAt, u128 as to128, u256 } from "typesol";
+export function f(a: u128, b: u128): void {
+  const x = u256(a);
+  const y = u256(b);
+  log(to128(panicsAt("src/a.rs:1:1", x + y)));
+  log(to128(panicsAt("src/a.rs:2:1", x / y)));
+  log(panicsAt("src/a.rs:3:1", a + b));
+}`,
+      );
+      const c = generate(file).c;
+      expect(c).toMatch(/ts_u256_add\([^\n]*\) TS_FAIL\(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow \(p\.ts:5\)"\)/);
+      expect(c).toMatch(/ts_u256_is_zero\([^\n]*\) TS_FAIL\(TS_ERR_DIV_ZERO, "TypeSOL: division by zero \(p\.ts:6\)"\)/);
+      // A u128 beside it takes Rust's message.
+      expect(c).toContain(`{ sol_log("attempt to add with overflow"); sol_panic_("src/a.rs", 8, 3, 1); __builtin_unreachable(); }`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("refuses misuse at compile time", () => {
