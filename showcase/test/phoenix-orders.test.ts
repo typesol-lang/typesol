@@ -466,35 +466,45 @@ for (const [bids, seats, fee] of SIZES) {
   });
 }
 
-describe("a full book (512/128)", () => {
+describe("a full book", () => {
   let d: Diff;
   beforeAll(async () => {
     d = await diff();
   });
 
-  it("evicts the least aggressive order for a better one, and refuses a worse one", async () => {
-    const { m, a, c } = await book(d);
-    // 512 bids at 1000..1511 and 512 asks at 3000..3511, 40 orders a transaction.
-    for (let from = 0; from < 512; from += 40) {
-      const n = Math.min(40, 512 - from);
-      await placeMany(d, "full: fill bids", m, from % 80 === 0 ? a : c, levels(ladder(1000n + BigInt(from), n, 1n)), []);
-      await placeMany(d, "full: fill asks", m, from % 80 === 0 ? c : a, [], levels(ladder(3000n + BigInt(from), n, 1n), 2n));
-    }
-    await place(d, "full: a better bid evicts the lowest", m, c, po(BID, 2000n, 3n));
-    await d.fails("full: a bid at the lowest price is refused", c.key, [ix.placeLimitOrder(m, c, po(BID, 1001n, 1n))], NEW_ORDER);
-    await d.fails("full: a worse bid is refused", c.key, [ix.placeLimitOrder(m, c, lim(BID, 500n, 1n))], NEW_ORDER);
-    await place(d, "full: a better ask evicts the highest", m, a, po(ASK, 2500n, 1n));
-    await d.fails("full: a worse ask is refused", a.key, [ix.placeLimitOrder(m, a, po(ASK, 4000n, 1n))], NEW_ORDER);
-    // A Limit order that matches first makes room for itself.
-    await place(d, "full: a Limit ask fills a bid, then rests", m, a, lim(ASK, 2000n, 5n));
-    await d.ok("full: multiple orders evict", c.key, [ix.placeMultiplePostOnlyOrders(m, c, multipleOrderPacket(levels([2100n, 2101n]), []))]);
-    await d.fails(
-      "full: multiple orders, one refused",
-      c.key,
-      [ix.placeMultiplePostOnlyOrders(m, c, multipleOrderPacket(levels([2102n, 900n]), []))],
-      NEW_ORDER,
-    );
-  });
+  for (const [bids, seats] of [
+    [512, 128],
+    [4096, 8321],
+  ] as const) {
+    it(`evicts the least aggressive order for a better one, and refuses a worse one (${bids}/${seats})`, async () => {
+      const { m, a, c } = await book(d, { bids, seats });
+      const at = `full ${bids}`;
+      // Bids at 10000.. and asks at 30000.., one lot each, 50 orders a transaction on free funds.
+      await d.ok(`${at}: deposit a`, a.key, [ix.depositFunds(m, a, 10n ** 9n, 10n ** 5n)]);
+      await d.ok(`${at}: deposit c`, c.key, [ix.depositFunds(m, c, 10n ** 9n, 10n ** 5n)]);
+      for (let from = 0; from < bids; from += 50) {
+        const n = Math.min(50, bids - from);
+        const fill = (t: Trader, b: CondensedOrder[], s: CondensedOrder[]) => ix.placeMultiplePostOnlyOrdersWithFreeFunds(m, t, multipleOrderPacket(b, s));
+        await d.ok(`${at}: fill bids`, a.key, [fill(a, levels(ladder(10000n + BigInt(from), n, 1n)), [])]);
+        await d.ok(`${at}: fill asks`, c.key, [fill(c, [], levels(ladder(30000n + BigInt(from), n, 1n), 2n))]);
+      }
+      const top = BigInt(bids);
+      await place(d, `${at}: a better bid evicts the lowest`, m, c, po(BID, 20000n, 3n));
+      await d.fails(`${at}: a bid at the lowest price is refused`, c.key, [ix.placeLimitOrder(m, c, po(BID, 10001n, 1n))], NEW_ORDER);
+      await d.fails(`${at}: a worse bid is refused`, c.key, [ix.placeLimitOrder(m, c, lim(BID, 5000n, 1n))], NEW_ORDER);
+      await place(d, `${at}: a better ask evicts the highest`, m, a, po(ASK, 25000n, 1n));
+      await d.fails(`${at}: a worse ask is refused`, a.key, [ix.placeLimitOrder(m, a, po(ASK, 30000n + top, 1n))], NEW_ORDER);
+      // A Limit order that matches first makes room for itself.
+      await place(d, `${at}: a Limit ask fills a bid, then rests`, m, a, lim(ASK, 20000n, 5n));
+      await d.ok(`${at}: multiple orders evict`, c.key, [ix.placeMultiplePostOnlyOrders(m, c, multipleOrderPacket(levels([21000n, 21001n]), []))]);
+      await d.fails(
+        `${at}: multiple orders, one refused`,
+        c.key,
+        [ix.placeMultiplePostOnlyOrders(m, c, multipleOrderPacket(levels([21002n, 9000n]), []))],
+        NEW_ORDER,
+      );
+    });
+  }
 });
 
 describe("fees, overflows and limits (512/128)", () => {
