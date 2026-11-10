@@ -98,28 +98,28 @@ export function process(): void {
       break;
     case 0n:
       log("PhoenixInstruction::Swap");
-      swap();
+      swap(rest, data, rec, logData);
       break;
     case 1n:
       log("PhoenixInstruction::SwapWithFreeFunds");
-      swapWithFreeFunds();
+      swapWithFreeFunds(rest, data, rec, logData);
       break;
     case 2n:
       log("PhoenixInstruction::PlaceLimitOrder");
-      placeLimitOrder();
-      break;
+      placeLimitOrder(rest, data, rec, logData);
+      return;
     case 3n:
       log("PhoenixInstruction::PlaceLimitOrderWithFreeFunds");
-      placeLimitOrderWithFreeFunds();
-      break;
+      placeLimitOrderWithFreeFunds(rest, data, rec, logData);
+      return;
     case 16n:
       log("PhoenixInstruction::PlaceMultiplePostOnlyOrders");
-      placeMultiplePostOnlyOrders();
-      break;
+      placeMultiplePostOnlyOrders(rest, data, rec, logData);
+      return;
     case 17n:
       log("PhoenixInstruction::PlaceMultiplePostOnlyOrdersWithFreeFunds");
-      placeMultiplePostOnlyOrdersWithFreeFunds();
-      break;
+      placeMultiplePostOnlyOrdersWithFreeFunds(rest, data, rec, logData);
+      return;
     case 4n:
       log("PhoenixInstruction::ReduceOrder");
       reduceOrder();
@@ -202,6 +202,7 @@ export function process(): void {
       changeFeeRecipient(rest);
       break;
   }
+  // (The order instructions that rest orders finish the recorder themselves and return above: their return data, the
+  // ids of the orders that rested, must be set after its last CPI.)
   finishRecorder(rec, logData, rest);
-  // The ids of the orders that rested go out as return data here, after the last CPI (the order instructions).
 }

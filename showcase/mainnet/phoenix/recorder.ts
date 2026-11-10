@@ -109,9 +109,15 @@ export function flush(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, res
 
 /**
  * EventRecorder::add_event: `event`'s index must already be `rec.eventsAdded` (`set_index`). It is serialized into a
- * scratch buffer; the batch so far is sent first when the event would take the data past the limit.
+ * scratch buffer; the batch so far is sent first when the event would take the data past the limit. While even the
+ * largest event fits, it is written straight into the batch (the same bytes, no flush either way).
  */
 export function recordEvent(rec: Inout<Recorder>, data: Inout<FixedVec<u8, 1280>>, rest: RemainingAccounts, event: PhoenixMarketEvent): void {
+  if (data.length + MAX_EVENT_SIZE + LOG_IX_ACCOUNT_META_SIZE <= MAX_INNER_INSTRUCTION_SIZE) {
+    data.pushBorsh(event);
+    rec.eventsAdded++;
+    return;
+  }
   const scratch: FixedVec<u8, 67> = fixedVec([]);
   scratch.pushBorsh(event);
   if (data.length + scratch.length + LOG_IX_ACCOUNT_META_SIZE > MAX_INNER_INSTRUCTION_SIZE) flush(rec, data, rest);
