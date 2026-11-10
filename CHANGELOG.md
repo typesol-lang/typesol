@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `const ERROR_LOG_PREFIX = null` / `const PROGRAM_ERROR_LOG_PREFIX = null`: failures return their error and log
+  nothing, as a native program's do when its own checks already logged (Phoenix). `ERROR_LOG_PREFIX = null` covers
+  `require(…, MyError.X)` and codes computed at run time, `PROGRAM_ERROR_LOG_PREFIX = null` built-in ProgramErrors
+  (`require(…, ProgramError.X)`, `loadBorsh`, views) and `programAt` / `sysvarAt`. With `""` a failure still logged
+  "Program log: " plus the message; now it costs 105 to 124 CU less (test/language/quiet-errors.test.ts). Only these
+  two constants may be `null`. Programs that do not use it compile to the same C.
 - Language: `Inout<T>` helper parameters, Rust's `&mut T`. `function addEvent(rec: Inout<Recorder>, e: Event): void`
   gets the caller's place itself (a pointer, never a copy) and may change it; the caller sees the writes after the
   call, as JS shares an object passed to a function. `T` is a fixed-size struct, `FixedArray<T, N>` or

@@ -402,7 +402,11 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   differently, or with other messages).
   test/language/rust-panics.test.ts checks the lines against the Phoenix binary's own panics.
 - Log lines as the original writes them: `const ERROR_LOG_PREFIX = "AMM error: "` and `const PROGRAM_ERROR_LOG_PREFIX =
-  "Program error: "` replace the compiler's failure line with the entrypoint's (`msg!("AMM error: {}", e)`);
+  "Program error: "` replace the compiler's failure line with the entrypoint's (`msg!("AMM error: {}", e)`); `null`
+  logs no failure line at all, as a native program returns an error its own checks already explained (Phoenix): the
+  program's errors and codes its helpers return (`ERROR_LOG_PREFIX = null`), built-in ProgramErrors and `programAt`'s
+  check (`PROGRAM_ERROR_LOG_PREFIX = null`), each about 110 CU cheaper than a logged one (constraint errors and the
+  compiler's own checks still log);
   `logBase64("ray_log: ", record)` logs a struct's bytes in base64 (a native `bincode` log record);
   `createProgramAddress(seeds, program)` is `Pubkey::create_program_address` (null for no address);
   `logComputeUnits()` is `sol_log_compute_units()`: the runtime writes "Program consumption: N units remaining" at

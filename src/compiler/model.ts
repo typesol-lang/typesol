@@ -332,7 +332,8 @@ export interface Helper {
 export interface ConstDef {
   name: string;
   /** `{ pubkey }` for `const ADMIN = pubkey("…")`: the decoded 32 bytes. */
-  value: bigint | boolean | string | { pubkey: number[] };
+  /** `null` only for ERROR_LOG_PREFIX / PROGRAM_ERROR_LOG_PREFIX: failures that log nothing. */
+  value: bigint | boolean | string | { pubkey: number[] } | null;
   type?: ScalarType;
 }
 

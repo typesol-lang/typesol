@@ -44,6 +44,7 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - The built-in RedBlackTree (unreleased): `rbTreeAt` / `rbTreeMutAt`, lib-sokoban 0.3's byte layout and algorithms,
   its panics in solana-program 1.14–1.17's format.
 - `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
+- Failures without a log line (unreleased): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
 - Local `FixedVec` / `FixedArray` lists of structs, `FixedVec.pushAll`, the instruction data as a list (`slice`,
   `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0).
 - `epochRewards()` and `EpochRewards` (0.42.0): the EpochRewards sysvar through its syscall.

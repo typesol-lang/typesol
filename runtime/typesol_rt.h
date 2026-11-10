@@ -96,6 +96,24 @@ static __attribute__((noinline, unused)) uint64_t ts_fail_code(uint32_t code, co
   return ts_fail(code ? code : TS_ERR_OVERFLOW, msg, sol_strlen(msg));
 }
 
+/* A failure that logs nothing (`const ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`): the code ts_fail
+ * would return, as a native program returns an error its own checks already explained (or never explain). */
+static inline __attribute__((always_inline, unused)) uint64_t ts_fail_quiet(uint64_t code) {
+#ifdef TS_PANIC_ON_OVERFLOW
+#ifdef TS_PANIC_ABORT
+  if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) abort();
+#else
+  if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) sol_panic_("", 0, 0, 0);
+#endif
+#endif
+#ifdef TS_CUSTOM_ZERO
+  if (code == 0) return (uint64_t)1 << 32;
+#endif
+  return code;
+}
+/* ts_fail_code's quiet form: a code computed at run time, 0 failing as an overflow. */
+static inline __attribute__((always_inline, unused)) uint64_t ts_fail_code_quiet(uint32_t code) { return ts_fail_quiet(code ? code : TS_ERR_OVERFLOW); }
+
 #define TS_TRY(expr)                 \
   do {                               \
     uint64_t ts_r_ = (expr);         \

@@ -408,6 +408,9 @@ function programFiles(program: ts.Program, entry: string): ts.SourceFile[] {
   return order;
 }
 
+/** The failure-line constants that may be `null`: such failures return their error without logging anything. */
+const SILENCEABLE_PREFIXES = ["ERROR_LOG_PREFIX", "PROGRAM_ERROR_LOG_PREFIX"];
+
 export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const entryPath = path.resolve(entry);
   checkImports(entryPath, files);
@@ -542,6 +545,15 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               value = -BigInt(init.operand.text.slice(0, -1).replace(/_/g, ""));
             else if (init.kind === ts.SyntaxKind.TrueKeyword || init.kind === ts.SyntaxKind.FalseKeyword) value = init.kind === ts.SyntaxKind.TrueKeyword;
             else if (ts.isStringLiteral(init)) value = init.text;
+            // `const ERROR_LOG_PREFIX = null`: failures log nothing, as a native program returning an error.
+            else if (init.kind === ts.SyntaxKind.NullKeyword && SILENCEABLE_PREFIXES.includes(d.name.text)) {
+              if (d.type) reporter.fail(d.type, `leave the type out: const ${d.name.text} = null`);
+              value = null;
+            } else if (init.kind === ts.SyntaxKind.NullKeyword)
+              reporter.fail(
+                init,
+                `only ${SILENCEABLE_PREFIXES.join(" and ")} can be null (failures that log nothing); other constants are bigint, boolean or string literals, or pubkey("…")`,
+              );
             else reporter.fail(init, 'top-level constants must be bigint, boolean or string literals, or pubkey("…")');
             declare(d.name, file);
             const def: ConstDef = { name: d.name.text, value };

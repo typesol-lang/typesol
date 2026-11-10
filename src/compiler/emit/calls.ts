@@ -118,7 +118,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
               "require's error is a string literal, a member of an error enum (CounterError.X) or a u32 code; a template string or string variable is not: give the message to an error enum member",
             );
           const code = v.literal !== undefined ? this.literal(v.literal, U32, args[1]) : this.expect(v, U32, args[1]);
-          this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
+          if (this.quietErrors()) this.line(`if (!${cond.c}) return ts_fail_code_quiet(${code.c});`);
+          else this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
           return undefined;
         }
         // A built-in ProgramError: its u64 form (the index shifted into the high 32 bits), as solana_program returns it.
@@ -129,9 +130,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         const err = this.errorRef(args[1]);
         // `const ERROR_LOG_PREFIX = "AMM error: "`: the program's errors log as its native entrypoint logs them.
+        // `const ERROR_LOG_PREFIX = null`: nothing logged, only the code returned.
         const prefix = this.model.constants.get("ERROR_LOG_PREFIX")?.value;
         const text = typeof prefix === "string" ? `${prefix}${err.msg}` : `Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`;
-        this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
+        if (prefix === null) this.line(`if (!${cond.c}) return ts_fail_quiet(${err.code});`);
+        else this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
         return undefined;
       }
       case "panic": {
@@ -1774,7 +1777,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
     const text = typeof pre === "string" ? `${pre}${PROGRAM_ERRORS[err]}` : `TypeSOL: not ${what}`;
     const bad = id ? `!ts_key_eq(&${h}->key, &${id})` : `!ts_is_token_program(&${h}->key)`;
-    this.line(`if (${bad}) TS_FAIL(((uint64_t)${err + 2}) << 32, ${cString(text)});`);
+    this.line(`if (${bad}) ${this.programFail(`((uint64_t)${err + 2}) << 32`, text)};`);
     if (kind.kind === "stakeHistory") this.line(`if (${h}->data_len < 8) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: not the StakeHistory sysvar's data");`);
     return { c: h, type: { kind: "account", program: kind } };
   }
@@ -2096,7 +2099,18 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
     const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
     const text = typeof pre === "string" ? `${pre}${name}` : `Error: ${name} (${this.location(node)})`;
-    return `TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)})`;
+    return this.programFail(`((uint64_t)${idx + 2}) << 32`, text);
+  }
+
+  /** A failure with a built-in ProgramError's code: logged with `text`, or nothing under `PROGRAM_ERROR_LOG_PREFIX = null`. */
+  protected programFail(code: string, text: string): string {
+    if (this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value === null) return `return ts_fail_quiet(${code})`;
+    return `TS_FAIL(${code}, ${cString(text)})`;
+  }
+
+  /** `const ERROR_LOG_PREFIX = null`: the program's own errors (and codes returned by its helpers) log nothing. */
+  protected quietErrors(): boolean {
+    return this.model.constants.get("ERROR_LOG_PREFIX")?.value === null;
   }
 
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
