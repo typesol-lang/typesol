@@ -414,8 +414,51 @@ export function placeLimitOrderWithFreeFunds(rest: RemainingAccounts, data: Inst
 
 /** The most CondensedOrders a transaction can carry (18 bytes each at least, in at most 1232). */
 const MAX_CONDENSED = 72n;
-/** A CondensedOrder's price is its first field. */
-const priceAt = (data: InstructionBytes, at: u64): u64 => data.readU64(at);
+
+/**
+ * One side's orders sorted best first, stably, as `sorted_by` sorts them (bids by price descending, asks ascending):
+ * `prices` and `starts` (where each order's bytes start) move together. A side already in order stays as it is and
+ * one in strictly the opposite order is reversed (the runs the standard library's merge sort finds first); anything
+ * else is sorted by insertion.
+ */
+function sortSide(prices: Inout<FixedVec<u64, 72>>, starts: Inout<FixedVec<u64, 72>>, first: u64, last: u64, descending: boolean): void {
+  let ordered = true;
+  let reversed = true;
+  for (let i = first + 1n; i < last; i++) {
+    const before = prices.get(i - 1n);
+    const p = prices.get(i);
+    if (descending ? before < p : before > p) ordered = false;
+    if (descending ? before >= p : before <= p) reversed = false;
+  }
+  if (ordered) return;
+  if (reversed) {
+    let i = first;
+    let j = last - 1n;
+    while (i < j) {
+      const p = prices.get(i);
+      const s = starts.get(i);
+      prices.set(i, prices.get(j));
+      starts.set(i, starts.get(j));
+      prices.set(j, p);
+      starts.set(j, s);
+      i++;
+      j--;
+    }
+    return;
+  }
+  for (let i = first + 1n; i < last; i++) {
+    const p = prices.get(i);
+    const s = starts.get(i);
+    let j = i;
+    while (j > first && (descending ? prices.get(j - 1n) < p : prices.get(j - 1n) > p)) {
+      prices.set(j, prices.get(j - 1n));
+      starts.set(j, starts.get(j - 1n));
+      j--;
+    }
+    prices.set(j, p);
+    starts.set(j, s);
+  }
+}
 
 /** Whether the CondensedOrders at `a` and `b` have the same (price, last_valid_slot, last_valid_unix_timestamp). */
 function sameLevel(data: InstructionBytes, a: u64, b: u64): boolean {
@@ -476,6 +519,7 @@ function multiplePostOnlyOrders(
 
   // MultipleOrderPacket::try_from_slice: where each CondensedOrder starts, bids then asks.
   const starts: FixedVec<u64, 72> = fixedVec([]);
+  const prices: FixedVec<u64, 72> = fixedVec([]);
   let at = 1n;
   let bidCount = 0n;
   for (let side = 0n; side < 2n; side++) {
@@ -486,6 +530,7 @@ function multiplePostOnlyOrders(
       require(at + 17n <= data.length, ProgramError.BorshIoError);
       if (starts.length === MAX_CONDENSED) require(false, ProgramError.BorshIoError);
       starts.push(at);
+      prices.push(data.readU64(at));
       at += 16n;
       for (let f = 0n; f < 2n; f++) {
         require(at + 1n <= data.length, ProgramError.BorshIoError);
@@ -517,8 +562,8 @@ function multiplePostOnlyOrders(
 
   let highestBid = 0n;
   let lowestAsk = 18446744073709551615n;
-  for (let i = 0n; i < starts.length; i++) {
-    const price = priceAt(data, starts.get(i));
+  for (let i = 0n; i < prices.length; i++) {
+    const price = prices.get(i);
     if (i < bidCount) {
       if (price > highestBid) highestBid = price;
     } else if (price < lowestAsk) lowestAsk = price;
@@ -546,21 +591,12 @@ function multiplePostOnlyOrders(
   for (let side = 0n; side < 2n; side++) {
     const first = side === 0n ? 0n : bidCount;
     const last = side === 0n ? bidCount : starts.length;
-    // A stable insertion sort of the side: bids by price descending, asks ascending.
-    for (let i = first + 1n; i < last; i++) {
-      const s = starts.get(i);
-      const p = priceAt(data, s);
-      let j = i;
-      while (j > first && (side === 0n ? priceAt(data, starts.get(j - 1n)) < p : priceAt(data, starts.get(j - 1n)) > p)) {
-        starts.set(j, starts.get(j - 1n));
-        j--;
-      }
-      starts.set(j, s);
-    }
+    sortSide(prices, starts, first, last, side === 0n);
     let i = first;
     while (i < last) {
       // One level: the adjacent orders with its price and time in force, their sizes summed.
       const s = starts.get(i);
+      const price = prices.get(i);
       let size = data.readU64(s + 8n);
       let k = i + 1n;
       while (k < last && sameLevel(data, s, starts.get(k))) {
@@ -571,7 +607,7 @@ function multiplePostOnlyOrders(
       const pk = emptyPacket();
       pk.kind = POST_ONLY;
       pk.side = u8(side);
-      pk.price_in_ticks = priceAt(data, s);
+      pk.price_in_ticks = price;
       pk.num_base_lots = size;
       pk.client_order_id = clientOrderId;
       pk.reject_post_only = failOnCross;
