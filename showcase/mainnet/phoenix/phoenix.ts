@@ -45,8 +45,8 @@ export const NATIVE_ACCOUNT_WRITES = true;
  * compiler writes a line for every failure; these make it the bare error: the PhoenixError's text, or the
  * ProgramError's name.
  */
-export const ERROR_LOG_PREFIX = "";
-export const PROGRAM_ERROR_LOG_PREFIX = "";
+export const ERROR_LOG_PREFIX = null;
+export const PROGRAM_ERROR_LOG_PREFIX = null;
 /** Phoenix ignores accounts after the ones it reads, however many; the default of 32 would refuse more (5113). */
 export const MAX_ACCOUNTS = 255n;
 

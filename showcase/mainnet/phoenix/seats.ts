@@ -29,7 +29,7 @@ import {
   type RemainingAccounts,
   ProgramError,
   createProgramAddress,
-  findProgramAddressBump,
+  findProgramAddressWithBump,
   loadRaw,
   loadRawMut,
   log,
@@ -43,8 +43,7 @@ import { PHOENIX_ID, createPda, emptyTraderState, need } from "./util.js";
 
 /** _create_seat: the seat PDA of (market, trader), created (128 bytes, owned by Phoenix) and written NotApproved. */
 function createSeat(payer: RemainingAccount, trader: Pubkey, seat: RemainingAccount, market: Pubkey, systemProgram: RemainingAccount): void {
-  const bump = findProgramAddressBump(["seat", market, trader], PHOENIX_ID);
-  const address = createProgramAddress(["seat", market, trader, bump], PHOENIX_ID)!;
+  const [address, bump] = findProgramAddressWithBump(["seat", market, trader], PHOENIX_ID);
   if (address !== seat.key) {
     log("Invalid seat address. \nsrc/program/processor/manage_seat.rs:69:5");
     require(false, ProgramError.InvalidAccountData);

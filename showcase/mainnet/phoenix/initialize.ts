@@ -32,7 +32,7 @@ import {
   type u8,
   ProgramError,
   createProgramAddress,
-  findProgramAddressBump,
+  findProgramAddressWithBump,
   loadRawMut,
   loadRawMutAt,
   log,
@@ -52,8 +52,7 @@ import { PHOENIX_ID, TOKEN_PROGRAM_ID, createPda, need, orderCmp, pow10 } from "
  * initialized as a token account of `mint` whose owner is the vault itself. Returns its bump.
  */
 function createVault(rest: RemainingAccounts, market: Pubkey, vault: RemainingAccount, mint: RemainingAccount): u8 {
-  const bump = findProgramAddressBump(["vault", market, mint.key], PHOENIX_ID);
-  const key = createProgramAddress(["vault", market, mint.key, bump], PHOENIX_ID)!;
+  const [key, bump] = findProgramAddressWithBump(["vault", market, mint.key], PHOENIX_ID);
   if (key !== vault.key) {
     log(`Supplied vault (${vault.key}) does not match computed key (${key}). \nsrc/program/processor/initialize.rs:165:9`);
     require(false, PhoenixError.InvalidMarketSigner);

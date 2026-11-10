@@ -197,15 +197,6 @@ export function lines(r: Result): string[] {
     .map((l) => l.replace(/^Program consumption: \d+ units remaining$/, "Program consumption: <N> units remaining"));
 }
 
-/** The line the port adds before its failure: the ProgramError's name or the PhoenixError's text. */
-function failureMarker(o: string): string | undefined {
-  const c = /InstructionErrorCustom \{ code: (\d+) \}/.exec(o);
-  if (c) return PHOENIX_ERRORS[Number(c[1])];
-  const b = /error: TransactionErrorInstructionError \{ index: \d+, error: (\w+)/.exec(o);
-  if (!b) return undefined;
-  return b[1] === "InstructionErrorBorshIo" ? "BorshIoError" : b[1];
-}
-
 /** Each inner instruction: stack height, program index, account indexes, data (hex). */
 export function inner(r: Result): string[] {
   return meta(r)
@@ -544,8 +535,6 @@ export const withData = (i: Instruction, data: Buffer): Instruction => ({ ...i, 
 export class Diff {
   readonly cu: Record<string, [bigint, bigint]> = {};
   compared = 0;
-  /** Comparisons whose port log had the one failure line more (dropped before comparing). */
-  failureLines = 0;
   /** The original's log lines of the last compared transaction (for messages). */
   lastLogs = "";
   private constructor(
@@ -619,15 +608,6 @@ export class Diff {
     expect(outcome(b), why).toBe(outcome(a));
     const want = lines(a);
     const got = lines(b);
-    // The port's failure line: one line more, just before "Program … failed", the error's name.
-    if (a instanceof FailedTransactionMetadata && got.length === want.length + 1) {
-      const marker = failureMarker(outcome(a));
-      const at = got.length - 2;
-      if (marker !== undefined && got[at] === `Program log: ${marker}` && /^Program \w+ failed: /.test(got[at + 1]!)) {
-        got.splice(at, 1);
-        this.failureLines++;
-      }
-    }
     expect(got, `${label}: logs\n${why}`).toEqual(want);
     expect(inner(b), `${label}: inner instructions\n${why}`).toEqual(inner(a));
     expect(returnData(b), `${label}: return data`).toBe(returnData(a));
@@ -740,9 +720,6 @@ export function cuTable(diffs: Diff[], title: string): string {
   }
   const compared = diffs.reduce((n, d) => n + d.compared, 0);
   const cheaper = rows.filter(([, [a, b]]) => b < a).length;
-  const allowed = diffs.reduce((n, d) => n + d.failureLines, 0);
-  out.push(
-    `${compared} transactions compared (${allowed} with the port's one failure line dropped, the rest line for line); the port cheaper on ${cheaper} of the ${rows.length} rows`,
-  );
+  out.push(`${compared} transactions compared, every log line identical; the port cheaper on ${cheaper} of the ${rows.length} rows`);
   return out.join("\n");
 }
