@@ -67,6 +67,10 @@ inner instructions (the event batches byte for byte), return data and account by
 | test_tif: an IOC that expires the resting order | 15,149 | 5,658 | 37% |
 | test_decode_order_packet: a deprecated IOC packet | 11,680 | 2,539 | 22% |
 
+The costliest transactions anywhere are in the random walk (`phoenix-fuzz.test.ts`): CancelAllOrders of one trader's
+orders on the 4096/8321 market, whose books hold about 8,000 orders, walks both books whole: 1,142,204 units in the
+original and 612,943 in the port at most in the seeds tried (54%), 0.99–1.14 million in the original from seed to seed.
+
 ## tests/test_phoenix.rs
 
 | Upstream test | Here |
