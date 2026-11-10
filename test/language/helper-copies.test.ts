@@ -31,9 +31,20 @@ ${body}`,
   );
   return generate(file).c;
 }
+/**
+ * Whether `fn`'s body copies a struct argument (snapshotPlace's `argcN`). The body is the definition's, not the
+ * prototype's: prototypes are emitted before any body, so the first `fn(TsParams` is the declaration ending in `;`.
+ */
 const copies = (src: string, fn: string) => {
-  const body = src.slice(src.indexOf(`${fn}(TsParams`), src.indexOf("\n}\n", src.indexOf(`${fn}(TsParams`)));
-  return /\bargc\d+\b/.test(body); // snapshotPlace's copy
+  const def = new RegExp(`^[^\\n;]*\\b${fn}\\(TsParams[^\\n;]*\\) \\{$`, "m").exec(src);
+  expect(def, `the definition of ${fn}`).not.toBeNull();
+  const start = def!.index;
+  const end = src.indexOf("\n}\n", start);
+  expect(end, `the end of ${fn}`).toBeGreaterThan(start);
+  const body = src.slice(start, end);
+  // The body calls a helper, so a copy would be visible; a body that calls nothing would make the check vacuous.
+  expect(body, `${fn}'s body`).toMatch(/\bfn_\w+\(params,/);
+  return /\bargc\d+\b/.test(body);
 };
 
 describe("struct arguments of helpers that take accounts", () => {

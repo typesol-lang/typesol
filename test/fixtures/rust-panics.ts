@@ -1,7 +1,8 @@
 // Rust panics as a program built with solana-program 1.14 leaves them (Phoenix v1): `panicked at '<msg>', <file>:<line>:<col>`
 // logged, then the abort syscall ("SBF program panicked"). The cases mirror the Phoenix binary's own panics, which the
 // test compares line for line: the entrypoint's split_at with too few accounts, and the overflow and remainder checks
-// of InitializeMarket (raw u64 arithmetic in initialize.rs, the wrapper types' operators in quantities.rs).
+// of InitializeMarket (raw u64 arithmetic in initialize.rs, the wrapper types' operators in quantities.rs), each after
+// the instruction's name, which Phoenix's dispatcher logs first.
 import { ProgramError, i64, instructionData, log, panic, panicsAt, remainingAccounts, require, u64 } from "typesol";
 
 export const PANIC_STYLE = "solana-1.14";
@@ -32,22 +33,26 @@ export function entry(): void {
   }
   // `10u64.pow(base_mint.decimals as u32) * raw_base_units_per_base_unit.unwrap_or(1) as u64`
   if (tag === 1n) {
+    log("PhoenixInstruction::Initialize");
     const atoms = panicsAt("src/program/processor/initialize.rs:109:9", pow10(u64(data.readU8(1n))) * u64(data.readU32(2n)));
     log(`${atoms}`);
     return;
   }
   // `base_atoms_per_base_unit % num_base_lots_per_base_unit` (BaseAtomsPerBaseUnit % BaseLotsPerBaseUnit)
   if (tag === 2n) {
+    log("PhoenixInstruction::Initialize");
     log(`${panicsAt("src/quantities.rs:296:1", data.readU64(1n) % data.readU64(9n))}`);
     return;
   }
   // `quote_atoms_per_quote_unit % num_quote_lots_per_quote_unit`
   if (tag === 3n) {
+    log("PhoenixInstruction::Initialize");
     log(`${panicsAt("src/quantities.rs:297:1", data.readU64(1n) % data.readU64(9n))}`);
     return;
   }
   // `quote_lot_size * tick_size_in_quote_lots_per_base_unit`
   if (tag === 4n) {
+    log("PhoenixInstruction::Initialize");
     log(`${panicsAt("src/quantities.rs:280:1", data.readU64(1n) * data.readU64(9n))}`);
     return;
   }

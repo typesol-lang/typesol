@@ -35,11 +35,19 @@ describe("Rust panics: PANIC_STYLE and panicsAt", () => {
         data: new Uint8Array([...data, nonce++ & 0xff]),
       },
     ]);
-  /** The panic: the program's own last log line, its failure line (program id left out) and the error. */
+  /**
+   * The panic: the program's own last log line, its failure line (program id left out), the error, and every log line
+   * (the program id left out, the "consumed N of M compute units" line dropped: N differs by design).
+   */
   const panicOf = (r: Result, program: string) => {
     const logs = logsOf(r);
     const own = logs.filter((l) => l.startsWith("Program log: "));
-    return { line: own.at(-1), failed: logs.at(-1)!.replace(program, "<program>"), err: errOf(r) };
+    return {
+      line: own.at(-1),
+      failed: logs.at(-1)!.replace(program, "<program>"),
+      err: errOf(r),
+      logs: logs.filter((l) => !/ consumed \d+ of \d+ compute units$/.test(l)).map((l) => l.replaceAll(program, "<program>")),
+    };
   };
   const phoenixPanic = (r: Result) => panicOf(r, PHOENIX);
   const ourPanic = (r: Result, p: Deployed = d) => panicOf(r, p.programId);
@@ -51,6 +59,11 @@ describe("Rust panics: PANIC_STYLE and panicsAt", () => {
       line: "Program log: panicked at 'assertion failed: mid <= self.len()', src/lib.rs:127:49",
       failed: "Program <program> failed: SBF program panicked",
       err: expect.stringMatching(/ProgramFailedToComplete/),
+      logs: [
+        "Program <program> invoke [1]",
+        "Program log: panicked at 'assertion failed: mid <= self.len()', src/lib.rs:127:49",
+        "Program <program> failed: SBF program panicked",
+      ],
     });
     expect(ourPanic(await call(d, [0], 1))).toEqual(phoenix);
     expectOk(await call(d, [0], 4));
@@ -73,6 +86,8 @@ describe("Rust panics: PANIC_STYLE and panicsAt", () => {
       const phoenix = phoenixPanic(await initializeMarket(m, params));
       expect(phoenix.line).toMatch(/^Program log: panicked at 'attempt to /);
       expect(phoenix.failed).toBe("Program <program> failed: SBF program panicked");
+      // The whole log: the instruction's name (the fixture logs it as Phoenix's dispatcher does), the panic, the abort.
+      expect(phoenix.logs).toEqual(["Program <program> invoke [1]", "Program log: PhoenixInstruction::Initialize", phoenix.line, phoenix.failed]);
       expect(ourPanic(await call(d, ours))).toEqual(phoenix);
     }
   });
@@ -98,12 +113,13 @@ describe("Rust panics: PANIC_STYLE and panicsAt", () => {
   it("aborts PANIC_ON_OVERFLOW's panics outside panicsAt and puts this line and column on a panic without a location", async () => {
     const r = await call(d, [13, ...le(U64_MAX, 8), ...le(1n, 8)]);
     expect(ourPanic(r)).toEqual({
-      line: "Program log: TypeSOL: arithmetic overflow (rust-panics.ts:76)",
+      line: "Program log: TypeSOL: arithmetic overflow (rust-panics.ts:81)",
       failed: "Program <program> failed: SBF program panicked",
       err: expect.stringMatching(/ProgramFailedToComplete/),
+      logs: ["Program <program> invoke [1]", "Program log: TypeSOL: arithmetic overflow (rust-panics.ts:81)", "Program <program> failed: SBF program panicked"],
     });
     const p = ourPanic(await call(d, [14, ...le(0n, 16)]));
-    expect(p.line).toBe("Program log: panicked at 'explicit', rust-panics.ts:78:20");
+    expect(p.line).toBe("Program log: panicked at 'explicit', rust-panics.ts:83:20");
     expect(p.failed).toBe("Program <program> failed: SBF program panicked");
   });
 

@@ -168,15 +168,20 @@ export function lines(r: Result): string[] {
     .map((l) => l.replace(/^Program consumption: \d+ units remaining$/, "Program consumption: <N> units remaining"));
 }
 
-/** Each inner instruction: stack height, program index, account indexes, data (hex). */
+/**
+ * Each inner instruction: the index of the top-level instruction it ran under, stack height, program index, account
+ * indexes, data (hex). The outer index is part of it so that the same CPIs made under another top-level instruction
+ * do not compare equal.
+ */
 export function inner(r: Result): string[] {
   return meta(r)
     .innerInstructions()
-    .flat()
-    .map((i) => {
-      const c = i.instruction();
-      return `${i.stackHeight()} ${c.programIdIndex()} [${[...c.accounts()].join(",")}] ${Buffer.from(c.data()).toString("hex")}`;
-    });
+    .flatMap((list, outer) =>
+      list.map((i) => {
+        const c = i.instruction();
+        return `${outer}: ${i.stackHeight()} ${c.programIdIndex()} [${[...c.accounts()].join(",")}] ${Buffer.from(c.data()).toString("hex")}`;
+      }),
+    );
 }
 
 const returnData = (r: Result) => {
@@ -499,21 +504,39 @@ export const withData = (i: Instruction, data: Buffer): Instruction => ({ ...i, 
 
 // ---- The two VMs -------------------------------------------------------------------------------------------------------
 
+/** One compared transaction's compute units, and whether it succeeded (in both: the outcomes are compared). */
+export interface CuRow {
+  label: string;
+  original: bigint;
+  port: bigint;
+  ok: boolean;
+}
+
 /**
  * The original and the port side by side, the accounts made in both, and the comparison. Labels name compared
- * transactions; `cu` keeps their compute units (original, port) for the CU table.
+ * transactions; `rows` keeps every compared transaction's compute units (original, port) in order, labels repeated
+ * as often as they were sent, and `cu` the last of each label.
  */
 export class Diff {
   readonly cu: Record<string, [bigint, bigint]> = {};
+  readonly rows: CuRow[] = [];
   compared = 0;
   /** The original's log lines of the last compared transaction (for messages). */
   lastLogs = "";
+  /** The original's result of the last compared transaction (the port's is the same, compared). */
+  last: Result | undefined;
   private constructor(
     readonly original: LiteSVM,
     readonly port: LiteSVM,
+    private readonly newKey: () => Promise<KeyPairSigner>,
   ) {}
 
-  static async create(): Promise<Diff> {
+  /**
+   * Both VMs. Every keypair the Diff makes (payers, mints, token accounts, markets) comes from `keys`: fresh ones by
+   * default, or a seeded source, so that a run's addresses (and with them the traders tree's order and every PDA)
+   * are reproduced by its seed.
+   */
+  static async create(keys: () => Promise<KeyPairSigner> = generateKeyPairSigner): Promise<Diff> {
     const port = (await deployFile(PORT, { programId: PROGRAM })).svm;
     const original = new LiteSVM();
     original.addProgram(PROGRAM, new Uint8Array(readFileSync(ORIGINAL)));
@@ -523,7 +546,7 @@ export class Diff {
       vm.setClock(new Clock(SLOT, UNIX_TIMESTAMP - 1000n, 580n, 581n, UNIX_TIMESTAMP));
       vm.withLogBytesLimit();
     }
-    return new Diff(original, port);
+    return new Diff(original, port, keys);
   }
 
   get vms(): readonly [LiteSVM, LiteSVM] {
@@ -532,7 +555,7 @@ export class Diff {
 
   /** A keypair with `sol` SOL in both VMs. */
   async funded(sol = 100n): Promise<KeyPairSigner> {
-    const k = await generateKeyPairSigner();
+    const k = await this.newKey();
     for (const vm of this.vms) vm.airdrop(k.address, lamports(sol * SOL));
     return k;
   }
@@ -595,7 +618,9 @@ export class Diff {
       expect(this.bytes(this.port, at), `${label}: ${at}`).toBe(this.bytes(this.original, at));
     }
     this.cu[label] = [meta(a).computeUnitsConsumed(), meta(b).computeUnitsConsumed()];
+    this.rows.push({ label, original: meta(a).computeUnitsConsumed(), port: meta(b).computeUnitsConsumed(), ok: outcome(a) === "ok" });
     this.lastLogs = logs(a);
+    this.last = a;
     return outcome(a);
   }
 
@@ -613,14 +638,14 @@ export class Diff {
 
   /** A mint in both VMs. */
   async mint(decimals: number, authority?: Address): Promise<Address> {
-    const k = (await generateKeyPairSigner()).address;
+    const k = (await this.newKey()).address;
     this.write(k, TOKEN, mintBytes({ decimals, authority }));
     return k;
   }
 
   /** A token account in both VMs. */
   async tokenAccount(mint: Address, owner: Address, amount = 0n): Promise<Address> {
-    const k = (await generateKeyPairSigner()).address;
+    const k = (await this.newKey()).address;
     this.write(k, TOKEN, tokenAccountBytes({ mint, owner, amount }));
     return k;
   }
@@ -642,7 +667,7 @@ export class Diff {
     const authority = o.authority ?? (await this.funded(1000n));
     const baseMint = await this.mint(o.baseDecimals ?? 9);
     const quoteMint = await this.mint(o.quoteDecimals ?? 6);
-    const market = (await generateKeyPairSigner()).address;
+    const market = (await this.newKey()).address;
     this.write(market, PROGRAM, Buffer.alloc(o.size ?? marketSize(bids, seats)));
     return {
       market,
@@ -777,17 +802,33 @@ export function registeredTraders(data: Buffer, m: Market): TraderEntry[] {
 export const traderEntry = (data: Buffer, m: Market, trader: Address): TraderEntry | undefined =>
   registeredTraders(data, m).find((t) => t.key.equals(key(trader)));
 
-/** The CU table: each compared transaction, the original's and the port's compute units. */
+/** The CU table: every compared transaction, the original's and the port's compute units. */
 export function cuTable(diffs: Diff[], title: string): string {
-  const rows = diffs.flatMap((d) => Object.entries(d.cu));
-  const width = Math.max(...rows.map(([l]) => l.length), 10);
+  const rows = diffs.flatMap((d) => d.rows);
+  const width = Math.max(...rows.map((r) => r.label.length), 10);
   const out = [`${title}`, `${"transaction".padEnd(width)}  original      port   saving`];
-  for (const [l, [a, b]] of rows) {
+  for (const { label, original: a, port: b, ok } of rows) {
     const pct = a === 0n ? "" : `${((Number(a - b) * 100) / Number(a)).toFixed(1)}%`;
-    out.push(`${l.padEnd(width)}  ${String(a).padStart(8)}  ${String(b).padStart(8)}  ${pct.padStart(7)}`);
+    out.push(`${label.padEnd(width)}  ${String(a).padStart(8)}  ${String(b).padStart(8)}  ${pct.padStart(7)}${ok ? "" : "  (failed)"}`);
   }
-  const compared = diffs.reduce((n, d) => n + d.compared, 0);
-  const cheaper = rows.filter(([, [a, b]]) => b < a).length;
-  out.push(`${compared} transactions compared, every log line identical; the port cheaper on ${cheaper} of the ${rows.length} rows`);
+  const ok = rows.filter((r) => r.ok);
+  const cheaper = ok.filter((r) => r.port < r.original).length;
+  out.push(`${rows.length} transactions compared, every log line identical; the port cheaper on ${cheaper} of the ${ok.length} that succeeded`);
   return out.join("\n");
+}
+
+/**
+ * The checks every Phoenix file ends with: exactly `expected` transactions compared (so a case that silently stops
+ * sending fails), and on every one that succeeded the port used fewer compute units than the original. Failed
+ * transactions are left out: where each side stops is compared through the logs, and a panic's CU are not a cost.
+ */
+export function checkCompute(diffs: Diff[], expected: number): void {
+  const rows = diffs.flatMap((d) => d.rows);
+  expect(
+    diffs.reduce((n, d) => n + d.compared, 0),
+    "transactions compared",
+  ).toBe(rows.length);
+  const dearer = rows.filter((r) => r.ok && r.port >= r.original).map((r) => `${r.label}: original ${r.original}, port ${r.port}`);
+  expect(dearer, "successful transactions where the port did not use fewer compute units").toEqual([]);
+  expect(rows.length, "transactions compared").toBe(expected);
 }

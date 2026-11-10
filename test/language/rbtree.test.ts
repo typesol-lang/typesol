@@ -245,18 +245,22 @@ function bad(a: u64, b: u64): i8 { return 0n; }
       "removeAt() would change the tree a for … of is walking",
     );
     expect(f(`const t = rbTreeAt<K, V>(a, 0n, 4n, cmp); t.removeAt(1n);`, "AccountInfo")).toContain("Property 'removeAt' does not exist");
-    expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); t.removeAt(k);`)).toMatch(/not assignable|expected a u32/);
+    expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); t.removeAt(k);`)).toContain("Argument of type 'K' is not assignable to parameter of type 'bigint'.");
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); const v = t.get(k); t.insert(k, { x: 1n, y: 2n }); if (v !== null) log(v.x);`)).toContain(
       '"v" still refers to',
     );
-    expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, bad);`)).toMatch(/bad must take two K keys|not assignable/);
+    expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, bad);`)).toContain(
+      "Argument of type '(a: bigint, b: bigint) => bigint' is not assignable to parameter of type '(a: K, b: K) => bigint'.",
+    );
     expect(f(`const t = rbTreeMutAt<Named, V>(a, 0n, 4n); log(t.length);`)).toContain("Named has no default order");
     expect(f(`const t = rbTreeMutAt<K, Odd>(a, 0n, 4n, cmp); log(t.length);`)).toContain("not a multiple of 8");
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); const r = t.reversed(); log(t.length);`)).toContain("reversed() walks the tree");
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); const u = t; log(u.length);`)).toContain("is a RedBlackTree");
     expect(f(`const m = rbTreeAt<K, V>(a, 0n, 4n, cmp).min(); log(m === null ? "none" : "some");`)).toContain("bind rbTreeAt(…) to a const first");
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); t.initialize();`, "AccountInfo")).toContain("must be Mut<AccountInfo> to load it with rbTreeMutAt");
-    expect(f(`const t = rbTreeAt<K, V>(a, 0n, 4n, cmp); const m = t.min(); if (m !== null) m.value.x = 1n;`, "AccountInfo")).toMatch(/read-only|Cannot assign/);
+    expect(f(`const t = rbTreeAt<K, V>(a, 0n, 4n, cmp); const m = t.min(); if (m !== null) m.value.x = 1n;`, "AccountInfo")).toContain(
+      "Cannot assign to 'x' because it is a read-only property.",
+    );
   });
 
   it("the language reference's example compiles", () => {

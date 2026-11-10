@@ -157,12 +157,14 @@ describe("closeRaw, assignOwner and resizeAccount", () => {
     expect(compileErrors(`${head}export function f(a: AccountInfo, b: Mut<AccountInfo>): void { closeRaw(a, b); }`)).toMatch(
       /a must be Mut<AccountInfo> to change it in place \(or declare const NATIVE_ACCOUNT_WRITES = true/,
     );
-    expect(compileErrors(`${head}export function f(a: Mut<Signer>, b: Mut<AccountInfo>): void { closeRaw(a, b); }`)).toMatch(
-      /Mut<Signer>. is not assignable|closeRaw.s account is a remaining account/,
+    expect(compileErrors(`${head}export function f(a: Mut<Signer>, b: Mut<AccountInfo>): void { closeRaw(a, b); }`)).toContain(
+      "Argument of type 'Mut<Signer>' is not assignable to parameter of type 'RemainingAccount | Mut<AccountInfo, never>'.",
     );
     expect(compileErrors(`${head}export function f(a: AccountInfo): void { resizeAccount(a, 1n); }`)).toMatch(
       /resizeAccount needs a Mut<AccountInfo> parameter or a remaining account/,
     );
-    expect(compileErrors(`${head}export function f(a: Mut<AccountInfo>): void { assignOwner(a, 5n); }`)).toMatch(/Pubkey|not assignable/);
+    expect(compileErrors(`${head}export function f(a: Mut<AccountInfo>): void { assignOwner(a, 5n); }`)).toContain(
+      "Argument of type 'bigint' is not assignable to parameter of type 'Pubkey'.",
+    );
   });
 });

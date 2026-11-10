@@ -34,9 +34,13 @@ import {
   UNIX_TIMESTAMP,
   asksAt,
   cancelOrderParams,
+  E,
+  builtin,
   cancelUpToParams,
+  checkCompute,
   computeUnits,
   cuTable,
+  custom,
   initParams,
   ix,
   key,
@@ -47,6 +51,7 @@ import {
   restingOrders,
   seatAddress,
   setClock,
+  traderEntry,
   tradersAt,
   truncate,
   u8,
@@ -73,14 +78,30 @@ async function diff(): Promise<Diff> {
   diffs.push(d);
   return d;
 }
+/** The transactions this file compares (every case, the setup ones included). */
+const COMPARED = 1082;
 afterAll(() => {
   console.log(cuTable(diffs, "Phoenix v1 upstream scenarios: compute units, original vs TypeSOL"));
+  checkCompute(diffs, COMPARED);
 });
 
-/** both(), which must fail (upstream asserts `is_err` only). */
-async function rejects(d: Diff, label: string, payer: KeyPairSigner, ixs: Instruction[]): Promise<void> {
+/** PhoenixError::NewOrderError, the error of every order the matching engine refuses. */
+const NEW_ORDER = custom(E.NewOrderError!);
+const INVALID_ACCOUNT_DATA = builtin("InvalidAccountData");
+const INVALID_INSTRUCTION_DATA = builtin("InvalidInstructionData");
+/** SPL Token's InsufficientFunds (custom 1), passed up from the deposit transfer. */
+const TOKEN_INSUFFICIENT_FUNDS = custom(1);
+
+/**
+ * both(), which must fail with `expected` (upstream asserts `is_err` only) and log `why` (the original's own message,
+ * as a "Program log: " line, or the source location a check logs as a line of its own): so a transaction refused before it reaches the program, or by another check than the
+ * one the upstream test aims at, cannot pass.
+ */
+async function rejects(d: Diff, label: string, payer: KeyPairSigner, ixs: Instruction[], expected: string, why: string): Promise<void> {
   const got = await d.both(label, payer, ixs);
-  expect(got, `${label}: must fail\n${d.lastLogs}`).not.toBe("ok");
+  expect(got, `${label}: must fail\n${d.lastLogs}`).toBe(expected);
+  const logged = d.lastLogs.split("\n").some((l) => l === `Program log: ${why}` || l === why);
+  expect(logged, `${label}: the original's message "${why}"\n${d.lastLogs}`).toBe(true);
 }
 
 // ---- Packets (OrderPacket's constructors) --------------------------------------------------------------------------------
@@ -292,6 +313,47 @@ const treeSizes = (d: Diff, m: Market) => {
   return [OFF.bids, asksAt(m.bids), tradersAt(m.bids)].map((at) => b.readBigUInt64LE(at + TREE.size));
 };
 
+/** A trader's two token balances, in atoms. */
+const balances = (d: Diff, t: Trader) => ({ base: d.amount(t.base), quote: d.amount(t.quote) });
+
+/**
+ * What `run` moved through the trader's token accounts, in lots (positive: received). With tokens, an order deposits
+ * its matched and posted lots less the free lots it used and withdraws what it matched out
+ * (process_new_order), so this is how a matching-engine response of the unit tests shows on chain.
+ */
+async function moved(d: Diff, m: Market, t: Trader, run: () => Promise<unknown>): Promise<{ base: bigint; quote: bigint }> {
+  const header = d.data(m.market);
+  const [baseLot, quoteLot] = [header.readBigUInt64LE(OFF.baseLotSize), header.readBigUInt64LE(OFF.quoteLotSize)];
+  const before = balances(d, t);
+  await run();
+  const after = balances(d, t);
+  const [base, quote] = [after.base - before.base, after.quote - before.quote];
+  expect([base % baseLot, quote % quoteLot], "token amounts moved in whole lots").toEqual([0n, 0n]);
+  return { base: base / baseLot, quote: quote / quoteLot };
+}
+
+/** A registered trader's free lots (TraderState's base_lots_free and quote_lots_free). */
+function freeLots(d: Diff, m: Market, t: Trader): { base: bigint; quote: bigint } {
+  const e = traderEntry(d.data(m.market), m, t.key.address);
+  expect(e, `${t.key.address} registered`).toBeDefined();
+  return { base: e!.baseFree, quote: e!.quoteFree };
+}
+
+/** A ladder side with `lots` taken from its best levels (what fills of `lots` leave). */
+function takeFrom(levels: { price: bigint; size: bigint }[], lots: bigint): { price: bigint; size: bigint }[] {
+  const out = levels.map((l) => ({ ...l }));
+  while (lots > 0n && out.length > 0) {
+    const take = lots < out[0]!.size ? lots : out[0]!.size;
+    out[0]!.size -= take;
+    lots -= take;
+    if (out[0]!.size === 0n) out.shift();
+  }
+  return out;
+}
+
+/** The prices of a side's resting orders, best first (get_market_orderbook's keys). */
+const prices = (d: Diff, m: Market, side: 0 | 1) => restingOrders(d.data(m.market), m, side).map((o) => o.price);
+
 // ---- tests/test_phoenix.rs ---------------------------------------------------------------------------------------------------
 
 describe("test_phoenix.rs", () => {
@@ -327,20 +389,46 @@ describe("test_phoenix.rs", () => {
     await d.ok("request seats: the attacker's RequestSeat", attacker, [
       ix.requestSeat(m, { key: attacker, seat: attackerSeat, base: m.baseVault, quote: m.quoteVault }),
     ]);
-    await rejects(d, "request seats: the attacker approves its seat through its own market", attacker, [
-      ix.changeSeatStatus(ownMarket, attackerSeat, 1, attacker),
-    ]);
+    await rejects(
+      d,
+      "request seats: the attacker approves its seat through its own market",
+      attacker,
+      [ix.changeSeatStatus(ownMarket, attackerSeat, 1, attacker)],
+      INVALID_ACCOUNT_DATA,
+      "Market on seat does not match market in instruction. ",
+    );
     await d.ok("request seats: maker RequestSeat", maker.key, [ix.requestSeat(m, maker)]);
-    await rejects(d, "request seats: the maker approves its own seat", maker.key, [ix.changeSeatStatus(m, maker.seat, 1, maker.key)]);
+    await rejects(
+      d,
+      "request seats: the maker approves its own seat",
+      maker.key,
+      [ix.changeSeatStatus(m, maker.seat, 1, maker.key)],
+      custom(E.InvalidMarketAuthority!),
+      "Invalid market authority. ",
+    );
     await d.ok("request seats: approve the maker", admin, [ix.changeSeatStatus(m, maker.seat, 1)]);
     await d.ok("request seats: retire the maker", admin, [ix.changeSeatStatus(m, maker.seat, 2)]);
-    await rejects(d, "request seats: the maker cannot be unretired", admin, [ix.changeSeatStatus(m, maker.seat, 1)]);
+    await rejects(
+      d,
+      "request seats: the maker cannot be unretired",
+      admin,
+      [ix.changeSeatStatus(m, maker.seat, 1)],
+      INVALID_INSTRUCTION_DATA,
+      "Invalid seat status transition from Retired to Approved",
+    );
     const maker1 = await d.trader(m, ...units(1_000_000n, 1_000_000n));
     await d.ok("request seats: maker1 RequestSeatAuthorized", admin, [ix.requestSeatAuthorized(m, admin, maker1.key.address, maker1.seat)]);
     await d.ok("request seats: approve maker1", admin, [ix.changeSeatStatus(m, maker1.seat, 1)]);
     await place(d, "request seats: maker1 bids at 100", m, maker1, limit(BID, 10_000n, 1n));
     await d.ok("request seats: retire maker1", admin, [ix.changeSeatStatus(m, maker1.seat, 2)]);
-    await rejects(d, "request seats: evict maker1 with an open order", admin, [ix.evictSeat(m, maker1)]);
+    await rejects(
+      d,
+      "request seats: evict maker1 with an open order",
+      admin,
+      [ix.evictSeat(m, maker1)],
+      custom(E.EvictionError!),
+      "Trader was not evicted, there are still orders on the book. ",
+    );
     await d.ok("request seats: ForceCancelOrders on both sides", admin, [
       ix.forceCancelOrders(m, maker1, cancelUpToParams(BID)),
       ix.forceCancelOrders(m, maker1, cancelUpToParams(ASK)),
@@ -354,15 +442,20 @@ describe("test_phoenix.rs", () => {
     const orders = [limit(BID, 10_000n, 1n), limit(BID, 9_900n, 1n), limit(ASK, 10_100n, 1n), limit(ASK, 10_200n, 1n)].map((p) =>
       ix.placeLimitOrder(m, maker, p),
     );
-    await rejects(d, "orders: a bid at 0 ticks", admin, [ix.placeLimitOrder(m, maker, limit(BID, 0n, 1n))]);
+    await rejects(d, "orders: a bid at 0 ticks", admin, [ix.placeLimitOrder(m, maker, limit(BID, 0n, 1n))], NEW_ORDER, "Bid price is too low");
     await d.ok("orders: a bid at 1 tick", admin, [ix.placeLimitOrder(m, maker, limit(BID, 1n, 1n))]);
     await d.ok("orders: cancel the first bid by id", admin, [ix.cancelMultipleOrdersById(m, maker, [cancelOrderParams(BID, 1n, not(1n))])]);
     await d.ok("orders: four orders in one transaction", admin, orders);
+    // Two asks of a lot locked (10⁶ atoms each), two bids of 100 and 99 locked (10 quote atoms a lot).
+    expect(balances(d, maker)).toEqual({ base: 999_999_998_000_000n, quote: 999_999_801_000n });
+    const quoteStart = d.amount(maker.quote);
     const seq = sequenceNumber(d, m);
     const asks = [cancelOrderParams(ASK, 10_200n, seq - 1n), cancelOrderParams(ASK, 10_100n, seq - 2n)];
     await d.ok("orders: cancel both asks by id", admin, [ix.cancelMultipleOrdersById(m, maker, asks)]);
+    expect(balances(d, maker)).toEqual({ base: 1_000_000_000_000_000n, quote: quoteStart });
     expect(sequenceNumber(d, m)).toBe(seq);
     await d.ok("orders: cancel them again", admin, [ix.cancelMultipleOrdersById(m, maker, asks)]);
+    expect(balances(d, maker)).toEqual({ base: 1_000_000_000_000_000n, quote: quoteStart });
     await d.ok("orders: a cancelled ask, an unknown ask, the bid at 99", admin, [
       ix.cancelMultipleOrdersById(m, maker, [
         cancelOrderParams(ASK, 10_200n, seq - 1n),
@@ -370,6 +463,8 @@ describe("test_phoenix.rs", () => {
         cancelOrderParams(BID, 9_900n, not(seq - 3n)),
       ]),
     ]);
+    // quote_lots_to_quote_atoms(9900): the bid at 99 returned.
+    expect(balances(d, maker)).toEqual({ base: 1_000_000_000_000_000n, quote: quoteStart + 99_000n });
   });
 
   it("test_phoenix_admin", async () => {
@@ -381,30 +476,72 @@ describe("test_phoenix.rs", () => {
       [limit(BID, 10_000n, 1n), limit(BID, 9_900n, 1n), limit(ASK, 10_100n, 1n), limit(ASK, 10_200n, 1n)].map((p) => ix.placeLimitOrder(m, maker, p)),
     );
     const successor = await d.funded(10n);
-    await rejects(d, "admin: NameSuccessor by a non-admin", successor, [ix.nameSuccessor(m, successor.address, successor)]);
+    await rejects(
+      d,
+      "admin: NameSuccessor by a non-admin",
+      successor,
+      [ix.nameSuccessor(m, successor.address, successor)],
+      custom(E.InvalidMarketAuthority!),
+      "Invalid market authority. ",
+    );
     await d.ok("admin: NameSuccessor by the admin", admin, [ix.nameSuccessor(m, successor.address)]);
     const attacker = await d.funded(10n);
-    await rejects(d, "admin: ClaimAuthority by an attacker", attacker, [ix.claimAuthority(m, attacker)]);
+    await rejects(
+      d,
+      "admin: ClaimAuthority by an attacker",
+      attacker,
+      [ix.claimAuthority(m, attacker)],
+      custom(E.InvalidMarketAuthority!),
+      "src/program/validation/checkers/phoenix_checkers.rs:103:9",
+    );
     await d.ok("admin: ClaimAuthority by the successor", successor, [ix.claimAuthority(m, successor)]);
     const buy = ix.swap(m, taker, iocLots(BID, 10_200n, 1n, DECREMENT_TAKE));
     await d.ok("admin: trade while Active", admin, [buy]);
-    await rejects(d, "admin: close an Active market", successor, [ix.changeMarketStatus(m, 4, undefined, successor)]);
-    await rejects(d, "admin: the previous admin pauses", admin, [ix.changeMarketStatus(m, 3)]);
+    await rejects(
+      d,
+      "admin: close an Active market",
+      successor,
+      [ix.changeMarketStatus(m, 4, undefined, successor)],
+      custom(E.InvalidStateTransition!),
+      "Invalid state transition. ",
+    );
+    await rejects(d, "admin: the previous admin pauses", admin, [ix.changeMarketStatus(m, 3)], custom(E.InvalidMarketAuthority!), "Invalid market authority. ");
     await d.ok("admin: the admin pauses", successor, [ix.changeMarketStatus(m, 3, undefined, successor)]);
     await d.ok("admin: cancel a bid while Paused", maker.key, [ix.cancelUpTo(m, maker, cancelUpToParams(BID, null, null, 1))]);
     await d.ok("admin: reactivate", successor, [ix.changeMarketStatus(m, 1, undefined, successor)]);
     await d.ok("admin: pause again", successor, [ix.changeMarketStatus(m, 3, undefined, successor)]);
-    await rejects(d, "admin: trade while Paused", taker.key, [buy]);
+    await rejects(d, "admin: trade while Paused", taker.key, [buy], INVALID_ACCOUNT_DATA, "FOK and IOC orders are not allowed, market status is Paused. ");
     await d.ok("admin: close the Paused market", successor, [ix.changeMarketStatus(m, 4, undefined, successor)]);
-    await rejects(d, "admin: tombstone a market with orders", successor, [ix.changeMarketStatus(m, 5, undefined, successor)]);
+    await rejects(
+      d,
+      "admin: tombstone a market with orders",
+      successor,
+      [ix.changeMarketStatus(m, 5, undefined, successor)],
+      INVALID_ACCOUNT_DATA,
+      "Invalid market status, must have no open orders, found 1 bids and 1 asks. ",
+    );
     await d.ok("admin: cancel both sides while Closed", maker.key, [
       ix.cancelUpTo(m, maker, cancelUpToParams(BID)),
       ix.cancelUpTo(m, maker, cancelUpToParams(ASK)),
     ]);
-    await rejects(d, "admin: evict a seat still approved", successor, [ix.evictSeat(m, maker, successor)]);
+    await rejects(
+      d,
+      "admin: evict a seat still approved",
+      successor,
+      [ix.evictSeat(m, maker, successor)],
+      custom(E.InvalidSeatStatus!),
+      "Seat must be unapproved or retired. ",
+    );
     await d.ok("admin: seat NotApproved", successor, [ix.changeSeatStatus(m, maker.seat, 0, successor)]);
     await d.ok("admin: evict the seat", successor, [ix.evictSeat(m, maker, successor)]);
-    await rejects(d, "admin: tombstone with uncollected fees", successor, [ix.changeMarketStatus(m, 5, undefined, successor)]);
+    await rejects(
+      d,
+      "admin: tombstone with uncollected fees",
+      successor,
+      [ix.changeMarketStatus(m, 5, undefined, successor)],
+      INVALID_ACCOUNT_DATA,
+      "Invalid market status, must have no uncollected fees. ",
+    );
     await d.ok("admin: collect the fees", admin, [ix.collectFees(m, admin, adminQuote)]);
     await d.ok("admin: tombstone", successor, [ix.changeMarketStatus(m, 5, undefined, successor)]);
   });
@@ -414,40 +551,82 @@ describe("test_phoenix.rs", () => {
     const { m, maker, taker } = await bootstrap(d, "basic");
     await layer(d, "basic: layer bids", m, maker, 4000n, 3600n, 5n, 1000n, 500n, BID);
     await layer(d, "basic: layer asks", m, maker, 4001n, 4550n, 5n, 1200n, 300n, ASK);
+    const takerStart = balances(d, taker);
     await swap(d, "basic: IOC sell 10 units down to 39.70", m, taker, iocLots(ASK, 3970n, 10_000n));
+    expect(d.amount(taker.quote) - takerStart.quote).toBe(398_750_000n);
+    expect(takerStart.base - d.amount(taker.base)).toBe(10_000_000_000n);
+    const makerStart = balances(d, maker);
     await d.ok("basic: maker withdraws", maker.key, [ix.withdrawFunds(m, maker)]);
+    expect(d.amount(maker.quote)).toBe(makerStart.quote);
+    expect(d.amount(maker.base) - makerStart.base).toBe(10_000_000_000n);
+    // Upstream matches each Reduce event of the cancel to a resting bid (sequence number and lots) and finds them all:
+    // here the event batch is compared byte for byte with the original's, and the bid book must be empty after it.
+    // 81 bids layered, the IOC took five levels.
+    expect(restingOrders(d.data(m.market), m, BID).length).toBe(76);
     await d.ok("basic: CancelUpTo every bid", maker.key, [ix.cancelUpTo(m, maker, cancelUpToParams(BID))]);
+    expect(restingOrders(d.data(m.market), m, BID)).toEqual([]);
+    const afterCancel = balances(d, maker);
+    expect(afterCancel.quote).toBe(1_000_000_000_000n - 398_750_000n);
     await d.ok("basic: deposit a lot of each", maker.key, [ix.depositFunds(m, maker, 1n, 1n)]);
+    // A quote lot is 10 atoms, a base lot 10⁶.
+    expect(balances(d, maker)).toEqual({ base: afterCancel.base - 1_000_000n, quote: afterCancel.quote - 10n });
     await d.ok("basic: withdraw a lot of each", maker.key, [ix.withdrawFunds(m, maker, 1n, 1n)]);
+    expect(balances(d, maker)).toEqual(afterCancel);
   });
 
   it("test_phoenix_fees", async () => {
     const d = await diff();
     const { m, admin, maker, taker } = await bootstrap(d, "fees", { fee: 5 });
     await place(d, "fees: maker bids 1000 lots at 100", m, maker, limit(BID, 10_000n, 1000n));
+    const takerQuote = d.amount(taker.quote);
     await swap(d, "fees: taker sells into it", m, taker, iocLots(ASK, 10_000n, 1000n));
+    // The fee is 5 bps of the taker's proceeds.
+    expect((50_000n + d.amount(taker.quote) - takerQuote) / 50_000n).toBe(2000n);
     const next = await d.trader(m);
-    await rejects(d, "fees: ChangeFeeRecipient without the current recipient", admin, [ix.changeFeeRecipient(m, next.key.address)]);
+    await rejects(
+      d,
+      "fees: ChangeFeeRecipient without the current recipient",
+      admin,
+      [ix.changeFeeRecipient(m, next.key.address)],
+      builtin("MissingRequiredSignature"),
+      "Previous fee recipient must sign if there are uncollected fees. ",
+    );
     await d.ok("fees: ChangeFeeRecipient, the current recipient signing", admin, [ix.changeFeeRecipient(m, next.key.address, admin)]);
+    const vaultStart = d.amount(m.quoteVault);
     await d.ok("fees: CollectFees to the new recipient", admin, [ix.collectFees(m, admin, next.quote)]);
+    expect(vaultStart - d.amount(m.quoteVault)).toBe(50_000n);
+    expect(d.amount(m.quoteVault)).toBe(0n);
     expect(d.amount(next.quote)).toBe(50_000n);
+    expect(freeLots(d, m, maker).base).toBe(1000n);
     await d.ok("fees: ChangeFeeRecipient with nothing uncollected", admin, [ix.changeFeeRecipient(m, (await generateKeyPairSigner()).address)]);
   });
 
   it("test_phoenix_cancel_with_free_funds", async () => {
     const d = await diff();
     const { m, maker } = await bootstrap(d, "cancel free");
-    await d.ok("cancel free: deposit 10000 quote units and 100 base units", maker.key, [ix.depositFunds(m, maker, 10_000n * 100_000n, 100_000n)]);
+    const deposited = { base: 100_000n, quote: 10_000n * 100_000n };
+    await d.ok("cancel free: deposit 10000 quote units and 100 base units", maker.key, [ix.depositFunds(m, maker, deposited.quote, deposited.base)]);
+    expect(freeLots(d, m, maker)).toEqual(deposited);
+    // 100 ticks × 10 lots × 10,000 quote atoms a tick per unit / (1,000 lots a unit × 10 atoms a quote lot).
+    const locked = { base: deposited.base, quote: deposited.quote - 1000n };
     const order = ix.placeLimitOrderWithFreeFunds(m, maker, limit(BID, 100n, 10n, { stb: DECREMENT_TAKE, free: true }));
     await d.ok("cancel free: a bid on free funds", maker.key, [order]);
+    expect(freeLots(d, m, maker)).toEqual(locked);
+    expect(restingOrders(d.data(m.market), m, BID).length).toBe(1);
+    // Upstream matches the cancel's Reduce events to the resting orders; here they are compared byte for byte.
     await d.ok("cancel free: CancelAllOrdersWithFreeFunds", maker.key, [ix.cancelAllOrdersWithFreeFunds(m, maker)]);
+    expect(restingOrders(d.data(m.market), m, BID)).toEqual([]);
+    expect(freeLots(d, m, maker)).toEqual(deposited);
     await d.ok("cancel free: two bids, the second cancelled by id", maker.key, [
       order,
       order,
       ix.cancelMultipleOrdersByIdWithFreeFunds(m, maker, [cancelOrderParams(BID, 100n, not(2n))]),
     ]);
+    expect(restingOrders(d.data(m.market), m, BID).length).toBe(1);
+    expect(freeLots(d, m, maker)).toEqual(locked);
     await d.ok("cancel free: a bid, then CancelUpToWithFreeFunds", maker.key, [order, ix.cancelUpToWithFreeFunds(m, maker, cancelUpToParams(BID))]);
     expect(restingOrders(d.data(m.market), m, BID)).toEqual([]);
+    expect(freeLots(d, m, maker)).toEqual(deposited);
   });
 
   it("test_phoenix_orders_with_free_funds", async () => {
@@ -455,41 +634,84 @@ describe("test_phoenix.rs", () => {
     const b = await bootstrap(d, "free funds");
     const { m, maker, taker } = b;
     const second = await newMaker(d, b, "free funds", 1_000_000n, 1_000_000n);
+    const makerStart = balances(d, maker);
     await layer(d, "free funds: layer bids", m, maker, 4000n, 3000n, 100n, 1000n, 1000n, BID);
     await layer(d, "free funds: layer asks", m, maker, 5000n, 6000n, 100n, 1000n, 1000n, ASK);
-    await rejects(d, "free funds: SwapWithFreeFunds by an unseated taker", taker.key, [
-      ix.swapWithFreeFunds(m, taker, iocLots(ASK, 3100n, 55_000n, ABORT, { free: true })),
-    ]);
+    await rejects(
+      d,
+      "free funds: SwapWithFreeFunds by an unseated taker",
+      taker.key,
+      [ix.swapWithFreeFunds(m, taker, iocLots(ASK, 3100n, 55_000n, ABORT, { free: true }))],
+      builtin("IllegalOwner"),
+      "Seat must be owned by the Phoenix program. ",
+    );
     await swap(d, "free funds: taker sells through 10 levels", m, taker, iocLots(ASK, 3100n, 55_000n));
     await swap(d, "free funds: taker buys through 10 levels", m, taker, iocLots(BID, 5900n, 55_000n));
     await swap(d, "free funds: maker self-trades the last bid", m, maker, iocLots(ASK, 3000n, 11_000n, DECREMENT_TAKE));
     await swap(d, "free funds: maker self-trades the last ask", m, maker, iocLots(BID, 6000n, 11_000n, DECREMENT_TAKE));
-    await rejects(d, "free funds: second maker's free-funds order with no free funds", second.key, [
-      ix.placeLimitOrderWithFreeFunds(m, second, postOnly(BID, 10_000n, 10_000n)),
-    ]);
+    const makerNew = balances(d, maker);
+    expect(makerStart.quote - makerNew.quote).toBe(2_200_000_000n);
+    expect(makerStart.base - makerNew.base).toBe(66_000_000_000n);
+    await rejects(
+      d,
+      "free funds: second maker's free-funds order with no free funds",
+      second.key,
+      [ix.placeLimitOrderWithFreeFunds(m, second, postOnly(BID, 10_000n, 10_000n))],
+      INVALID_INSTRUCTION_DATA,
+      "Order must be set to use only deposited funds. ",
+    );
     await place(d, "free funds: second maker bids at 30", m, second, limit(BID, 3000n, 10_000n));
     await place(d, "free funds: second maker asks at 34.1", m, second, limit(ASK, 3410n, 10_000n));
     await swap(d, "free funds: maker buys on free funds", m, maker, iocLots(BID, 3410n, 10_000n, CANCEL_PROVIDE, { free: true }), true);
     await swap(d, "free funds: maker sells on free funds", m, maker, iocLots(ASK, 3000n, 10_000n, CANCEL_PROVIDE, { free: true }), true);
+    // No deposits or withdrawals: the free-funds trades leave the token accounts alone.
+    expect(balances(d, maker)).toEqual(makerNew);
     await place(d, "free funds: maker bids with all its free quote and a unit more", m, maker, limit(BID, 3369n, 101_000n));
     await place(d, "free funds: maker asks with all its free base and a unit more", m, maker, limit(ASK, 5000n, 67_000n));
-    await rejects(d, "free funds: second maker's SwapWithFreeFunds, short", second.key, [
-      ix.swapWithFreeFunds(m, second, iocLots(BID, 25_000n, 10_000n, CANCEL_PROVIDE, { free: true })),
-    ]);
+    // Only the unit more came from the token accounts.
+    expect(makerNew.quote - d.amount(maker.quote)).toBe(33_690_000n);
+    expect(makerNew.base - d.amount(maker.base)).toBe(1_000_000_000n);
+    const secondStart = balances(d, second);
+    await rejects(
+      d,
+      "free funds: second maker's SwapWithFreeFunds, short",
+      second.key,
+      [ix.swapWithFreeFunds(m, second, iocLots(BID, 25_000n, 10_000n, CANCEL_PROVIDE, { free: true }))],
+      NEW_ORDER,
+      "Trader does not have enough deposited funds to process order",
+    );
     const freeBid = limit(BID, 3410n, 10_000n, { free: true });
     const freeAsk = limit(ASK, 3500n, 10_000n, { free: true });
     await place(d, "free funds: second maker bids on free funds", m, second, freeBid, true);
     await place(d, "free funds: second maker asks on free funds", m, second, freeAsk, true);
+    expect(balances(d, second)).toEqual(secondStart);
     await place(d, "free funds: second maker bids with tokens", m, second, limit(BID, 3410n, 10_000n));
     await place(d, "free funds: second maker asks with tokens", m, second, limit(ASK, 3500n, 10_000n));
+    // Its free funds were used up, so these two took new deposits.
+    expect(secondStart.base - d.amount(second.base)).toBe(10_000_000_000n);
+    expect(secondStart.quote - d.amount(second.quote)).toBe(341_000_000n);
     await d.ok("free funds: second maker cancels all on free funds", second.key, [ix.cancelAllOrdersWithFreeFunds(m, second)]);
     const half = [limit(BID, 3410n, 5000n, { free: true }), limit(ASK, 3500n, 5000n, { free: true })];
     for (const [i, p] of half.entries())
-      await rejects(d, `free funds: a free-funds packet through PlaceLimitOrder (${i})`, second.key, [ix.placeLimitOrder(m, second, p)]);
+      await rejects(
+        d,
+        `free funds: a free-funds packet through PlaceLimitOrder (${i})`,
+        second.key,
+        [ix.placeLimitOrder(m, second, p)],
+        INVALID_INSTRUCTION_DATA,
+        "Instruction does not allow using deposited funds. ",
+      );
     for (const [i, p] of half.entries()) await place(d, `free funds: a free-funds packet through its instruction (${i})`, m, second, p, true);
     const tokens = [limit(BID, 3410n, 5000n), limit(ASK, 3500n, 5000n)];
     for (const [i, p] of tokens.entries())
-      await rejects(d, `free funds: a token packet through PlaceLimitOrderWithFreeFunds (${i})`, second.key, [ix.placeLimitOrderWithFreeFunds(m, second, p)]);
+      await rejects(
+        d,
+        `free funds: a token packet through PlaceLimitOrderWithFreeFunds (${i})`,
+        second.key,
+        [ix.placeLimitOrderWithFreeFunds(m, second, p)],
+        INVALID_INSTRUCTION_DATA,
+        "Order must be set to use only deposited funds. ",
+      );
   });
 
   it("test_phoenix_place_multiple_limit_orders", async () => {
@@ -502,37 +724,85 @@ describe("test_phoenix.rs", () => {
         ? ix.placeMultiplePostOnlyOrdersWithFreeFunds(m, maker, multipleOrderPacket(bids, asks, null, 1))
         : ix.placeMultiplePostOnlyOrders(m, maker, multipleOrderPacket(bids, asks, null, 1));
     const first = many([level(800n, 10_000n), level(900n, 10_000n)], [level(1000n, 10_000n), level(1100n, 10_000n)]);
-    await rejects(d, "multiple: five accounts only", maker.key, [truncate(first, 5)]);
+    const start = balances(d, maker);
+    await rejects(
+      d,
+      "multiple: five accounts only",
+      maker.key,
+      [truncate(first, 5)],
+      builtin("NotEnoughAccountKeys"),
+      "PhoenixInstruction::PlaceMultiplePostOnlyOrders",
+    );
     await d.ok("multiple: two bids and two asks", maker.key, [first]);
+    expect(start.base - d.amount(maker.base)).toBe(20_000_000_000n);
+    expect(start.quote - d.amount(maker.quote)).toBe(170_000_000n);
     await d.ok("multiple: cancel all on free funds", maker.key, [ix.cancelAllOrdersWithFreeFunds(m, maker)]);
-    await rejects(d, "multiple: free funds, base short", maker.key, [
-      many([level(800n, 9000n), level(1100n, 10_000n)], [level(1000n, 10_000n), level(1100n, 10_000n), level(1200n, 4000n)], true),
-    ]);
-    await rejects(d, "multiple: free funds, quote short", maker.key, [
-      many([level(800n, 10_000n), level(900n, 10_000n), level(300n, 1000n)], [level(1000n, 10_000n), level(1100n, 10_000n)], true),
-    ]);
+    await rejects(
+      d,
+      "multiple: free funds, base short",
+      maker.key,
+      [many([level(800n, 9000n), level(1100n, 10_000n)], [level(1000n, 10_000n), level(1100n, 10_000n), level(1200n, 4000n)], true)],
+      builtin("InvalidArgument"),
+      "Invalid input. MultipleOrderPacket contains crossing bids and asks",
+    );
+    await rejects(
+      d,
+      "multiple: free funds, quote short",
+      maker.key,
+      [many([level(800n, 10_000n), level(900n, 10_000n), level(300n, 1000n)], [level(1000n, 10_000n), level(1100n, 10_000n)], true)],
+      NEW_ORDER,
+      "Trader does not have enough deposited funds to process order",
+    );
+    const beforeFree = balances(d, maker);
     await d.ok("multiple: on free funds", maker.key, [
       many([level(800n, 10_000n), level(900n, 10_000n)], [level(1700n, 10_000n), level(1700n, 5000n), level(1200n, 5000n)], true),
     ]);
+    expect(balances(d, maker)).toEqual(beforeFree);
     await d.ok("multiple: cancel all on free funds again", maker.key, [ix.cancelAllOrdersWithFreeFunds(m, maker)]);
-    await rejects(d, "multiple: crossing itself", maker.key, [
-      many([level(800n, 10_000n), level(900n, 10_000n)], [level(900n, 10_000n), level(1100n, 10_000n)]),
-    ]);
-    await rejects(d, "multiple: crossing itself, another way", maker.key, [
-      many([level(2900n, 1000n), level(900n, 10_000n), level(1900n, 10_000n)], [level(3000n, 10_000n), level(2500n, 10_000n)]),
-    ]);
+    await rejects(
+      d,
+      "multiple: crossing itself",
+      maker.key,
+      [many([level(800n, 10_000n), level(900n, 10_000n)], [level(900n, 10_000n), level(1100n, 10_000n)])],
+      builtin("InvalidArgument"),
+      "Invalid input. MultipleOrderPacket contains crossing bids and asks",
+    );
+    await rejects(
+      d,
+      "multiple: crossing itself, another way",
+      maker.key,
+      [many([level(2900n, 1000n), level(900n, 10_000n), level(1900n, 10_000n)], [level(3000n, 10_000n), level(2500n, 10_000n)])],
+      builtin("InvalidArgument"),
+      "Invalid input. MultipleOrderPacket contains crossing bids and asks",
+    );
     await place(d, "multiple: second maker bids at 10", m, second, limit(BID, 1000n, 10_000n));
     await place(d, "multiple: second maker asks at 20", m, second, limit(ASK, 2000n, 10_000n));
-    await rejects(d, "multiple: an ask crossing the book", maker.key, [
-      many([level(800n, 10_000n), level(900n, 10_000n)], [level(1000n, 10_000n), level(1100n, 10_000n)]),
-    ]);
-    await rejects(d, "multiple: a bid crossing the book", maker.key, [many([level(2000n, 10_000n), level(900n, 10_000n)], [])]);
+    await rejects(
+      d,
+      "multiple: an ask crossing the book",
+      maker.key,
+      [many([level(800n, 10_000n), level(900n, 10_000n)], [level(1000n, 10_000n), level(1100n, 10_000n)])],
+      NEW_ORDER,
+      "PostOnly order crosses the book - order rejected",
+    );
+    await rejects(
+      d,
+      "multiple: a bid crossing the book",
+      maker.key,
+      [many([level(2000n, 10_000n), level(900n, 10_000n)], [])],
+      NEW_ORDER,
+      "PostOnly order crosses the book - order rejected",
+    );
+    const beforeMixed = balances(d, maker);
     await d.ok("multiple: free funds first, then tokens", maker.key, [
       many(
         [level(500n, 10_000n), level(400n, 10_000n), level(300n, 10_000n), level(500n, 10_000n), level(400n, 10_000n)],
         [level(10_000n, 5000n), level(10_500n, 5000n), level(10_000n, 5000n), level(10_300n, 5000n), level(10_200n, 5000n)],
       ),
     ]);
+    // 20 base units and 170 quote units were free: only 5 and 40 more came from the token accounts.
+    expect(beforeMixed.base - d.amount(maker.base)).toBe(5_000_000_000n);
+    expect(beforeMixed.quote - d.amount(maker.quote)).toBe(40_000_000n);
     await d.ok("multiple: maker cancels all", maker.key, [ix.cancelAllOrdersWithFreeFunds(m, maker)]);
     await d.ok("multiple: second maker cancels all", second.key, [ix.cancelAllOrdersWithFreeFunds(m, second)]);
     const bids = Array.from({ length: 21 }, (_, i) => level(10_000n - 10n * BigInt(i + 1), 10_000n));
@@ -586,8 +856,17 @@ describe("test_phoenix.rs", () => {
         limit(ASK, 136n, 10n, { stb: ABORT }),
       ].map((p) => ix.placeLimitOrder(m, maker, p)),
     );
+    const header = d.data(m.market);
+    const [baseLot, quoteLot] = [header.readBigUInt64LE(OFF.baseLotSize), header.readBigUInt64LE(OFF.quoteLotSize)];
+    const takerStart = balances(d, taker);
     await swap(d, "raw units: taker sells through both bids", m, taker, iocLots(ASK, 135n, 20n, ABORT, { coid: 19_082_332n }));
+    // Upstream's formula: first and second cross price × size × quote lot size, both at 135 ticks and 10 lots.
+    expect(d.amount(taker.quote) - takerStart.quote).toBe(135n * 10n * quoteLot + 135n * 10n * quoteLot);
+    expect(takerStart.base - d.amount(taker.base)).toBe(20n * baseLot);
+    const makerStart = balances(d, maker);
     await d.ok("raw units: maker withdraws", maker.key, [ix.withdrawFunds(m, maker)]);
+    expect(d.amount(maker.quote)).toBe(makerStart.quote);
+    expect(d.amount(maker.base) - makerStart.base).toBe(20n * baseLot);
   });
 
   it("test_phoenix_place_order_quiet_failure", async () => {
@@ -595,6 +874,7 @@ describe("test_phoenix.rs", () => {
     const b = await bootstrap(d, "quiet");
     const { m } = b;
     const maker = await newMaker(d, b, "quiet", 100n, 1000n);
+    const start = balances(d, maker);
     const silent = (side: 0 | 1, price: bigint, lots: bigint, free = false, fail = true) => limit(side, price, lots, { stb: ABORT, free, silent: fail });
     await d.ok("quiet: deposit 3 of each", maker.key, [ix.depositFunds(m, maker, 300_000n, 3000n)]);
     await place(d, "quiet: ask 97 units, fail-silent", m, maker, silent(ASK, 1000n, 97_000n));
@@ -606,9 +886,17 @@ describe("test_phoenix.rs", () => {
     ]);
     expect(restingOrders(d.data(m.market), m, ASK).length).toBe(3);
     await place(d, "quiet: ask 2 units, fails silently", m, maker, silent(ASK, 1000n, 2000n));
-    await rejects(d, "quiet: ask 2 units, fails", maker.key, [ix.placeLimitOrder(m, maker, silent(ASK, 1000n, 2000n, false, false))]);
+    await rejects(
+      d,
+      "quiet: ask 2 units, fails",
+      maker.key,
+      [ix.placeLimitOrder(m, maker, silent(ASK, 1000n, 2000n, false, false))],
+      TOKEN_INSUFFICIENT_FUNDS,
+      "Error: insufficient funds",
+    );
     expect(restingOrders(d.data(m.market), m, ASK).length).toBe(3);
     await d.ok("quiet: cancel all", maker.key, [ix.cancelAllOrders(m, maker)]);
+    expect(d.amount(maker.base)).toBe(start.base);
     await place(d, "quiet: bid 99.7 units at 10, fail-silent", m, maker, silent(BID, 1000n, 99_700n));
     expect(d.amount(maker.quote)).toBe(3_000_000n);
     await place(d, "quiet: bid 1 unit at 1, fail-silent", m, maker, silent(BID, 100n, 1000n));
@@ -618,9 +906,17 @@ describe("test_phoenix.rs", () => {
     ]);
     expect(restingOrders(d.data(m.market), m, BID).length).toBe(3);
     await place(d, "quiet: bid 2 units at 10, fails silently", m, maker, silent(BID, 1000n, 2000n));
-    await rejects(d, "quiet: bid 2 units at 10, fails", maker.key, [ix.placeLimitOrder(m, maker, silent(BID, 1000n, 2000n, false, false))]);
+    await rejects(
+      d,
+      "quiet: bid 2 units at 10, fails",
+      maker.key,
+      [ix.placeLimitOrder(m, maker, silent(BID, 1000n, 2000n, false, false))],
+      TOKEN_INSUFFICIENT_FUNDS,
+      "Error: insufficient funds",
+    );
     expect(restingOrders(d.data(m.market), m, BID).length).toBe(3);
     await d.ok("quiet: cancel all again", maker.key, [ix.cancelAllOrders(m, maker)]);
+    expect(d.amount(maker.quote)).toBe(start.quote);
   });
 
   it("test_phoenix_multiple_orders_fail_silently_basic", async () => {
@@ -631,9 +927,14 @@ describe("test_phoenix.rs", () => {
     await d.ok("fail silently: deposit 312 quote units and 39 base units", maker.key, [ix.depositFunds(m, maker, 31_200_000n, 39_000n)]);
     const bids = Array.from({ length: 10 }, (_, i) => level(1000n - BigInt(i), 10_000n));
     const asks = Array.from({ length: 10 }, (_, i) => level(1001n + BigInt(i), 10_000n));
-    await rejects(d, "fail silently: fail on insufficient funds", maker.key, [
-      ix.placeMultiplePostOnlyOrders(m, maker, multipleOrderPacket(bids, asks, null, FAIL_FUNDS_FAIL_CROSS)),
-    ]);
+    await rejects(
+      d,
+      "fail silently: fail on insufficient funds",
+      maker.key,
+      [ix.placeMultiplePostOnlyOrders(m, maker, multipleOrderPacket(bids, asks, null, FAIL_FUNDS_FAIL_CROSS))],
+      TOKEN_INSUFFICIENT_FUNDS,
+      "Error: insufficient funds",
+    );
     await d.ok("fail silently: skip on insufficient funds", maker.key, [
       ix.placeMultiplePostOnlyOrders(m, maker, multipleOrderPacket(bids, asks, null, SKIP_FUNDS_FAIL_CROSS)),
     ]);
@@ -663,17 +964,42 @@ describe("test_phoenix.rs", () => {
           null,
           behavior,
         );
-      await rejects(d, `${name}: fail on cross`, maker.key, [ix.placeMultiplePostOnlyOrders(m, maker, packet(FAIL_FUNDS_FAIL_CROSS))]);
+      await rejects(
+        d,
+        `${name}: fail on cross`,
+        maker.key,
+        [ix.placeMultiplePostOnlyOrders(m, maker, packet(FAIL_FUNDS_FAIL_CROSS))],
+        NEW_ORDER,
+        "PostOnly order crosses the book - order rejected",
+      );
       if (amend) {
         await d.ok(`${name}: skip on insufficient funds, amend on cross`, maker.key, [
           ix.placeMultiplePostOnlyOrders(m, maker, packet(SKIP_FUNDS_AMEND_CROSS)),
         ]);
-        const data = d.data(m.market);
-        expect([restingOrders(data, m, BID).length, restingOrders(data, m, ASK).length]).toEqual([11, 11]);
+        const [bidPrices, askPrices] = [prices(d, m, BID), prices(d, m, ASK)];
+        expect([bidPrices.length, askPrices.length]).toEqual([11, 11]);
+        if (name.endsWith("_bid")) {
+          // Bids at or above the resting ask (10.01) are amended to a tick below it: two bids at 1000.
+          for (let i = 0; i < 10; i++) expect(bidPrices.includes(bids(i)), `bid ${bids(i)}`).toBe(bids(i) < 1001n);
+          expect(bidPrices.filter((p) => p === 1000n).length).toBe(2);
+          for (let i = 0; i < 10; i++) expect(askPrices).toContain(asks(i));
+          expect([askPrices[0], bidPrices[0]]).toEqual([1001n, 1000n]);
+        } else {
+          // Asks at or below the resting bid (9.96) are amended to a tick above it: three asks at 997.
+          for (let i = 0; i < 10; i++) expect(bidPrices).toContain(bids(i));
+          for (let i = 0; i < 10; i++) if (asks(i) > 996n) expect(askPrices).toContain(asks(i));
+          expect(askPrices.filter((p) => p === 997n).length).toBe(3);
+          expect([askPrices[0], bidPrices[0]]).toEqual([997n, 996n]);
+        }
       } else
-        await rejects(d, `${name}: skip on insufficient funds, fail on cross`, maker.key, [
-          ix.placeMultiplePostOnlyOrders(m, maker, packet(SKIP_FUNDS_FAIL_CROSS)),
-        ]);
+        await rejects(
+          d,
+          `${name}: skip on insufficient funds, fail on cross`,
+          maker.key,
+          [ix.placeMultiplePostOnlyOrders(m, maker, packet(SKIP_FUNDS_FAIL_CROSS))],
+          NEW_ORDER,
+          "PostOnly order crosses the book - order rejected",
+        );
     });
   }
 });
@@ -697,28 +1023,61 @@ describe("test_market.rs", () => {
       await layer(d, `simple: maker ${k} asks`, m, maker, askStart, askEnd, 1n, size * 100n, step * 100n, ASK);
       makers.push(maker);
     }
+    // Each book in time priority within a price: bids best price first and, at one price, the larger stored
+    // (inverted) sequence number first; asks the smaller first.
+    const data = d.data(m.market);
+    for (const [side, better] of [
+      [BID, (a: bigint, b: bigint) => a > b],
+      [ASK, (a: bigint, b: bigint) => a < b],
+    ] as const) {
+      const book = restingOrders(data, m, side);
+      for (let i = 1; i < book.length; i++) {
+        const [prv, cur] = [book[i - 1]!, book[i]!];
+        expect(prv.price === cur.price ? better(prv.seq, cur.seq) : better(prv.price, cur.price), `${side} order ${i}`).toBe(true);
+      }
+    }
+    // 10,000 quote lots a tick per base unit, 100 base lots a unit.
+    const TICK = 10_000n;
+    const PER_UNIT = 100n;
     const coid = () => (rng.next() << 64n) | rng.next();
     let l = ladder(d, m, 5);
-    await d.ok("simple: buy the best ask level", taker.key, [
-      ix.swap(m, taker, iocLots(BID, l.asks[0]!.price, l.asks[0]!.size, DECREMENT_TAKE, { coid: coid() })),
-    ]);
+    let got = await moved(d, m, taker, () =>
+      d.ok("simple: buy the best ask level", taker.key, [ix.swap(m, taker, iocLots(BID, l.asks[0]!.price, l.asks[0]!.size, DECREMENT_TAKE, { coid: coid() }))]),
+    );
+    expect(-got.quote * PER_UNIT).toBe(TICK * l.asks[0]!.price * l.asks[0]!.size);
+    expect(got.base).toBe(l.asks[0]!.size);
+    expect(ladder(d, m, 1).asks[0]).toEqual(l.asks[1]);
     l = ladder(d, m, 5);
-    await d.ok("simple: sell into the best bid level", taker.key, [
-      ix.swap(m, taker, iocLots(ASK, l.bids[0]!.price, l.bids[0]!.size, DECREMENT_TAKE, { coid: coid() })),
-    ]);
+    got = await moved(d, m, taker, () =>
+      d.ok("simple: sell into the best bid level", taker.key, [
+        ix.swap(m, taker, iocLots(ASK, l.bids[0]!.price, l.bids[0]!.size, DECREMENT_TAKE, { coid: coid() })),
+      ]),
+    );
+    expect(got.quote * PER_UNIT).toBe(TICK * l.bids[0]!.price * l.bids[0]!.size);
+    expect(-got.base).toBe(l.bids[0]!.size);
+    expect(ladder(d, m, 1).bids[0]).toEqual(l.bids[1]);
     l = ladder(d, m, 5);
     await d.ok("simple: a sell at the best ask matches nothing", taker.key, [
       ix.swap(m, taker, iocLots(ASK, l.asks[0]!.price, l.asks[0]!.size, DECREMENT_TAKE, { coid: coid() })),
     ]);
     expect(ladder(d, m, 5)).toEqual(l);
     const all = l.bids.reduce((n, x) => n + x.size, 0n) - 1n;
-    await d.ok("simple: sell five bid levels but a lot", taker.key, [ix.swap(m, taker, iocLots(ASK, l.bids[4]!.price, all, DECREMENT_TAKE, { coid: coid() }))]);
+    const adjusted = l.bids.reduce((n, x) => n + TICK * x.price * x.size, 0n);
+    got = await moved(d, m, taker, () =>
+      d.ok("simple: sell five bid levels but a lot", taker.key, [ix.swap(m, taker, iocLots(ASK, l.bids[4]!.price, all, DECREMENT_TAKE, { coid: coid() }))]),
+    );
     expect(ladder(d, m, 1).bids[0]).toEqual({ price: l.bids[4]!.price, size: 1n });
+    expect(-got.base).toBe(all);
+    expect(got.quote).toBe((adjusted - l.bids[4]!.price * TICK) / PER_UNIT);
     // claim_all_funds for every trader with free funds.
     const index = (t: Trader) => registeredTraders(d.data(m.market), m).find((e) => e.key.equals(key(t.key.address)))!;
     for (const [k, t] of makers.entries()) {
       const e = index(t);
-      if (e.baseFree > 0n || e.quoteFree > 0n) await d.ok(`simple: maker ${k} withdraws`, t.key, [ix.withdrawFunds(m, t)]);
+      if (e.baseFree > 0n || e.quoteFree > 0n) {
+        await d.ok(`simple: maker ${k} withdraws`, t.key, [ix.withdrawFunds(m, t)]);
+        // Every maker still has orders locked, so it stays registered, with nothing free.
+        expect(freeLots(d, m, t), `maker ${k}`).toEqual({ base: 0n, quote: 0n });
+      }
     }
     for (const [k, t] of makers.entries()) {
       if (rng.int(2) === 0) await d.ok(`simple: maker ${k} cancels its bids up to`, t.key, [BUDGET, ix.cancelUpTo(m, t, cancelUpToParams(BID))]);
@@ -751,10 +1110,24 @@ describe("test_market.rs", () => {
     const d = await diff();
     const { m, trader } = await unitMarket(d, "post only default");
     await place(d, "post only default: bid at 100", m, trader, postOnly(BID, 100n, 1n));
-    await rejects(d, "post only default: ask at 100 would match", trader.key, [ix.placeLimitOrder(m, trader, postOnly(ASK, 100n, 1n))]);
+    await rejects(
+      d,
+      "post only default: ask at 100 would match",
+      trader.key,
+      [ix.placeLimitOrder(m, trader, postOnly(ASK, 100n, 1n))],
+      NEW_ORDER,
+      "PostOnly order crosses the book - order rejected",
+    );
     await place(d, "post only default: ask at 102", m, trader, postOnly(ASK, 102n, 1n));
     await place(d, "post only default: bid at 101", m, trader, postOnly(BID, 101n, 1n));
-    await rejects(d, "post only default: bid at 102 would match", trader.key, [ix.placeLimitOrder(m, trader, postOnly(BID, 102n, 1n))]);
+    await rejects(
+      d,
+      "post only default: bid at 102 would match",
+      trader.key,
+      [ix.placeLimitOrder(m, trader, postOnly(BID, 102n, 1n))],
+      NEW_ORDER,
+      "PostOnly order crosses the book - order rejected",
+    );
     expect(ladder(d, m, 5)).toEqual({
       bids: [
         { price: 101n, size: 1n },
@@ -769,10 +1142,24 @@ describe("test_market.rs", () => {
     const { m, trader } = await unitMarket(d, "post only rejection");
     const po = (side: 0 | 1, price: bigint, reject: boolean) => postOnly(side, price, 1n, { reject });
     await place(d, "post only rejection: bid at 100", m, trader, po(BID, 100n, true));
-    await rejects(d, "post only rejection: ask at 100, rejected", trader.key, [ix.placeLimitOrder(m, trader, po(ASK, 100n, true))]);
+    await rejects(
+      d,
+      "post only rejection: ask at 100, rejected",
+      trader.key,
+      [ix.placeLimitOrder(m, trader, po(ASK, 100n, true))],
+      NEW_ORDER,
+      "PostOnly order crosses the book - order rejected",
+    );
     await place(d, "post only rejection: ask at 102", m, trader, po(ASK, 102n, true));
     await place(d, "post only rejection: bid at 101", m, trader, po(BID, 101n, true));
-    await rejects(d, "post only rejection: bid at 102, rejected", trader.key, [ix.placeLimitOrder(m, trader, po(BID, 102n, true))]);
+    await rejects(
+      d,
+      "post only rejection: bid at 102, rejected",
+      trader.key,
+      [ix.placeLimitOrder(m, trader, po(BID, 102n, true))],
+      NEW_ORDER,
+      "PostOnly order crosses the book - order rejected",
+    );
     await place(d, "post only rejection: ask at 100, amended", m, trader, po(ASK, 100n, false));
     await place(d, "post only rejection: bid at 102, amended", m, trader, po(BID, 102n, false));
     expect(ladder(d, m, 5)).toEqual({
@@ -784,23 +1171,53 @@ describe("test_market.rs", () => {
     });
     await d.ok("post only rejection: cancel all", trader.key, [ix.cancelAllOrders(m, trader)]);
     await place(d, "post only rejection: ask at 1 on an empty book", m, trader, po(ASK, 1n, false));
-    await rejects(d, "post only rejection: bid amended below 1 tick", trader.key, [ix.placeLimitOrder(m, trader, po(BID, 1n, false))]);
-    await rejects(d, "post only rejection: bid at 0", trader.key, [ix.placeLimitOrder(m, trader, po(BID, 0n, false))]);
+    await rejects(
+      d,
+      "post only rejection: bid amended below 1 tick",
+      trader.key,
+      [ix.placeLimitOrder(m, trader, po(BID, 1n, false))],
+      NEW_ORDER,
+      "PostOnly order crosses the book and can not be amended to a valid price - order rejected",
+    );
+    await rejects(d, "post only rejection: bid at 0", trader.key, [ix.placeLimitOrder(m, trader, po(BID, 0n, false))], NEW_ORDER, "Bid price is too low");
     expect(ladder(d, m, 5).asks[0]!.price).toBe(1n);
   });
 
   it("test_limit_orders_with_self_trade", async () => {
     const d = await diff();
     const { m, trader, taker } = await unitMarket(d, "self trade");
+    // Ticks × 10,000 quote lots a tick per unit × lots / 100 lots a unit.
+    const q = (price: bigint, lots: bigint) => (price * 10_000n * lots) / 100n;
     await place(d, "self trade: bid 5 at 100", m, trader, limit(BID, 100n, 5n));
-    await place(d, "self trade: ask 10 at 100 cancels its own bid", m, trader, limit(ASK, 100n, 10n));
-    expect(ladder(d, m, 1).asks[0]!.size).toBe(10n);
-    await rejects(d, "self trade: bid 15, Abort", trader.key, [ix.placeLimitOrder(m, trader, limit(BID, 100n, 15n, { stb: ABORT, coid: 1n }))]);
-    await place(d, "self trade: bid 15, DecrementTake", m, trader, limit(BID, 100n, 15n, { stb: DECREMENT_TAKE, coid: 2n }));
     expect(ladder(d, m, 1).bids[0]!.size).toBe(5n);
-    await place(d, "self trade: taker asks 10, DecrementTake", m, taker, limit(ASK, 100n, 10n, { stb: DECREMENT_TAKE, coid: 3n }));
+    // The response: 10 base lots posted (the cancelled bid freed quote, not base).
+    let got = await moved(d, m, trader, () => place(d, "self trade: ask 10 at 100 cancels its own bid", m, trader, limit(ASK, 100n, 10n)));
+    expect(got).toEqual({ base: -10n, quote: 0n });
+    expect(ladder(d, m, 1).asks[0]!.size).toBe(10n);
+    await rejects(
+      d,
+      "self trade: bid 15, Abort",
+      trader.key,
+      [ix.placeLimitOrder(m, trader, limit(BID, 100n, 15n, { stb: ABORT, coid: 1n }))],
+      NEW_ORDER,
+      "Encountered error matching order",
+    );
+    // Posted 5 lots of quote, all of it the freed quote lots.
+    got = await moved(d, m, trader, () => place(d, "self trade: bid 15, DecrementTake", m, trader, limit(BID, 100n, 15n, { stb: DECREMENT_TAKE, coid: 2n })));
+    expect(got).toEqual({ base: 0n, quote: 0n });
+    expect(ladder(d, m, 1).bids[0]!.size).toBe(5n);
+    // new_from_sell(5, the quote of 5 at 100), 5 base lots posted.
+    got = await moved(d, m, taker, () =>
+      place(d, "self trade: taker asks 10, DecrementTake", m, taker, limit(ASK, 100n, 10n, { stb: DECREMENT_TAKE, coid: 3n })),
+    );
+    expect(got).toEqual({ base: -10n, quote: q(100n, 5n) });
     expect(ladder(d, m, 1).asks[0]!.size).toBe(5n);
-    await place(d, "self trade: taker bids 1 into its own ask, DecrementTake", m, taker, limit(BID, 100n, 1n, { stb: DECREMENT_TAKE, coid: 4n }));
+    // The default response: nothing matched, nothing posted.
+    got = await moved(d, m, taker, () =>
+      place(d, "self trade: taker bids 1 into its own ask, DecrementTake", m, taker, limit(BID, 100n, 1n, { stb: DECREMENT_TAKE, coid: 4n })),
+    );
+    expect(got).toEqual({ base: 0n, quote: 0n });
+    expect(restingOrders(d.data(m.market), m, BID)).toEqual([]);
     expect(ladder(d, m, 1).asks[0]!.size).toBe(4n);
   });
 
@@ -824,19 +1241,49 @@ describe("test_market.rs", () => {
       ["taker asks 25 at 110", taker, ASK, 110n, 25n],
       ["trader bids 75 at 111, matching then posting on freed quote", trader, BID, 111n, 75n],
     ];
-    for (const [label, t, side, price, lots] of steps) await place(d, `free lots: ${label}`, m, t, limit(side, price, lots));
+    // The responses upstream asserts, as the trader's token accounts see them (base, quote lots; negative: deposited):
+    // deposits are matched plus posted less free lots used, withdrawals what was matched out.
+    const q = (price: bigint, lots: bigint) => (price * 10_000n * lots) / 100n;
+    const expected: Record<number, { base: bigint; quote: bigint }> = {
+      // 5 posted, all 5 from free lots.
+      3: { base: 0n, quote: 0n },
+      // 20 posted, 10 from free lots.
+      4: { base: -10n, quote: 0n },
+      // Sold 10 at 101, 40 posted, 25 from free lots.
+      7: { base: -(10n + 40n - 25n), quote: q(101n, 10n) },
+      // The quote of 20 at 100 posted, all from free lots.
+      9: { base: 0n, quote: 0n },
+      // The quote of 50 at 100 posted, of 30 from free lots.
+      10: { base: 0n, quote: -(q(100n, 50n) - q(100n, 30n)) },
+      // Bought 25 at 110, the quote of 50 at 111 posted, the quote of 50 at 120 from free lots.
+      14: { base: 25n, quote: -(q(110n, 25n) + q(111n, 50n) - q(120n, 50n)) },
+    };
+    for (const [i, [label, t, side, price, lots]] of steps.entries()) {
+      const got = await moved(d, m, t, () => place(d, `free lots: ${label}`, m, t, limit(side, price, lots)));
+      if (expected[i]) expect(got, label).toEqual(expected[i]);
+    }
   });
 
   it("test_orders_with_only_free_funds", async () => {
     const d = await diff();
     const { m, trader, taker } = await unitMarket(d, "only free funds");
-    await rejects(d, "only free funds: taker's PostOnly with no free funds", taker.key, [
-      ix.placeLimitOrderWithFreeFunds(m, taker, postOnly(BID, 100n, 5n, { reject: false, free: true })),
-    ]);
+    await rejects(
+      d,
+      "only free funds: taker's PostOnly with no free funds",
+      taker.key,
+      [ix.placeLimitOrderWithFreeFunds(m, taker, postOnly(BID, 100n, 5n, { reject: false, free: true }))],
+      NEW_ORDER,
+      "Trader does not have enough deposited funds to process order",
+    );
     await place(d, "only free funds: trader bids 5 at 100", m, trader, postOnly(BID, 100n, 5n, { reject: false }));
-    await rejects(d, "only free funds: taker's IOC with no free funds", taker.key, [
-      ix.swapWithFreeFunds(m, taker, iocLots(ASK, 100n, 5n, CANCEL_PROVIDE, { free: true })),
-    ]);
+    await rejects(
+      d,
+      "only free funds: taker's IOC with no free funds",
+      taker.key,
+      [ix.swapWithFreeFunds(m, taker, iocLots(ASK, 100n, 5n, CANCEL_PROVIDE, { free: true }))],
+      NEW_ORDER,
+      "Trader does not have enough deposited funds to process order",
+    );
     await swap(d, "only free funds: taker's IOC with tokens", m, taker, iocLots(ASK, 100n, 5n, CANCEL_PROVIDE));
     await place(d, "only free funds: trader asks on the base it bought", m, trader, limit(ASK, 100n, 5n, { stb: ABORT, free: true }), true);
     await place(d, "only free funds: taker buys it", m, taker, limit(BID, 100n, 5n, { stb: ABORT }));
@@ -861,39 +1308,89 @@ describe("test_market.rs", () => {
 
   it("test_fok_and_ioc_limit_1", async () => {
     const { d, m, taker } = await seeded("fok 1");
-    await swap(d, "fok 1: FOK buy through 3 levels", m, taker, fok(BID, 103n, 30n, { coid: 1n }));
-    await swap(d, "fok 1: FOK sell through 3 levels", m, taker, fok(ASK, 97n, 30n, { coid: 2n }));
+    // new_from_buy(the quote lots of 30 at an average 102, 30), then new_from_sell(30, the quote lots of 30 at 98).
+    let got = await moved(d, m, taker, () => swap(d, "fok 1: FOK buy through 3 levels", m, taker, fok(BID, 103n, 30n, { coid: 1n })));
+    expect(got).toEqual({ base: 30n, quote: -quoteLots(102n, 30n) });
+    got = await moved(d, m, taker, () => swap(d, "fok 1: FOK sell through 3 levels", m, taker, fok(ASK, 97n, 30n, { coid: 2n })));
+    expect(got).toEqual({ base: -30n, quote: quoteLots(98n, 30n) });
   });
 
   it("test_fok_and_ioc_limit_2", async () => {
     const { d, m, taker } = await seeded("fok 2");
-    await rejects(d, "fok 2: FOK buy, price limit too low", taker.key, [ix.swap(m, taker, fok(BID, 102n, 30n))]);
-    await rejects(d, "fok 2: FOK sell, price limit too high", taker.key, [ix.swap(m, taker, fok(ASK, 98n, 30n))]);
+    await rejects(
+      d,
+      "fok 2: FOK buy, price limit too low",
+      taker.key,
+      [ix.swap(m, taker, fok(BID, 102n, 30n))],
+      NEW_ORDER,
+      "IOC order failed to meet minimum fill requirements. ",
+    );
+    await rejects(
+      d,
+      "fok 2: FOK sell, price limit too high",
+      taker.key,
+      [ix.swap(m, taker, fok(ASK, 98n, 30n))],
+      NEW_ORDER,
+      "IOC order failed to meet minimum fill requirements. ",
+    );
   });
 
   it("test_fok_and_ioc_limit_3", async () => {
     const { d, m, taker } = await seeded("ioc 3");
-    await swap(d, "ioc 3: IOC buy with a quote lot more than 3 levels", m, taker, ioc(BID, { price: 103n, quote: quoteLots(102n, 30n) + 1n, stb: ABORT }));
-    await swap(d, "ioc 3: IOC sell 31 lots, 30 there", m, taker, iocLots(ASK, 97n, 31n));
+    let got = await moved(d, m, taker, () =>
+      swap(d, "ioc 3: IOC buy with a quote lot more than 3 levels", m, taker, ioc(BID, { price: 103n, quote: quoteLots(102n, 30n) + 1n, stb: ABORT })),
+    );
+    expect(got).toEqual({ base: 30n, quote: -quoteLots(102n, 30n) });
+    got = await moved(d, m, taker, () => swap(d, "ioc 3: IOC sell 31 lots, 30 there", m, taker, iocLots(ASK, 97n, 31n)));
+    expect(got).toEqual({ base: -30n, quote: quoteLots(98n, 30n) });
   });
 
   it("test_fok_and_ioc_limit_4", async () => {
     const { d, m, taker } = await seeded("ioc 4");
-    await swap(d, "ioc 4: IOC buy, two levels in its price", m, taker, ioc(BID, { price: 102n, quote: quoteLots(102n, 30n), stb: ABORT }));
-    await swap(d, "ioc 4: IOC sell, two levels in its price", m, taker, iocLots(ASK, 98n, 30n));
+    let got = await moved(d, m, taker, () =>
+      swap(d, "ioc 4: IOC buy, two levels in its price", m, taker, ioc(BID, { price: 102n, quote: quoteLots(102n, 30n), stb: ABORT })),
+    );
+    expect(got).toEqual({ base: 20n, quote: -(quoteLots(101n, 10n) + quoteLots(102n, 10n)) });
+    got = await moved(d, m, taker, () => swap(d, "ioc 4: IOC sell, two levels in its price", m, taker, iocLots(ASK, 98n, 30n)));
+    expect(got).toEqual({ base: -20n, quote: quoteLots(99n, 10n) + quoteLots(98n, 10n) });
   });
 
   it("test_fok_and_ioc_limit_5", async () => {
     const { d, m, taker } = await seeded("fok 5");
-    await rejects(d, "fok 5: FOK buy 31 lots, 30 there", taker.key, [ix.swap(m, taker, fok(BID, 103n, 31n))]);
-    await rejects(d, "fok 5: FOK sell 31 lots, 30 there", taker.key, [ix.swap(m, taker, fok(ASK, 97n, 31n))]);
+    await rejects(
+      d,
+      "fok 5: FOK buy 31 lots, 30 there",
+      taker.key,
+      [ix.swap(m, taker, fok(BID, 103n, 31n))],
+      NEW_ORDER,
+      "IOC order failed to meet minimum fill requirements. ",
+    );
+    await rejects(
+      d,
+      "fok 5: FOK sell 31 lots, 30 there",
+      taker.key,
+      [ix.swap(m, taker, fok(ASK, 97n, 31n))],
+      NEW_ORDER,
+      "IOC order failed to meet minimum fill requirements. ",
+    );
     // The clock at slot 1000, second 1000.
     setClock(d, 1000n, 1000n);
-    await swap(d, "fok 5: IOC expired by slot", m, taker, ioc(BID, { base: 100n, stb: ABORT, slot: 2n }));
-    await swap(d, "fok 5: IOC expired by timestamp", m, taker, ioc(BID, { base: 100n, stb: ABORT, time: 2n }));
-    await swap(d, "fok 5: IOC within both limits", m, taker, ioc(BID, { base: 100n, stb: ABORT, slot: 1200n, time: 1200n }));
+    // MatchingEngineResponse::default() for the expired two, a fill for the third.
+    let got = await moved(d, m, taker, () => swap(d, "fok 5: IOC expired by slot", m, taker, ioc(BID, { base: 100n, stb: ABORT, slot: 2n })));
+    expect(got).toEqual({ base: 0n, quote: 0n });
+    got = await moved(d, m, taker, () => swap(d, "fok 5: IOC expired by timestamp", m, taker, ioc(BID, { base: 100n, stb: ABORT, time: 2n })));
+    expect(got).toEqual({ base: 0n, quote: 0n });
+    got = await moved(d, m, taker, () => swap(d, "fok 5: IOC within both limits", m, taker, ioc(BID, { base: 100n, stb: ABORT, slot: 1200n, time: 1200n })));
+    expect(got.base).toBeGreaterThan(0n);
     setClock(d, SLOT, UNIX_TIMESTAMP);
-    await rejects(d, "fok 5: IOC in base and quote lots", taker.key, [ix.swap(m, taker, ioc(BID, { base: 100n, quote: 1n, stb: ABORT }))]);
+    await rejects(
+      d,
+      "fok 5: IOC in base and quote lots",
+      taker.key,
+      [ix.swap(m, taker, ioc(BID, { base: 100n, quote: 1n, stb: ABORT }))],
+      NEW_ORDER,
+      "Invalid IOC params.",
+    );
   });
 
   it("test_fok_and_ioc_with_free_funds", async () => {
@@ -902,13 +1399,27 @@ describe("test_market.rs", () => {
     await d.ok("fok free: deposit", taker.key, [ix.depositFunds(m, taker, quoteLots(103n, 1n), 29n)]);
     await swap(d, "fok free: FOK sell at 99 with tokens", m, taker, fok(ASK, 99n, 10n));
     await swap(d, "fok free: FOK sell at 98 on free funds", m, taker, fok(ASK, 98n, 10n, { free: true }), true);
-    await rejects(d, "fok free: FOK sell at 97 on free funds, short", taker.key, [ix.swapWithFreeFunds(m, taker, fok(ASK, 97n, 10n, { free: true }))]);
+    await rejects(
+      d,
+      "fok free: FOK sell at 97 on free funds, short",
+      taker.key,
+      [ix.swapWithFreeFunds(m, taker, fok(ASK, 97n, 10n, { free: true }))],
+      NEW_ORDER,
+      "Trader does not have enough deposited funds to process order",
+    );
     await swap(d, "fok free: FOK buy at 101 with tokens", m, taker, fok(BID, 101n, 10n));
     // Swap pays from a registered trader's free lots first (the bare matching engine there leaves them for the
     // free-funds orders): the 101,000 quote lots it took are deposited back, so the free funds are the unit test's.
     await d.ok("fok free: deposit back what the token buy took from free funds", taker.key, [ix.depositFunds(m, taker, quoteLots(101n, 10n), 0n)]);
     await swap(d, "fok free: FOK buy at 102 on free funds", m, taker, fok(BID, 102n, 10n, { free: true }), true);
-    await rejects(d, "fok free: FOK buy at 103 on free funds, short", taker.key, [ix.swapWithFreeFunds(m, taker, fok(BID, 103n, 10n, { free: true }))]);
+    await rejects(
+      d,
+      "fok free: FOK buy at 103 on free funds, short",
+      taker.key,
+      [ix.swapWithFreeFunds(m, taker, fok(BID, 103n, 10n, { free: true }))],
+      NEW_ORDER,
+      "Trader does not have enough deposited funds to process order",
+    );
   });
 
   /** The slippage tests' book: tick 1,000, 1,000 base lots a unit, 5 bps; bids 99..90 and asks 101..110 of 10,000·i lots. */
@@ -929,21 +1440,44 @@ describe("test_market.rs", () => {
     // get_min_base_lots_out (f64, as there): 6,000,000 quote lots at 102 ticks, 50 bps slippage.
     const quoteIn = 6_000_000;
     const minBase = BigInt(Math.floor(((quoteIn * 1000) / (1000 * 102)) * (1 - 50 / 10000)));
-    await swap(d, "slippage 1: buy for quote lots, a minimum of base lots", m, taker, ioc(BID, { quote: BigInt(quoteIn), minBase }));
+    const start = ladder(d, m, 5);
+    expect(start.asks[2]).toEqual({ price: 103n, size: 30_000n });
+    const got = await moved(d, m, taker, () =>
+      swap(d, "slippage 1: buy for quote lots, a minimum of base lots", m, taker, ioc(BID, { quote: BigInt(quoteIn), minBase })),
+    );
+    // The fill within 50 bps of 102: the average price in ticks of the quote lots in over the base lots out.
+    const average = (1000 * Number(-got.quote)) / 1000 / Number(got.base);
+    expect(Math.floor(((average - 102) / 102) * 10_000)).toBeLessThanOrEqual(50);
+    // The book after it is the starting book less the fills (upstream replays the Fill events; the fills take the
+    // best asks in order, so the base lots bought do the same).
+    expect(ladder(d, m, 1).asks[0]).toEqual(takeFrom(start.asks, got.base)[0]);
   });
 
   it("test_fok_with_slippage_2", async () => {
     const { d, m, taker } = await slippageBook("slippage 2");
-    await rejects(d, "slippage 2: sell 50,000 lots for the quote lots of 98 ticks", taker.key, [
-      ix.swap(m, taker, ioc(ASK, { base: 50_000n, minQuote: 98n * 50_000n })),
-    ]);
+    await rejects(
+      d,
+      "slippage 2: sell 50,000 lots for the quote lots of 98 ticks",
+      taker.key,
+      [ix.swap(m, taker, ioc(ASK, { base: 50_000n, minQuote: 98n * 50_000n }))],
+      NEW_ORDER,
+      "IOC order failed to meet minimum fill requirements. ",
+    );
   });
 
   it("test_fok_with_slippage_3", async () => {
     const { d, m, taker } = await slippageBook("slippage 3");
     // get_min_quote_lots_out (f64): 50 units at 98 ticks, 28 bps slippage.
     const minQuote = BigInt(Math.floor(((1000 * 98 * 50_000) / 1000) * (1 - 28 / 10000)));
-    await swap(d, "slippage 3: sell 50 units, a minimum of quote lots", m, taker, ioc(ASK, { base: 50_000n, minQuote }));
+    const start = ladder(d, m, 5);
+    const got = await moved(d, m, taker, () => swap(d, "slippage 3: sell 50 units, a minimum of quote lots", m, taker, ioc(ASK, { base: 50_000n, minQuote })));
+    expect(-got.base).toBe(50_000n);
+    // Upstream's bound (bps.floor() <= bps + taker_bps) holds for any fill; the minimum is what binds here.
+    const average = (1000 * Number(got.quote)) / 1000 / Number(-got.base);
+    const bps = ((98 - average) / 98) * 10_000;
+    expect(Math.floor(bps)).toBeLessThanOrEqual(bps + 5);
+    expect(got.quote).toBeGreaterThanOrEqual(minQuote);
+    expect(ladder(d, m, 1).bids[0]).toEqual(takeFrom(start.bids, -got.base)[0]);
   });
 
   it("test_sell_with_quote_lot_budget", async () => {
@@ -951,8 +1485,10 @@ describe("test_market.rs", () => {
     const { m, trader, taker } = await unitMarket(d, "quote budget", 1000n, 1000n, 0);
     await place(d, "quote budget: bid 10,000 at 100", m, trader, postOnly(BID, 100n, 10_000n));
     await place(d, "quote budget: bid 20,000 at 99", m, trader, postOnly(BID, 99n, 20_000n));
-    await swap(d, "quote budget: sell for 1,000,000 quote lots", m, taker, ioc(ASK, { quote: 1_000_000n, stb: ABORT }));
-    await swap(d, "quote budget: sell for 1,000,000 quote lots again", m, taker, ioc(ASK, { quote: 1_000_000n, stb: ABORT }));
+    let got = await moved(d, m, taker, () => swap(d, "quote budget: sell for 1,000,000 quote lots", m, taker, ioc(ASK, { quote: 1_000_000n, stb: ABORT })));
+    expect(got.quote).toBe(1_000_000n);
+    got = await moved(d, m, taker, () => swap(d, "quote budget: sell for 1,000,000 quote lots again", m, taker, ioc(ASK, { quote: 1_000_000n, stb: ABORT })));
+    expect(got).toEqual({ base: -10_101n, quote: 10_101n * 99n });
   });
 
   it("test_fees_basic", async () => {
@@ -960,11 +1496,26 @@ describe("test_market.rs", () => {
     const { m, admin, trader, taker } = await unitMarket(d, "fees basic", 10_000n, 1000n, 5);
     await place(d, "fees basic: bid 10 at 9900", m, trader, postOnly(BID, 9900n, 10n));
     await place(d, "fees basic: ask 10 at 10100", m, trader, postOnly(ASK, 10_100n, 10n));
-    await swap(d, "fees basic: buy 10", m, taker, iocLots(BID, 10_100n, 10n));
-    await swap(d, "fees basic: sell 10", m, taker, iocLots(ASK, 9900n, 10n));
+    // Ticks × 10,000 quote lots a tick per unit × 10 lots / 1,000 lots a unit, plus or less 5 bps.
+    let got = await moved(d, m, taker, () => swap(d, "fees basic: buy 10", m, taker, iocLots(BID, 10_100n, 10n)));
+    expect(got).toEqual({ base: 10n, quote: -(((10_100n * 10_000n * 10n) / 1000n) * 10_005n) / 10_000n });
+    got = await moved(d, m, taker, () => swap(d, "fees basic: sell 10", m, taker, iocLots(ASK, 9900n, 10n)));
+    expect(got).toEqual({ base: -10n, quote: (((9900n * 10_000n * 10n) / 1000n) * 9995n) / 10_000n });
     const account = await d.tokenAccount(m.quoteMint, admin.address);
     await d.ok("fees basic: collect", admin, [ix.collectFees(m, admin, account)]);
     expect(d.data(m.market).readBigUInt64LE(OFF.unclaimedFees)).toBe(0n);
+  });
+
+  it("test_limit_order_crossing", async () => {
+    const d = await diff();
+    const { m, trader, taker } = await unitMarket(d, "limit crossing");
+    await place(d, "limit crossing: bid 10 at 100", m, trader, limit(BID, 100n, 10n));
+    await place(d, "limit crossing: another bid 10 at 100", m, trader, limit(BID, 100n, 10n));
+    // An ask of 20 at 95 with a match limit of 1: it fills the first bid, stops, and the rest still crosses, so it
+    // does not rest.
+    await place(d, "limit crossing: ask 20 at 95, match limit 1", m, taker, limit(ASK, 95n, 20n, { stb: ABORT, matchLimit: 1n }));
+    expect(ladder(d, m, 5).asks).toEqual([]);
+    expect(ladder(d, m, 5).bids).toEqual([{ price: 100n, size: 10n }]);
   });
 
   it("test_tif", async () => {
@@ -982,16 +1533,25 @@ describe("test_market.rs", () => {
         setClock(d, at.slot, at.time);
       };
       setClock(d, SLOT + 2000n, UNIX_TIMESTAMP + 2000n);
-      await place(d, `tif ${what}: placed once expired, nothing rests`, m, maker, packet);
+      // MatchingEngineResponse::default(): nothing posted, nothing deposited.
+      let got = await moved(d, m, maker, () => place(d, `tif ${what}: placed once expired, nothing rests`, m, maker, packet));
+      expect(got).toEqual({ base: 0n, quote: 0n });
+      expect(restingOrders(d.data(m.market), m, BID)).toEqual([]);
       setClock(d, at.slot, at.time);
       await place(d, `tif ${what}: placed`, m, maker, packet);
+      expect(restingOrders(d.data(m.market), m, BID).map((o) => o.lots)).toEqual([100n]);
       const sell = ix.swap(m, taker, iocLots(ASK, 0n, 10n));
       advance(500n);
-      await d.ok(`tif ${what}: half way, fills`, taker.key, [sell]);
+      got = await moved(d, m, taker, () => d.ok(`tif ${what}: half way, fills`, taker.key, [sell]));
+      expect(got.quote).toBeGreaterThan(0n);
       advance(500n);
-      await d.ok(`tif ${what}: at the last valid ${what}, fills`, taker.key, [sell]);
+      got = await moved(d, m, taker, () => d.ok(`tif ${what}: at the last valid ${what}, fills`, taker.key, [sell]));
+      expect(got.quote).toBeGreaterThan(0n);
+      // The ExpiredOrder event removes the bid's last 80 lots (the event itself is compared byte for byte).
+      expect(restingOrders(d.data(m.market), m, BID).map((o) => [o.price, o.lots])).toEqual([[1000n, 80n]]);
       advance(1n);
-      await d.ok(`tif ${what}: one past, expires`, taker.key, [sell]);
+      got = await moved(d, m, taker, () => d.ok(`tif ${what}: one past, expires`, taker.key, [sell]));
+      expect(got.quote).toBe(0n);
       expect(restingOrders(d.data(m.market), m, BID)).toEqual([]);
     }
     setClock(d, SLOT, UNIX_TIMESTAMP);

@@ -28,6 +28,7 @@ import {
   builtin,
   cancelOrderParams,
   cancelUpToParams,
+  checkCompute,
   custom,
   cuTable,
   initParams,
@@ -61,8 +62,11 @@ async function diff(): Promise<Diff> {
   return d;
 }
 
+/** The transactions this file compares (every case, the setup ones included). */
+const COMPARED = 824;
 afterAll(() => {
   console.log(cuTable(diffs, "Phoenix v1: compute units, original vs TypeSOL"));
+  checkCompute(diffs, COMPARED);
 });
 
 /** Every instruction of the program, built for market `m` and trader `t` (the signer the entry checks is index 3). */
@@ -859,11 +863,12 @@ for (const [bids, seats] of [
       d.patch(m.market, (b) => before.copy(b));
       const full = Buffer.from(before);
       full.writeBigUInt64LE(BigInt(seats), tradersAt(bids) + TREE.size);
-      if (full.readUInt32LE(tradersAt(bids) + TREE.root) !== 0) {
-        d.patch(m.market, (b) => full.copy(b));
-        await d.fails(`DepositFunds ${tag}: traders tree full`, payer, [ix.depositFunds(m, t, 1n, 1n)], custom(E.TraderNotFound!));
-        d.patch(m.market, (b) => before.copy(b));
-      }
+      // The full tree needs a root (the traders registered earlier in this describe): without one the case below
+      // would test nothing, so its absence fails.
+      expect(full.readUInt32LE(tradersAt(bids) + TREE.root), "the traders tree has a root").not.toBe(0);
+      d.patch(m.market, (b) => full.copy(b));
+      await d.fails(`DepositFunds ${tag}: traders tree full`, payer, [ix.depositFunds(m, t, 1n, 1n)], custom(E.TraderNotFound!));
+      d.patch(m.market, (b) => before.copy(b));
       await d.ok(`DepositFunds ${tag}: registers the trader`, payer, [ix.depositFunds(m, t, 1n, 1n)]);
       await d.fails(`WithdrawFunds ${tag}: a trader with no state`, payer, [ix.withdrawFunds(m, await d.trader(m))], custom(E.WithdrawFundsError!));
     });

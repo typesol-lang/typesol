@@ -25,6 +25,7 @@ import {
   builtin,
   cancelOrderParams,
   cancelUpToParams,
+  checkCompute,
   custom,
   cuTable,
   ix,
@@ -53,8 +54,11 @@ async function diff(): Promise<Diff> {
   diffs.push(d);
   return d;
 }
+/** The transactions this file compares (every case, the setup ones included). */
+const COMPARED = 390;
 afterAll(() => {
   console.log(cuTable(diffs, "Phoenix v1 reductions and cancels: compute units, original vs TypeSOL"));
+  checkCompute(diffs, COMPARED);
 });
 
 // ---- Orders placed by the original -------------------------------------------------------------------------------------

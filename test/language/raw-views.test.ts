@@ -153,8 +153,8 @@ import { type u64 } from "typesol";
       "must be Mut<AccountInfo> to load it with loadRawMutAt",
     );
     expect(compileErrors(`${head}export function f(a: AccountInfo): void { const p = loadRawAt<L>(a, 0n); log(p.n); }`)).toContain("ends in a BigVec");
-    expect(compileErrors(`${head}export function f(a: AccountInfo): void { const p = rawArrayAt<P>(a, 0n, 2n); p.set(0n, { a: 1n }); }`)).toMatch(
-      /set|read-only/,
+    expect(compileErrors(`${head}export function f(a: AccountInfo): void { const p = rawArrayAt<P>(a, 0n, 2n); p.set(0n, { a: 1n }); }`)).toContain(
+      "Property 'set' does not exist on type 'ReadonlyRawArray<P>'.",
     );
     expect(compileErrors(`${head}export function f(a: Mut<AccountInfo>): void { const p = rawArrayMutAt<u64>(a, 0n, 2n); p.push(1n); }`)).toContain(
       "Property 'push' does not exist on type 'RawArray<bigint>'",

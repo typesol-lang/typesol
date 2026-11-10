@@ -26,6 +26,7 @@ import {
   U64_MAX,
   UNIX_TIMESTAMP,
   builtin,
+  checkCompute,
   custom,
   cuTable,
   ix,
@@ -58,8 +59,11 @@ async function diff(): Promise<Diff> {
   diffs.push(d);
   return d;
 }
+/** The transactions this file compares (every case, the setup ones included). */
+const COMPARED = 1117;
 afterAll(() => {
   console.log(cuTable(diffs, "Phoenix v1 orders: compute units, original vs TypeSOL"));
+  checkCompute(diffs, COMPARED);
 });
 
 // ---- Packets ---------------------------------------------------------------------------------------------------------
@@ -638,13 +642,19 @@ describe("the order packet decoder", () => {
         true,
       ],
     ];
-    const outcomes = new Set<string>();
+    const got: Record<string, string> = {};
     for (const [label, packet, swap] of packets) {
-      outcomes.add(await send(`${label}, whole`, packet, swap));
-      for (let cut = 1; cut <= 4; cut++) outcomes.add(await send(`${label}, ${cut} cut`, packet.subarray(0, packet.length - cut), swap));
-      outcomes.add(await send(`${label}, one byte more`, Buffer.concat([packet, u8(0)]), swap));
+      got[`${label}, whole`] = await send(`${label}, whole`, packet, swap);
+      for (let cut = 1; cut <= 4; cut++) got[`${label}, ${cut} cut`] = await send(`${label}, ${cut} cut`, packet.subarray(0, packet.length - cut), swap);
+      got[`${label}, one byte more`] = await send(`${label}, one byte more`, Buffer.concat([packet, u8(0)]), swap);
     }
-    expect([...outcomes].sort()).toEqual([INVALID_DATA, "ok"].sort());
+    // Every packet decodes whole and up to 3 bytes short (the missing bytes read as zeros); 4 bytes short or a byte
+    // over, it is refused.
+    for (const [label] of packets) {
+      for (let cut = 0; cut <= 4; cut++)
+        expect(got[`${label}, ${cut === 0 ? "whole" : `${cut} cut`}`], `${label}, ${cut} cut`).toBe(cut < 4 ? "ok" : INVALID_DATA);
+      expect(got[`${label}, one byte more`], `${label}, one byte more`).toBe(INVALID_DATA);
+    }
   });
 
   it("refuses unknown variants and tags, bad booleans and Options", async () => {

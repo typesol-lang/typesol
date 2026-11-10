@@ -178,10 +178,10 @@ describe("byte builders", () => {
     const body = (s: string) => `${head}export function f(k: Pubkey): void { const b: FixedVec<u8, 8> = fixedVec([]); ${s} }`;
     expect(compileErrors(body("b.pushLE(5n);"))).toMatch(/pushLE needs the integer's width: pushLE<u16>\(…\) or pushLE\(u16\(…\)\)/);
     expect(compileErrors(body("b.setLE(0n, 5n);"))).toMatch(/setLE needs the integer's width/);
-    expect(compileErrors(body("b.pushLE(k);"))).toMatch(/a Pubkey is pushKey\(key\)|not assignable/);
+    expect(compileErrors(body("b.pushLE(k);"))).toContain("Argument of type 'Pubkey' is not assignable to parameter of type 'bigint'.");
     expect(compileErrors(body("b.pushBorsh({ a: 1n });"))).toMatch(/pushBorsh\(\{ … \}\) needs the value's type: buf.pushBorsh<Header>/);
     expect(compileErrors(body("b.pushBorsh(5n);"))).toMatch(/pushBorsh needs the integer's width/);
-    expect(compileErrors(body("b.pushLE<boolean>(true);"))).toMatch(/T is an integer type|does not satisfy/);
+    expect(compileErrors(body("b.pushLE<boolean>(true);"))).toContain("Type 'boolean' does not satisfy the constraint 'bigint'.");
     expect(compileErrors(`${head}export function f(): void { const b: FixedVec<u64, 8> = fixedVec([]); b.pushLE(u64(1n)); }`)).toMatch(
       /pushLE\(\) builds bytes in a FixedVec<u8, N>/,
     );
