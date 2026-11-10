@@ -56,7 +56,9 @@ export interface Released {
 
 /**
  * What the book work reads of the market again and again, read once: the trees' capacities and offsets, the
- * FIFOMarket's tick size and base lots per base unit.
+ * FIFOMarket's tick size and base lots per base unit. The helpers take it as `Inout<MarketShape>` though they only
+ * read it: a plain struct parameter is copied at every call of a helper that also takes accounts (about 44 compute
+ * units more per cancelled order), an Inout one is passed by pointer.
  */
 export interface MarketShape {
   bids: u64;
@@ -116,12 +118,16 @@ function reducedBidQuoteLots(price: u64, tick: u64, lots: u64, perUnit: u64): u6
 
 /** A Reduce event's bytes: its PhoenixMarketEvent tag, the index (u16) and four u64s. */
 const REDUCE_EVENT_LEN = 35n;
-/** recorder.ts's limit: the inner instruction's 1280 bytes, less the Log instruction's one account meta (34). */
+/**
+ * recorder.ts's limit, MAX_INNER_INSTRUCTION_SIZE (1280) less LOG_IX_ACCOUNT_META_SIZE (34): keep the two in step.
+ */
 const EVENT_ROOM = 1246n;
 
 /**
  * recordEvent of a Reduce event { index, order_sequence_number, price_in_ticks, base_lots_removed,
- * base_lots_remaining }, its Borsh bytes appended to the batch directly (the bulk cancels record one per order).
+ * base_lots_remaining }: the same bytes and the same flush, appended to the batch directly rather than built as a
+ * PhoenixMarketEvent in a scratch buffer (about 100 compute units less per event; the bulk cancels record one per
+ * order).
  */
 function recordReduce(
   rec: Inout<Recorder>,
