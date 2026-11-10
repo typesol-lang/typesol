@@ -323,7 +323,17 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
 - Log lines as the original writes them: `const ERROR_LOG_PREFIX = "AMM error: "` and `const PROGRAM_ERROR_LOG_PREFIX =
   "Program error: "` replace the compiler's failure line with the entrypoint's (`msg!("AMM error: {}", e)`);
   `logBase64("ray_log: ", record)` logs a struct's bytes in base64 (a native `bincode` log record);
-  `createProgramAddress(seeds, program)` is `Pubkey::create_program_address` (null for no address).
+  `createProgramAddress(seeds, program)` is `Pubkey::create_program_address` (null for no address);
+  `logComputeUnits()` is `sol_log_compute_units()`: the runtime writes "Program consumption: N units remaining" at
+  that point, as for the original (Phoenix's cancel and withdraw paths log it).
+- Return data as the original sets it: `setReturnData(bytes)` is `set_return_data(&bytes)`, the bytes as they are, from
+  the `@fallback` entry, a helper or a void instruction (Phoenix's Borsh `Vec<FIFOOrderId>` of the orders that rested,
+  built in a local `FixedVec<u8, N>`). `bytes` is a list of u8: a local FixedVec, a Vec or FixedVec in account data, or
+  the instruction data or a slice of it. The last call wins and an empty list clears it; a CPI made afterwards replaces
+  it with the callee's (call it after the last CPI, as Rust must). More than 1024 bytes fails as the Rust call does: the
+  runtime refuses it ("Return data too large (1025 > 1024)"). An instruction that returns a value cannot call it (a
+  compile error: its return value is its return data); a helper it calls may, and the instruction's return value, set
+  last, replaces what the helper set.
 
 ## Not supported yet
 

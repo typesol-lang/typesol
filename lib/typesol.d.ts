@@ -2300,6 +2300,23 @@ export declare function emit<T>(event: T): void;
 export declare function returnData<T extends bigint | boolean | Pubkey | Hash | object>(program: AccountMeta): T;
 
 /**
+ * Set this instruction's return data to `bytes` as they are (Rust's `set_return_data(&bytes)`): a list of u8 such as a
+ * local `FixedVec<u8, N>`, a Vec or FixedVec in account data, or the instruction data or a slice of it. For a native
+ * port's `@fallback` entry and helpers (`set_return_data(order_ids.try_to_vec()?.as_ref())`), and void instructions.
+ * The last call wins, and a CPI made afterwards replaces it with the callee's (call it after the last CPI, as Rust
+ * must). More than 1024 bytes fails as Rust's call does: the runtime refuses it ("Return data too large").
+ * An instruction that returns a value cannot call it (its return value is its return data); a helper it calls may, and
+ * the instruction's return value, set last, replaces what the helper set.
+ */
+export declare function setReturnData(bytes: IndexedList<u8>): void;
+
+/**
+ * Log the compute units left (Rust's `sol_log_compute_units()`): the runtime writes "Program consumption: <N> units
+ * remaining", as the original's line, at the same place.
+ */
+export declare function logComputeUnits(): void;
+
+/**
  * Verify `account.key` is the PDA for `seeds` + `bump` under this program. Any bump that gives a PDA passes (Anchor's
  * `bump = expr`): use a stored bump, not one from the arguments, or the caller picks among up to 256 addresses.
  */

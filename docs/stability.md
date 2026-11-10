@@ -47,6 +47,7 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - `NATIVE_ACCOUNT_WRITES` (0.42.0): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
   (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside
   "the checks stay" promise above: it only applies to programs that declare it.
+- For native ports (Unreleased): `setReturnData` and `logComputeUnits` in a native entry.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
 - `programAt<P>` / `sysvarAt<S>` and remaining accounts in the typed CPIs (System, Token, ATA, Memo, Stake); a ternary
   between remaining accounts and `AccountInfo` parameters (0.42.0).

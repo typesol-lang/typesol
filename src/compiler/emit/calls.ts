@@ -702,6 +702,26 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "returnData":
         return this.returnData(node);
+      case "setReturnData": {
+        // Rust's set_return_data(&bytes): the bytes as they are. More than 1024 is left to the syscall, which refuses
+        // it exactly as it refuses the original's call.
+        if (args.length !== 1) this.fail(node, "setReturnData(bytes) takes one list of u8");
+        if (this.ix?.returns)
+          this.fail(
+            node,
+            `${this.ix.name} returns a value, which is its return data: return it instead of calling setReturnData (or declare the instruction void)`,
+          );
+        const what = "setReturnData takes a list of u8: a local FixedVec<u8, N>, a Vec or FixedVec in account data, or the instruction data or a slice of it";
+        const s = this.listSpan(args[0]!) ?? this.fail(args[0]!, what);
+        if (s.elem.kind !== "int" || s.elem.name !== "u8") this.fail(args[0]!, what);
+        this.line(`sol_set_return_data((const uint8_t *)${s.items}, ${s.count});`);
+        return undefined;
+      }
+      case "logComputeUnits": {
+        if (args.length) this.fail(node, "logComputeUnits() takes no arguments");
+        this.line(`sol_log_compute_units();`);
+        return undefined;
+      }
       case "programAt":
       case "sysvarAt":
         return this.programAt(node, builtin);

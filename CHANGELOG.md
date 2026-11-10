@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- Native entries set their own return data and log compute units: `setReturnData(bytes)` (Rust's `set_return_data`,
+  from a list of u8: a local `FixedVec<u8, N>`, account data, the instruction data or a slice) in a `@fallback` entry,
+  its helpers and void instructions, and `logComputeUnits()` (`sol_log_compute_units`, the runtime's "Program
+  consumption: N units remaining"), which were only emitted under `--profile`. An instruction that returns a value
+  refuses `setReturnData` (its return value is its return data). Checked against the lines the Phoenix v1 binary
+  writes.
+
 ## 0.42.0 — 2026-11-09
 
 SPL Stake Pool ported in full, the native program behind most liquid staking tokens, from the tag a reproducible build
