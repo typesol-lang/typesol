@@ -9,7 +9,11 @@ import {
   type RemainingAccount,
   type RemainingAccounts,
   type i8,
+  type i64,
+  type Pubkey,
   type u8,
+  type u32,
+  type i16,
   u16,
   ProgramError,
   fixedVec,
@@ -17,6 +21,7 @@ import {
   loadRaw,
   loadRawAt,
   loadRawMutAt,
+  programId,
   rbTreeAt,
   rbTreeMutAt,
   remainingAccounts,
@@ -63,9 +68,23 @@ export interface Shape {
   perUnit: u64;
 }
 
+/** Part of Phoenix's PhoenixMarketEvent: its largest variant (Header, 91 bytes) sets the enum's size. */
 export type Event =
   | { kind: "Uninitialized" }
-  | { kind: "Reduce"; index: u16; order_sequence_number: u64; price_in_ticks: u64; base_lots_removed: u64; base_lots_remaining: u64 };
+  | { kind: "Header"; instruction: u8; sequence_number: u64; timestamp: i64; slot: u64; market: Pubkey; signer: Pubkey; total_events: u16 }
+  | { kind: "Fill"; index: u16; maker_id: Pubkey; order_sequence_number: u64; price_in_ticks: u64; base_lots_filled: u64; base_lots_remaining: u64 }
+  | { kind: "Reduce"; index: u16; order_sequence_number: u64; price_in_ticks: u64; base_lots_removed: u64; base_lots_remaining: u64 }
+  | { kind: "Moved"; at: Point; flag: boolean; side: Side; who: Pubkey };
+
+export interface Point {
+  x: u32;
+  y: i16;
+}
+
+export enum Side {
+  Bid,
+  Ask,
+}
 
 const TREE = 40n;
 
@@ -215,12 +234,16 @@ function events(rest: RemainingAccounts, data: InstructionBytes): void {
         base_lots_remaining: 9n,
       });
     } else if (op === 31n) {
-      buf.pushLE<u8>(1n);
+      buf.pushLE<u8>(3n);
       buf.pushLE(u16(k));
       buf.pushLE(k + 7n);
       buf.pushLE<u64>(100n);
       buf.pushLE(k);
       buf.pushLE<u64>(9n);
+    } else if (op === 32n) {
+      // Every scalar kind (a bool, an enum, a Pubkey) by direct stores, then a variant with a struct field (one copy).
+      buf.pushBorsh<Event>({ kind: "Fill", index: u16(k), maker_id: programId(), order_sequence_number: 1n, price_in_ticks: 2n, base_lots_filled: 3n, base_lots_remaining: 4n });
+      buf.pushBorsh<Event>({ kind: "Moved", flag: k === 0n, at: { x: 7n, y: -2n }, side: Side.Ask, who: programId() });
     }
   }
   setReturnData(buf);

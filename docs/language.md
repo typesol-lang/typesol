@@ -425,7 +425,9 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   i8 … i128; a literal needs one: `buf.pushLE<u16>(1n)` or `buf.pushLE(u16(1n))`), `buf.pushKey(key)` a Pubkey's 32
   bytes, `buf.pushBorsh(value)` a value's Borsh encoding with the codecs `invoke`, events and `storeBorsh` use (a
   struct, or an object literal given its type, `buf.pushBorsh<Header>({ … })`; a data enum, its tag then the variant's
-  fields; a FixedArray; a list, its u32 count then the elements; integers, booleans, Pubkeys, strings and Options),
+  fields; a FixedArray; a list, its u32 count then the elements; integers, booleans, Pubkeys, strings and Options; a
+  data-enum literal of a fixed-size variant costs what the same bytes cost with `pushLE`: its fields evaluated in
+  order, then one room check and a store of each),
   `buf.setLE(offset, x)` (or `setLE<u16>(offset, x)`) overwrites bytes within the length, as Rust's
   `data[a..b].copy_from_slice(…)`, and `buf.truncate(n)` keeps the first `n`. Past the room (or, for `setLE` and
   `truncate`, past the length) fails with 5104 and the length does not move. Phoenix's event recorder, which the test

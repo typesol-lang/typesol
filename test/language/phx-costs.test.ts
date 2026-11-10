@@ -1,7 +1,7 @@
 // What Phoenix's matching engine and cancels repeat, in compute units (test/fixtures/phx-costs.ts): a cancel by node
 // index, walks of a 400-order book, min / max / get / addrOf, views of one account made again and again, a struct
 // handed to helpers that take accounts, and a Reduce event by pushBorsh against pushLE.
-import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
 import { FailedTransactionMetadata, type TransactionMetadata } from "litesvm";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -10,6 +10,11 @@ import { type Deployed, deployFile, fundedSigner, send } from "../harness.js";
 type Result = TransactionMetadata | FailedTransactionMetadata;
 const CAP = 512;
 const ORDERS = 400;
+const u16le = (v: number) => {
+  const b = Buffer.alloc(2);
+  b.writeUInt16LE(v);
+  return b;
+};
 const u64 = (v: bigint | number) => {
   const b = Buffer.alloc(8);
   b.writeBigUInt64LE(BigInt(v));
@@ -107,7 +112,15 @@ describe("Phoenix's hot paths", () => {
     const evB = await run(30, 0, 0, 0, 100);
     const evL = await run(31, 0, 0, 0, 100);
     expect(Buffer.from(evB.ret)).toEqual(Buffer.from(evL.ret));
+    // Fill (a Pubkey among integers) and Moved (a struct field, a bool, an enum): Borsh, field by field.
+    const id = Buffer.from(getAddressEncoder().encode(d.programId));
+    const fill = Buffer.concat([Buffer.from([2]), u16le(0), id, u64(1), u64(2), u64(3), u64(4)]);
+    const moved = Buffer.concat([Buffer.from([4, 7, 0, 0, 0, 0xfe, 0xff, 1, 1]), id]);
+    expect(Buffer.from((await run(32, 0, 0, 0, 1)).ret)).toEqual(Buffer.concat([Buffer.from([15]), fill, moved]));
     lines.push(`pushBorsh per event ${((evB.cu - ev0) / 100).toFixed(1)}`, `pushLE per event ${((evL.cu - ev0) / 100).toFixed(1)}`);
+    // 54 CU per event before (the whole 92-byte enum zeroed, filled and copied, then a tag and a switch on it): now
+    // within a few units of the six pushLE calls writing the same 35 bytes.
+    expect((evB.cu - evL.cu) / 100).toBeLessThan(5);
     console.log(lines.join("\n"));
   });
 });

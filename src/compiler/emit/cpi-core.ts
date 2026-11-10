@@ -514,6 +514,38 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
             : undefined;
       if (!type)
         this.fail(arg, "pushBorsh({ … }) needs the value's type: buf.pushBorsh<Header>({ … }) (a struct or data enum), or bind it to a typed const first");
+      // A data enum literal of a fixed-size variant: the tag and the variant's fields (packed, their Borsh form) in a
+      // temporary of exactly those bytes, then one room check and one copy. Not the whole enum zeroed, filled and
+      // copied, then written as a tag and a switch on it.
+      if (type.kind === "dataEnum") {
+        const lit = this.dataEnumLiteral(type.name, arg);
+        const size = 1 + lit.variant.fields.reduce((n, f) => n + this.fieldBytes(f.type), 0);
+        // Integers, booleans, enums and Pubkeys: each field's value in a local of its own (in source order), then one
+        // room check and a store of each at its offset, as pushLE would write them one by one.
+        if (lit.variant.fields.every((f) => isScalar(f.type))) {
+          const locals = new Map(lit.variant.fields.map((f) => [f.name, this.tmp("bf")]));
+          for (const f of lit.variant.fields) this.line(`${fieldC(f.type)} ${locals.get(f.name)};`);
+          lit.writeFields((field) => locals.get(field)!);
+          return (_put, room) => {
+            this.line(`if (${size} > ${room.cap} - ${room.at}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: pushBorsh() past the FixedVec's room");`);
+            this.line(`${room.dst}[${room.at}] = ${lit.vi};`);
+            let off = 1;
+            for (const f of lit.variant.fields) {
+              const n = this.fieldBytes(f.type);
+              this.line(`ts_memcpy(${room.dst} + ${room.at} + ${off}, &${locals.get(f.name)}, ${n});`);
+              off += n;
+            }
+            this.line(`${room.at} += ${size};`);
+          };
+        }
+        if (lit.variant.fields.every((f) => borshIdentical(f.type, this.model))) {
+          const t = this.tmp("bv");
+          this.line(`struct __attribute__((packed)) { uint8_t tag; TSV_${lit.e.name}__${lit.variant.name} v; } ${t};`);
+          this.line(`${t}.tag = ${lit.vi};`);
+          lit.writeFields(`${t}.v`);
+          return (put) => put(`&${t}`, String(size));
+        }
+      }
       const t = this.tmp("bv");
       this.line(`${fieldC(type)} ${t};`);
       if (type.kind === "struct") this.line(`ts_memzero(&${t}, sizeof(${t}));`);

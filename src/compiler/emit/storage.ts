@@ -533,6 +533,40 @@ export abstract class StorageEmitter extends AliasEmitter {
   }
 
   /**
+   * A data enum literal (`{ kind: "Variant", … }`), checked: its variant, and `writeFields(base)`, which evaluates the
+   * fields in source order (as JS does) into `${base}.<field>`, a `TSV_<Enum>__<Variant>` place (or, given a function,
+   * into the place it names for each field).
+   */
+  protected dataEnumLiteral(name: string, valueNode: ts.ObjectLiteralExpression) {
+    const e = this.model.dataEnums.get(name)!;
+    const kindProp = valueNode.properties.find((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "kind") as
+      ts.PropertyAssignment | undefined;
+    if (!kindProp) this.fail(valueNode, `a ${e.name} literal needs kind: "Variant"`);
+    const vi = this.variantIndex(e.name, kindProp.initializer);
+    const variant = e.variants[vi];
+    const given = new Map<string, ts.Expression>();
+    for (const p of valueNode.properties) {
+      if (p === kindProp) continue;
+      if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) given.set(p.name.text, p.initializer);
+      else if (ts.isShorthandPropertyAssignment(p)) given.set(p.name.text, p.name);
+      else this.fail(p, "use plain `field: value` entries");
+    }
+    for (const k of given.keys()) if (!variant.fields.some((f) => f.name === k)) this.fail(valueNode, `${e.name}.${variant.name} has no field "${k}"`);
+    const writeFields = (base: string | ((field: string) => string)) => {
+      for (const f of variant.fields) if (!given.has(f.name)) this.fail(valueNode, `missing field "${f.name}" of ${e.name}.${variant.name}`);
+      for (const [name, ex] of given) {
+        const f = variant.fields.find((x) => x.name === name)!;
+        const sub: Ref = { lv: typeof base === "string" ? `${base}.${f.name}` : base(f.name), type: f.type, writable: true };
+        const vt = this.storageValueType(f.type);
+        // A string kept in a variable enum holds its own copy of account text (the account may change later).
+        if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(ex, vt), vt, ex)).c) + ";");
+        else this.writeAggregate(sub, ex);
+      }
+    };
+    return { e, vi, variant, writeFields };
+  }
+
+  /**
    * Write an aggregate value into `target`. `fresh`: the target is a value just declared (or a temporary), which no
    * expression can read yet, so a literal is built in it directly rather than in a temporary first.
    */
@@ -567,35 +601,14 @@ export abstract class StorageEmitter extends AliasEmitter {
       return;
     }
     if (target.type.kind === "dataEnum" && ts.isObjectLiteralExpression(valueNode)) {
-      const e = this.model.dataEnums.get(target.type.name)!;
-      const kindProp = valueNode.properties.find((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "kind") as
-        ts.PropertyAssignment | undefined;
-      if (!kindProp) this.fail(valueNode, `a ${e.name} literal needs kind: "Variant"`);
-      const vi = this.variantIndex(e.name, kindProp.initializer);
-      const variant = e.variants[vi];
-      const given = new Map<string, ts.Expression>();
-      for (const p of valueNode.properties) {
-        if (p === kindProp) continue;
-        if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) given.set(p.name.text, p.initializer);
-        else if (ts.isShorthandPropertyAssignment(p)) given.set(p.name.text, p.name);
-        else this.fail(p, "use plain `field: value` entries");
-      }
-      for (const k of given.keys()) if (!variant.fields.some((f) => f.name === k)) this.fail(valueNode, `${e.name}.${variant.name} has no field "${k}"`);
+      const lit = this.dataEnumLiteral(target.type.name, valueNode);
+      const { e, vi, variant } = lit;
       // Build the new value in a temporary: its fields may read the old value of the target.
       const tmp = this.tmp("de");
       this.line(`TSE_${e.name} ${tmp};`);
       this.line(`ts_memzero(&${tmp}, sizeof(${tmp}));`);
       this.line(`${tmp}.tag = ${vi};`);
-      for (const f of variant.fields) if (!given.has(f.name)) this.fail(valueNode, `missing field "${f.name}" of ${e.name}.${variant.name}`);
-      // Fields are evaluated in source order, as in JS, straight into the temporary.
-      for (const [name, ex] of given) {
-        const f = variant.fields.find((x) => x.name === name)!;
-        const sub: Ref = { lv: `${tmp}.v.${variant.name}.${f.name}`, type: f.type, writable: true };
-        const vt = this.storageValueType(f.type);
-        // A string kept in a variable enum holds its own copy of account text (the account may change later).
-        if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(ex, vt), vt, ex)).c) + ";");
-        else this.writeAggregate(sub, ex);
-      }
+      lit.writeFields(`${tmp}.v.${variant.name}`);
       this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }

@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- Faster: `buf.pushBorsh<DataEnum>({ kind: "Reduce", … })`, a data-enum literal of a fixed-size variant, builds only
+  that variant: its fields evaluated in source order into locals, then one room check, the tag and a store of each
+  field at its offset (a variant holding a struct or FixedArray: one temporary of exactly its bytes and one copy). It
+  zeroed, filled and copied the whole enum (92 bytes for Phoenix's PhoenixMarketEvent), then wrote the tag and the
+  variant behind a switch on it: Phoenix's 35-byte Reduce event 54 → 19 CU against 16 for the same bytes by `pushLE`
+  (test/language/phx-costs.test.ts, which also checks every field kind's bytes). Changes the generated C of programs
+  that push data-enum literals (Phoenix, test/fixtures/byte-builders.ts), whose tests pass unchanged.
 - Faster: a read-only struct, FixedArray or data-enum argument of a helper that also takes accounts is copied at the
   call only when it may be account data (a field of a view or of a loaded account), which the helper's writes could
   change. A struct parameter of a helper that itself takes accounts, an instruction's struct argument and return data
