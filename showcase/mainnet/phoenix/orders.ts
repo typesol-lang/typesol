@@ -45,8 +45,8 @@ import { type FifoMarketPrefix, type MarketHeader, type TraderState, FIFO_MARKET
 import { type Recorder, finishRecorder } from "./recorder.js";
 import { assertCrossAllowed, assertPostAllowed, checkSeatWithContext, checkVaultContext, dispatchLoadedMarket, statusName } from "./checkers.js";
 import { sendFromVault } from "./funds.js";
-import { addBaseLots, addQuoteLots, baseLotsToAtoms, need, quoteLotsToAtoms, subBaseLots, subQuoteLots } from "./util.js";
-import { type Packet, type Response, ASK, BID, IMMEDIATE_OR_CANCEL, LIMIT, POST_ONLY, placeOrder, quoteLotsFor } from "./matching.js";
+import { addBaseLots, addQuoteLots, baseLotsToAtoms, need, quoteLotsFor, quoteLotsToAtoms, subBaseLots, subQuoteLots } from "./util.js";
+import { type Packet, type Response, ASK, BID, IMMEDIATE_OR_CANCEL, LIMIT, POST_ONLY, placeOrder } from "./matching.js";
 
 /** A packet with every field zero (filled by the decoder or the multiple-order loop). */
 function emptyPacket(): Packet {

@@ -41,6 +41,8 @@ import { LOG_AUTHORITY_BUMP, LOG_AUTHORITY_ID, PHOENIX_ID } from "./util.js";
 const MAX_INNER_INSTRUCTION_SIZE = 1280n;
 /** The bytes of the Log instruction's one AccountMeta (LOG_IX_ACCOUNT_META_SIZE). */
 const LOG_IX_ACCOUNT_META_SIZE = 34n;
+/** The room the batch's data has: MAX_INNER_INSTRUCTION_SIZE less LOG_IX_ACCOUNT_META_SIZE (book.ts's Reduce events). */
+export const EVENT_ROOM = 1246n;
 /** [15] and the Borsh header. */
 export const HEADER_LEN = 93n;
 /** The largest event, a Fill (MAX_EVENT_SIZE): an event's bytes fit a FixedVec<u8, 67>. */

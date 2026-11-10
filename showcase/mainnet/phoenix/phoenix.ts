@@ -10,7 +10,11 @@
 // The instructions live by subject: initialize.ts (InitializeMarket), governance.ts (ClaimAuthority, NameSuccessor,
 // ChangeMarketStatus), seats.ts (RequestSeat, RequestSeatAuthorized, ChangeSeatStatus), funds.ts (DepositFunds,
 // WithdrawFunds), fees.ts (CollectFees, ChangeFeeRecipient), orders.ts (swaps and limit orders) and cancel.ts
-// (reductions, cancels, ForceCancelOrders, EvictSeat).
+// (reductions, cancels, ForceCancelOrders, EvictSeat). The FIFOMarket's work is in two files: matching.ts (the
+// matching engine: place_order_inner, match_order, check_for_cross, eviction) and book.ts (reduce_order_inner, the one
+// way an order leaves the book short of a fill or an eviction, used by both, and the cancels built on it). Beside
+// them: state.ts (the account layouts), checkers.ts (the account checks), recorder.ts (the event recorder), errors.ts
+// and util.ts (addresses, PDAs, the quantity operators, CPIs).
 import { type FixedVec, type u8, ProgramError, currentSlot, fixedVec, instructionData, loadRaw, log, now, panic, remainingAccounts, require } from "typesol";
 import { type MarketHeader } from "./state.js";
 import { type Recorder, TAG_LOG, finishRecorder, startRecorder } from "./recorder.js";
