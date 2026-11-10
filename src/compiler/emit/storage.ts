@@ -204,6 +204,9 @@ export abstract class StorageEmitter extends AliasEmitter {
   /** Resolve an expression to a storage location, if it names one. */
   protected ref(node: ts.Expression): Ref | undefined {
     if (ts.isParenthesizedExpression(node)) return this.ref(node.expression);
+    // A RawArray, a tree node's key / value, a narrowed tree result (views.ts).
+    const view = this.viewRef(node);
+    if (view) return view;
     const unbanged = this.withoutBang(node);
     if (unbanged) return this.ref(unbanged);
     this.noOptionalChain(node);

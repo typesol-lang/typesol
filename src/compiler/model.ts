@@ -60,8 +60,17 @@ export type ValueType =
   | { kind: "txIx" }
   /** The EpochRewards sysvar as epochRewards() read it: a `TsEpochRewards` copy. */
   | { kind: "epochRewards" }
-  /** A struct loaded from a remaining account with loadAccount / loadAccountMut. */
-  | { kind: "structRef"; struct: string; writable: boolean }
+  /**
+   * A struct loaded from a remaining account with loadAccount / loadAccountMut. `nullable`: a RedBlackTree's
+   * `get(k)` / `remove(k)` of a struct value, NULL when the key is absent (narrowed with `x !== null` before use).
+   */
+  | { kind: "structRef"; struct: string; writable: boolean; nullable?: boolean }
+  /** `rawArrayAt<T>(acct, offset, capacity)`: `capacity` elements in place at a run-time offset (`T *` + count). */
+  | { kind: "rawArray"; elem: FieldType; writable: boolean }
+  /** `rbTreeAt<K, V>(acct, offset, capacity, compare?)`: lib-sokoban's RedBlackTree in place (a `TsRbt`). */
+  | { kind: "rbTree"; inst: string; writable: boolean }
+  /** A node of a RedBlackTree (min / max / nodeAt / for … of): a `TsRbtEntry`; `nullable` for min / max. */
+  | { kind: "rbEntry"; inst: string; writable: boolean; nullable?: boolean }
   /** A data-enum place (local value, argument, or alias into account data): `TS_DE_<name> *`. */
   | { kind: "enumRef"; name: string; writable: boolean }
   /** A data-enum instruction argument (Borsh enum), parsed into a local. */
@@ -85,9 +94,10 @@ export type FieldType =
    * room for N elements. With `heap`, a `Vec<T>` in a `@layout borsh` struct: Anchor's Vec, held on the heap while the
    * instruction runs (`TSH_*`: length, capacity, elements) and bounded only by the account when it is written back.
    * With `big`, a `BigVec<T>` (the last field of a struct read with loadRaw): stored like a trailing Vec, its room set by
-   * the account's size, never resized.
+   * the account's size, never resized. With `raw` (and `big`), a `rawArrayAt` view: a run-time count of elements in
+   * place, no stored length.
    */
-  | { kind: "vec"; elem: FieldType; cap?: number; heap?: true; optional?: true; big?: true };
+  | { kind: "vec"; elem: FieldType; cap?: number; heap?: true; optional?: true; big?: true; raw?: true };
 
 export interface StructField {
   name: string;
@@ -407,6 +417,24 @@ export interface ProgramModel {
   localVecs: Map<string, FieldType & { kind: "vec" }>;
   /** Structs read or written with loadBorsh / storeBorsh, filled in while emitting: their ts_bdec_ / ts_benc_ codecs. */
   borshNative: Set<string>;
+  /** RedBlackTree instances (key, value, comparator), filled in while emitting: their per-tree C functions. */
+  rbTrees: Map<string, RbTreeInst>;
+}
+
+/**
+ * One `rbTreeAt<K, V>(…, compare?)` instantiation: lib-sokoban 0.3's RedBlackTree<K, V, N> over K and V (N is the
+ * run-time capacity). `c` is the prefix of its C functions (`ts_rbt<n>_find` …); `compare` the helper ordering keys
+ * (`compare(searched, nodeKey)`: negative, 0 or positive), or none for the default order.
+ */
+export interface RbTreeInst {
+  key: string;
+  c: string;
+  keyType: FieldType;
+  valueType: FieldType;
+  keySize: number;
+  valueSize: number;
+  stride: number;
+  compare?: Helper;
 }
 
 export function isWritable(k: ParamKind): boolean {
@@ -453,6 +481,7 @@ export function typeName(t: ValueType | FieldType): string {
       return t.name;
     case "vec":
       if (t.optional) return `Option<Vec<${typeName(t.elem)}>>`;
+      if (t.raw) return `RawArray<${typeName(t.elem)}>`;
       if (t.big) return `BigVec<${typeName(t.elem)}>`;
       return t.cap === undefined ? `Vec<${typeName(t.elem)}>` : `FixedVec<${typeName(t.elem)}, ${t.cap}>`;
     case "vecArg":
@@ -473,6 +502,12 @@ export function typeName(t: ValueType | FieldType): string {
       return "EpochRewards";
     case "structRef":
       return t.struct;
+    case "rawArray":
+      return `RawArray<${typeName(t.elem)}>`;
+    case "rbTree":
+      return "RedBlackTree";
+    case "rbEntry":
+      return "RbEntry";
   }
 }
 
@@ -501,6 +536,7 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
         !a.heap === !(b as typeof a).heap &&
         !a.optional === !(b as typeof a).optional &&
         !a.big === !(b as typeof a).big &&
+        !a.raw === !(b as typeof a).raw &&
         sameType(a.elem, (b as typeof a).elem)
       );
     case "vecArg":
@@ -511,6 +547,11 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
       return sameType(a.option, (b as typeof a).option);
     case "structRef":
       return a.struct === (b as typeof a).struct;
+    case "rawArray":
+      return sameType(a.elem, (b as typeof a).elem);
+    case "rbTree":
+    case "rbEntry":
+      return a.inst === (b as typeof a).inst;
     case "dataEnum":
     case "dataEnumArg":
     case "enumRef":

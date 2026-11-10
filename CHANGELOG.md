@@ -21,6 +21,19 @@ codes, and says so here.
   (test/language/inout.test.ts). Writing to a read-only helper parameter now says to declare it `Inout<T>`.
   docs/language.md (`Inout<T>` parameters), docs/stability.md (Experimental; the open edge of helpers taking a
   writable struct that is not an account is settled). Programs that do not use it compile to the same C.
+- New: `loadRawAt<T>(acct, offset)` / `loadRawMutAt<T>(…)`, a native account's struct at a byte offset known at run
+  time, and `rawArrayAt<T>(acct, offset, capacity)` / `rawArrayMutAt<T>(…)`, a run-time number of elements in place
+  (`get`, `set`, `.length`, `for … of`, the list methods). Bounds checked once when made (ProgramError::AccountDataTooSmall,
+  overflow included); owner, writability and claim as `loadRaw` / `loadRawMut`.
+- New: `rbTreeAt<K, V>(acct, offset, capacity, compare?)` / `rbTreeMutAt`, lib-sokoban 0.3's `RedBlackTree<K, V, N>`
+  over account bytes, byte for byte (Phoenix's order books and seats): `get`, `insert`, `remove`, `min`, `max`,
+  `addrOf`, `nodeAt`, `initialize`, `length`, `capacity`, `for … of` and `reversed()`. A comparator function orders
+  the keys (called as `compare(searched, node)`), or Rust's derived order. Replayed against the crate itself on
+  1,020,000 recorded operations (capacities 1 to 512, strides 32, 64 and 144) with identical bytes after every one;
+  a further 7,320 are the committed test. sokoban's panics are logged as solana-program up to 1.17 logs a panic, with sokoban's
+  messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries (get 215 CU against
+  384, insert 595 / 742, remove 355 / 618).
+- Programs that use none of these compile to the same C as before.
 
 ## 0.42.0 — 2026-11-09
 

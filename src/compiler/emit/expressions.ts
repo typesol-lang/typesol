@@ -242,7 +242,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
             `"${node.text}" is a function: call it (${node.text}(…)), bind it with const, or pass it to a helper or list method; it cannot be stored or returned as a value`,
           );
         if (l.type.kind === "array") this.fail(node, `"${node.text}" is an array; use .get(i)`);
-        if (l.type.kind === "vec") this.fail(node, `"${node.text}" is a list; use .get(i) and .length`);
+        if (l.type.kind === "vec" || l.type.kind === "rawArray") this.fail(node, `"${node.text}" is a list; use .get(i) and .length`);
+        if (l.type.kind === "rbTree") this.fail(node, `"${node.text}" is a RedBlackTree; use its methods (get, insert, remove, min, max, for … of)`);
         if (l.type.kind === "remaining") return { c: l.c, type: l.type };
         return l.type.kind === "pubkey" && !l.ptr ? { c: `(&${l.c})`, type: l.type } : { c: l.c, type: l.type };
       }
@@ -322,6 +323,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   protected property(node: ts.PropertyAccessExpression): Value {
     const field = node.name.text;
+    const view = this.viewProperty(node);
+    if (view) return view;
     // A BigVec's room: the elements the account holds past the struct.
     if (field === "capacity" && this.peekKind(node.expression) === "vec") {
       const r = this.ref(node.expression);
@@ -849,6 +852,9 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       const neg = op === K.ExclamationEqualsEqualsToken || op === K.ExclamationEqualsToken;
       // An Option<Vec<T>> argument: None leaves its view's pointer NULL (a Some, empty or not, points into the data).
       if (v.type.kind === "vecArg" && v.type.optional) return { c: `((${v.c}).ptr ${neg ? "!=" : "=="} NULL)`, type: BOOL };
+      // A RedBlackTree's get / remove of a struct value (a reference, NULL when absent) and its min / max node.
+      if (v.type.kind === "structRef" && v.type.nullable) return { c: `(${v.c} ${neg ? "!=" : "=="} NULL)`, type: BOOL };
+      if (v.type.kind === "rbEntry") return { c: `((${v.c}).index ${neg ? "!=" : "=="} 0)`, type: BOOL };
       if (v.type.kind !== "option" && v.type.kind !== "optionArg") this.fail(other, "only Option values can be compared with null");
       return { c: neg ? `((${v.c}).some != 0)` : `((${v.c}).some == 0)`, type: BOOL };
     }

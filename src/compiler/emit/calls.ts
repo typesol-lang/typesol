@@ -686,6 +686,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "loadForeign":
       case "loadBorsh":
         this.fail(node, `bind ${builtin}<T>(...) to a const first: const p = ${builtin}<T>(account)`);
+      case "loadRawAt":
+      case "loadRawMutAt":
+      case "rawArrayAt":
+      case "rawArrayMutAt":
+      case "rbTreeAt":
+      case "rbTreeMutAt":
+        this.fail(node, `bind ${builtin}(…) to a const first: const v = ${builtin}<…>(account, offset${builtin.startsWith("load") ? "" : ", capacity"})`);
       case "storeBorsh":
         return this.storeBorsh(node);
       case "emit":
@@ -744,6 +751,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
 
     if (ts.isPropertyAccessExpression(callee)) {
       const method = callee.name.text;
+      // A RedBlackTree's methods (rbTreeAt / rbTreeMutAt).
+      const onTree = this.treeCall(node);
+      if (onTree) return onTree.value;
       const introspected = this.instructionsCall(node, callee, method);
       if (introspected) return introspected;
       // xs.some(…) and friends on a Vec, FixedArray, FixedVec or Vec argument: a loop with the callback expanded in it.
@@ -1104,6 +1114,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const info = v.vec!;
     const vt = v.type as FieldType & { kind: "vec" };
     if (method === "set") return undefined;
+    if (info.raw)
+      this.fail(node, `a RawArray has get, set, .length, for … of and the list methods (its length is the capacity it was made with), not ${method}()`);
     if (method === "slice")
       this.fail(node, "use slice(start, end) right where it is read: for (const x of list.slice(a, b)), list.slice(a, b).forEach(…) or .get(i)");
     if (info.slice) this.fail(node, `a slice has get, set, .length, for … of and the list methods; call ${method}() on the BigVec itself`);
@@ -1813,20 +1825,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (!s || s.size === undefined || (s.vec && !s.bigVec)) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: ${fn} reads fixed layouts only`);
     if (node.arguments.length !== 1) this.fail(node, `${fn}<T>(account) takes one remaining account or AccountInfo parameter`);
-    let h = this.handle(node.arguments[0]);
-    let param: number | undefined;
-    if (!h) {
-      const acct = this.accountParam(node.arguments[0], "the account");
-      if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
-      if (mut && !isWritable(acct.kind) && !this.nativeAccountWrites())
-        this.fail(
-          node.arguments[0],
-          `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
-        );
-      if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
-      h = `a_${acct.name}`;
-      param = this.ix.accounts.indexOf(acct);
-    }
+    const { h, param } = this.rawAccount(node, fn, mut);
     this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
     this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
     // A BigVec's stored length must fit in the account. Its capacity is kept in a local: every access is clamped to it
@@ -1839,21 +1838,43 @@ export abstract class CallEmitter extends ExpressionEmitter {
       // Named in scope, so a loop moved into a function of its own is given it (see outlinedLoop).
       this.scopes.at(-1)!.set(`__${bigCap}`, { c: bigCap, type: U64, mutable: false });
     }
-    // NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
-    // instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
-    // gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
-    if (mut && !this.nativeAccountWrites()) {
-      this.line(`TS_TRY(ts_check_writable(${h}));`);
-      const slot = this.claimSlots.get(node);
-      if (slot)
-        this.line(
-          param === undefined
-            ? `TS_TRY(ts_claim_mut_rec(params, ${h}, &${slot}, params->ka_num));`
-            : `TS_TRY(ts_claim_mut_at_rec(params, ${param}, &${slot}));`,
-        );
-      else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
-    }
+    if (mut) this.claimRawMut(node, h, param);
     return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut }, ...(bigCap ? { bigCap } : {}) };
+  }
+
+  /**
+   * The account a loadRaw-style view reads (its first argument): a remaining account, or an AccountInfo parameter of
+   * the instruction (`param`: its position, for the claim). `fn` names the call in messages.
+   */
+  protected rawAccount(node: ts.CallExpression, fn: string, mut: boolean): { h: string; param?: number } {
+    const h = this.handle(node.arguments[0]);
+    if (h) return { h };
+    const acct = this.accountParam(node.arguments[0], "the account");
+    if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
+    if (mut && !isWritable(acct.kind) && !this.nativeAccountWrites())
+      this.fail(
+        node.arguments[0],
+        `${acct.name} must be Mut<AccountInfo> to load it with ${fn} (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+      );
+    if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
+    return { h: `a_${acct.name}`, param: this.ix.accounts.indexOf(acct) };
+  }
+
+  /**
+   * A writable view's checks: the account is writable and loaded mutably once in the instruction (2040).
+   * NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
+   * instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
+   * gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
+   */
+  protected claimRawMut(node: ts.CallExpression, h: string, param: number | undefined): void {
+    if (this.nativeAccountWrites()) return;
+    this.line(`TS_TRY(ts_check_writable(${h}));`);
+    const slot = this.claimSlots.get(node);
+    if (slot)
+      this.line(
+        param === undefined ? `TS_TRY(ts_claim_mut_rec(params, ${h}, &${slot}, params->ka_num));` : `TS_TRY(ts_claim_mut_at_rec(params, ${param}, &${slot}));`,
+      );
+    else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
   }
 
   /**

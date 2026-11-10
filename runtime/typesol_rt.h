@@ -1805,6 +1805,332 @@ static inline __attribute__((always_inline)) uint8_t *ts_opaque_ptr(uint8_t *p) 
 }
 
 /*
+ * ---- A Rust panic as solana-program up to 1.17 reports it ----------------------------------------------------
+ * The program's panic handler logs the PanicInfo ("panicked at '<msg>', <file>:<line>:<col>", Rust before 1.73) and
+ * the runtime's abort ends the program ("SBF program panicked", ProgramFailedToComplete). The built-in
+ * RedBlackTree panics this way, where lib-sokoban 0.3 does, with sokoban's own messages and source locations.
+ */
+static __attribute__((noinline, noreturn, unused)) void ts_rust_panic(const char *msg, uint64_t msg_len, const char *loc, uint64_t loc_len) {
+  char line[160];
+  uint64_t n = 0;
+  const char *head = "panicked at '";
+  for (uint64_t i = 0; head[i]; i++) line[n++] = head[i];
+  for (uint64_t i = 0; i < msg_len && n < sizeof(line) - 4 - loc_len; i++) line[n++] = msg[i];
+  line[n++] = '\'';
+  line[n++] = ',';
+  line[n++] = ' ';
+  for (uint64_t i = 0; i < loc_len && n < sizeof(line); i++) line[n++] = loc[i];
+  sol_log_(line, n);
+  abort();
+}
+/* `msg` then the decimal digits of `v` (Rust's `panic!("Buffer is full, size {}", self.size)`). */
+static __attribute__((noinline, noreturn, unused)) void ts_rust_panic_u64(const char *msg, uint64_t msg_len, uint64_t v, const char *loc, uint64_t loc_len) {
+  char text[112];
+  uint64_t n = 0;
+  for (; n < msg_len && n < 88; n++) text[n] = msg[n];
+  char digits[20];
+  uint64_t d = 0;
+  do {
+    digits[d++] = (char)('0' + v % 10);
+    v /= 10;
+  } while (v);
+  while (d) text[n++] = digits[--d];
+  ts_rust_panic(text, n, loc, loc_len);
+}
+#define TS_RUST_PANIC(msg, loc) ts_rust_panic((msg), sizeof(msg) - 1, (loc), sizeof(loc) - 1)
+
+/*
+ * ---- RedBlackTree (lib-sokoban 0.3's RedBlackTree<K, V, N>, byte for byte) ------------------------------------
+ * At `base`: root u32 (0 = SENTINEL), padding [u32; 3], then the NodeAllocator: size u64, bump_index u32,
+ * free_list_head u32, then N nodes. Node i (1-based) is at base + 32 + (i - 1) * stride: registers [u32; 4] =
+ * [left, right, parent, color (0 black, 1 red)], then the key, then the value. These functions are sokoban's own,
+ * statement for statement (red_black_tree.rs, node_allocator.rs), so every register, size, bump index and free-list
+ * write is the one sokoban makes: the free list is LIFO through register 0 and ends at the bump index (not at 0);
+ * a node taken from the bump index has no register written, one taken from the free list only register 0; removing a
+ * node clears its registers and leaves its key and value bytes. `stride` is a constant at every call (the per-tree
+ * functions the compiler writes), so a node's address is one multiply or shift. Every node index read is checked
+ * against the capacity (as Rust's `nodes[i - 1]` is): a damaged tree panics instead of reading outside the account.
+ */
+typedef struct {
+  uint8_t *base;
+  uint64_t cap;
+} TsRbt;
+/* A node handed out by min / max / nodeAt / iteration: its index (0: none) and its first byte. */
+typedef struct {
+  uint8_t *node;
+  uint32_t index;
+} TsRbtEntry;
+#define TS_RBT_ROOT(b) (*(ts_u32_unaligned *)(b))
+#define TS_RBT_SIZE(b) (*(ts_u64_unaligned *)((b) + 16))
+#define TS_RBT_BUMP(b) (*(ts_u32_unaligned *)((b) + 24))
+#define TS_RBT_FREE(b) (*(ts_u32_unaligned *)((b) + 28))
+#define TS_RBT_LEFT 0
+#define TS_RBT_RIGHT 1
+#define TS_RBT_PARENT 2
+#define TS_RBT_COLOR 3
+
+/* Rust's `&self.nodes[(i - 1) as usize]` out of range: index 0 underflows (overflow checks on), past N is out of bounds. */
+static __attribute__((noinline, noreturn, unused)) void ts_rbt_bad_index(uint64_t cap, uint32_t i) {
+  if (i == 0) TS_RUST_PANIC("attempt to subtract with overflow", "src/node_allocator.rs:255:21");
+  char text[96];
+  uint64_t n = 0;
+  const char *a = "index out of bounds: the len is ";
+  for (uint64_t k = 0; a[k]; k++) text[n++] = a[k];
+  char digits[20];
+  uint64_t d = 0, v = cap;
+  do {
+    digits[d++] = (char)('0' + v % 10);
+    v /= 10;
+  } while (v);
+  while (d) text[n++] = digits[--d];
+  const char *b = " but the index is ";
+  for (uint64_t k = 0; b[k]; k++) text[n++] = b[k];
+  ts_rust_panic_u64(text, n, (uint64_t)i - 1, "src/node_allocator.rs:255:10", 28);
+}
+static inline __attribute__((always_inline)) uint8_t *ts_rbt_node(const TsRbt *t, uint64_t stride, uint32_t i) {
+  if ((uint64_t)i - 1 >= t->cap) ts_rbt_bad_index(t->cap, i);
+  return t->base + 32 + ((uint64_t)i - 1) * stride;
+}
+/* allocator.get_register / set_register / connect: SENTINEL reads 0 and ignores writes. */
+static inline __attribute__((always_inline)) uint32_t ts_rbt_reg(const TsRbt *t, uint64_t stride, uint32_t i, uint32_t r) {
+  return i ? ((ts_u32_unaligned *)ts_rbt_node(t, stride, i))[r] : 0;
+}
+static inline __attribute__((always_inline)) void ts_rbt_set(const TsRbt *t, uint64_t stride, uint32_t i, uint32_t r, uint32_t v) {
+  if (i) ((ts_u32_unaligned *)ts_rbt_node(t, stride, i))[r] = v;
+}
+/* _connect(parent, child, dir): parent's register `dir` takes the child (0 too), the child's parent register the parent. */
+static inline __attribute__((always_inline)) void ts_rbt_connect(const TsRbt *t, uint64_t stride, uint32_t parent, uint32_t child, uint32_t dir) {
+  ts_rbt_set(t, stride, parent, dir, child);
+  ts_rbt_set(t, stride, child, TS_RBT_PARENT, parent);
+}
+static inline __attribute__((always_inline)) bool ts_rbt_is_red(const TsRbt *t, uint64_t stride, uint32_t i) {
+  return ts_rbt_reg(t, stride, i, TS_RBT_COLOR) == 1;
+}
+static inline __attribute__((always_inline)) bool ts_rbt_is_black(const TsRbt *t, uint64_t stride, uint32_t i) {
+  return ts_rbt_reg(t, stride, i, TS_RBT_COLOR) == 0;
+}
+static inline __attribute__((always_inline)) uint32_t ts_rbt_child_dir(const TsRbt *t, uint64_t stride, uint32_t parent, uint32_t child) {
+  uint32_t left = ts_rbt_reg(t, stride, parent, TS_RBT_LEFT);
+  uint32_t right = ts_rbt_reg(t, stride, parent, TS_RBT_RIGHT);
+  if (child == left) return TS_RBT_LEFT;
+  if (child == right) return TS_RBT_RIGHT;
+  TS_RUST_PANIC("Nodes are not connected", "src/red_black_tree.rs:429:13");
+}
+static inline __attribute__((always_inline)) void ts_rbt_rotate(const TsRbt *t, uint64_t stride, uint32_t parent, uint32_t dir) {
+  uint32_t grandparent = ts_rbt_reg(t, stride, parent, TS_RBT_PARENT);
+  uint32_t sibling = ts_rbt_reg(t, stride, parent, 1 - dir);
+  if (sibling == 0) return;
+  uint32_t child = ts_rbt_reg(t, stride, sibling, dir);
+  ts_rbt_connect(t, stride, sibling, parent, dir);
+  ts_rbt_connect(t, stride, parent, child, 1 - dir);
+  if (grandparent != 0) {
+    ts_rbt_connect(t, stride, grandparent, sibling, ts_rbt_child_dir(t, stride, grandparent, parent));
+  } else {
+    ts_rbt_set(t, stride, sibling, TS_RBT_PARENT, 0);
+    TS_RBT_ROOT(t->base) = sibling;
+  }
+}
+/* NodeAllocator::initialize: size, bump index and free list all 0, else "Cannot reinitialize NodeAllocator". */
+static inline void ts_rbt_initialize(const TsRbt *t) {
+  uint8_t *b = t->base;
+  if (TS_RBT_SIZE(b) == 0 && TS_RBT_BUMP(b) == 0 && TS_RBT_FREE(b) == 0) {
+    TS_RBT_BUMP(b) = 1;
+    TS_RBT_FREE(b) = 1;
+  } else {
+    TS_RUST_PANIC("Cannot reinitialize NodeAllocator", "src/node_allocator.rs:249:13");
+  }
+}
+/* NodeAllocator::add_node: the free list's head, or the bump index when the list is used up; then the key and value. */
+static inline __attribute__((always_inline)) uint32_t ts_rbt_add_node(const TsRbt *t, uint64_t stride, const void *key, uint64_t ksz,
+                                                                      const void *value, uint64_t vsz) {
+  uint8_t *b = t->base;
+  uint32_t i = TS_RBT_FREE(b);
+  if (i == TS_RBT_BUMP(b)) {
+    if ((uint64_t)TS_RBT_BUMP(b) == t->cap + 1) ts_rust_panic_u64("Buffer is full, size ", 21, TS_RBT_SIZE(b), "src/node_allocator.rs:269:17", 28);
+    TS_RBT_BUMP(b) += 1;
+    TS_RBT_FREE(b) = TS_RBT_BUMP(b);
+  } else {
+    uint8_t *n = ts_rbt_node(t, stride, i);
+    TS_RBT_FREE(b) = ((ts_u32_unaligned *)n)[0];
+    ((ts_u32_unaligned *)n)[0] = 0;
+  }
+  uint8_t *n = ts_rbt_node(t, stride, i);
+  ts_memcpy(n + 16, key, ksz);
+  ts_memcpy(n + 16 + ksz, value, vsz);
+  TS_RBT_SIZE(b) += 1;
+  return i;
+}
+static inline __attribute__((always_inline)) void ts_rbt_fix_insert(const TsRbt *t, uint64_t stride, uint32_t node) {
+  while (ts_rbt_is_red(t, stride, ts_rbt_reg(t, stride, node, TS_RBT_PARENT))) {
+    uint32_t parent = ts_rbt_reg(t, stride, node, TS_RBT_PARENT);
+    uint32_t grandparent = ts_rbt_reg(t, stride, parent, TS_RBT_PARENT);
+    if (grandparent == 0) {
+      if (TS_RBT_ROOT(t->base) != parent) TS_RUST_PANIC("assertion failed: self.is_root(parent)", "src/red_black_tree.rs:503:17");
+      break;
+    }
+    uint32_t dir = ts_rbt_child_dir(t, stride, grandparent, parent);
+    uint32_t uncle = ts_rbt_reg(t, stride, grandparent, 1 - dir);
+    if (ts_rbt_is_red(t, stride, uncle)) {
+      ts_rbt_set(t, stride, uncle, TS_RBT_COLOR, 0);
+      ts_rbt_set(t, stride, parent, TS_RBT_COLOR, 0);
+      ts_rbt_set(t, stride, grandparent, TS_RBT_COLOR, 1);
+      node = grandparent;
+    } else {
+      if (ts_rbt_child_dir(t, stride, parent, node) == 1 - dir) {
+        ts_rbt_rotate(t, stride, parent, dir);
+        node = parent;
+      }
+      parent = ts_rbt_reg(t, stride, node, TS_RBT_PARENT);
+      grandparent = ts_rbt_reg(t, stride, parent, TS_RBT_PARENT);
+      ts_rbt_set(t, stride, parent, TS_RBT_COLOR, 0);
+      ts_rbt_set(t, stride, grandparent, TS_RBT_COLOR, 1);
+      ts_rbt_rotate(t, stride, grandparent, 1 - dir);
+    }
+  }
+  ts_rbt_set(t, stride, TS_RBT_ROOT(t->base), TS_RBT_COLOR, 0);
+}
+/* _insert's new leaf under `parent` (on side `dir`): red, linked, then _fix_insert unless the parent is the root. */
+static inline __attribute__((always_inline)) void ts_rbt_link_leaf(const TsRbt *t, uint64_t stride, uint32_t parent, uint32_t node, uint32_t dir) {
+  ts_rbt_set(t, stride, node, TS_RBT_COLOR, 1);
+  ts_rbt_connect(t, stride, parent, node, dir);
+  if (ts_rbt_reg(t, stride, parent, TS_RBT_PARENT) != 0) ts_rbt_fix_insert(t, stride, node);
+}
+static inline __attribute__((always_inline)) uint32_t ts_rbt_find_min(const TsRbt *t, uint64_t stride, uint32_t node) {
+  while (ts_rbt_reg(t, stride, node, TS_RBT_LEFT) != 0) node = ts_rbt_reg(t, stride, node, TS_RBT_LEFT);
+  return node;
+}
+static inline __attribute__((always_inline)) uint32_t ts_rbt_find_max(const TsRbt *t, uint64_t stride, uint32_t node) {
+  while (ts_rbt_reg(t, stride, node, TS_RBT_RIGHT) != 0) node = ts_rbt_reg(t, stride, node, TS_RBT_RIGHT);
+  return node;
+}
+static inline __attribute__((always_inline)) void ts_rbt_transplant(const TsRbt *t, uint64_t stride, uint32_t target, uint32_t source) {
+  uint32_t parent = ts_rbt_reg(t, stride, target, TS_RBT_PARENT);
+  if (parent == 0) {
+    TS_RBT_ROOT(t->base) = source;
+    ts_rbt_set(t, stride, source, TS_RBT_PARENT, 0);
+    return;
+  }
+  ts_rbt_connect(t, stride, parent, source, ts_rbt_child_dir(t, stride, parent, target));
+}
+static inline __attribute__((always_inline)) void ts_rbt_fix_remove(const TsRbt *t, uint64_t stride, uint32_t node, bool has_pd, uint32_t parent, uint32_t dir) {
+  /* `parent_and_dir.unwrap_or({ … })` evaluates its argument first: a pure read here (node is SENTINEL whenever
+     parent_and_dir is Some), kept for the panic it could raise on a damaged tree. */
+  uint32_t p0 = ts_rbt_reg(t, stride, node, TS_RBT_PARENT);
+  uint32_t d0 = ts_rbt_child_dir(t, stride, p0, node);
+  if (!has_pd) {
+    parent = p0;
+    dir = d0;
+  }
+  for (;;) {
+    uint32_t sibling = ts_rbt_reg(t, stride, parent, 1 - dir);
+    if (ts_rbt_is_red(t, stride, sibling)) {
+      ts_rbt_set(t, stride, sibling, TS_RBT_COLOR, 0);
+      ts_rbt_set(t, stride, parent, TS_RBT_COLOR, 1);
+      ts_rbt_rotate(t, stride, parent, dir);
+      sibling = ts_rbt_reg(t, stride, parent, 1 - dir);
+    }
+    if (ts_rbt_is_black(t, stride, ts_rbt_reg(t, stride, sibling, TS_RBT_LEFT)) &&
+        ts_rbt_is_black(t, stride, ts_rbt_reg(t, stride, sibling, TS_RBT_RIGHT))) {
+      ts_rbt_set(t, stride, sibling, TS_RBT_COLOR, 1);
+      node = parent;
+    } else {
+      if (ts_rbt_is_black(t, stride, ts_rbt_reg(t, stride, sibling, 1 - dir))) {
+        ts_rbt_set(t, stride, ts_rbt_reg(t, stride, sibling, dir), TS_RBT_COLOR, 0);
+        ts_rbt_set(t, stride, sibling, TS_RBT_COLOR, 1);
+        ts_rbt_rotate(t, stride, sibling, 1 - dir);
+        sibling = ts_rbt_reg(t, stride, parent, 1 - dir);
+      }
+      ts_rbt_set(t, stride, sibling, TS_RBT_COLOR, ts_rbt_reg(t, stride, parent, TS_RBT_COLOR));
+      ts_rbt_set(t, stride, parent, TS_RBT_COLOR, 0);
+      ts_rbt_set(t, stride, ts_rbt_reg(t, stride, sibling, 1 - dir), TS_RBT_COLOR, 0);
+      ts_rbt_rotate(t, stride, parent, dir);
+      node = TS_RBT_ROOT(t->base);
+    }
+    if (TS_RBT_ROOT(t->base) == node || ts_rbt_is_red(t, stride, node)) break;
+    parent = ts_rbt_reg(t, stride, node, TS_RBT_PARENT);
+    dir = ts_rbt_child_dir(t, stride, parent, node);
+  }
+  ts_rbt_set(t, stride, node, TS_RBT_COLOR, 0);
+}
+/* _remove_tree_node: unlink node `n` (a leaf, one child transplanted, or replaced by its predecessor), free it, rebalance. */
+static inline __attribute__((always_inline)) void ts_rbt_remove_node(const TsRbt *t, uint64_t stride, uint32_t n) {
+  uint8_t *b = t->base;
+  bool black = ts_rbt_is_black(t, stride, n);
+  uint32_t left = ts_rbt_reg(t, stride, n, TS_RBT_LEFT);
+  uint32_t right = ts_rbt_reg(t, stride, n, TS_RBT_RIGHT);
+  uint32_t pivot;
+  bool has_pd = false;
+  uint32_t pd_parent = 0, pd_dir = 0;
+  if (ts_rbt_reg(t, stride, n, TS_RBT_LEFT) == 0 && ts_rbt_reg(t, stride, n, TS_RBT_RIGHT) == 0) {
+    if (TS_RBT_ROOT(b) != n) {
+      uint32_t parent = ts_rbt_reg(t, stride, n, TS_RBT_PARENT);
+      uint32_t dir = ts_rbt_child_dir(t, stride, parent, n);
+      ts_rbt_connect(t, stride, parent, 0, dir);
+      pivot = 0;
+      has_pd = true;
+      pd_parent = parent;
+      pd_dir = dir;
+    } else {
+      TS_RBT_ROOT(b) = 0;
+      pivot = 0;
+    }
+  } else if (left == 0) {
+    ts_rbt_transplant(t, stride, n, right);
+    pivot = right;
+  } else if (right == 0) {
+    ts_rbt_transplant(t, stride, n, left);
+    pivot = left;
+  } else {
+    uint32_t max_left = ts_rbt_find_max(t, stride, left);
+    uint32_t max_left_parent = ts_rbt_reg(t, stride, max_left, TS_RBT_PARENT);
+    uint32_t max_left_child = ts_rbt_reg(t, stride, max_left, TS_RBT_LEFT);
+    black = ts_rbt_is_black(t, stride, max_left);
+    if (ts_rbt_reg(t, stride, max_left, TS_RBT_PARENT) != n) {
+      ts_rbt_transplant(t, stride, max_left, max_left_child);
+      ts_rbt_connect(t, stride, max_left, ts_rbt_reg(t, stride, n, TS_RBT_LEFT), TS_RBT_LEFT);
+      if (max_left_child == 0) {
+        has_pd = true;
+        pd_parent = max_left_parent;
+        pd_dir = TS_RBT_RIGHT;
+      }
+    } else if (max_left_child == 0) {
+      if (ts_rbt_reg(t, stride, max_left, TS_RBT_LEFT) != 0 || ts_rbt_reg(t, stride, max_left, TS_RBT_RIGHT) != 0)
+        TS_RUST_PANIC("assertion failed: self.is_leaf(max_left)", "src/red_black_tree.rs:598:17");
+      has_pd = true;
+      pd_parent = max_left;
+      pd_dir = TS_RBT_LEFT;
+    }
+    ts_rbt_transplant(t, stride, n, max_left);
+    ts_rbt_connect(t, stride, max_left, ts_rbt_reg(t, stride, n, TS_RBT_RIGHT), TS_RBT_RIGHT);
+    ts_rbt_set(t, stride, max_left, TS_RBT_COLOR, ts_rbt_reg(t, stride, n, TS_RBT_COLOR));
+    pivot = max_left_child;
+  }
+  /* _remove_allocator_node: registers cleared, then onto the free list (key and value bytes stay). */
+  ts_rbt_set(t, stride, n, TS_RBT_PARENT, 0);
+  ts_rbt_set(t, stride, n, TS_RBT_COLOR, 0);
+  ts_rbt_set(t, stride, n, TS_RBT_LEFT, 0);
+  ts_rbt_set(t, stride, n, TS_RBT_RIGHT, 0);
+  if (n != 0) {
+    ts_rbt_set(t, stride, n, 0, TS_RBT_FREE(b));
+    TS_RBT_FREE(b) = n;
+    if (TS_RBT_SIZE(b) == 0) TS_RUST_PANIC("attempt to subtract with overflow", "src/node_allocator.rs:291:9");
+    TS_RBT_SIZE(b) -= 1;
+  }
+  if (black) {
+    if (TS_RBT_ROOT(b) == pivot)
+      ts_rbt_set(t, stride, pivot, TS_RBT_COLOR, 0);
+    else
+      ts_rbt_fix_remove(t, stride, pivot, has_pd, pd_parent, pd_dir);
+  }
+}
+/* For iteration: an in-order walk keeps at most the tree's height of nodes, under 64 for any red-black tree a u32
+   index can address; a deeper (damaged) tree stops with a panic. */
+#define TS_RBT_STACK 64
+static __attribute__((noinline, noreturn, unused)) void ts_rbt_too_deep(void) {
+  TS_RUST_PANIC("TypeSOL: RedBlackTree deeper than a red-black tree can be", "rbtree");
+}
+
+/*
  * Did an Ed25519 precompile instruction in this transaction verify `message` signed by `signer`?
  * Reads the Instructions sysvar (data: u16 count, u16 offsets[count], then per instruction
  * u16 num_accounts, num_accounts * (u8 flags, 32-byte key), 32-byte program id, u16 data_len, data).

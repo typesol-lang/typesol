@@ -257,6 +257,112 @@ export declare function loadAccountMut<T>(account: RemainingAccount | AccountInf
 export declare function loadRaw<T>(account: RemainingAccount | AccountInfo): Account<T>;
 export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
 /**
+ * `loadRaw` / `loadRawMut` at a byte offset known only at run time (a native account whose parts start where its header
+ * says: Phoenix's market at byte 576). Owned by this program (3007); `offset + size(T)` within the data, checked once
+ * here (ProgramError::AccountDataTooSmall); `loadRawMutAt` writable and claimed as `loadRawMut` is (2040; neither with
+ * `NATIVE_ACCOUNT_WRITES`). Bind it with const: `const market = loadRawMutAt<FifoMarket>(acct, 576n)`.
+ */
+export declare function loadRawAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Account<T>;
+export declare function loadRawMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Mut<T>;
+/**
+ * `capacity` elements of a fixed-size type packed in place from a run-time byte offset, the count known only at run
+ * time (a slab sized by its header). Bounds checked once when it is made (`offset + capacity × size(T)` within the
+ * data, overflow included: ProgramError::AccountDataTooSmall), then `get` / `set` check the index against the count
+ * (5104). Elements are references into the account (structs) or values. `.length` is the capacity.
+ */
+export interface RawArray<T> extends ListMethods<T> {
+  readonly length: u64;
+  get(index: bigint): T;
+  set(index: bigint, value: T): void;
+  [Symbol.iterator](): Iterator<T>;
+}
+/** A RawArray of a read-only view (`rawArrayAt`): elements are read, not written. */
+export interface ReadonlyRawArray<T> extends ListMethods<T> {
+  readonly length: u64;
+  get(index: bigint): Readonly<T>;
+  [Symbol.iterator](): Iterator<Readonly<T>>;
+}
+/** `const slab = rawArrayMutAt<Order>(acct, offset, capacity)`: see RawArray. */
+export declare function rawArrayAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>;
+export declare function rawArrayMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): RawArray<T>;
+
+/** A node of a RedBlackTree: its key (read-only), its value (in place) and its index in the tree's node array (1-based). */
+export interface RbEntry<K, V> {
+  readonly key: Readonly<K>;
+  value: V;
+  readonly index: u32;
+}
+/**
+ * lib-sokoban 0.3's `RedBlackTree<K, V, N>` in account data, byte for byte (Phoenix's order books and trader seats):
+ * at the offset, root u32, padding, the allocator (size u64, bump index u32, free list head u32), then `capacity` nodes
+ * of 16 register bytes + K + V, 1-based. Every operation makes the writes sokoban makes, so a port's account bytes
+ * match the original's after every instruction (freed nodes keep their key and value bytes; the free list is LIFO).
+ * Keys are ordered by the comparator given to `rbTreeMutAt`, called as `compare(searchedKey, nodeKey)`, or by default
+ * as Rust derives Ord (fields in order, integers by value, Pubkeys by their bytes).
+ */
+export interface RedBlackTree<K, V> {
+  /** The number of keys (sokoban's `len()`). */
+  readonly length: u64;
+  /** The number of nodes it was made with (sokoban's `capacity()`, its `N`). */
+  readonly capacity: u64;
+  /** NodeAllocator::initialize on zeroed bytes; anything else panics "Cannot reinitialize NodeAllocator", as sokoban. */
+  initialize(): void;
+  /** The value stored for `key`, in place (a reference: writes go to the tree), or null. */
+  get(key: K): V | null;
+  /**
+   * Insert, or replace the value of an equal key (keeping its node). The node index, or null when a new key finds the
+   * tree full (nothing written); a tree that is empty takes the key without that check, as sokoban's does.
+   * References into the tree's nodes (`get`, `min`, entries) cannot be used after an insert (a freed node may be reused).
+   */
+  insert(key: K, value: V): u32 | null;
+  /** Remove `key`: its value (a struct in place in the freed node, which keeps its bytes until reused), or null. */
+  remove(key: K): V | null;
+  /** The node with the smallest key (sokoban's get_min_index), or null when empty. */
+  min(): RbEntry<K, V> | null;
+  /** The node with the largest key, or null. */
+  max(): RbEntry<K, V> | null;
+  /** The index of the node holding `key` (sokoban's get_addr), 0 when absent. */
+  addrOf(key: K): u32;
+  /** Node `index` as stored (sokoban's get_node), whether or not it holds a key; 0 or past the capacity panics as Rust's indexing. */
+  nodeAt(index: u32): RbEntry<K, V>;
+  /** `for (const e of tree.reversed())`: from the largest key down. */
+  reversed(): Iterable<RbEntry<K, V>>;
+  /** `for (const e of tree)`: from the smallest key up, `break` and `continue` as in any loop. */
+  [Symbol.iterator](): Iterator<RbEntry<K, V>>;
+}
+/** A RedBlackTree of a read-only view (`rbTreeAt`): read, never changed. */
+export interface ReadonlyRedBlackTree<K, V> {
+  readonly length: u64;
+  readonly capacity: u64;
+  get(key: K): Readonly<V> | null;
+  min(): Readonly<RbEntry<K, Readonly<V>>> | null;
+  max(): Readonly<RbEntry<K, Readonly<V>>> | null;
+  addrOf(key: K): u32;
+  nodeAt(index: u32): Readonly<RbEntry<K, Readonly<V>>>;
+  reversed(): Iterable<Readonly<RbEntry<K, Readonly<V>>>>;
+  [Symbol.iterator](): Iterator<Readonly<RbEntry<K, Readonly<V>>>>;
+}
+/**
+ * lib-sokoban 0.3's RedBlackTree<K, V, capacity> at a run-time byte offset (see RedBlackTree): owned by this program
+ * (3007), its 32 + capacity × (16 + size(K) + size(V)) bytes within the data (ProgramError::AccountDataTooSmall),
+ * `rbTreeMutAt` writable and claimed as `loadRawMut` is. `compare`, a function of the program `(a: K, b: K) => i8`
+ * (negative: a first), orders the keys; it is called as compare(searchedKey, nodeKey), so an order that depends on the
+ * left key (Phoenix's FIFOOrderId: bids descending, asks ascending, by the sequence number's top bit) works as in
+ * Rust. Without it, keys are ordered as Rust's derived Ord orders them.
+ */
+export declare function rbTreeAt<K, V>(
+  account: RemainingAccount | AccountInfo,
+  offset: u64,
+  capacity: u64,
+  compare?: (a: K, b: K) => bigint,
+): ReadonlyRedBlackTree<K, V>;
+export declare function rbTreeMutAt<K, V>(
+  account: RemainingAccount | AccountInfo,
+  offset: u64,
+  capacity: u64,
+  compare?: (a: K, b: K) => bigint,
+): RedBlackTree<K, V>;
+/**
  * A native program's Borsh account, as Rust's `try_from_slice_unchecked::<T>(&data)` reads it: the data from byte 0
  * decoded into a local `T` (a copy; write it back with `storeBorsh`). No owner check and no discriminator; bytes after
  * the value are ignored. Data too short for it, an Option tag or a boolean other than 0/1, or an enum tag out of range
