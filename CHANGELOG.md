@@ -6,6 +6,20 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `loadRawAt<T>(acct, offset)` / `loadRawMutAt<T>(…)`, a native account's struct at a byte offset known at run
+  time, and `rawArrayAt<T>(acct, offset, capacity)` / `rawArrayMutAt<T>(…)`, a run-time number of elements in place
+  (`get`, `set`, `.length`, `for … of`, the list methods). Bounds checked once when made (ProgramError::AccountDataTooSmall,
+  overflow included); owner, writability and claim as `loadRaw` / `loadRawMut`.
+- New: `rbTreeAt<K, V>(acct, offset, capacity, compare?)` / `rbTreeMutAt`, lib-sokoban 0.3's `RedBlackTree<K, V, N>`
+  over account bytes, byte for byte (Phoenix's order books and seats): `get`, `insert`, `remove`, `min`, `max`,
+  `addrOf`, `nodeAt`, `initialize`, `length`, `capacity`, `for … of` and `reversed()`. A comparator function orders
+  the keys (called as `compare(searched, node)`), or Rust's derived order. Replayed against the crate itself on
+  1,020,000 recorded operations (capacities 1 to 512, strides 32, 64 and 144) with identical bytes after every one;
+  7,320 of them are a test. sokoban's panics are logged as solana-program up to 1.17 logs a panic, with sokoban's
+  messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries (get 215 CU against
+  384, insert 595 / 742, remove 355 / 618).
+- Programs that use none of these compile to the same C as before.
+
 ## 0.42.0 — 2026-11-09
 
 SPL Stake Pool ported in full, the native program behind most liquid staking tokens, from the tag a reproducible build

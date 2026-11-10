@@ -82,6 +82,7 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 | `storage.ts` | `StorageEmitter` | references into account data and locals, reads and writes, indexing, aliasing, argument validation |
 | `expressions.ts` | `ExpressionEmitter` | literals, operators and checked arithmetic, property reads, conditionals, text, casts |
 | `calls.ts` | `CallEmitter` | `call()` (the built-in dispatch), Vec methods, helpers, remaining accounts, foreign reads, return data |
+| `views.ts` | `ViewEmitter` | views at run-time offsets (`loadRawAt`, `rawArrayAt`) and the RedBlackTree's binding, methods and node references (its per-tree C is `rbtree.ts`, its structural code `ts_rbt_*` in the runtime) |
 | `cpi-core.ts` | `CpiCoreEmitter` | seeds and PDAs, signer seeds, remaining-account ranges, byte buffers and Borsh serialization |
 | `create.ts` | `CreateEmitter` | `create` / `createIfNeeded` of program accounts, mints (with Token-2022 extensions), token accounts and ATAs; System transfers |
 | `token.ts` | `TokenEmitter` | SPL Token / Token-2022 instructions and the ATA program |
@@ -188,6 +189,7 @@ the change. The sha256 values in the `*.build.json` manifests must not change.
 | `test/language/diagnostics.test.ts` | Every rejected construct, plus the golden C. |
 | `test/security/hardening.test.ts`, `test/security/regressions.test.ts` | Attacks and edge cases that once failed. Keep each as a negative test. |
 | `test/verification/fuzz-*.test.ts`, `test/verification/differential.test.ts` | Randomized checks against BigInt, a TypeScript state model, and the Anchor twins in `test/anchor-twins`. See [testing.md](testing.md). |
+| `test/verification/rbtree-trace.test.ts` | The RedBlackTree replaying traces lib-sokoban 0.3 itself recorded (`test/verification/rbtree/`, rebuilt by its `regenerate.sh` with a small Rust oracle the tests do not need), bytes compared after every operation. |
 | `scripts/smoke.ts` | End to end against a real `solana-test-validator` (`scripts/localnet.sh`). |
 
 Some tests need optional inputs and are skipped without them:
