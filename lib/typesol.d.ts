@@ -345,6 +345,12 @@ export interface RedBlackTree<K, V> {
   insert(key: K, value: V): u32 | null;
   /** Remove `key`: its value (a struct in place in the freed node, which keeps its bytes until reused), or null. */
   remove(key: K): V | null;
+  /**
+   * Remove the node at `index` (from `addrOf`, a node of `min` / `max` / `get`'s entry or a walk): the same writes as
+   * `remove(node.key)`, without searching the tree again. Its value, or null for index 0 or a node that holds no key
+   * (a freed one); past the capacity panics as `nodeAt` does.
+   */
+  removeAt(index: u32): V | null;
   /** The node with the smallest key (sokoban's get_min_index), or null when empty. */
   min(): RbEntry<K, V> | null;
   /** The node with the largest key, or null. */

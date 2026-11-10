@@ -108,6 +108,24 @@ describe("RedBlackTree", () => {
     expect(line(none, "no such")).toBe("Program log: no such order");
   });
 
+  it("removeAt(index) writes what remove(key) writes for that node; index 0 and a freed node give null and write nothing", async () => {
+    const prices = [5, 9, 5, 7, 9, 1, 3];
+    const book = async (byKey: boolean) => {
+      await fresh(8);
+      ok(await call("init", { cap: new BN(8) }));
+      ok(await call("post", { cap: new BN(8), prices: priceWord(prices), count: new BN(prices.length), bid: true }));
+      const r = ok(await call("cancel_best", { cap: new BN(8), by_key: byKey }));
+      return { r, b: bytes() };
+    };
+    const byKey = await book(true);
+    const byIndex = await book(false);
+    // the best bid is 9 / trader 2 (node 2)
+    expect(line(byKey.r, "removed")).toBe("Program log: removed 2 at 2 len 6");
+    expect(line(byIndex.r, "removed")).toBe("Program log: removed 2 at 2 len 6");
+    expect(line(byIndex.r, "again")).toBe("Program log: again true zero true len 6");
+    expect(byIndex.b.equals(byKey.b)).toBe(true);
+  });
+
   it("an equal key replaces the value even when full; a new key on a full tree gives null and writes nothing", async () => {
     const STR = 32;
     await fresh(2, STR);
@@ -171,6 +189,12 @@ describe("RedBlackTree", () => {
       "index out of bounds: the len is 3 but the index is 3', src/node_allocator.rs:255:10",
     );
     ok(await run(Buffer.concat([Buffer.from([2]), u64(3), u64(3)])));
+    // removeAt past the capacity panics as nodeAt does; 0 is no node
+    panicked(
+      await run(Buffer.concat([Buffer.from([3]), u64(3), u64(4)])),
+      "index out of bounds: the len is 3 but the index is 3', src/node_allocator.rs:255:10",
+    );
+    expect(logs(ok(await run(Buffer.concat([Buffer.from([3]), u64(3), u64(0)]))))).toContain("Program log: none");
     // a tree with no room: an empty tree's insert skips the capacity check, so the allocator panics
     market = (await generateKeyPairSigner()).address;
     d.svm.setAccount({ address: market, lamports: 1_000_000_000n, programAddress: d.programId, executable: false, data: Buffer.alloc(32) } as never);
@@ -203,6 +227,11 @@ function bad(a: u64, b: u64): i8 { return 0n; }
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); for (const e of t) t.remove(e.key);`)).toContain(
       "remove() would change the tree a for … of is walking",
     );
+    expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); for (const e of t) t.removeAt(e.index);`)).toContain(
+      "removeAt() would change the tree a for … of is walking",
+    );
+    expect(f(`const t = rbTreeAt<K, V>(a, 0n, 4n, cmp); t.removeAt(1n);`, "AccountInfo")).toContain("Property 'removeAt' does not exist");
+    expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); t.removeAt(k);`)).toMatch(/not assignable|expected a u32/);
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); const v = t.get(k); t.insert(k, { x: 1n, y: 2n }); if (v !== null) log(v.x);`)).toContain(
       '"v" still refers to',
     );
@@ -231,13 +260,15 @@ function orderCmp(a: FIFOOrderId, b: FIFOOrderId): i8 {
   if (a.price_in_ticks !== b.price_in_ticks) return a.price_in_ticks < b.price_in_ticks ? -1n : 1n;
   return a.order_sequence_number < b.order_sequence_number ? -1n : a.order_sequence_number > b.order_sequence_number ? 1n : 0n;
 }
-export function fill(market: AccountInfo, n: u64, s: u64, fill: u64, trader: Pubkey): void {
+export function fill(market: AccountInfo, n: u64, s: u64, fill: u64, trader: Pubkey, orderId: FIFOOrderId, traderIndex: u64): void {
   const bids = rbTreeMutAt<FIFOOrderId, FIFORestingOrder>(market, 880n, n, orderCmp);
   const traders = rbTreeMutAt<Pubkey, TraderState>(market, 880n + 2n * (32n + 64n * n), s);
   const best = bids.min();
   if (best !== null && best.value.num_base_lots > 0n) best.value.num_base_lots -= fill;
   const index = traders.addrOf(trader);
   if (index !== 0n) traders.nodeAt(index).value.base_lots_free += fill;
+  const at = bids.addrOf(orderId);
+  if (at !== 0n && bids.nodeAt(at).value.trader_index === traderIndex) bids.removeAt(at);
 }`),
     ).toBe("");
   });

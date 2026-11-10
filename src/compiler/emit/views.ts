@@ -7,9 +7,9 @@ import { type Local, type Ref, type Value, U32, U64, fieldC, optC, valueC } from
 /** The run-time offset views a native program reads its account with. */
 const VIEW_FNS = new Set(["loadRawAt", "loadRawMutAt", "rawArrayAt", "rawArrayMutAt", "rbTreeAt", "rbTreeMutAt"]);
 /** Tree methods that hand out a reference into a node (bound to a const, they alias the tree). */
-const TREE_REFS = new Set(["get", "remove", "min", "max", "nodeAt"]);
+const TREE_REFS = new Set(["get", "remove", "removeAt", "min", "max", "nodeAt"]);
 const TREE_METHODS =
-  "length, capacity, initialize(), get(key), insert(key, value), remove(key), min(), max(), addrOf(key), nodeAt(index), for … of and reversed()";
+  "length, capacity, initialize(), get(key), insert(key, value), remove(key), removeAt(index), min(), max(), addrOf(key), nodeAt(index), for … of and reversed()";
 
 /**
  * Views of native account data at offsets known only at run time (Phoenix's market at byte 576, its trees sized by
@@ -359,6 +359,15 @@ export abstract class ViewEmitter extends CallEmitter {
         if (method === "addrOf") return { value: { c: r, type: U32 } };
         return { value: this.nodeValue(tree, r) };
       }
+      case "removeAt": {
+        // remove(key) for a node already found (addrOf, an entry's index): the same writes, no second search.
+        arity(1, "index");
+        writes();
+        const i = this.expect(this.expr(args[0]!, U32), U32, args[0]!);
+        const r = this.tmp("rbi");
+        this.line(`uint32_t ${r} = ${inst.c}_remove_at(&${t}, ${i.c});`);
+        return { value: this.nodeValue(tree, r) };
+      }
       case "min":
       case "max": {
         arity(0, "");
@@ -428,7 +437,7 @@ export abstract class ViewEmitter extends CallEmitter {
         if (l?.type.kind === "structRef" && l.type.nullable) v = { c: l.c, type: l.type };
       } else if (ts.isCallExpression(inner) && ts.isPropertyAccessExpression(inner.expression) && this.treeOf(inner.expression.expression)) {
         const m = inner.expression.name.text;
-        if (m === "get" || m === "remove") v = this.treeCall(inner)!.value;
+        if (m === "get" || m === "remove" || m === "removeAt") v = this.treeCall(inner)!.value;
       }
       if (!v || v.type.kind !== "structRef") return undefined;
       this.line(`if (${v.c} == NULL) TS_FAIL(TS_ERR_UNWRAP, "TypeSOL: the key is not in the tree");`);

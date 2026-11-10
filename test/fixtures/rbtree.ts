@@ -96,6 +96,11 @@ function runU64(acct: RemainingAccount, data: InstructionBytes): void {
     const v = t.remove(data.readU64(18n));
     out.a = v === null ? 0n : 1n;
     out.b = v === null ? 0n : v;
+  } else if (op === 11n) {
+    // remove(key) as removeAt(addrOf(key)): the trace replay checks it writes what sokoban's remove wrote.
+    const v = t.removeAt(t.addrOf(data.readU64(18n)));
+    out.a = v === null ? 0n : 1n;
+    out.b = v === null ? 0n : v;
   } else if (op === 3n) {
     const v = t.get(data.readU64(18n));
     out.a = v === null ? 0n : 1n;
@@ -153,6 +158,10 @@ function runFifo(acct: RemainingAccount, data: InstructionBytes): void {
     out.b = r === null ? 0n : u64(r!);
   } else if (op === 2n) {
     const v = t.remove(key);
+    out.a = v === null ? 0n : 1n;
+    out.b = v === null ? 0n : v.trader_index;
+  } else if (op === 11n) {
+    const v = t.removeAt(t.addrOf(key));
     out.a = v === null ? 0n : 1n;
     out.b = v === null ? 0n : v.trader_index;
   } else if (op === 3n) {
@@ -220,6 +229,10 @@ function runTrader(acct: RemainingAccount, data: InstructionBytes): void {
     out.b = r === null ? 0n : u64(r!);
   } else if (op === 2n) {
     const v = t.remove(key);
+    out.a = v === null ? 0n : 1n;
+    out.b = v === null ? 0n : v.w0;
+  } else if (op === 11n) {
+    const v = t.removeAt(t.addrOf(key));
     out.a = v === null ? 0n : 1n;
     out.b = v === null ? 0n : v.w0;
   } else if (op === 3n) {

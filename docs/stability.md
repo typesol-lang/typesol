@@ -42,7 +42,7 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
 - `BigVec<T>` (0.42.0): SPL's `big_vec`, a list over the rest of a native account.
 - Views at run-time offsets (unreleased): `loadRawAt` / `loadRawMutAt`, `rawArrayAt` / `rawArrayMutAt`.
 - The built-in RedBlackTree (unreleased): `rbTreeAt` / `rbTreeMutAt`, lib-sokoban 0.3's byte layout and algorithms,
-  its panics in solana-program 1.14–1.17's format.
+  its panics in solana-program 1.14–1.17's format, `removeAt(index)` (what it gives for a node in no tree may change).
 - `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
 - Failures without a log line (unreleased): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
 - `findProgramAddressWithBump` (unreleased), with `const [address, bump] = …` its only array destructuring.

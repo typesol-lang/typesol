@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `tree.removeAt(index)` on a RedBlackTree removes the node at that index (from `addrOf`, or a node's `.index`
+  from `min` / `max` / a walk) with exactly the writes `remove(node.key)` makes, without searching the tree a second
+  time: Phoenix's cancel finds the order, checks whose it is, then removes it (691 → 547 CU in
+  test/language/phx-costs.test.ts). It gives the removed value, or null for index 0 or a node in no tree (a freed one,
+  which is left as it is); past the capacity it panics as `nodeAt` does. The lib-sokoban trace replay runs a second
+  time with every `remove(key)` as `removeAt(addrOf(key))`, and the bytes after each operation are still the crate's
+  (test/verification/rbtree-trace.test.ts).
 - New: room beyond one 4 KiB stack frame. `/** @noinline */` on a helper keeps it a C function of its own, so its
   locals get their own frame instead of the instruction's it would be inlined into (3 to 5 CU per call);
   `/** @heap */` on an instruction's list or struct local keeps it on the heap (one allocation per declaration,

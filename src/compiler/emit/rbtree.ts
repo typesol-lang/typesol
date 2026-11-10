@@ -78,6 +78,13 @@ function emitTree(model: ProgramModel, t: RbTreeInst): string[] {
     `  *out = i;`,
     `  return SUCCESS;`,
     `}`,
+    `/* removeAt: node \`i\` unlinked and freed as _remove frees the node it finds; 0 (nothing written) for index 0 or a node`,
+    `   in no tree (not the root, no parent: a freed or never used one). Past the capacity panics as get_node does. */`,
+    `static __attribute__((noinline, unused)) uint32_t ${p}_remove_at(const TsRbt *t, uint32_t i) {`,
+    `  if (i == 0 || (TS_RBT_ROOT(t->base) != i && ts_rbt_reg(t, ${S}, i, TS_RBT_PARENT) == 0)) return 0;`,
+    `  ts_rbt_remove_node(t, ${S}, i);`,
+    `  return i;`,
+    `}`,
     ``,
   ];
 }

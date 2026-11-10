@@ -6,7 +6,8 @@
 // with its side-dependent comparator (bids and asks, stride 64) and Pubkey keys with Phoenix's TraderState (stride
 // 144). The committed set is test/verification/rbtree/traces.jsonl.gz (7,320 operations; rebuilt by
 // test/verification/rbtree/regenerate.sh); RBTREE_TRACES=<file.jsonl[.gz]> replays another, such as the
-// million-operation runs the oracle makes (see the script).
+// million-operation runs the oracle makes (see the script). A second pass replays every remove(key) as
+// removeAt(addrOf(key)), which must leave the bytes sokoban's remove left.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner } from "@solana/kit";
 import { FailedTransactionMetadata, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
@@ -62,8 +63,8 @@ function valueBytes(shape: Trace["shape"], vseed: number): Buffer {
   const n = shape === "u64" ? 1 : shape === "trader" ? 12 : 4;
   return Buffer.concat(words(BigInt(vseed), n).map(u64le));
 }
-function opData(t: Trace, op: Op): Buffer {
-  const code = { init: 0, i: 1, r: 2, g: 3, mn: 4, mx: 5, f: 6, b: 7, a: 8 }[op[0]]!;
+function opData(t: Trace, op: Op, removeAt = false): Buffer {
+  const code = { init: 0, i: 1, r: removeAt ? 11 : 2, g: 3, mn: 4, mx: 5, f: 6, b: 7, a: 8 }[op[0]]!;
   const head = Buffer.concat([Buffer.from([code, SHAPE[t.shape]]), u64le(BigInt(OFFSET)), u64le(BigInt(t.cap))]);
   let args: Buffer = Buffer.alloc(0);
   if (op[0] === "i") args = Buffer.concat([keyBytes(t.shape, op[1] as string), valueBytes(t.shape, op[2] as number)]);
@@ -103,7 +104,7 @@ describe("RedBlackTree against lib-sokoban 0.3 (recorded traces)", () => {
     return r;
   };
 
-  it(`replays ${traces.length} traces, ${traces.reduce((n, t) => n + t.ops.length, 0)} operations, byte for byte`, async () => {
+  const replay = async (removeAt: boolean) => {
     let checked = 0;
     for (const t of traces) {
       const a = (await generateKeyPairSigner()).address;
@@ -116,7 +117,7 @@ describe("RedBlackTree against lib-sokoban 0.3 (recorded traces)", () => {
       await run(a, opData(t, ["init"]));
       for (let s = 0; s < t.ops.length; s++) {
         const op = t.ops[s]!;
-        await run(a, opData(t, op));
+        await run(a, opData(t, op, removeAt));
         const now = bytes(a);
         const where = `${t.shape} cap ${t.cap} seed ${t.seed} step ${s} ${JSON.stringify(op)}`;
         const hash = createHash("sha256")
@@ -135,5 +136,10 @@ describe("RedBlackTree against lib-sokoban 0.3 (recorded traces)", () => {
       }
     }
     expect(checked).toBe(traces.reduce((n, t) => n + t.ops.length, 0));
-  }, 1_800_000);
+  };
+
+  it(`replays ${traces.length} traces, ${traces.reduce((n, t) => n + t.ops.length, 0)} operations, byte for byte`, () => replay(false), 1_800_000);
+
+  // removeAt(addrOf(key)) in place of every remove(key): the bytes after each step must still be sokoban's.
+  it("replays them again with every remove as removeAt(addrOf(key))", () => replay(true), 1_800_000);
 });
