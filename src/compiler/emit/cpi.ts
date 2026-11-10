@@ -317,8 +317,12 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         const ft = f.type;
         const t = this.tmp("evv");
         this.line(`${fixedVecC(ft)} ${t};`);
-        this.line(`ts_memzero(&${t}, sizeof(${t}));`);
-        this.writeAggregate({ lv: t, type: ft, writable: true }, e);
+        // A literal is built in place, its free slots zeroed; anything else may fill only the first ones.
+        if (this.isListLiteral(e)) this.writeAggregate({ lv: t, type: ft, writable: true }, e, true);
+        else {
+          this.line(`ts_memzero_bulk(&${t}, sizeof(${t}));`);
+          this.writeAggregate({ lv: t, type: ft, writable: true }, e);
+        }
         const n = this.fieldBytes(ft);
         return (put) => put(`&${t}`, String(n), n);
       }

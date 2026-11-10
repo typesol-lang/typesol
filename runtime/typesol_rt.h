@@ -1826,6 +1826,22 @@ static inline __attribute__((always_inline)) void ts_memcpy_bulk(void *dst, cons
   if (n >= TS_MEMCPY_SYSCALL_MIN) sol_memcpy_(dst, src, n);
   else ts_memcpy(dst, src, n);
 }
+/* The memset syscall, for zeroing large regions (a local FixedVec's free slots, so bytes past its length read as zero
+ * wherever its whole layout is copied: account data, events): max(10, n / 250) CU plus the call, against n / 8 stores
+ * for ts_memzero's words (constant sizes unroll), so regions under 128 bytes keep the stores. */
+extern void sol_memset_(void *dst, uint8_t c, uint64_t n);
+#define TS_MEMSET_SYSCALL_MIN 128
+static inline __attribute__((always_inline, unused)) void ts_memzero_bulk(void *dst, uint64_t n) {
+  if (n >= TS_MEMSET_SYSCALL_MIN) sol_memset_(dst, 0, n);
+  else ts_memzero(dst, n);
+}
+/* A copy of a size known when compiling (a whole local FixedVec): the syscall from TS_MEMCPY_CONST_MIN bytes, where
+ * the unrolled words (a load and a store per 8 bytes) cost more than the call. */
+#define TS_MEMCPY_CONST_MIN 128
+static inline __attribute__((always_inline, unused)) void ts_memcpy_const(void *dst, const void *src, uint64_t n) {
+  if (n >= TS_MEMCPY_CONST_MIN) sol_memcpy_(dst, src, n);
+  else ts_memcpy(dst, src, n);
+}
 /* A BigVec's room: a BigVec struct is only ever a loadRaw view, which sits at a TsAccount's data, right after its
  * data_len (see TsAccount); the elements that fit in the account past the struct (its fixed fields and the length). */
 static inline __attribute__((always_inline)) uint64_t ts_bigvec_cap(const uint8_t *data, uint64_t fixed, uint64_t elem) {

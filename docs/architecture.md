@@ -138,8 +138,13 @@ These invariants are easy to break. Each one has tests.
   message.
 - **No SDK byte loops.** Generated code and the runtime compare, copy and zero memory with `ts_key_eq`, `ts_mem_eq`,
   `ts_memcpy` and `ts_memzero` (8 bytes per instruction), not `sol_memcmp`, `sol_memcpy`, `sol_memset` or
-  `SolPubkey_same`. `ts_bytes_cmp` stays byte-wise because it orders, not just compares. Checked u64 arithmetic uses
+  `SolPubkey_same`. Large regions go to the memory syscalls (max(10, n / 250) CU): `ts_memzero_bulk` and
+  `ts_memcpy_const` from 128 bytes, `ts_memcpy_bulk` (a run-time length) from 32, `sol_memmove_` for BigVec's moves.
+  `ts_bytes_cmp` stays byte-wise because it orders, not just compares. Checked u64 arithmetic uses
   `ts_add/sub/mul_overflow_u64`, which clang lowers to fewer instructions than the builtins on SBF.
+- **A FixedVec's free slots are zero.** Bytes past a FixedVec's length are never read element by element, but its
+  whole layout is copied (into account data, an event, another list), so a list made from a literal zeroes them
+  (once, `ts_memzero_bulk`) and the stack's earlier contents never reach an account or a log.
 - **Heap use is bounded.** The heap is a bump allocator (32 KiB by default) and is never freed. Anything that runs in
   a loop must not allocate on every pass; hoist a reusable buffer instead (see `snapshotPlace()`).
 

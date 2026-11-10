@@ -883,7 +883,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     this.checkLocalListSize(t, init, "the new list");
     this.model.localVecs.set(fixedVecC(t), t);
     const pad = "  ".repeat(this.indent);
-    this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero(&${c}, sizeof(${c}));`;
+    this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero_bulk(&${c}, sizeof(${c}));`;
     return t;
   }
   /** The element type of a Vec, FixedArray, FixedVec or Vec argument. */
@@ -1546,7 +1546,8 @@ export abstract class StatementEmitter extends CpiEmitter {
         if (listType.kind === "vec") {
           this.model.localVecs.set(fixedVecC(listType), listType);
           this.line(`${fixedVecC(listType)} ${c};`);
-          this.line(`ts_memzero(&${c}, sizeof(${c}));`);
+          // A literal zeroes its own free slots; anything else (a copy of another list) may fill only the first ones.
+          if (!this.isListLiteral(init)) this.line(`ts_memzero_bulk(&${c}, sizeof(${c}));`);
         } else this.line(`${storageDecl(listType, c)};`);
         this.writeAggregate({ lv: c, type: listType, writable: true }, init, true);
         this.scopes.at(-1)!.set(name, { c, type: listType, mutable });

@@ -602,30 +602,38 @@ export abstract class StorageEmitter extends AliasEmitter {
     if (target.type.kind === "vec" && target.type.cap !== undefined && ts.isCallExpression(valueNode) && this.exportName(valueNode.expression) === "fixedVec") {
       const list = valueNode.arguments[0];
       if (valueNode.arguments.length !== 1 || !ts.isArrayLiteralExpression(list)) this.fail(valueNode, "fixedVec([…]) takes an array literal");
-      return this.writeAggregate(target, list);
+      return this.writeAggregate(target, list, fresh);
     }
     if (target.type.kind === "vec" && target.type.cap !== undefined && ts.isArrayLiteralExpression(valueNode)) {
-      // `list = [a, b]`: built in a temporary (the elements may read the old list), the unused slots zeroed.
       const t = target.type as FieldType & { kind: "vec"; cap: number };
       const els = valueNode.elements;
       if (els.length > t.cap) this.fail(valueNode, `${els.length} elements do not fit in ${typeName(t)}`);
-      // Empty: nothing reads the old list, so it is cleared in place (length 0, every slot zero).
-      if (els.length === 0) {
-        this.line(`ts_memzero(&${target.lv}, sizeof(${target.lv}));`);
+      // The slots past the elements are zeroed (so the list's whole layout, copied into account data or an event, reads
+      // the same whatever ran before), large regions by the memset syscall: about constant compute units at any size.
+      const size = this.fieldBytes(t.elem);
+      const writeInto = (lv: string) => {
+        const free = (t.cap - els.length) * size;
+        if (free > 0) this.line(`ts_memzero_bulk(${els.length ? `(uint8_t *)${lv}.items + ${els.length * size}` : `${lv}.items`}, ${free});`);
+        this.line(`${lv}.len = ${els.length};`);
+        els.forEach((e, i) => {
+          if (ts.isSpreadElement(e)) this.fail(e, "list the elements one by one");
+          const sub: Ref = { lv: `${lv}.items[${i}]`, type: t.elem, writable: true };
+          const vt = this.storageValueType(t.elem);
+          if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(e, vt), vt, e)).c) + ";");
+          else this.writeAggregate(sub, e, true);
+        });
+      };
+      // A fresh list (a declaration, a struct literal's field) is built in place: nothing can read it yet. So is an
+      // empty one, which reads nothing.
+      if (fresh || els.length === 0) {
+        writeInto(target.lv);
         return;
       }
+      // `list = [a, b]`: built in a temporary, since the elements may read the old list.
       const tmp = this.tmp("fv");
       this.line(`${fixedVecC(t)} ${tmp};`);
-      this.line(`ts_memzero(&${tmp}, sizeof(${tmp}));`);
-      this.line(`${tmp}.len = ${els.length};`);
-      els.forEach((e, i) => {
-        if (ts.isSpreadElement(e)) this.fail(e, "list the elements one by one");
-        const sub: Ref = { lv: `${tmp}.items[${i}]`, type: t.elem, writable: true };
-        const vt = this.storageValueType(t.elem);
-        if (vt) this.line(this.writeStorage(sub, this.ownedString(this.expect(this.expr(e, vt), vt, e)).c) + ";");
-        else this.writeAggregate(sub, e);
-      });
-      this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
+      writeInto(tmp);
+      this.line(`ts_memcpy_const(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
     // A struct holding a heap Vec is copied field by field: a whole copy would share one list between two places.
@@ -722,6 +730,12 @@ export abstract class StorageEmitter extends AliasEmitter {
       );
     // Same-typed places are either distinct or identical (`a.p = a.p`); ts_copy skips the latter.
     this.line(`ts_copy(&${target.lv}, &${src.lv}, sizeof(${target.lv}));`);
+  }
+
+  /** `fixedVec([…])` or `[…]`: a list literal, which writeAggregate builds in a fresh target with its free slots zeroed. */
+  protected isListLiteral(node: ts.Expression): boolean {
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return ts.isArrayLiteralExpression(node) || (ts.isCallExpression(node) && this.exportName(node.expression) === "fixedVec");
   }
 
   /** The Vec view of a FixedVec stored at `lv` (`{ len, items[cap] }`). */

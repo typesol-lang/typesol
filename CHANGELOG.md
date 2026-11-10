@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- Faster: a local `FixedVec` is set up in about constant compute units. `fixedVec([])` of 1280 bytes zeroed the list
+  twice (1,436 CU in test/language/fixedvec-setup.test.ts, now 152 with the rest of the instruction); `fixedVec([15n])`
+  also built and copied a temporary (3,216 → 155); a FixedVec field in a struct literal zeroed and copied a temporary,
+  doubling the stack (2,571 → 153). The free slots are now zeroed once, by the memset syscall from 128 bytes
+  (`ts_memzero_bulk`), and the elements are written in place; `list = fixedVec([…])` still builds in a temporary (its
+  elements may read the old list) but zeroes and copies it with the syscalls. The free slots stay zero, since a list's
+  whole layout is copied into account data and events. Changes the generated C of programs with local FixedVecs
+  (Phoenix, SPL Stake Pool, Marginfi, coral multisig, favorites and seven test fixtures), whose tests pass unchanged.
 - New: `const ERROR_LOG_PREFIX = null` / `const PROGRAM_ERROR_LOG_PREFIX = null`: failures return their error and log
   nothing, as a native program's do when its own checks already logged (Phoenix). `ERROR_LOG_PREFIX = null` covers
   `require(…, MyError.X)` and codes computed at run time, `PROGRAM_ERROR_LOG_PREFIX = null` built-in ProgramErrors
