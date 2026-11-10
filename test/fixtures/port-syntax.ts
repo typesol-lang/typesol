@@ -1,6 +1,6 @@
 // Forms a native port writes as the Rust reads (test/language/port-syntax.test.ts): for loops with two counters, a
-// local list of 2 KiB of elements, reads through a view without binding it.
-import { type AccountInfo, type FixedVec, fixedVec, loadRaw, loadRawAt, rbTreeAt, u32, u64 } from "typesol";
+// local list of 2 KiB of elements, reads through a view without binding it, a struct of the file's own for helpers.
+import { type AccountInfo, type FixedVec, type Inout, fixedVec, loadRaw, loadRawAt, rbTreeAt, u32, u64 } from "typesol";
 
 export interface Inner {
   a: u64;
@@ -43,4 +43,25 @@ export function collect(n: u64): u64 {
 /** Reads through views made in the expression: `loadRaw<Header>(m).inner.b`, `loadRawAt<…>(m, 8n).a`, `rbTreeAt(…).length`. */
 export function peek(market: AccountInfo): u64 {
   return loadRaw<Header>(market).inner.b * 1000n + loadRawAt<Inner>(market, 8n).a * 100n + rbTreeAt<u64, u64>(market, 24n, 2n).length * 10n + rbTreeAt<u64, u64>(market, 24n, 2n).capacity;
+}
+
+/** Not exported: the file's own struct, for its helpers (out of the IDL). */
+interface Pair {
+  a: u64;
+  b: u64;
+}
+
+function pairOf(x: u64): Pair {
+  return { a: x, b: x + 1n };
+}
+
+function bump(p: Inout<Pair>): void {
+  p.a += 10n;
+}
+
+export function pairs(x: u64): u64 {
+  const p = pairOf(x);
+  bump(p);
+  const q: Pair = { a: 1n, b: 2n };
+  return p.a + p.b + q.b;
 }

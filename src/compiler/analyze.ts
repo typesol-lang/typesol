@@ -464,7 +464,9 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               if (el.propertyName) reporter.fail(el, `renaming imports from TypeSOL files is not supported; import ${el.propertyName.text} as is`);
           }
         } else if (ts.isInterfaceDeclaration(stmt)) {
-          if (!isExported(stmt)) reporter.fail(stmt, "structs must be exported");
+          // A struct that is not exported is the file's own (helpers, locals): it stays out of the IDL (see
+          // checkLocalStructs). An account group is part of the instructions' accounts, so it is exported.
+          if (!isExported(stmt) && isAccountGroup(stmt, imports)) reporter.fail(stmt, "account groups must be exported: export interface …");
           declare(stmt.name, file);
           // An interface of accounts is an account group (Anchor's composite `#[derive(Accounts)]` field), not a struct.
           if (isAccountGroup(stmt, imports)) groups.set(stmt.name.text, { decl: stmt, imports });
@@ -955,6 +957,12 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
     reporter.error(sourceFile, "a TypeSOL program needs at least one exported function (instruction) in its entry file");
 
   const name = path.basename(sourceFile.fileName).replace(/\.ts$/, "");
+  const events = collectEvents([...functions, ...helperNodes], structs);
+  // What instructions take or return (collectStructs walks a returned struct only when given it as a reference).
+  const surface = new Set(argStructs);
+  for (const ix of instructions)
+    if (ix.returns?.kind === "struct") collectStructs({ kind: "structRef", struct: ix.returns.name, writable: false }, structs, dataEnums, surface);
+  checkLocalStructs(structs, dataEnums, accountStructs, surface, events, reporter);
   return {
     model: {
       name: snakeCase(name).replace(/[^a-z0-9_]/g, "_"),
@@ -971,7 +979,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       dataEnums,
       options,
       constants,
-      events: collectEvents([...functions, ...helperNodes], structs),
+      events,
       accountStructs,
       foreignAccounts: new Set([...foreignStructs].filter((n) => !ownStructs.has(n))),
       argStructs,
@@ -991,6 +999,45 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
 }
 
 /** Every struct an argument type contains (transitively), for IDL layout decisions. */
+/**
+ * A struct that is not exported (`interface Pair { … }`) is its file's own: helpers, locals and other such structs use
+ * it, and the IDL leaves it out. What the IDL describes cannot hold one: account data, instruction arguments and
+ * results, events, an exported struct's fields, a data enum's variants. Each such use is one error naming the fix.
+ */
+function checkLocalStructs(
+  structs: Map<string, StructDef>,
+  dataEnums: Map<string, DataEnumDef>,
+  accountStructs: Set<string>,
+  argStructs: Set<string>,
+  events: Set<string>,
+  reporter: Reporter,
+) {
+  const local = (n: string) => structs.get(n)?.local === true;
+  const fix = (n: string, what: string) => `${n} is not exported, but ${what} uses it, which puts it in the IDL: export interface ${n}`;
+  const named = (t: FieldType): string[] =>
+    t.kind === "struct"
+      ? [t.name]
+      : t.kind === "array" || t.kind === "vec"
+        ? named(t.elem)
+        : t.kind === "option" && (t.inner.kind === "struct" || t.inner.kind === "array")
+          ? named(t.inner as FieldType)
+          : [];
+  for (const s of structs.values()) {
+    if (s.local) {
+      if (accountStructs.has(s.name)) reporter.error(s.node.name, fix(s.name, "account data"));
+      else if (argStructs.has(s.name)) reporter.error(s.node.name, fix(s.name, "an instruction's arguments or result"));
+      else if (events.has(s.name)) reporter.error(s.node.name, fix(s.name, "an event"));
+      continue;
+    }
+    for (const f of s.fields)
+      for (const n of named(f.type)) if (local(n)) reporter.error(structs.get(n)!.node.name, fix(n, `the exported struct ${s.name} (field ${f.name})`));
+  }
+  for (const e of dataEnums.values())
+    for (const v of e.variants)
+      for (const f of v.fields)
+        for (const n of named(f.type)) if (local(n)) reporter.error(structs.get(n)!.node.name, fix(n, `the data enum ${e.name} (${v.name}.${f.name})`));
+}
+
 function collectStructs(t: ValueType | FieldType, structs: Map<string, StructDef>, dataEnums: Map<string, DataEnumDef>, out: Set<string>) {
   const visitField = (f: FieldType): void => {
     if (f.kind === "struct") {
@@ -1432,6 +1479,7 @@ function analyzeStructs(
       const declared = fields.map((f) => f.name);
       structs.set(name, {
         ...(idlMeta ? { idlMeta } : {}),
+        ...((ts.getModifiers(decl) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ? {} : { local: true }),
         ...(stored.some((f, i) => f.name !== declared[i]) ? { declared } : {}),
         name,
         fields: stored,

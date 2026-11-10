@@ -59,6 +59,26 @@ export function f(m: Mut<AccountInfo>): void { ${body} }`);
     expect(f(`log(rbTreeMutAt<u64, u64>(m, 0n, 2n).length);`)).toContain("bind rbTreeMutAt(…) to a const first");
   });
 
+  it("a struct that is not exported serves helpers and stays out of the IDL", async () => {
+    expect(await u64("pairs", { x: new BN(5) })).toBe(15n + 6n + 2n);
+    const types = (d.idl.types ?? []).map((t) => t.name);
+    expect(types).toContain("Header");
+    expect(types).not.toContain("Pair");
+    const f = (body: string) =>
+      compileErrors(`import { type Account, type Mut, type Signer, type u64, emit } from "typesol";
+interface Pair { a: u64; b: u64; }
+${body}`);
+    const fix = (what: string) => `Pair is not exported, but ${what} uses it, which puts it in the IDL: export interface Pair`;
+    expect(f(`export function g(p: Pair): void {}`)).toBe(fix("an instruction's arguments or result"));
+    expect(f(`export function g(a: u64): Pair { return { a, b: a }; }`)).toBe(fix("an instruction's arguments or result"));
+    expect(f(`export function g(s: Mut<Pair>): void { s.a = 1n; }`)).toBe(fix("account data"));
+    expect(f(`export function g(a: u64): void { emit<Pair>({ a, b: a }); }`)).toBe(fix("an event"));
+    expect(f(`export interface Book { best: Pair; }\nexport function g(s: Mut<Book>): void { s.best.a = 1n; }`)).toBe(
+      fix("the exported struct Book (field best)"),
+    );
+    expect(f(`export type E = { kind: "P"; p: Pair } | { kind: "N" };\nexport function g(e: E): void {}`)).toBe(fix("the data enum E (P.p)"));
+  });
+
   it("a comma anywhere else is still refused", () => {
     const f = (body: string) => compileErrors(`import { type u64 } from "typesol";\nexport function f(a: u64): void { let x = a; let y = a; ${body} }`);
     expect(f(`x++, y++;`)).toContain("this expression has no effect");

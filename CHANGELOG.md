@@ -6,6 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: a struct that is not exported (`interface Pair { … }`) is its file's own: helpers take, return and change
+  it (`Inout<Pair>`), locals hold it, and the IDL leaves it out. It failed with "structs must be exported" and a
+  misleading second error about the helper's return type. Used where the IDL describes it (account data, an
+  instruction's arguments or result, an event, an exported struct's field, a data enum's variant), it is one error
+  naming the use and the fix, `export interface Pair` (test/language/port-syntax.test.ts). A non-exported account group
+  is refused as before, with its own message.
 - Language: a read-only native view can be read where it is made: `loadRaw<Header>(market).inner.b`,
   `loadRawAt<Prefix>(market, 576n).tick` and `rbTreeAt<K, V>(…).length` / `.capacity` ("unsupported property access"
   and "bind … to a const first" before). A writable view (`loadRawMut`, `loadRawMutAt`) is still bound first, now
