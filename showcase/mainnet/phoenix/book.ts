@@ -38,6 +38,7 @@ import {
   type FIFORestingOrder,
   type FifoMarketPrefix,
   type MarketHeader,
+  type PhoenixMarketEvent,
   type TraderState,
   BIDS_OFFSET,
   FIFO_MARKET_OFFSET,
@@ -119,10 +120,8 @@ function reducedBidQuoteLots(price: u64, tick: u64, lots: u64, perUnit: u64): u6
 const REDUCE_EVENT_LEN = 1n + 2n + 4n * 8n;
 
 /**
- * recordEvent of a Reduce event { index, order_sequence_number, price_in_ticks, base_lots_removed,
- * base_lots_remaining }: the same bytes and the same flush, appended to the batch directly rather than built as a
- * PhoenixMarketEvent in a scratch buffer (about 100 compute units less per event; the bulk cancels record one per
- * order).
+ * recordEvent of a Reduce event: the same bytes and the same flush, the event written straight into the batch (one
+ * room check, then its fields) rather than built in a scratch buffer first; the bulk cancels record one per order.
  */
 function recordReduce(
   rec: Inout<Recorder>,
@@ -134,12 +133,14 @@ function recordReduce(
   remaining: u64,
 ): void {
   if (logData.length + REDUCE_EVENT_LEN > EVENT_ROOM) flush(rec, logData, rest);
-  logData.pushLE<u8>(4n); // PhoenixMarketEvent::Reduce
-  logData.pushLE(u16(rec.eventsAdded));
-  logData.pushLE(seq);
-  logData.pushLE(price);
-  logData.pushLE(removed);
-  logData.pushLE(remaining);
+  logData.pushBorsh<PhoenixMarketEvent>({
+    kind: "Reduce",
+    index: u16(rec.eventsAdded),
+    order_sequence_number: seq,
+    price_in_ticks: price,
+    base_lots_removed: removed,
+    base_lots_remaining: remaining,
+  });
   rec.eventsAdded++;
 }
 

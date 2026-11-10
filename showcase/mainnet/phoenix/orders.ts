@@ -41,7 +41,15 @@ import {
   u128,
 } from "typesol";
 import { PhoenixError } from "./errors.js";
-import { type FifoMarketPrefix, type MarketHeader, type TraderState, FIFO_MARKET_OFFSET, MARKET_STATUS_ACTIVE, tradersOffset } from "./state.js";
+import {
+  type FIFOOrderId,
+  type FifoMarketPrefix,
+  type MarketHeader,
+  type TraderState,
+  FIFO_MARKET_OFFSET,
+  MARKET_STATUS_ACTIVE,
+  tradersOffset,
+} from "./state.js";
 import { type Recorder, finishRecorder } from "./recorder.js";
 import { assertCrossAllowed, assertPostAllowed, checkSeatWithContext, checkVaultContext, dispatchLoadedMarket, statusName } from "./checkers.js";
 import { sendFromVault } from "./funds.js";
@@ -335,8 +343,7 @@ function finishWithOrderId(rest: RemainingAccounts, rec: Inout<Recorder>, logDat
   if (!resp.placed) return;
   const ids: FixedVec<u8, 20> = fixedVec([]);
   ids.pushLE<u32>(1n);
-  ids.pushLE(resp.placed_price_in_ticks);
-  ids.pushLE(resp.placed_order_sequence_number);
+  ids.pushBorsh<FIFOOrderId>({ price_in_ticks: resp.placed_price_in_ticks, order_sequence_number: resp.placed_order_sequence_number });
   setReturnData(ids);
 }
 
@@ -621,8 +628,7 @@ function multiplePostOnlyOrders(
       const resp = emptyResponse();
       require(placeOrder(rest, rec, logData, trader.key, pk, resp, slot, unixTimestamp), PhoenixError.NewOrderError);
       if (resp.placed) {
-        ids.pushLE(resp.placed_price_in_ticks);
-        ids.pushLE(resp.placed_order_sequence_number);
+        ids.pushBorsh<FIFOOrderId>({ price_in_ticks: resp.placed_price_in_ticks, order_sequence_number: resp.placed_order_sequence_number });
         placed++;
       }
       const quoteDeposited = subQuoteLots(addQuoteLots(resp.num_quote_lots_in, resp.num_quote_lots_posted), resp.num_free_quote_lots_used);
