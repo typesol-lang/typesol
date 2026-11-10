@@ -71,6 +71,7 @@ ${body}`);
     const fix = (what: string) => `Pair is not exported, but ${what} uses it, which puts it in the IDL: export interface Pair`;
     expect(f(`export function g(p: Pair): void {}`)).toBe(fix("an instruction's arguments or result"));
     expect(f(`export function g(a: u64): Pair { return { a, b: a }; }`)).toBe(fix("an instruction's arguments or result"));
+    expect(f(`export function g(p: Pair | null): void {}`)).toBe(fix("an instruction's arguments or result"));
     expect(f(`export function g(s: Mut<Pair>): void { s.a = 1n; }`)).toBe(fix("account data"));
     expect(f(`export function g(a: u64): void { emit<Pair>({ a, b: a }); }`)).toBe(fix("an event"));
     expect(f(`export interface Book { best: Pair; }\nexport function g(s: Mut<Book>): void { s.best.a = 1n; }`)).toBe(

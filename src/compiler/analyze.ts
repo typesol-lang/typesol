@@ -602,7 +602,10 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       if (typeof c.def.value !== "bigint") reporter.fail(c.type, "only integer constants take a type annotation");
       const info = INT_INFO[t.name];
       // An expression is computed in its type, as Rust's `const X: u64 = …` is: every step must fit, not only the result.
-      if (isConstantExpression(c.init)) foldConstant(c.init, constants, reporter, t.name);
+      const literal =
+        ts.isBigIntLiteral(c.init) ||
+        (ts.isPrefixUnaryExpression(c.init) && c.init.operator === ts.SyntaxKind.MinusToken && ts.isBigIntLiteral(c.init.operand));
+      if (!literal && isConstantExpression(c.init)) foldConstant(c.init, constants, reporter, t.name);
       if (c.def.value < info.min || c.def.value > info.max) reporter.fail(c.type, `${c.def.value} does not fit in ${t.name}`);
       c.def.type = t;
     });
@@ -968,8 +971,13 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const events = collectEvents([...functions, ...helperNodes], structs);
   // What instructions take or return (collectStructs walks a returned struct only when given it as a reference).
   const surface = new Set(argStructs);
-  for (const ix of instructions)
+  for (const ix of instructions) {
     if (ix.returns?.kind === "struct") collectStructs({ kind: "structRef", struct: ix.returns.name, writable: false }, structs, dataEnums, surface);
+    // An Option<Struct> argument (`p: Pair | null`): its struct too.
+    for (const a of ix.args)
+      if (a.type.kind === "optionArg" && a.type.option.inner.kind === "struct")
+        collectStructs({ kind: "structRef", struct: a.type.option.inner.name, writable: false }, structs, dataEnums, surface);
+  }
   checkLocalStructs(structs, dataEnums, accountStructs, surface, events, reporter);
   return {
     model: {

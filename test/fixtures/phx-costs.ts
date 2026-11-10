@@ -74,7 +74,8 @@ export type Event =
   | { kind: "Header"; instruction: u8; sequence_number: u64; timestamp: i64; slot: u64; market: Pubkey; signer: Pubkey; total_events: u16 }
   | { kind: "Fill"; index: u16; maker_id: Pubkey; order_sequence_number: u64; price_in_ticks: u64; base_lots_filled: u64; base_lots_remaining: u64 }
   | { kind: "Reduce"; index: u16; order_sequence_number: u64; price_in_ticks: u64; base_lots_removed: u64; base_lots_remaining: u64 }
-  | { kind: "Moved"; at: Point; flag: boolean; side: Side; who: Pubkey };
+  | { kind: "Moved"; at: Point; flag: boolean; side: Side; who: Pubkey }
+  | { kind: "Flagged"; flag: boolean; side: Side; size: u32 };
 
 export interface Point {
   x: u32;
@@ -241,9 +242,10 @@ function events(rest: RemainingAccounts, data: InstructionBytes): void {
       buf.pushLE(k);
       buf.pushLE<u64>(9n);
     } else if (op === 32n) {
-      // Every scalar kind (a bool, an enum, a Pubkey) by direct stores, then a variant with a struct field (one copy).
+      // Every scalar kind (a bool, an enum, a Pubkey) by direct stores, and a variant with a struct field (one copy).
       buf.pushBorsh<Event>({ kind: "Fill", index: u16(k), maker_id: programId(), order_sequence_number: 1n, price_in_ticks: 2n, base_lots_filled: 3n, base_lots_remaining: 4n });
       buf.pushBorsh<Event>({ kind: "Moved", flag: k === 0n, at: { x: 7n, y: -2n }, side: Side.Ask, who: programId() });
+      buf.pushBorsh<Event>({ kind: "Flagged", side: Side.Ask, flag: k === 0n, size: 513n });
     }
   }
   setReturnData(buf);

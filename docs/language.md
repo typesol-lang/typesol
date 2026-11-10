@@ -347,8 +347,8 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   source, not from a binary), so a damaged tree never reads outside the account. A port makes the original's checks
   in the original's order before the tree call, and these lines follow on their own. Iteration keeps its stack on the
   program's stack (64 nodes, more than any red-black tree a u32 index can address holds on one path); a deeper,
-  damaged tree panics where the Rust's heap stack would grow. A walk costs about 34 compute units per node plus its
-  body (each node's index checked once, when the walk reaches it). A tree is a const of the function that makes it, not
+  damaged tree panics where the Rust's heap stack would grow. A walk costs about 34 compute units per node, a sum in
+  its body included (each node's index checked once, when the walk reaches it). A tree is a const of the function that makes it, not
   a helper parameter (make it again in the helper from the account).
 - Writes as the original makes them: `export const NATIVE_ACCOUNT_WRITES = true` (anywhere in the program; opt-in, for
   native ports). A native program writes account data in place and the runtime judges afterwards: a read-only account

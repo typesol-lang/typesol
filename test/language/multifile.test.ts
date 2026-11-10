@@ -118,7 +118,7 @@ describe("large accounts and constants", () => {
       `${T}\nimport { type FixedArray } from "typesol";\nexport interface Huge { xs: FixedArray<u64, 1000000>; ys: FixedArray<u64, 400000>; }\nexport function f(): void {}`,
       /Solana accounts are at most/,
     ],
-    ["non-literal constants", `${T}\nconst X = 1n + 2n;\nexport function f(): void {}`, /must be bigint, boolean or string literals/],
+    ["non-literal constants", `${T}\nconst X = 1n > 2n;\nexport function f(): void {}`, /are bigint, boolean or string literals, pubkey/],
     ["typed constants out of range", `${T}\nimport { type u8 } from "typesol";\nconst X: u8 = 300n;\nexport function f(): void {}`, /300 does not fit in u8/],
     ["let at the top level", `${T}\nlet X = 1n;\nexport function f(): void {}`, /must be const literals/],
     [

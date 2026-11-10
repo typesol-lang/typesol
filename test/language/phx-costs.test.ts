@@ -112,11 +112,13 @@ describe("Phoenix's hot paths", () => {
     const evB = await run(30, 0, 0, 0, 100);
     const evL = await run(31, 0, 0, 0, 100);
     expect(Buffer.from(evB.ret)).toEqual(Buffer.from(evL.ret));
-    // Fill (a Pubkey among integers) and Moved (a struct field, a bool, an enum): Borsh, field by field.
+    // Fill (a Pubkey among integers), Moved (a struct field, a bool, an enum) and Flagged: Borsh, field by field.
     const id = Buffer.from(getAddressEncoder().encode(d.programId));
     const fill = Buffer.concat([Buffer.from([2]), u16le(0), id, u64(1), u64(2), u64(3), u64(4)]);
     const moved = Buffer.concat([Buffer.from([4, 7, 0, 0, 0, 0xfe, 0xff, 1, 1]), id]);
-    expect(Buffer.from((await run(32, 0, 0, 0, 1)).ret)).toEqual(Buffer.concat([Buffer.from([15]), fill, moved]));
+    // Flagged: a bool and an enum by direct stores, its fields given out of order (written in declared order)
+    const flagged = Buffer.from([5, 1, 1, 0x01, 0x02, 0, 0]);
+    expect(Buffer.from((await run(32, 0, 0, 0, 1)).ret)).toEqual(Buffer.concat([Buffer.from([15]), fill, moved, flagged]));
     lines.push(`pushBorsh per event ${((evB.cu - ev0) / 100).toFixed(1)}`, `pushLE per event ${((evL.cu - ev0) / 100).toFixed(1)}`);
     // 54 CU per event before (the whole 92-byte enum zeroed, filled and copied, then a tag and a switch on it): now
     // within a few units of the six pushLE calls writing the same 35 bytes.
