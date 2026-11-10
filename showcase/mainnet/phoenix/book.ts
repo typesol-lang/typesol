@@ -20,7 +20,6 @@ import {
   type InstructionBytes,
   type Pubkey,
   type RemainingAccounts,
-  type TokenProgram,
   type u8,
   abort,
   fixedVec,
@@ -28,7 +27,6 @@ import {
   loadRawAt,
   log,
   panicsAt,
-  programAt,
   rbTreeAt,
   rbTreeMutAt,
   u16,
@@ -46,9 +44,8 @@ import {
   asksOffset,
   tradersOffset,
 } from "./state.js";
-import { type Recorder, flush, recordEvent } from "./recorder.js";
-import { sendFromVault } from "./funds.js";
-import { addBaseLots, addQuoteLots, baseLotsToAtoms, orderCmp, quoteLotsToAtoms, subBaseLots, subQuoteLots } from "./util.js";
+import { type Recorder, EVENT_ROOM, flush, recordEvent } from "./recorder.js";
+import { addBaseLots, addQuoteLots, adjustedQuoteLots, orderCmp, subBaseLots, subQuoteLots, ticksToPrice } from "./util.js";
 
 /** The lots a reduction or cancel gives back to the trader's wallet: MatchingEngineResponse's *_out. */
 export interface Released {
@@ -105,11 +102,12 @@ export function traderIndexOf(m: Inout<MarketShape>, rest: RemainingAccounts, tr
 
 /**
  * The quote lots a bid of `lots` at `price` holds: `(price × tick × lots) / base_lots_per_base_unit` (fifo.rs:1616,
- * reduce_order_inner). The products panic at their quantities.rs impls; the division is `#[track_caller]`, so its
- * remainder check panics, and its warning names, the caller's location.
+ * reduce_order_inner): util.ts's quoteLotsFor with the division's own checks. The products panic at their
+ * quantities.rs impls; the division is `#[track_caller]`, so its remainder check panics, and its warning names, the
+ * caller's location. (In every market InitializeMarket accepts the division is exact and the warning never logged.)
  */
 function reducedBidQuoteLots(price: u64, tick: u64, lots: u64, perUnit: u64): u64 {
-  const adjusted = panicsAt("src/quantities.rs:293:1", panicsAt("src/quantities.rs:287:1", price * tick) * lots);
+  const adjusted = adjustedQuoteLots(ticksToPrice(tick, price), lots);
   if (panicsAt("src/state/markets/fifo.rs:1616:38", adjusted % perUnit) !== 0n) {
     log(
       `WARNING: Expected clean division, but received AdjustedQuoteLots { inner: ${adjusted} } / BaseLotsPerBaseUnit { inner: ${perUnit} }. Caller: Location { file: "src/state/markets/fifo.rs", line: 1616, col: 38 }`,
@@ -120,10 +118,6 @@ function reducedBidQuoteLots(price: u64, tick: u64, lots: u64, perUnit: u64): u6
 
 /** A Reduce event's bytes: its PhoenixMarketEvent tag, the index (u16) and four u64s. */
 const REDUCE_EVENT_LEN = 35n;
-/**
- * recorder.ts's limit, MAX_INNER_INSTRUCTION_SIZE (1280) less LOG_IX_ACCOUNT_META_SIZE (34): keep the two in step.
- */
-const EVENT_ROOM = 1246n;
 
 /**
  * recordEvent of a Reduce event { index, order_sequence_number, price_in_ticks, base_lots_removed,
@@ -409,19 +403,4 @@ export function cancelByIdInner(
     if ((data.readU8(at) === 0n) !== isBidSequence(seq)) continue;
     cancelOne(m, rest, rec, logData, traderIndex, data.readU64(at + 1n), seq, mode, total);
   }
-}
-
-/**
- * token_utils.rs try_withdraw of what was released: quote lots × quote lot size, then base lots × base lot size, sent
- * quote first, from the vault context at position `vaults` (base account, quote account, base vault, quote vault,
- * SPL Token).
- */
-export function withdrawReleased(rest: RemainingAccounts, vaults: u64, released: Released): void {
-  const market = rest.get(2n);
-  const h = loadRaw<MarketHeader>(market);
-  const quoteAtoms = quoteLotsToAtoms(released.quote, h.quote_lot_size);
-  const baseAtoms = baseLotsToAtoms(released.base, h.base_lot_size);
-  const token = programAt<TokenProgram>(rest.get(vaults + 4n));
-  sendFromVault(token, market.key, h.quote_params.mint_key, h.quote_params.vault_bump, rest.get(vaults + 3n), rest.get(vaults + 1n), quoteAtoms);
-  sendFromVault(token, market.key, h.base_params.mint_key, h.base_params.vault_bump, rest.get(vaults + 2n), rest.get(vaults), baseAtoms);
 }

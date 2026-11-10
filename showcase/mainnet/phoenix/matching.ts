@@ -7,9 +7,9 @@
 // written in place (loadRawMutAt at byte 576) and its three trees are lib-sokoban's (rbTreeMutAt); a tree is a view
 // of the function that makes it, so each helper makes the ones it needs from the market account.
 //
-// Quantities are plain u64s. Rust's newtype operators panic at their `impl`, the macro invocation in quantities.rs:
-// QuoteLots and BaseLots (util.ts's helpers, lines 233 and 234), AdjustedQuoteLots (257), and the products of
-// allow_multiply!: QuoteLotsPerBaseUnitPerTick × Ticks (287), QuoteLots × BaseLotsPerBaseUnit (290) and
+// Quantities are plain u64s. Rust's newtype operators panic at their `impl`, the macro invocation in quantities.rs
+// (util.ts's helpers, shared with book.ts and orders.ts): QuoteLots and BaseLots (lines 233 and 234),
+// AdjustedQuoteLots (257), and the products of allow_multiply!: QuoteLotsPerBaseUnitPerTick × Ticks (287), QuoteLots × BaseLotsPerBaseUnit (290) and
 // QuoteLotsPerBaseUnit × BaseLots (293). The divisions of an AdjustedQuoteLots by the base lots per base unit are exact
 // in every market InitializeMarket accepts (the tick size is a multiple of it), so their "Expected clean division"
 // warning is never logged.
@@ -53,7 +53,21 @@ import {
 } from "./state.js";
 import { type Recorder, recordEvent } from "./recorder.js";
 import { type Released, EXPIRED, KEEP_FUNDS, marketShape, reduceOrderInner } from "./book.js";
-import { U64_MAX, addBaseLots, addQuoteLots, emptyTraderState, orderCmp, subBaseLots, subQuoteLots } from "./util.js";
+import {
+  U64_MAX,
+  addAdjusted,
+  addBaseLots,
+  addQuoteLots,
+  adjustedQuoteLots,
+  emptyTraderState,
+  orderCmp,
+  quoteLotsFor,
+  quoteLotsToAdjusted,
+  subAdjusted,
+  subBaseLots,
+  subQuoteLots,
+  ticksToPrice,
+} from "./util.js";
 
 /** Side, as OrderPacket carries it. */
 export const BID: u8 = 0n;
@@ -129,37 +143,7 @@ export interface Inflight {
   last_valid_unix_timestamp_in_seconds: u64;
 }
 
-// ---- Quantities (quantities.rs) ----------------------------------------------------------------------------------
-
-/** AdjustedQuoteLots + AdjustedQuoteLots (`basic_u64_struct!(AdjustedQuoteLots)`). */
-function addAdjusted(a: u64, b: u64): u64 {
-  return panicsAt("src/quantities.rs:257:1", a + b);
-}
-
-/** AdjustedQuoteLots - AdjustedQuoteLots. */
-function subAdjusted(a: u64, b: u64): u64 {
-  return panicsAt("src/quantities.rs:257:1", a - b);
-}
-
-/** QuoteLotsPerBaseUnitPerTick × Ticks = QuoteLotsPerBaseUnit, a price in quote lots per base unit. */
-export function ticksToPrice(tickSize: u64, ticks: u64): u64 {
-  return panicsAt("src/quantities.rs:287:1", tickSize * ticks);
-}
-
-/** QuoteLotsPerBaseUnit × BaseLots = AdjustedQuoteLots. */
-export function adjustedQuoteLots(price: u64, baseLots: u64): u64 {
-  return panicsAt("src/quantities.rs:293:1", price * baseLots);
-}
-
-/** QuoteLots × BaseLotsPerBaseUnit = AdjustedQuoteLots. */
-function quoteLotsToAdjusted(quoteLots: u64, baseLotsPerBaseUnit: u64): u64 {
-  return panicsAt("src/quantities.rs:290:1", quoteLots * baseLotsPerBaseUnit);
-}
-
-/** `ticks × tick size × lots / base lots per base unit`: the quote lots a resting order of `lots` at `ticks` locks. */
-export function quoteLotsFor(ticks: u64, tickSize: u64, lots: u64, baseLotsPerBaseUnit: u64): u64 {
-  return adjustedQuoteLots(ticksToPrice(tickSize, ticks), lots) / baseLotsPerBaseUnit;
-}
+// ---- Fees (quantities.rs; the quantity operators are util.ts's) -------------------------------------------------
 
 /** compute_fee: the fee on `adjusted` rounded up, in u128 and cast back (`as u64`). */
 function computeFee(adjusted: u64, feeBps: u64): u64 {

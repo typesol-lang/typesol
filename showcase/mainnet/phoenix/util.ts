@@ -101,6 +101,36 @@ export function subBaseLots(a: u64, b: u64): u64 {
   return panicsAt("src/quantities.rs:234:1", a - b);
 }
 
+/** AdjustedQuoteLots + AdjustedQuoteLots (`basic_u64_struct!(AdjustedQuoteLots)`). */
+export function addAdjusted(a: u64, b: u64): u64 {
+  return panicsAt("src/quantities.rs:257:1", a + b);
+}
+
+/** AdjustedQuoteLots - AdjustedQuoteLots. */
+export function subAdjusted(a: u64, b: u64): u64 {
+  return panicsAt("src/quantities.rs:257:1", a - b);
+}
+
+/** QuoteLotsPerBaseUnitPerTick × Ticks = QuoteLotsPerBaseUnit, a price in quote lots per base unit. */
+export function ticksToPrice(tickSize: u64, ticks: u64): u64 {
+  return panicsAt("src/quantities.rs:287:1", tickSize * ticks);
+}
+
+/** QuoteLotsPerBaseUnit × BaseLots = AdjustedQuoteLots. */
+export function adjustedQuoteLots(price: u64, baseLots: u64): u64 {
+  return panicsAt("src/quantities.rs:293:1", price * baseLots);
+}
+
+/** QuoteLots × BaseLotsPerBaseUnit = AdjustedQuoteLots. */
+export function quoteLotsToAdjusted(quoteLots: u64, baseLotsPerBaseUnit: u64): u64 {
+  return panicsAt("src/quantities.rs:290:1", quoteLots * baseLotsPerBaseUnit);
+}
+
+/** `ticks × tick size × lots / base lots per base unit`: the quote lots a resting order of `lots` at `ticks` locks. */
+export function quoteLotsFor(ticks: u64, tickSize: u64, lots: u64, baseLotsPerBaseUnit: u64): u64 {
+  return adjustedQuoteLots(ticksToPrice(tickSize, ticks), lots) / baseLotsPerBaseUnit;
+}
+
 /** QuoteLots × QuoteAtomsPerQuoteLot = QuoteAtoms (`allow_multiply!(QuoteLots, QuoteAtomsPerQuoteLot, QuoteAtoms)`). */
 export function quoteLotsToAtoms(lots: u64, quoteLotSize: u64): u64 {
   return panicsAt("src/quantities.rs:264:1", lots * quoteLotSize);

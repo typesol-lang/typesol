@@ -125,7 +125,18 @@ export function processWithdraw(
     require(false, PhoenixError.EvictionError);
   }
   logComputeUnits();
-  // try_withdraw: quote first, then base, each from its vault, signed by the vault PDA.
+  tryWithdraw(rest, vaults, quoteLots, baseLots);
+}
+
+/**
+ * token_utils.rs try_withdraw (process_withdraw's, and the reductions' and cancels' of what they released): quote lots
+ * × quote lot size, then base lots × base lot size, sent quote first, each from its vault signed by the vault PDA. The
+ * vault context is the five accounts from position `vaults` (base account, quote account, base vault, quote vault,
+ * SPL Token).
+ */
+export function tryWithdraw(rest: RemainingAccounts, vaults: u64, quoteLots: u64, baseLots: u64): void {
+  const market = rest.get(2n);
+  const h = loadRaw<MarketHeader>(market);
   const quoteAtoms = quoteLotsToAtoms(quoteLots, h.quote_lot_size);
   const baseAtoms = baseLotsToAtoms(baseLots, h.base_lot_size);
   const token = programAt<TokenProgram>(rest.get(vaults + 4n));

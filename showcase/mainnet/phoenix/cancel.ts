@@ -18,7 +18,7 @@ import { type FixedVec, type Inout, type InstructionBytes, type RemainingAccount
 import { PhoenixError } from "./errors.js";
 import { type Recorder } from "./recorder.js";
 import { assertReduceAllowed, assertValidAuthority, checkSeatWithContext, checkVaultContext, dispatchLoadedMarket } from "./checkers.js";
-import { processWithdraw } from "./funds.js";
+import { processWithdraw, tryWithdraw } from "./funds.js";
 import {
   type CancelUpTo,
   type Released,
@@ -30,7 +30,6 @@ import {
   marketShape,
   reduceOrderInner,
   traderIndexOf,
-  withdrawReleased,
 } from "./book.js";
 import { need } from "./util.js";
 
@@ -66,7 +65,7 @@ function loadAuthorizedContext(rest: RemainingAccounts): void {
  * reduce_order_inner releases nothing.)
  */
 function finish(rest: RemainingAccounts, withdraw: boolean, vaults: u64, released: Released): void {
-  if (withdraw) withdrawReleased(rest, vaults, released);
+  if (withdraw) tryWithdraw(rest, vaults, released.quote, released.base);
 }
 
 /**
