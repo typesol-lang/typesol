@@ -275,7 +275,9 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   hand-encoded `invoke` data.
 - Accounts without a discriminator: `loadRaw<T>(acct)` / `loadRawMut<T>(acct)` view one as a fixed-layout struct from
   byte 0 (this program's, 3007; at least the struct's size, 3003; `loadRawMut`: writable, loaded once). Make the
-  original's own checks (an exact size, its error codes) before the load. The owner check of these views (and of
+  original's own checks (an exact size, its error codes) before the load. A read-only view can be read where it is
+  made, `loadRaw<Header>(market).inner.b` or `loadRawAt<Prefix>(market, 576n).tick` (its checks made there); a
+  writable one claims its account once per instruction, so it is bound to a const first. The owner check of these views (and of
   `loadRawAt`, `rawArrayAt`, `rbTreeAt` below) is made every time, but the last account found this program's passes
   again with one pointer compare instead of 32 bytes until a CPI or an owner write (`assignOwner`, `closeRaw`,
   `close`): helpers that each view the market again, and views in loops, pay about 3 compute units for it instead of
@@ -303,7 +305,8 @@ accounts by position. TypeSOL ports one as it is (see `showcase/mainnet/raydium-
   `rawArrayAt<T>(acct, offset, capacity)` / `rawArrayMutAt<T>(…)` for a run-time number of elements, each bounds-checked
   once when it is made (ProgramError::AccountDataTooSmall; `loadRaw`'s fixed size check stays 3003, the error of a
   view whose size is known when the program is compiled), as Phoenix slices `&data[576..]` after checking the
-  account's size itself. The checks a Rust original makes first (a size, its own error code) go before the view.
+  account's size itself. `rbTreeAt(…).length` and `.capacity` read a tree made for the one read; anything else on a
+  tree or a raw array is done on a const bound to it. The checks a Rust original makes first (a size, its own error code) go before the view.
 - lib-sokoban's trees (Phoenix's order books and trader seats): `rbTreeMutAt<K, V>(acct, offset, capacity, compare?)`,
   every write the crate's own, so the account matches the original after every instruction:
 

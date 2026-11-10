@@ -1,6 +1,17 @@
 // Forms a native port writes as the Rust reads (test/language/port-syntax.test.ts): for loops with two counters, a
-// local list of 2 KiB of elements.
-import { type FixedVec, fixedVec, u32, u64 } from "typesol";
+// local list of 2 KiB of elements, reads through a view without binding it.
+import { type AccountInfo, type FixedVec, fixedVec, loadRaw, loadRawAt, rbTreeAt, u32, u64 } from "typesol";
+
+export interface Inner {
+  a: u64;
+  b: u64;
+}
+
+/** A market header: a u64, then a nested struct; a RedBlackTree<u64, u64> follows at byte 24. */
+export interface Header {
+  x: u64;
+  inner: Inner;
+}
 
 /** Two counters meeting in the middle: `for (let i = 0n, j = n; i < j; i++, j--)`, skipping a step with continue. */
 export function meet(n: u64, skip: u64): u64 {
@@ -27,4 +38,9 @@ export function collect(n: u64): u64 {
   let s = 0n;
   for (const id of ids) s += u64(id);
   return s + ids.length;
+}
+
+/** Reads through views made in the expression: `loadRaw<Header>(m).inner.b`, `loadRawAt<…>(m, 8n).a`, `rbTreeAt(…).length`. */
+export function peek(market: AccountInfo): u64 {
+  return loadRaw<Header>(market).inner.b * 1000n + loadRawAt<Inner>(market, 8n).a * 100n + rbTreeAt<u64, u64>(market, 24n, 2n).length * 10n + rbTreeAt<u64, u64>(market, 24n, 2n).capacity;
 }

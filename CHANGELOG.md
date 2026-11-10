@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- Language: a read-only native view can be read where it is made: `loadRaw<Header>(market).inner.b`,
+  `loadRawAt<Prefix>(market, 576n).tick` and `rbTreeAt<K, V>(…).length` / `.capacity` ("unsupported property access"
+  and "bind … to a const first" before). A writable view (`loadRawMut`, `loadRawMutAt`) is still bound first, now
+  with the reason: it claims its account once per instruction (test/language/port-syntax.test.ts).
 - Language: a local list may hold 2 KiB of elements, its FixedVec length word aside: `const ids: FixedVec<u32, 512> =
   fixedVec([])` (2,052 bytes, Phoenix's collected order ids) was refused. A frame that then overflows is still reported
   by the frame check, which names the biggest locals; the refusal of a bigger list now gives the element bytes and, on

@@ -416,6 +416,22 @@ export abstract class ViewEmitter extends CallEmitter {
   }
 
   protected viewRef(node: ts.Expression): Ref | undefined {
+    // `loadRaw<T>(acct).field`, `loadRawAt<T>(acct, offset).inner.b`: a read-only view read where it is made, its checks
+    // made there. A writable view claims its account once per instruction: it is bound to a const instead.
+    if (ts.isCallExpression(node)) {
+      const fn = this.exportName(node.expression);
+      if (fn === "loadRaw" || fn === "loadRawAt") {
+        const v = fn === "loadRaw" ? this.loadRaw(node, false) : this.loadRawAt(node, false);
+        const struct = (v.type as ValueType & { kind: "structRef" }).struct;
+        return { lv: `(*${v.c})`, type: { kind: "struct", name: struct }, writable: false, ...(v.bigCap ? { bigCap: v.bigCap } : {}) };
+      }
+      if (fn === "loadRawMut" || fn === "loadRawMutAt")
+        this.fail(
+          node,
+          `bind ${fn}(…) to a const first, as a writable view claims its account once per instruction: const v = ${fn}<…>(account${fn === "loadRawMutAt" ? ", offset" : ""})`,
+        );
+      return undefined;
+    }
     if (ts.isIdentifier(node)) {
       const l = this.lookup(node.text);
       return l?.type.kind === "rawArray" ? this.rawArrayRef(l) : undefined;
@@ -446,14 +462,24 @@ export abstract class ViewEmitter extends CallEmitter {
     return undefined;
   }
 
-  /** `rbTreeAt(…).length`, `rawArrayAt(…).get(i)`: a view used without binding it. */
+  /** `rbTreeMutAt(…).min()`, `rawArrayAt(…).get(i)`: a view used without binding it. */
   private unbound(node: ts.Expression): void {
     const fn = this.viewFn(node);
-    if (fn) this.fail(node, `bind ${fn}(…) to a const first: const v = ${fn}<…>(account, offset${fn.startsWith("load") ? "" : ", capacity"})`);
+    // loadRawAt(…).field reads in place, loadRawMutAt(…).field names its own fix (viewRef).
+    if (fn && fn !== "loadRawAt" && fn !== "loadRawMutAt")
+      this.fail(node, `bind ${fn}(…) to a const first: const v = ${fn}<…>(account, offset${fn.startsWith("load") ? "" : ", capacity"})`);
   }
 
   protected viewProperty(node: ts.PropertyAccessExpression): Value | undefined {
     const field = node.name.text;
+    // `rbTreeAt(…).length` / `.capacity`: a read-only tree made for the one read.
+    let inner: ts.Expression = node.expression;
+    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+    if (this.viewFn(inner) === "rbTreeAt" && (field === "length" || field === "capacity")) {
+      const t = this.tmp("rbt");
+      this.rbTreeAt(inner as ts.CallExpression, false, t);
+      return field === "length" ? { c: `TS_RBT_SIZE(${t}.base)`, type: U64 } : { c: `${t}.cap`, type: U64 };
+    }
     this.unbound(node.expression);
     const tree = this.treeOf(node.expression);
     if (tree) {

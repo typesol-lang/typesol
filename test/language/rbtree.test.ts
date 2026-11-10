@@ -254,7 +254,7 @@ function bad(a: u64, b: u64): i8 { return 0n; }
     expect(f(`const t = rbTreeMutAt<K, Odd>(a, 0n, 4n, cmp); log(t.length);`)).toContain("not a multiple of 8");
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); const r = t.reversed(); log(t.length);`)).toContain("reversed() walks the tree");
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); const u = t; log(u.length);`)).toContain("is a RedBlackTree");
-    expect(f(`log(rbTreeAt<K, V>(a, 0n, 4n, cmp).length);`)).toContain("bind rbTreeAt(…) to a const first");
+    expect(f(`const m = rbTreeAt<K, V>(a, 0n, 4n, cmp).min(); log(m === null ? "none" : "some");`)).toContain("bind rbTreeAt(…) to a const first");
     expect(f(`const t = rbTreeMutAt<K, V>(a, 0n, 4n, cmp); t.initialize();`, "AccountInfo")).toContain("must be Mut<AccountInfo> to load it with rbTreeMutAt");
     expect(f(`const t = rbTreeAt<K, V>(a, 0n, 4n, cmp); const m = t.min(); if (m !== null) m.value.x = 1n;`, "AccountInfo")).toMatch(/read-only|Cannot assign/);
   });

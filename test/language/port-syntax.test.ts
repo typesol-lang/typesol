@@ -1,5 +1,6 @@
 // Forms native ports write as the Rust reads (test/fixtures/port-syntax.ts): comma-separated for-loop updates and
 // initializers.
+import { generateKeyPairSigner } from "@solana/kit";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BN, compileErrors, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
@@ -36,6 +37,26 @@ describe("port syntax", () => {
       "FixedVec<u8, 2049> takes 2053 bytes; locals live on the 4 KiB stack, so keep it under 2 KiB of elements (2049 here: a smaller FixedVec<T, N>, or /** @heap */ on the declaration to keep it on the heap)",
     );
     expect(f(`/** @heap */ const xs: FixedVec<u8, 2049> = fixedVec([]);`)).toBe("");
+  });
+
+  it("reads a field through a read-only view without binding it", async () => {
+    const market = (await generateKeyPairSigner()).address;
+    const data = Buffer.alloc(24 + 32 + 2 * 32);
+    data.writeBigUInt64LE(5n, 8); // inner.a
+    data.writeBigUInt64LE(7n, 16); // inner.b
+    data.writeBigUInt64LE(1n, 24 + 16); // the tree's size
+    d.svm.setAccount({ address: market, lamports: 1_000_000_000n, programAddress: d.programId, executable: false, data } as never);
+    const payer = await fundedSigner(d.svm);
+    const r = expectOk(await send(d.svm, payer, [ix(d, "peek", {}, [{ address: market, writable: false }])]));
+    expect(Buffer.from(r.returnData().data()).readBigUInt64LE(0)).toBe(7512n);
+    const f = (body: string) =>
+      compileErrors(`import { type AccountInfo, type Mut, type u64, loadRawMut, rbTreeMutAt, log } from "typesol";
+export interface H { x: u64; y: u64; }
+export function f(m: Mut<AccountInfo>): void { ${body} }`);
+    expect(f(`log(loadRawMut<H>(m).x);`)).toContain(
+      "bind loadRawMut(…) to a const first, as a writable view claims its account once per instruction: const v = loadRawMut<…>(account)",
+    );
+    expect(f(`log(rbTreeMutAt<u64, u64>(m, 0n, 2n).length);`)).toContain("bind rbTreeMutAt(…) to a const first");
   });
 
   it("a comma anywhere else is still refused", () => {
