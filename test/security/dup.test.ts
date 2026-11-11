@@ -142,3 +142,80 @@ export function both(a: Dup<Mut<Wallet>>, b: Dup<Mut<Wallet>>): void { shut(a, b
     expect(d.svm.getAccount(w1).exists).toBe(false);
   });
 });
+
+// A reference into account data must not be used after something moves that data (a Vec of the account resized, so
+// the Vecs after it shift; a helper given the account): the same rule whichever parameter names the account. Two
+// parameters that may be one account (a Dup<…> pair, a read-only and a writable account of one type, a struct loaded
+// from a remaining account or an AccountInfo) count as one.
+describe("references across a resize through another slot that may be the same account", () => {
+  const BAG = `import { type Account, type AccountInfo, type Dup, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type Vec, type u64, loadAccount, remainingAccounts } from "typesol";
+export interface Entry { id: u64; score: u64 }
+export interface Bag { owner: Pubkey; tags: Vec<u64>; count: u64; entries: Vec<Entry> }
+export interface Other { owner: Pubkey; tags: Vec<u64>; count: u64; entries: Vec<Entry> }
+function shrink(b: Mut<Bag>): void { b.tags.pop(); }
+`;
+  const fn = (params: string, body: string) =>
+    `${BAG}export function f(payer: Mut<Signer>, ${params}, systemProgram: SystemProgram, v: u64): u64 {\n${body}\n}\n`;
+  const DUP = "a: Dup<Mut<Bag>>, b: Mut<Bag>";
+  const RO = "a: Account<Bag>, b: Mut<Bag>";
+  it.each([
+    ["Dup, a push before a write", DUP, "const e = a.entries.get(0n); b.tags.push(v, payer); e.score = 777n; return 0n;"],
+    ["Dup, pops", DUP, "const e = a.entries.get(1n); b.tags.pop(); b.tags.pop(); e.score = v; return a.entries.get(1n).score;"],
+    ["Dup, clear", DUP, "const e = a.entries.get(1n); b.entries.clear(); b.tags.clear(); e.score = v; return a.count;"],
+    ["read-only and writable, pop", RO, "const e = a.entries.get(1n); b.tags.pop(); return e.score;"],
+    ["read-only and writable, push", RO, "const e = a.entries.get(1n); b.tags.push(v, payer); return e.id;"],
+    ["read-only and writable, a loop", RO, "let s = 0n; for (const x of a.entries) { if (b.tags.length > 0n) b.tags.pop(); s += x.score; } return s;"],
+    ["read-only and writable, a helper given the account", RO, "const e = a.entries.get(1n); shrink(b); return e.score;"],
+    [
+      "a remaining account loaded",
+      "b: Mut<Bag>",
+      "const x = loadAccount<Bag>(remainingAccounts().get(0n)); const e = x.entries.get(1n); b.tags.pop(); return e.score;",
+    ],
+    ["an AccountInfo loaded", "b: Mut<Bag>, i: AccountInfo", "const x = loadAccount<Bag>(i); const e = x.entries.get(1n); b.tags.pop(); return e.score;"],
+  ])("%s: refused", (_, params, body) => {
+    expect(compileErrors(fn(params, body))).toMatch(/may be the same account as b .*this moves that data|may be the same account as b .*may move that data/);
+  });
+
+  it.each([
+    ["fields copied first", RO, "const s = a.entries.get(1n).score; b.tags.pop(); return s;"],
+    ["a reference read only before the resize", RO, "const e = a.entries.get(1n); const s = e.score; b.tags.pop(); return s;"],
+    ["a loop that reads before it resizes", DUP, "let s = 0n; for (const x of a.entries) { s += x.score; if (b.tags.length > 0n) b.tags.pop(); } return s;"],
+    ["accounts of different types", "a: Account<Other>, b: Mut<Bag>", "const e = a.entries.get(1n); b.tags.pop(); return e.score;"],
+    ["two writable accounts (2040 keeps them apart)", "a: Mut<Bag>, b: Mut<Bag>", "const e = a.entries.get(1n); b.tags.pop(); return e.score;"],
+  ])("%s: compiles", (_, params, body) => {
+    expect(compileErrors(fn(params, body))).toBe("");
+  });
+
+  it("a program that copies first reads the moved data right with one account in both slots", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-dup-vec-"));
+    writeFileSync(
+      path.join(dir, "bag.ts"),
+      `${BAG}export function open(payer: Mut<Signer>, bag: Init<Bag>, systemProgram: SystemProgram, id: u64): void { bag.create(payer, ["bag", id]); }
+export function add(payer: Mut<Signer>, bag: Mut<Bag>, systemProgram: SystemProgram, tag: u64): void { bag.tags.push(tag, payer); bag.entries.push({ id: tag, score: tag * 2n }, payer); }
+export function f(payer: Mut<Signer>, ${RO}, systemProgram: SystemProgram): u64 {
+  const s = a.entries.get(1n).score;
+  b.tags.pop();
+  return s * 1000n + a.entries.get(1n).score;
+}
+`,
+    );
+    const d = await deployFile(path.join(dir, "bag.ts"));
+    const payer = await fundedSigner(d.svm);
+    const [bag] = await pda(d.programId, ["bag", new Uint8Array(getU64Encoder().encode(1n))]);
+    const base = [{ address: payer.address, signer: payer, writable: true }, { address: bag, writable: true }, { address: SYSTEM_PROGRAM }];
+    expectOk(await send(d.svm, payer, [ix(d, "open", { id: new BN(1) }, base)]));
+    for (const t of [10, 20, 30]) expectOk(await send(d.svm, payer, [ix(d, "add", { tag: new BN(t) }, base)]));
+    const r = expectOk(
+      await send(d.svm, payer, [
+        ix(d, "f", {}, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: bag },
+          { address: bag, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(Buffer.from(r.returnData().data()).readBigUInt64LE()).toBe(40_040n);
+    expect(decodeAccount<{ tags: BN[] }>(d, d.svm, "Bag", bag).tags.map(String)).toEqual(["10", "20"]);
+  });
+});

@@ -1099,7 +1099,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const tail = info.tail;
     const tailStart = () => {
       if (!tail) return undefined;
-      this.assertNotAliased(tail.paths, node);
+      this.assertNotAliased(tail.paths, node, undefined, false, true);
       const at = this.tmp("tail");
       const n = this.tmp("tail_n");
       this.line(`uint8_t *${at} = ${tail.end};`);
@@ -1177,7 +1177,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "pop": {
         if (args.length !== 0) this.fail(node, "pop() takes no arguments");
         needWritable();
-        this.assertNotAliased(elemPaths(), node);
+        // A Vec of an account shrinks: the popped element is cut off under every name of the account.
+        const growable = info.cap === undefined && !info.heap;
+        this.assertNotAliased(elemPaths(), node, undefined, false, growable);
         const st = this.storageValueType(vt.elem);
         const n = this.tmp("n");
         this.line(`uint64_t ${n} = ${count};`);
@@ -1195,7 +1197,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           } else this.line(`${valueC(st)} ${out} = ${val.c};`);
           result = st.kind === "pubkey" ? { c: `(&${out})`, type: st } : { c: out, type: st };
         }
-        const t = info.cap === undefined && !info.heap ? tailStart() : undefined;
+        const t = growable ? tailStart() : undefined;
         if (t) this.line(`ts_memmove(${t.at} - ${info.elemSize}, ${t.at}, ${t.n});`);
         this.line(`${info.len} = (uint32_t)(${n} - 1);`);
         resize(`${n} - 1`, "NULL");
@@ -1204,7 +1206,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "clear": {
         if (args.length !== 0) this.fail(node, "clear() takes no arguments");
         needWritable();
-        this.assertNotAliased(elemPaths(), node);
+        this.assertNotAliased(elemPaths(), node, undefined, false, info.cap === undefined && !info.heap);
         const t = info.cap === undefined && !info.heap ? tailStart() : undefined;
         if (t) this.line(`ts_memmove((uint8_t *)${info.items}, ${t.at}, ${t.n});`);
         this.line(`${info.len} = 0;`);
@@ -2459,7 +2461,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // A helper that takes a writable struct account may replace anything stored in it (see assertNotAliased): the
     // account however it is named here (a parameter, an account group's field, a struct loaded with loadAccountMut).
     for (const [i, p] of h.params.entries())
-      if (p.account && p.account.kind === "account" && p.account.mut) this.assertNotAliased(this.pathsOf(argNodes[i]!), node, h.display, true);
+      if (p.account && p.account.kind === "account" && p.account.mut) this.assertNotAliased(this.pathsOf(argNodes[i]!), node, h.display, true, true);
     const args = [
       "params",
       ...pieces.map((x) => (typeof x === "number" ? (passedByPointer(values[x].type) ? this.pointerArg(values[x], mayWrite) : values[x].c) : x)),
