@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.44.1 — 2026-11-11
+
 Fixes from a second internal review, of 0.44.0 (docs/audit.md). Of the 76 programs of the 0.44.0 sources, 74 compile
 to the same binary as in 0.44.0 and 2 to a different one (mint-close-authority and allow-block-list-token, below); no
 program of those sources is refused.
