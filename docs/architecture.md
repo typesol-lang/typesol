@@ -103,7 +103,7 @@ representation in between. We reviewed this on 2026-10-30 and kept it that way f
   named in the source, see `alias.ts`), a second backend (SBF without clang), and optimizations clang cannot see
   because they depend on account semantics (dropping a repeated check, packing a `@layout borsh` account only where
   it changed).
-- **What it would cost now:** rewriting most of the compiler's 14,000 lines, and losing the property every release
+- **What it would cost now:** rewriting most of the compiler's 19,000 lines, and losing the property every release
   relies on: programs that do not use a change compile to the same binaries. Audit scope and differential results
   would start over.
 - **What we have instead:** the layers above, each owning one concern; `Ref` / `Value` as the typed place and value

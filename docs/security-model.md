@@ -10,7 +10,7 @@ auditors, [SECURITY.md](../SECURITY.md) how to report a problem.
 | --- | --- |
 | The program's author | the program's logic: what it allows, to whom, for how much |
 | TypeSOL (this repository) | that the binary does what the source and these guarantees say, and nothing an attacker can steer beyond it |
-| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js |
+| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js. The guarantees are tested with one platform-tools release (v1.52, from Agave 3.1.10); a build with another warns, or fails with `--toolchain-strict`, and `<name>.build.json` records which one built a binary |
 | The Solana runtime | account ownership and signer flags as passed, the loader's account serialization, CPI privilege rules, sysvars |
 
 Everything a transaction carries is attacker-controlled: the instruction data, which accounts are passed in which
@@ -48,7 +48,8 @@ Each holds for every instruction of every program the compiler accepts. A break 
 7. **Bounds.** Every index into an array, Vec, FixedVec or remaining-account list is checked (5104); a
    growable Vec's stored length is checked against the account's size before it is used (3003).
 8. **Account creation.** `create` / `createIfNeeded` is a top-level statement, and the account cannot be read or
-   written before it (compile error). Creation refuses an account that already exists (3000), and an address someone
+   written before it (compile error). Creation refuses an account that already exists (the System Program's
+   own error, custom 0; `initAccount<T>` over an account already holding a T is 3000), and an address someone
    pre-funded still gets created. `createIfNeeded` on an existing account re-derives the canonical PDA and checks
    owner, discriminator and size (token accounts: mint and owner; mints: decimals, authorities and the extensions it
    names). A `Migrate<From, To>` account is checked as an existing `From`; `migrate(…)` is a top-level statement every
@@ -56,14 +57,18 @@ Each holds for every instruction of every program the compiler accepts. A break 
    errors).
 9. **Writes through references.** A place is never written after the code that computes its value may have moved it:
    replacing or resizing what a live reference points into is a compile error, as is writing a Vec element with a
-   right side that may resize the Vec.
+   right side that may resize the Vec. A helper given a writable struct account may replace anything in it, however
+   the account is named at the call (a parameter, an account group's field, a struct loaded with `loadAccountMut`): a
+   reference into it read after the call is a compile error. A helper that can write gets its Pubkey, Option and
+   string arguments as they were at the call (a copy unless nothing it is given reaches them), and a closed account
+   is not used after `close()` (compile error).
 10. **Remaining accounts.** Writing one (`.lamports`, `loadAccountMut`) checks it is writable (3006) and not another
     account of the instruction (2040); `loadAccountMut` loads a given account once per instruction (2040);
     `loadAccount<T>` checks owner, discriminator and size, and validates the data as instruction arguments are.
 11. **Growth.** An account grows by at most 10 KiB per instruction (3016), the payer is a `Mut<Signer>`, new bytes are
     zero and the new rent is paid; shrinking keeps the lamports in the account.
 12. **CPIs.** A program signs only for its own PDAs (the runtime enforces it; the seeds are those written in the
-    source). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
+    source, with the values they had where the list was written, also for a named list or one given to a helper). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
     signs for it; remaining accounts keep the flags they were passed with, or are checked for the role requested.
     `invokeInstruction` is the exception by design: its program, account flags and data come from values (stored in
     account data or passed in), so the compiler cannot check them; the runtime does, refusing any account the
@@ -107,8 +112,35 @@ Each holds for every instruction of every program the compiler accepts. A break 
 - Arithmetic overflow returns an error code (5100) in every build; Anchor aborts the program, and only when
   overflow checks are enabled.
 
+## Review of 0.43.0 (2026-11-11)
+
+An internal review of 0.43.0 found that some of the guarantees above did not hold in every case; the defects are
+listed in [audit.md](audit.md#0430-2026-11-11) and fixed in the next release (0.44.0). Programs built with 0.43.0 or
+earlier should be rebuilt with it and redeployed: the fixes change the binary of programs that have a helper
+taking a Pubkey, Option, string or u256, exposed or not (35 of the 76 programs of the 0.43.0 sources build to the same
+binary, 41 to another).
+
+The defect that can break an authorization check is the first: a Pubkey, Option, string or u256 argument of a
+helper was not a copy. A program was exposed where all of these hold:
+
+- a helper takes a parameter of one of those types and also an account it writes (or remaining accounts, or an
+  `Inout` place);
+- a call passes that parameter a field of the same account (`rotate(v, v.admin, caller)`), or a value stored in it;
+- the helper reads the parameter after writing the field (`v.admin = v.pending`, then a check on `admin`): it read
+  the new value;
+- the helper was not inlined. A `/** @noinline */` helper never is; for the others it was clang's choice, which the
+  source does not show, so count every such call as exposed.
+
+Each of the other defects needs the construct it names: a seed list bound to a name, given to a helper or written
+beside an argument with side effects; a reference held across a helper that is given an account-group field or a
+loaded account; Borsh input with an Option of a struct that holds an Option (a bounded read past the input, no
+write); a closure or callback that changes a local read before it; a string viewing an `Inout` place; `close()` into
+the account itself, `Dup<…>` on a closed account, or an account used after `close()`. A program without them was not
+exposed to them.
+
 ## Status
 
-The compiler and runtime have had internal security reviews; the findings of the latest are fixed in 0.25.0
-(CHANGELOG). The releases after it have not had such a review yet, and there has been no external audit: see
+The compiler and runtime have had internal security reviews, the latest of 0.43.0 (above); its findings are fixed in
+the next release (0.44.0). It was an internal review, not an independent audit, and it did not cover the Metaplex and
+token CPI wrappers' emitters, the oracles, SBPF v1/v2 builds or Windows. There has been no external audit: see
 [audit.md](audit.md).

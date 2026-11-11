@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's bank (programs/marginfi/src/state/bank.rs, bank_config.rs and bank_cache.rs @ c5d440f6): creating one
 // from its compact config, checking a config, the interest accrual and the rate cache. Amounts and share values are
 // I80F48 (showcase/mainnet/marginfi/i80f48.ts).

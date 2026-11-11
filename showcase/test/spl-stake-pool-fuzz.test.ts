@@ -101,7 +101,7 @@ describe("a random walk over epochs", () => {
       return got;
     };
     const sweep = (when: string) => {
-      for (const a of known) expect(d.bytes(d.port, a), `${when} (seed ${SEED}): ${a}`).toBe(d.bytes(d.original, a));
+      for (const a of known) d.expectSame(a, `${when} (seed ${SEED}): ${a}`);
     };
 
     // The validators: a set of vote accounts, three of them in the pool to begin with.
@@ -186,7 +186,7 @@ describe("a random walk over epochs", () => {
         if (a.effective === 0n || a.activating !== 0n || a.deactivating !== 0n) continue;
         if (!rng.chance(70)) continue;
         // The account is about to be written in both from the original's bytes: it must agree first.
-        expect(d.bytes(d.port, at), `rewards (seed ${SEED}): ${at}`).toBe(d.bytes(d.original, at));
+        d.expectSame(at, `rewards (seed ${SEED}): ${at}`);
         // A reward the history still counts as fully active: with a cluster this small, a delegation grown past
         // what its warmup took would be partly activating again (no cluster pays such rewards).
         let reward = (a.effective * BigInt(1 + rng.int(50))) / 100_000n;

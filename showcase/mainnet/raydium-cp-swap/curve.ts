@@ -1,3 +1,4 @@
+// A port of Raydium CP-Swap (raydium-io/raydium-cp-swap, programs/cp-swap), Copyright Raydium, licensed under the Apache License, Version 2.0.
 // The constant-product curve and fees of the Raydium CP-Swap port (programs/cp-swap/src/curve/). Where the original's
 // math returns None, its callers turn that into ZeroTradingTokens, so these helpers fail with it directly.
 import { type u64, panic, require, u128 } from "typesol";

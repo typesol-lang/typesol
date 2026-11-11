@@ -6,6 +6,18 @@ and next to `cargo-build-sbf` on PATH; set `TYPESOL_SBF_SDK` to a `platform-tool
 
 **"platform-tools missing" / "no SBPF v2 libraries"** — `cargo-build-sbf --force-tools-install`.
 
+**"warning: this build uses clang … TypeSOL is tested with clang 20.1.7-rust-dev …"** — the active platform-tools are
+not the ones the release is tested with (platform-tools v1.52, from Agave 3.1.10). The build goes on, but the C TypeSOL
+generates is only checked against that clang: another one can compile it to other bytes, and what the C relies on
+includes backend details (how the SBF backend passes struct arguments was behind a defect fixed after 0.43.0). Install the tested ones with
+`cargo-build-sbf --install-only --force-tools-install --tools-version v1.52`; `typesol doctor` shows which are active.
+In CI, `--toolchain-strict` (or `TYPESOL_TOOLCHAIN=strict`) turns the warning into an error.
+
+**`typesol verify` says MISMATCH** — first make sure the same sources (imports included), TypeSOL version and SBPF
+version are used. Then the toolchain: verify prints the rebuild's clang and platform-tools, and the deployed build's
+when a `<name>.build.json` describes the deployed bytes (`--manifest <file>`, one next to a given `.so`, or the local
+build's). A program on chain carries no such record, so keep the build manifest of every deployment.
+
 **Windows** — not tested; use WSL2 with the Linux Agave CLI.
 
 **Node errors such as `ERR_UNKNOWN_FILE_EXTENSION` or `ERR_REQUIRE_ESM`** — use Node.js 22.12 or newer.

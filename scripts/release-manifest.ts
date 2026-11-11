@@ -14,7 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -68,7 +68,9 @@ const compiler = (await import(pathToFileURL(path.join(compilerRoot, "dist/compi
 };
 const toolchain = (await import(pathToFileURL(path.join(compilerRoot, "dist/compiler/toolchain.js")).href)) as {
   toolchainVersion: () => string;
-  findToolchain: () => { clang: string };
+  findToolchain: () => { clang: string; sdk: string };
+  /** From 0.44.0: the version the SDK's marker file and link agree on. */
+  platformToolsVersion?: () => string | undefined;
 };
 const ts = (await import(pathToFileURL(path.join(compilerRoot, "node_modules/typescript/lib/typescript.js")).href).catch(() => import("typescript"))) as {
   default?: { version: string };
@@ -136,7 +138,8 @@ const manifest: Manifest = {
   compiler: compiler.COMPILER_VERSION,
   toolchain: {
     clang: toolchain.toolchainVersion(),
-    platformTools: /platform-tools-sdk\/sbf|\/(v\d+\.\d+[^/]*)\//.exec(clang)?.[1],
+    // An older compiler package cannot tell: then the version in the resolved clang path (~/.cache/solana/v1.52/…), if any.
+    platformTools: toolchain.platformToolsVersion?.() ?? /[/\\](v\d+\.\d+(?:\.\d+)?)[/\\]platform-tools[/\\]/.exec(realpathSync(clang))?.[1],
     node: process.version,
     typescript: ts.default?.version ?? ts.version ?? "",
     runtime: sha256(readFileSync(path.join(compilerRoot, "runtime/typesol_rt.h"))),

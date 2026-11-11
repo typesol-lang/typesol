@@ -2,9 +2,18 @@
 
 From an empty directory to a program on Solana mainnet-beta: create, test, deploy, publish the IDL, then check that
 the deployed binary is the one your source builds. The program here is the counter that `typesol init` creates
-(13.2 KiB); any TypeSOL project works the same way.
+(11,400 bytes, 11.1 KiB, built with TypeSOL 0.43.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
+slightly); any TypeSOL project works the same way.
 
-You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Requirements).
+You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Quick start).
+
+**The toolchain you deploy with.** The binary is what the platform-tools' clang makes of the generated C, so the
+toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
+`typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). Keep
+`target/my_app/my_app.build.json` with each deployment, next to the commit you deployed: it records the TypeSOL,
+TypeScript, clang and platform-tools versions and the host, and the deployed bytes' sha256. Step 6's `verify` matches
+only when it rebuilds with the same TypeSOL version and toolchain, and on a mismatch `--manifest` with that file shows
+what differs.
 
 ## 1. Create and test
 
@@ -21,7 +30,7 @@ Write your program in `programs/my_app.ts` and keep the tests passing before you
 ## 2. Build
 
 ```sh
-npx typesol build
+npx --no-install typesol build
 ```
 
 This writes `target/my_app/`: the program (`my_app.so`), its Anchor IDL (`my_app.json`), a TypeScript client
@@ -46,8 +55,10 @@ ever close the program:
 solana rent $(wc -c < target/my_app/my_app.so)
 ```
 
-The counter needs 0.069 SOL of rent. During the deploy the program is first written to a buffer account that holds
-the same amount again; it is returned when the deploy finishes. Fund about twice the rent plus 0.01 SOL for fees.
+For the counter that is about 0.080 SOL (rent is (128 + size) × 6,960 lamports at the current rate: 80,234,880
+lamports for 11,400 bytes; the program data account holds 45 bytes more). During the deploy the program is first
+written to a buffer account that holds the same amount again; it is returned when the deploy finishes. Fund about
+twice the rent plus 0.01 SOL for fees: 0.17 SOL for the counter.
 
 The public mainnet RPC is rate-limited; for deploys, set `--url` (or `solana config set --url`) to your RPC
 provider's endpoint.
@@ -55,8 +66,8 @@ provider's endpoint.
 ## 4. Deploy
 
 ```sh
-npx typesol deploy --dry-run   # builds and prints the solana command it will run
-npx typesol deploy
+npx --no-install typesol deploy --dry-run   # builds and prints the solana command it will run
+npx --no-install typesol deploy
 ```
 
 It runs `solana program deploy` at the address in `target/deploy/my_app-keypair.json`, with your wallet as payer and
@@ -68,7 +79,7 @@ with `solana program close <buffer address>`, or list yours with `solana program
 ## 5. Publish the IDL
 
 ```sh
-npx typesol idl publish
+npx --no-install typesol idl publish
 ```
 
 It writes the IDL to the Program Metadata program, signed by the upgrade authority, where Anchor clients and
@@ -77,12 +88,12 @@ explorers look for it. It costs a few thousandths of a SOL of rent.
 ## 6. Verify
 
 ```sh
-npx typesol verify my_app
+npx --no-install typesol verify my_app
 ```
 
 `verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
 the cluster in your Solana CLI config, and compares the bytes. `match` means anyone with your source and the same
-TypeSOL version gets exactly the program on chain. It also prints the upgrade authority and checks the IDL you
+TypeSOL version and toolchain gets exactly the program on chain. It also prints the upgrade authority and checks the IDL you
 published in step 5. Anyone can run it against your program with `--address <program id> --url mainnet-beta`.
 
 ## 7. Call it

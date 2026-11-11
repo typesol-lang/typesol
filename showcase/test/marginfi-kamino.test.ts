@@ -6,13 +6,14 @@
 // mode taking the collateral's borrowing power.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, lamports } from "@solana/kit";
 import { BorshCoder, web3 } from "@anchor-lang/core";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
 import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
+import { present } from "../../test/binaries.js";
 
 const KLEND = address("KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD");
 const FARMS = address("FarmsPZpWu9i7Kky8tPN37rs2TpmMrAZrC7S7vJa91Hr");
@@ -76,7 +77,7 @@ const kOffset = (account: string, path: string) => {
   return at;
 };
 
-describe.skipIf(!existsSync(program("kamino_lending.so")))("Marginfi v2 port against the mainnet binary: Kamino banks", () => {
+describe.skipIf(!present(program("kamino_lending.so")))("Marginfi v2 port against the mainnet binary: Kamino banks", () => {
   const h = marginfiPair();
   const { s, setPyth, setSwb, editGroup } = h;
   /**

@@ -4,12 +4,12 @@
 // 4..36), and Merkle trees are built here the way Jito's tooling builds them. Every transaction must have the same
 // outcome, the same account bytes and the same events ("Program data:" lines).
 import { type Address, type KeyPairSigner, address, generateKeyPairSigner, lamports } from "@solana/kit";
-import { existsSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BN, pda } from "../../test/harness.js";
 import { DISTRIBUTIONS, SYSTEM, type Meta, custom, dec, errorsOf, merkle, pairOf, pk, program, report, u64 } from "./jito-helpers.js";
+import { present } from "../../test/binaries.js";
 
-describe.skipIf(!existsSync(program("jito_tip_payment.so")))("showcase/mainnet/jito-mev tip payment against mainnet", () => {
+describe.skipIf(!present(program("jito_tip_payment.so")))("showcase/mainnet/jito-mev tip payment against mainnet", () => {
   const ID = address("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt");
   const s = pairOf("jito_tip_payment.so", "tip_payment.ts", ID);
   const errors = errorsOf("tip_payment.ts");
@@ -208,7 +208,7 @@ describe.skipIf(!existsSync(program("jito_tip_payment.so")))("showcase/mainnet/j
 });
 
 for (const P of DISTRIBUTIONS)
-  describe.skipIf(!existsSync(program(P.so)))(`showcase/mainnet/jito-mev ${P.name} against mainnet`, () => {
+  describe.skipIf(!present(program(P.so)))(`showcase/mainnet/jito-mev ${P.name} against mainnet`, () => {
     const s = pairOf(P.so, P.source, P.id);
     const errors = errorsOf(P.errors);
     const snake = P.priority ? "priority_fee_distribution_account" : "tip_distribution_account";

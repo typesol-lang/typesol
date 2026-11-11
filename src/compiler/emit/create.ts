@@ -457,6 +457,12 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
         );
     }
     const { owner, mint } = target.constraints.ata!;
+    // The Associated Token Account program takes the owner as an account of the instruction, not as a key.
+    if (owner.startsWith("@"))
+      this.fail(
+        node,
+        `${call}(...) creates the account through the Associated Token Account program, which needs the owner as an account: "${owner}" is a stored key. Take the owner as a parameter (checked against ${owner.slice(1)}) and name it in Ata<…>`,
+      );
     const a = `a_${target.name}`;
     const create = `TS_TRY(ts_ata_create(params, a_${ataProgram.name}, a_${payer.name}, ${a}, a_${owner}, a_${mint}, a_${system.name}, a_${tokenProgram.name}, false));`;
     let result: Value | undefined;

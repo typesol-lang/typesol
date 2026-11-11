@@ -777,10 +777,12 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       return acc;
     }
     if (exp.type.kind !== "int") this.fail(node.right, "the exponent of ** must be an integer");
+    // Any exponent past 255 overflows unless the base is 0 or 1: a u256 one is not needed, and has no C shift.
+    if (exp.type.name === "u256") this.fail(node.right, "the exponent of ** is a u128 or smaller integer: convert it (u64(e))");
     const r = this.tmp("pr");
     const sq = this.tmp("ps");
     const e = this.tmp("pe");
-    this.line(`${ct} ${r} = 1;`);
+    this.line(`${ct} ${r} = ${type.name === "u256" ? intLiteral(1n, "u256") : "1"};`);
     this.line(`${ct} ${sq} = ${base.c};`);
     if (INT_INFO[exp.type.name].signed) this.line(`if (${exp.c} < 0) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: negative exponent");`);
     this.line(
@@ -1007,6 +1009,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         // Checked like the other operators: the amount must be below the width, and `<<` may not lose bits
         // (in JS the bigint would just grow). `>>` on signed types is arithmetic, as in JS.
         if (right.type.kind !== "int") this.fail(node, "shift amounts must be integers");
+        if (right.type.name === "u256") this.fail(node, "shift by a u64 (or smaller) amount");
         const bits = INT_INFO[type.name].bytes * 8;
         const sh = this.tmp("sh");
         const rinfo = INT_INFO[right.type.name];

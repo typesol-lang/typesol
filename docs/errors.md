@@ -20,7 +20,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 2016 / 2017 / 2018 | mint authority / freeze authority / decimals mismatch (2018: an existing mint `createIfNeeded` found) |
 | 2021 / 2022 | token account / mint not owned by the token program `TokenOf` / `MintOf` names (ConstraintTokenTokenProgram / ConstraintMintTokenProgram) |
 | 2024–2039 | an existing mint `createIfNeeded` found lacks a Token-2022 extension it was given, or holds other keys in it: group pointer 2024–2026, group member pointer 2027–2029, metadata pointer 2030–2032, close authority 2033–2034, permanent delegate 2035–2036, transfer hook 2037–2039 (the first code of each: the extension is missing; the next: the authority / address differs) (ConstraintMint…Extension…) |
-| 2040 | the same account passed in two writable slots (ConstraintDuplicateMutableAccount) |
+| 2040 | the same account passed in two writable slots (ConstraintDuplicateMutableAccount); also `close(a, b)` in a helper given one account for both |
 | 0 (from the System Program) | an `Init` / `create` on an address already in use (AccountAlreadyInUse): the System Program refuses it, as under Anchor's `init` |
 | 3000 | `initAccount<T>` on an account whose discriminator is already set (AccountDiscriminatorAlreadySet) |
 | 3001 | a zero-copy (`@serialization bytemuck`) account with fewer than 8 bytes of data (AccountDiscriminatorNotFound) |

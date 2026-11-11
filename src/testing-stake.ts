@@ -214,7 +214,8 @@ function allowanceFloat(epoch: bigint, account: bigint, clusterPortion: bigint, 
 
 /**
  * The effective, activating and deactivating stake of a delegation at `targetEpoch`, given the cluster's stake history:
- * an exact port of `Delegation::stake_activating_and_deactivating_v2` (solana-stake-interface 4.3.0), BigInt math with
+ * an exact port of `Delegation::stake_activating_and_deactivating_v2` (solana-stake-interface 4.3.0,
+ * https://github.com/solana-program/stake, Copyright Anza Maintainers; licence recorded in NOTICE), BigInt math with
  * its u128 saturation. `newRateActivationEpoch` is the epoch from which warmup and cooldown are 9% per epoch rather
  * than 25%: 0 (the default) as the Stake program has it on every cluster; `null` for 25% throughout (Rust's None).
  */

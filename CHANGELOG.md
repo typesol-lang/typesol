@@ -6,8 +6,117 @@ codes, and says so here.
 
 ## Unreleased
 
+- Fixed: a Pubkey, Option, string or u256 argument of a helper was not a copy. The SBF backend passes such a value as a
+  pointer to the caller's object, so a helper that was not inlined and wrote that object (`rotate(v, v.admin, caller)`
+  with `v.admin = v.pending` inside) then read its own write through the parameter: a check on the old value passed on
+  the new one. Whether it happened depended on inlining. The value now arrives by pointer, to a copy taken at the call
+  whenever the helper can write (it takes accounts, remaining accounts or `Inout` places) and the value is not out of
+  its reach (a local, an instruction argument, an account's key, the program id)
+  (test/language/helper-copies.test.ts, inlined and `@noinline`).
+- Fixed: a seed list bound to a name (`const s = signer(["vault", st.count, bump])`), given to a helper, or written
+  beside an argument with side effects read its seeds when the CPI ran, so after `st.count += 1n` the program signed
+  for another PDA than the one the source names. The seeds are copied where the list is written
+  (test/language/pda-signers.test.ts).
+- Fixed: the rule that a reference into an account is not used after a helper that may move its data was skipped when
+  the account reached the helper as an account-group field (`grow(g.pool, g.payer)`) or as one loaded with
+  `loadAccountMut`; such a program compiled and wrote through the stale reference. Both are refused like a plain
+  parameter (test/security/aliasing.test.ts).
+- Fixed: the Borsh decoder's length checks subtracted before comparing, so for an `Option` of a struct that itself
+  holds an Option (or a Vec of such structs) a short buffer wrapped the subtraction and the read went past the end
+  (up to the struct's size, read only). The checks no longer subtract, and a nested struct's smallest size is checked
+  after its tag and for each element; `ts_alloc`, string appends and the stake history reader are written the same
+  way (test/language/borsh-nested.test.ts).
+- Fixed: a local read before a closure or list callback that changes it kept the new value (`x += bump()`,
+  `two(x, bump())`); it keeps the value it had when read, as the left-to-right order promises
+  (test/language/closures.test.ts). A string that views text inside an `Inout` place is copied for the helper that
+  takes the place (test/language/inout.test.ts).
+- Fixed: `close()`. Closing an account into itself is a compile error (`CloseTo<…, "self">`, `close(a, a)`), and 2040
+  at run time in a helper whose two accounts may be one; `Dup<…>` is refused on an account the body closes; using an
+  account after `close()` in the same instruction (its writes were dropped) is a compile error, its `.key` aside
+  (test/security/dup.test.ts, test/language/diagnostics.test.ts).
+- Language: `min` / `max`, `switch` and list indexes take a `u256`; a `u256` shift amount or exponent is a compile
+  error (it was a C build failure); `x <<= n` and `x >>= n` take an amount of its own integer type, as `<<` does;
+  `Ata<Init<TokenAccount>, "@acct.field", …>.create` is a compile error naming the form instead of C that does not
+  build (test/language/pow.test.ts, test/language/diagnostics.test.ts).
+- Of the 76 programs of the 0.43.0 sources, 35 compile to the same binary as in 0.43.0 and 41 to a different one:
+  those with a helper that takes a Pubkey, Option, string or u256 (the parameter is a pointer now). counter, vault and
+  escrow are among the 35. Measured against 0.43.0, the changed example programs move by at most 22 compute units
+  either way, and no compared transaction of a port costs more than the original's.
+- Docs: docs/security-model.md says what creation over an existing account returns (the System Program's custom 0;
+  3000 is `initAccount<T>`), and docs/runtime.md names the cases that abort (`PANIC_ON_OVERFLOW`, `PANIC_STYLE`, a
+  RedBlackTree whose bytes are inconsistent).
+- CLI: generated `.mcp.json` / `.cursor/mcp.json`, the agent rules, hints and docs run the project's own copy with
+  `npx --no-install typesol …` (or `npx @typesol/cli …` outside a project): plain `npx typesol` outside an installed
+  project asks the registry for a package of that name, which does not exist. docs/migrate-from-anchor.md installs
+  before running `port`.
+- typesol/testing: `testProgram` reuses an up-to-date build (same sources, runtime, TypeSOL, TypeScript and clang
+  versions), and builds of one program from parallel test workers wait for each other
+  (`<out>/<name>/.typesol-build.lock`, taken over when its process is gone or after 15 minutes) instead of writing
+  over each other's files.
+- CLI: `typesol cpi` and `typesol port` check the IDL as `typesol client` does (identifiers, base58 addresses, byte
+  lists) and keep IDL text inside escaped comments. A pre-0.30 Anchor IDL gets "run `anchor idl convert`" in all
+  three, and a null or non-object IDL or a missing `instructions` list is refused with a message.
+- Client: a type that holds itself through a Vec or an Option (`enum Shape { Rec { kids: Vec<Shape> } }`) gets a lazy
+  codec; building it overflowed the stack. `u256` / `i256` are supported (bigint, 32 bytes LE), and
+  `Option<Option<T>>` is `Option<T> | null` so Some(None) round-trips; one level more is left out with a note.
+- CLI: `clone`, `client --address`, `verify` and `idl publish` time out RPC requests (30 s, `TYPESOL_RPC_TIMEOUT`) and
+  report the host and cause as `doctor` / `deploy` do. `deploy` refuses to run without `--url` or a configured
+  `json_rpc_url`, and `deploy` / `idl publish` print the cluster and payer before sending. A `--config` that does not
+  exist is a usage error in `deploy --dry-run` and `doctor` too.
+- CLI: `check --json` prints JSON for every outcome (a missing file, bad `--files` input). Printed `cd` and deploy
+  hints quote paths. `build file.ts --program-id <missing>` explains instead of failing with ENOENT.
+- Docs: docs/cli.md lists `typesol mcp` and every file `init` writes. docs/mainnet.md's counter size and rent are
+  measured (11,400 bytes, about 0.080 SOL at 0.43.0). Case studies link to showcase sources on GitHub. docs/client.md
+  describes which PDA seeds are filled in. docs/audit.md's figures come from `scripts/audit-stats.ts` (checked by the
+  tests), its unreviewed range runs to 0.43.0, and macOS CI is on demand.
+- Tests: the Phoenix and Stake Pool diff helpers compare account bytes without copying them twice or building hex
+  strings unless they differ (phoenix-upstream peak RSS 1.53 GB → 0.77 GB), and the per-order market copies left in
+  phoenix-cancel and phoenix-upstream are hoisted.
+- Licences: NOTICE records the third-party code the package ships (lib-sokoban's red-black tree in the runtime
+  header, MIT; SPL's big_vec layout and the Stake interface's activation function, Apache-2.0) and the Phoenix and
+  SPL Stake Pool ports, and ships in the package with the Apache-2.0 text. Every showcase/mainnet file names its
+  source and licence.
+- CI: a program binary whose sha256 differs from test/programs/SOURCES.md fails the fetch step (Token Metadata is
+  fetched from mainnet, the build the record names; Bubblegum's record is the build devnet runs now). All fetch-only
+  binaries are cached, keyed on SOURCES.md. `CI_REQUIRE_ALL` turns a suite skipped for a missing binary into a
+  failure (test/binaries.ts).
 - Docs: docs/testing.md lists the SPL Stake Pool and Phoenix random walks and the red-black tree's trace replay
   against lib-sokoban among the checks against an independent oracle.
+- Releases: `scripts/release-check.ts <version>` packs the npm tarball from a clean `git archive` of the tag (frozen
+  install, build, lint, the version and CHANGELOG section checked; `--tests` adds the suite) and writes
+  `releases/<version>.json`: the commit, the tarball's shasum and integrity as the registry reports them, and each
+  file's sha256. The maintainer publishes that tarball (`npm publish <file>.tgz`) instead of a folder with
+  `--ignore-scripts`, and `--verify --registry` compares the registry with the record afterwards. `npm pack` is
+  reproducible: two clean packs of v0.43.0 and the published 0.43.0 are the same bytes (shasum 10c2883b…), recorded
+  in releases/0.43.0.json (CONTRIBUTING.md, docs/testing.md).
+- Toolchain: the toolchain the release is tested with is declared in one place (`TESTED_TOOLCHAIN`, exported from
+  `typesol/compiler`: Agave 3.1.10, platform-tools v1.52, its clang 20.1.7 version line). A build with another clang
+  (`build`, `deploy`, `verify`, `typesol/testing`, a reused up-to-date build too) prints one warning per process naming
+  both and saying its binaries are not covered by the tests; `--toolchain-strict` on `build` and `deploy`, or
+  `TYPESOL_TOOLCHAIN=strict` anywhere, makes it an error. `typesol doctor` has a `toolchain` row (tested, or untested
+  with both versions; an error under strict), and its install hint is Agave 3.1.10 instead of "stable". CI runs
+  `doctor` under strict, so the tests run on the declared toolchain (test/cli/toolchain.test.ts).
+- Build manifests: `<name>.build.json` records `platformTools` (from the SDK's `platform-tools-<version>.md` marker
+  and its link into the cache, when they agree) and `host` (`os`, `arch`) beside `clang`. A manifest without `host`
+  (from 0.43.0 or earlier) makes the up-to-date check rebuild once instead of reusing the build; a different
+  platform-tools or host rebuilds too. `scripts/release-manifest.ts` takes the platform-tools version from the same
+  place (its path pattern found none).
+- CLI: `typesol verify` on a mismatch prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the
+  deployed build's when a build manifest's binary hash is the deployed bytes' (`--manifest <file>`, `<name>.build.json`
+  next to a given `.so`, or the local build's), and which of them differ. A program on chain records no toolchain, so
+  without such a manifest it says the deployed side is unknown and names the local manifest as describing another
+  binary.
+- Docs: the README's quick start installs the tested Agave and platform-tools exactly; docs/mainnet.md has "the
+  toolchain you deploy with" (keep the build manifest with the deployment; `verify` needs the same toolchain);
+  docs/troubleshooting.md explains the warning and verify mismatches; docs/cli.md lists the new flags and rows.
+- Docs: docs/audit.md and docs/security-model.md record the internal review of 0.43.0 (2026-11-11): the defects above,
+  what it covered (compiler semantics probes, the runtime and generated C, the tooling) and what it did not (the
+  Metaplex and token CPI wrappers' emitters, oracles, SBPF v1/v2 builds, Windows); programs built with 0.43.0 or
+  earlier should be rebuilt, and docs/security-model.md says how to tell whether a program was exposed to the helper
+  argument defect. SECURITY.md and CONTRIBUTING.md add the fix-release rule (from 0.44.0 on, a release that only
+  fixes soundness or security defects is a patch of the latest minor, with no new language surface and the binary
+  diff in its notes; older minors are not maintained). docs/stability.md lists what a release gives today: the
+  checked tarball, the tested toolchain, the build record, fix releases.
 
 ## 0.43.0 — 2026-11-11
 

@@ -68,3 +68,25 @@ node scripts/release-manifest.ts --diff a.json b.json
 For 0.37.0 → 0.38.0 (run by hand before release manifests existed): all 67 programs of the 0.37.0 sources build to
 the same binary and IDL with both packages.
 
+### The npm tarball
+
+From 0.43.0 on, `releases/<version>.json` in the repository describes the package on npm: the tag and its commit, the
+tarball's size, sha1 shasum and sha512 integrity (the registry's `dist.shasum` and `dist.integrity`), and the sha256
+of every file in it. `scripts/release-check.ts` writes it from a clean export of the tag (`git archive`: install with
+the lockfile, build, lint, check the version and the CHANGELOG section, `npm pack`), and the maintainer publishes the
+tarball it produced, by hand ([CONTRIBUTING.md](https://github.com/typesol-lang/typesol/blob/main/CONTRIBUTING.md#releasing)). To check a release yourself:
+
+```sh
+node scripts/release-check.ts 0.43.0                       # pack the tag again: git diff releases/ shows what moved
+node scripts/release-check.ts 0.43.0 --verify --registry   # the registry's hashes against the record
+npm pack @typesol/cli@0.43.0 --pack-destination /tmp/pub
+node scripts/release-check.ts 0.43.0 --verify --tarball /tmp/pub/typesol-cli-0.43.0.tgz   # file by file
+```
+
+`npm pack` is reproducible here: two clean exports of v0.43.0 packed to the same bytes, and to the published tarball
+(shasum `10c2883bf3a01fcb16a86c1dbbbb696e1e962b2c`, with Node 25.9.0, pnpm 11.9.0 and npm 11.12.1). npm writes every
+entry with a fixed date and mode, in a fixed order; what can still change the bytes is another npm (its tar headers)
+or another Node (its zlib compresses the archive). The record also keeps the uncompressed archive's sha256 and each
+file's, which compare across those, and `--verify --tarball` says which files differ, if any. 0.42.0 and earlier
+were published from a maintainer's checkout without a record.
+

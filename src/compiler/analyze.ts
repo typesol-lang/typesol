@@ -2532,6 +2532,9 @@ function analyzeInstruction(
         if (a.kind.kind !== "account" || !a.kind.mut) reporter.fail(a.node, "CloseTo needs a Mut<Struct> account");
         const dest = accounts.find((o) => o.name === c.closeTo);
         if (!dest) reporter.fail(a.node, `CloseTo<…, "${c.closeTo}">: add an account parameter named "${c.closeTo}"`);
+        // Closing into itself would zero the account and then hand its own lamports back to it: the runtime refuses the
+        // instruction (unbalanced), after everything else ran.
+        if (dest === a) reporter.fail(a.node, `CloseTo<…, "${c.closeTo}">: the destination is the account being closed; name another writable account`);
       }
     });
   }

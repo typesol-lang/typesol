@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's Drift integration (programs/marginfi/src/instructions/drift and programs/drift-mocks of
 // mrgnlabs/marginfi-v2 @ c5d440f6): what the Drift instructions read from Drift's spot market and user accounts, at
 // the offsets drift-mocks' MinimalSpotMarket and MinimalUser give (discriminator included).

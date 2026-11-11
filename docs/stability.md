@@ -11,8 +11,9 @@ From 1.0 on, within a major version:
 
 - **Sources keep compiling.** A program that compiles with 1.x compiles with every later 1.y, to a program with the same
   account layouts, IDL, instruction and account discriminators and error codes. New releases add; they do not take away.
-- **Binaries are reproducible and only change for a reason.** A release that changes the binary of a program that uses
-  none of its new features says so, with the release manifest's diff (`binary-diff.txt`) as the evidence.
+- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release and the toolchain it is
+  tested with, a source builds to the same bytes. A release that changes the binary of a program that uses none of
+  its new features says so, with the release manifest's diff (`binary-diff.txt`) as the evidence.
 - **The checks stay.** No check a program gets from its parameter types (owner, discriminator, signer, writability,
   aliasing, checked arithmetic, constraints) is removed or weakened.
 - **The tools keep their interfaces**: `typesol build`, `test` (via `typesol/testing`), `check --json`, `deploy`,
@@ -30,6 +31,24 @@ Meant to stay as they are; a change before 1.0 would be a breaking change listed
 - Errors and events: error enums and their codes, `require`, `AnchorError`, `emit`, `emitCpi`.
 - CPIs: System, SPL Token, Token-2022, Associated Token, Memo, generic `invoke` with PDA signing.
 - Layouts: account data (Anchor's discriminator and fixed or `@layout borsh` layout), the IDL, the client.
+
+## What a release gives you now
+
+- **The npm package is the one that was checked.** From 0.43.0 on, `releases/<version>.json` in the repository holds
+  the published tarball's shasum and integrity and every file's sha256, packed from a clean export of the release tag
+  after install, build and lint. `npm pack` is reproducible here, so anyone can pack the tag again and compare, or
+  compare the registry with `node scripts/release-check.ts <version> --verify --registry`
+  ([docs/testing.md](testing.md#the-npm-tarball)).
+- **The tests cover one toolchain.** Each release declares the Agave and platform-tools it is tested with
+  (`TESTED_TOOLCHAIN`, exported from `typesol/compiler`; Agave 3.1.10 and platform-tools v1.52 now). A binary built with
+  another clang is outside what the tests cover: `typesol build` and `deploy` warn once, `--toolchain-strict` (or
+  `TYPESOL_TOOLCHAIN=strict`) refuses it, and `typesol doctor` shows which one is active.
+- **A build says what made it.** `<name>.build.json` records the TypeSOL, TypeScript, clang and platform-tools versions,
+  the host, the SBPF version and the sha256 of every source and of the binary. `typesol verify` uses it to say, on a
+  mismatch, whether the toolchains differ. A program on chain records none of this: keep the file with the deployment.
+- **Fixes come as patches of the latest minor.** From 0.44.0 on, a release that only fixes soundness or security
+  defects is a patch (0.44.1, …) with no new language surface, and its notes carry the binary diff against the
+  previous release ([SECURITY.md](../SECURITY.md#fix-releases)). Older minors are not maintained.
 
 ## Experimental
 

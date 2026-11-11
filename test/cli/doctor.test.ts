@@ -1,13 +1,14 @@
 // The first minutes: `typesol doctor`, what `init` says when the platform-tools are missing, and the checks `deploy`
 // runs before sending anything (an RPC that does not answer, a payer that cannot pay), against a fake RPC.
 import { execFile } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { loadOrCreateKeypair } from "../../src/keys.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = path.join(ROOT, "dist/cli.js");
@@ -113,4 +114,76 @@ describe("first minutes: doctor, init, deploy preflight", () => {
     // A first deploy: twice the rent (100_000_000 from the fake RPC) plus fees.
     expect(poor.stderr).toMatch(/the payer \w+ has 1000 lamports on 127\.0\.0\.1:\d+; deploying needs about 0\.21 SOL .*solana airdrop 2 \w+ --url localhost/);
   });
+
+  it("deploy refuses to pick a cluster itself, says which cluster and payer before sending; --config must exist", async () => {
+    const dir = tmp();
+    expect((await run(["init", ".", "--name", "counter"], dir)).status).toBe(0);
+    const payer = path.join(dir, "payer.json");
+    writeFileSync(payer, JSON.stringify(Array.from({ length: 64 }, (_, i) => 64 - i)));
+    // No --url and no Solana CLI config: `solana program deploy` would go to its default (mainnet-beta).
+    const none = await run(["deploy", "--keypair", payer], dir, { HOME: tmp() });
+    expect(none.status).toBe(1);
+    expect(none.stderr).toMatch(/no cluster: pass --url/);
+    expect(existsSync(path.join(dir, "target"))).toBe(false); // refused before building
+    for (const args of [
+      ["deploy", "--dry-run", "--config", "nope.yml"],
+      ["doctor", "--config", "nope.yml"],
+    ]) {
+      const r = await run(args, dir);
+      expect(r.status, args.join(" ")).toBe(2);
+      expect(r.stderr, args.join(" ")).toMatch(/nope\.yml does not exist/);
+    }
+    // The preflight passes; the cluster and payer are printed before `solana` runs (not on this PATH, so it stops there).
+    balance = 10_000_000_000;
+    const go = await run(["deploy", "--url", rpcUrl, "--keypair", payer], dir, {
+      PATH: [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter),
+    });
+    expect(go.stdout).toMatch(/cluster 127\.0\.0\.1:\d+, payer [1-9A-HJ-NP-Za-km-z]{32,44}\n/);
+    expect(go.stderr).toMatch(/`solana` was not found on PATH/);
+  });
+});
+
+describe("kit-based commands: RPC failures name the host and the cause, and time out", () => {
+  const PROGRAM = "11111111111111111111111111111112";
+  let closedUrl = "";
+  let hanging: Server;
+  let hangingUrl = "";
+  beforeAll(async () => {
+    const port = await new Promise<number>((r) => {
+      const s = createServer().listen(0, "127.0.0.1", () => {
+        const p = (s.address() as AddressInfo).port;
+        s.close(() => r(p));
+      });
+    });
+    // A path that stands for an API key: it must not be printed.
+    closedUrl = `http://127.0.0.1:${port}/secret-api-key`;
+    hanging = createServer(() => {}); // accepts, never answers
+    await new Promise<void>((r) => hanging.listen(0, "127.0.0.1", r));
+    hangingUrl = `http://127.0.0.1:${(hanging.address() as AddressInfo).port}/secret-api-key`;
+  });
+  afterAll(() => hanging.closeAllConnections?.() ?? hanging.close());
+
+  it("clone, client --address, verify and idl publish", async () => {
+    const dir = tmp();
+    expect((await run(["init", ".", "--name", "counter"], dir)).status).toBe(0);
+    const payer = path.join(dir, "payer.json");
+    loadOrCreateKeypair(payer); // a fresh throwaway key: idl publish checks it is a real keypair before any request
+    const commands = [
+      ["clone", PROGRAM, "--url", closedUrl, "--out", "accounts"],
+      ["client", "--address", PROGRAM, "--url", closedUrl],
+      ["verify", "programs/counter.ts", "--address", PROGRAM, "--url", closedUrl],
+      ["idl", "publish", "--url", closedUrl, "--keypair", payer],
+    ];
+    for (const args of commands) {
+      const r = await run(args, dir);
+      expect(r.status, args[0]).toBe(1);
+      expect(r.stderr, args[0]).toMatch(/cannot reach 127\.0\.0\.1:\d+ \(ECONNREFUSED\): check --url/);
+      expect(r.stderr + r.stdout, args[0]).not.toContain("secret-api-key");
+    }
+    const publish = await run(commands[3]!, dir);
+    expect(publish.stdout).toMatch(/cluster 127\.0\.0\.1:\d+, payer [1-9A-HJ-NP-Za-km-z]{32,44}/);
+    const slow = await run(["clone", PROGRAM, "--url", hangingUrl, "--out", "accounts"], dir, { TYPESOL_RPC_TIMEOUT: "1" });
+    expect(slow.status).toBe(1);
+    expect(slow.stderr).toMatch(/cannot reach 127\.0\.0\.1:\d+ \(no answer in 1 s\)/);
+  }, 60_000);
 });

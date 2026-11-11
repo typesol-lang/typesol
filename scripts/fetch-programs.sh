@@ -7,7 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../test/programs"
 url="${1:-devnet}"
 dump() { [[ -f "$2" ]] || solana program dump -u "$url" "$1" "$2"; }
-dump metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s mpl_token_metadata.so
+# Token Metadata is the build deployed on mainnet (devnet runs a newer one); the other Metaplex programs are devnet's.
+[[ -f mpl_token_metadata.so ]] || solana program dump -u mainnet-beta metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s mpl_token_metadata.so
 dump CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d mpl_core.so
 dump BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY mpl_bubblegum.so
 dump mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW mpl_account_compression.so
@@ -49,12 +50,16 @@ trimmed jup7TthsMgcR9Y3L277b8Eo9uboVSmu1utkuXHNUKar juplend_rewards.so
 trimmed distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp merkle_distributor.so
 trimmed 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 raydium_amm_v4.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
-# checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded.
+# checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded. Either
+# is a failure (exit 3, after every file is checked): tests run against an unrecorded binary prove nothing about the
+# one SOURCES.md names. Record the new hash (and re-check the port against it) or restore the recorded binary.
+bad=0
 for f in *.so; do
   want="$(grep -E "^\| \`$f\` " SOURCES.md | grep -oE '[0-9a-f]{64}' | tail -1 || true)"
   got="$(shasum -a 256 "$f" | cut -c1-64)"
-  if [[ -z "$want" ]]; then echo "$f: not in SOURCES.md" >&2
+  if [[ -z "$want" ]]; then echo "$f: not in SOURCES.md" >&2; bad=1
   elif [[ "$want" == "$got" ]]; then echo "$f: sha256 as recorded"
-  else echo "$f: sha256 differs from SOURCES.md ($got): upgraded upstream since it was recorded?" >&2
+  else echo "$f: sha256 differs from SOURCES.md ($got): upgraded upstream since it was recorded?" >&2; bad=1
   fi
 done
+if [[ "$bad" == 1 ]]; then exit 3; fi

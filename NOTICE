@@ -1,8 +1,48 @@
 TypeSOL
 Copyright (c) 2026 TypeSOL contributors. Licensed under the MIT License (LICENSE).
 
-This repository also holds third-party material used only by its tests. None of it is part of the published
-@typesol/cli package.
+Third-party code in the published @typesol/cli package
+--------------------------------------------------------
+
+The package ships this NOTICE and the Apache License 2.0 text (test/programs/LICENSE-Apache-2.0.txt).
+
+- runtime/typesol_rt.h, the RedBlackTree section (ts_rbt_*): a statement-for-statement port of the red-black tree and
+  node allocator of lib-sokoban 0.3.0 (https://github.com/jarry-xiao/sokoban, src/red_black_tree.rs and
+  src/node_allocator.rs). lib-sokoban is offered under "MIT OR Apache-2.0"; TypeSOL uses it under the MIT License:
+
+    MIT License
+
+    Copyright (c) 2022 Jarry Xiao
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+- runtime/typesol_rt.h, the BigVec section (ts_bigvec_*), and the BigVec<T> layout the compiler gives account data:
+  they follow SPL Stake Pool's big_vec.rs (solana-program/stake-pool, program/src/big_vec.rs; earlier in
+  solana-labs/solana-program-library), licensed under the Apache License, Version 2.0. Changes: rewritten in C and
+  TypeScript.
+
+- dist/testing-stake.js (src/testing-stake.ts), stakeActivation: a port of Delegation::stake_activating_and_deactivating_v2
+  of solana-stake-interface 4.3.0 (https://github.com/solana-program/stake, interface crate), Copyright Anza
+  Maintainers. Licence: Apache-2.0 (the crate's Cargo metadata for 4.3.0; text in test/programs/LICENSE-Apache-2.0.txt). Changes: rewritten in TypeScript (BigInt arithmetic with the original's u128 saturation).
+
+Third-party material in this repository only (not in the published package)
+------------------------------------------------------------------------------
 
 - test/programs/: program binaries dumped from Solana clusters. The ones kept in the repository are Apache-2.0:
   SPL Account Compression and SPL Noop (solana-labs/solana-program-library), Program Metadata
@@ -24,6 +64,8 @@ This repository also holds third-party material used only by its tests. None of 
   liquidity and rewards rate model programs, as mrgnlabs/marginfi-v2 keeps them in idls-complete/ (Apache-2.0).
 - showcase/test/fixtures/clmm/: Raydium CLMM's on-chain IDL and the accounts of one mainnet pool (raydium-io/raydium-clmm,
   Apache-2.0).
-
-Examples under examples/ that port these programs (raydium-cp-swap, raydium-clmm, raydium-amm, jito-mev, marginfi, multisig.ts)
-follow their originals' source, which is Apache-2.0; see each file's header.
+- showcase/mainnet/: TypeSOL ports of mainnet programs, which follow their originals' source: Raydium CP-Swap, CLMM
+  and AMM v4, Jito's MEV programs, marginfi v2, coral-xyz/multisig and SPL Stake Pool (Apache-2.0), and Phoenix v1
+  (MIT, Copyright Ellipsis Labs). Every file says which program it ports and under which licence in its first line.
+- showcase/program-examples/: ports of solana-developers/program-examples (MIT, Copyright Solana Foundation; the
+  licence text is in showcase/program-examples/README.md).

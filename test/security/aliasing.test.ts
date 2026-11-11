@@ -110,3 +110,48 @@ describe("an associated token account with two token program parameters", () => 
     ).toMatch(/Ata<AccountInfo, …> needs exactly one token program parameter/);
   });
 });
+
+// A helper given a writable struct account may replace what a reference into it points at, however the account is
+// named at the call: a parameter, an account group's field, or a struct loaded with loadAccountMut.
+const STALE = `import { type u64, type Mut, type Signer, type SystemProgram, type AccountInfo, type Vec, loadAccountMut, remainingAccounts } from "typesol";
+export interface Point { x: u64; y: u64 }
+export interface M { n: u64; p: Point; a: Vec<u64>; b: Vec<Point> }
+export interface G { pool: Mut<M>; payer: Mut<Signer>; sys: SystemProgram }
+function grow(m: Mut<M>, payer: Mut<Signer>): void { m.a.push(777n, payer); }
+function wipe(m: Mut<M>): void { m.p = { x: 9n, y: 9n }; }
+export interface L { p: Point; n: u64 }
+function wipeL(l: Mut<L>): void { l.p = { x: 9n, y: 9n }; }
+`;
+
+describe("a reference into an account read after a helper given that account", () => {
+  it.each([
+    [
+      "a parameter",
+      "export function f(pool: Mut<M>, payer: Mut<Signer>, sys: SystemProgram): u64 { const e = pool.b.get(0n); grow(pool, payer); e.x = 4242n; return 0n; }",
+    ],
+    ["an account group's field (write)", "export function f(g: G): u64 { const e = g.pool.b.get(0n); grow(g.pool, g.payer); e.x = 4242n; return 0n; }"],
+    ["an account group's field (read)", "export function f(g: G): u64 { const e = g.pool.b.get(0n); grow(g.pool, g.payer); return e.x; }"],
+    ["an account group's field (struct field)", "export function f(g: G): u64 { const r = g.pool.p; wipe(g.pool); return r.x; }"],
+    ["a loaded struct", "export function f(acc: Mut<AccountInfo>): u64 { const v = loadAccountMut<L>(acc); const r = v.p; wipeL(v); return r.x; }"],
+    [
+      "a loaded remaining account",
+      "export function f(): u64 { const v = loadAccountMut<L>(remainingAccounts().get(0n)); const r = v.p; wipeL(v); return r.x; }",
+    ],
+  ])("%s: refused", (_, body) => {
+    expect(compileErrors(STALE + body)).toMatch(/still refers to data in .*, and (grow|wipe|wipeL)\(\) may replace it/);
+  });
+
+  it("names the group's field as the source does", () => {
+    expect(compileErrors(STALE + "export function f(g: G): u64 { const r = g.pool.p; wipe(g.pool); return r.x; }")).toMatch(
+      /"r" still refers to data in g\.pool,/,
+    );
+  });
+
+  it.each([
+    ["the loaded struct itself, read after", "export function f(acc: Mut<AccountInfo>): u64 { const v = loadAccountMut<L>(acc); wipeL(v); return v.p.x; }"],
+    ["a reference not read after", "export function f(g: G): u64 { const r = g.pool.p; const x = r.x; wipe(g.pool); return x; }"],
+    ["the group's field read through again", "export function f(g: G): u64 { wipe(g.pool); return g.pool.p.x; }"],
+  ])("%s: compiles", (_, body) => {
+    expect(compileErrors(STALE + body)).toBe("");
+  });
+});

@@ -4,15 +4,15 @@
 import { getMintDecoder } from "@solana-program/token";
 import { type Address, address, generateKeyPairSigner, getAddressDecoder, getProgramDerivedAddress, some } from "@solana/kit";
 import type { LiteSVM } from "litesvm";
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ATA_PROGRAM, BN, SYSTEM_PROGRAM, TOKEN_PROGRAM, acct, customError, expectOk, fundedSigner, ix, pda, send } from "../../../test/harness.js";
 import { METADATA_PROGRAM, addrBytes, ataOf, deployPort, tokenBalance } from "../../../test/ports-helpers.js";
+import { present } from "../../../test/binaries.js";
 
 // Metaplex Token Metadata is not redistributed with TypeSOL (Metaplex NFT license): `pnpm fetch:programs` downloads it.
 const MPL_METADATA_SO = fileURLToPath(new URL("../../../test/programs/mpl_token_metadata.so", import.meta.url));
-const HAVE_METADATA = existsSync(MPL_METADATA_SO);
+const HAVE_METADATA = present(MPL_METADATA_SO);
 const SYSVAR_RENT = address("SysvarRent111111111111111111111111111111111");
 const META = {
   name: "Solana Gold",

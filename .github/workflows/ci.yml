@@ -62,32 +62,55 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm lint # scripts/ typecheck against dist/
+      # The tests are only evidence for the toolchain the compiler declares as tested (TESTED_TOOLCHAIN in
+      # src/compiler/toolchain.ts): doctor fails here when the installed clang is another one.
+      - run: node dist/cli.js doctor
+        env:
+          TYPESOL_TOOLCHAIN: strict
       - name: Cache third-party program binaries
+        # Every fetch-only binary (SOURCES.md's "no (fetch)" rows), keyed on SOURCES.md: a recorded hash that changes
+        # fetches again instead of restoring the old file.
         uses: actions/cache@v6
         with:
-          path: test/programs/mpl_*.so
-          key: programs-v1
+          path: |
+            test/programs/mpl_token_metadata.so
+            test/programs/mpl_core.so
+            test/programs/mpl_account_compression.so
+            test/programs/mpl_noop.so
+            test/programs/mpl_bubblegum.so
+            test/programs/kamino_lending.so
+            test/programs/kamino_farms.so
+            test/programs/juplend_earn.so
+            test/programs/juplend_liquidity.so
+            test/programs/juplend_rewards.so
+            test/programs/merkle_distributor.so
+          key: programs-v2-${{ hashFiles('test/programs/SOURCES.md') }}
       - name: Fetch program binaries (public devnet, with retries)
-        # The step fails when the last attempt does (the loop alone would end with sleep's status).
+        # The step fails when the last attempt does (the loop alone would end with sleep's status). Exit code 3 is a
+        # binary whose sha256 is not the one SOURCES.md records: not retried, it fails the run.
         run: |
           for i in 1 2 3; do
-            bash scripts/fetch-programs.sh devnet && break
+            if bash scripts/fetch-programs.sh devnet; then break; else status=$?; fi
+            if [ "$status" = 3 ]; then echo "a binary differs from test/programs/SOURCES.md (see above)" >&2; exit 3; fi
             if [ "$i" = 3 ]; then echo "fetching the program binaries failed 3 times" >&2; exit 1; fi
             sleep 20
           done
           test -f test/programs/mpl_token_metadata.so
       # The compiler's own tests; the ports checked against mainnet binaries run in the showcase job.
+      # CI_REQUIRE_ALL: a suite whose binary is missing fails instead of skipping (test/binaries.ts).
       - run: pnpm test:core
+        env:
+          CI_REQUIRE_ALL: programs
       - name: Pack, install the tarball into a scaffolded project, typecheck and test it
         run: |
           npm pack --pack-destination /tmp
           mkdir /tmp/consumer && cd /tmp/consumer && npm init -y >/dev/null
           npm install /tmp/typesol-cli-*.tgz
-          npx typesol --version
-          npx typesol init app --name app && cd app
+          npx --no-install typesol --version
+          npx --no-install typesol init app --name app && cd app
           npm pkg set devDependencies.typesol=file:$(ls /tmp/typesol-cli-*.tgz)
           npm install
-          npx typesol build
+          npx --no-install typesol build
           npx tsc -p tsconfig.json
           npm test
 
@@ -124,20 +147,37 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Cache third-party program binaries
+        # Every fetch-only binary (SOURCES.md's "no (fetch)" rows), keyed on SOURCES.md: a recorded hash that changes
+        # fetches again instead of restoring the old file.
         uses: actions/cache@v6
         with:
-          path: test/programs/mpl_*.so
-          key: programs-v1
+          path: |
+            test/programs/mpl_token_metadata.so
+            test/programs/mpl_core.so
+            test/programs/mpl_account_compression.so
+            test/programs/mpl_noop.so
+            test/programs/mpl_bubblegum.so
+            test/programs/kamino_lending.so
+            test/programs/kamino_farms.so
+            test/programs/juplend_earn.so
+            test/programs/juplend_liquidity.so
+            test/programs/juplend_rewards.so
+            test/programs/merkle_distributor.so
+          key: programs-v2-${{ hashFiles('test/programs/SOURCES.md') }}
       - name: Fetch program binaries (public devnet, with retries)
-        # The step fails when the last attempt does (the loop alone would end with sleep's status).
+        # The step fails when the last attempt does (the loop alone would end with sleep's status). Exit code 3 is a
+        # binary whose sha256 is not the one SOURCES.md records: not retried, it fails the run.
         run: |
           for i in 1 2 3; do
-            bash scripts/fetch-programs.sh devnet && break
+            if bash scripts/fetch-programs.sh devnet; then break; else status=$?; fi
+            if [ "$status" = 3 ]; then echo "a binary differs from test/programs/SOURCES.md (see above)" >&2; exit 3; fi
             if [ "$i" = 3 ]; then echo "fetching the program binaries failed 3 times" >&2; exit 1; fi
             sleep 20
           done
           test -f test/programs/mpl_token_metadata.so
       - run: pnpm test:showcase
+        env:
+          CI_REQUIRE_ALL: programs
 
   differential:
     # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on
@@ -170,3 +210,5 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:twins
       - run: FUZZ_RUNS=500 FUZZ_STEPS=300 pnpm vitest run test/verification/differential.test.ts test/client/cpigen.test.ts test/language/borsh-layout.test.ts test/client/client-anchor.test.ts
+        env:
+          CI_REQUIRE_ALL: twins

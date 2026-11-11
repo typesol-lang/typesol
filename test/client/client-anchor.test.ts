@@ -2,13 +2,14 @@
 // a zero-copy account read and written at rustc's #[repr(C)] offsets (padding included), and generic argument types
 // instantiated from the IDL. Driven through typesol/testing's LiteSVM connection.
 import { LiteSVM } from "litesvm";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { type ClientIdl, generateClient } from "../../src/tools/clientgen.js";
 import { svmConnection } from "../../src/tools/svmrpc.js";
 import { fundedSigner } from "../harness.js";
+import { present } from "../binaries.js";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SO = path.join(ROOT, "test/anchor-twins/target/deploy/anchor_zerocopy.so");
@@ -20,7 +21,7 @@ afterAll(() => rmSync(OUT, { recursive: true, force: true }));
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Any = any;
 
-describe.skipIf(!existsSync(SO))("generated client: an Anchor program's zero-copy account and generic types", () => {
+describe.skipIf(!present(SO))("generated client: an Anchor program's zero-copy account and generic types", () => {
   it("reads and writes the zero-copy account at the program's offsets, and passes generic arguments", async () => {
     const { source, notes } = generateClient(IDL);
     // The generic definitions themselves have no client type; their instantiations do.

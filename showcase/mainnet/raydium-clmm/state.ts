@@ -1,3 +1,4 @@
+// Part of the TypeSOL port of Raydium CLMM (raydium-io/raydium-clmm @ 6d7a0f8, Apache-2.0).
 // Account state of the Raydium CLMM port (programs/amm/src/states/ of raydium-io/raydium-clmm @ 6d7a0f8), byte for byte:
 // the zero-copy accounts (PoolState, TickArrayState, TickArrayBitmapExtension, ObservationState) are
 // #[repr(C, packed)], which is TypeSOL's fixed layout; the Borsh accounts (AmmConfig, PersonalPositionState,

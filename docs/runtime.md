@@ -12,7 +12,17 @@ This page is for people changing it; programs never call it directly.
   many call sites would otherwise each grow the binary (`ts_fail`, the rent fallback `ts_rent_slow`, PDA search).
 - **Errors are return values.** A function that can fail returns `uint64_t`: `SUCCESS`, or an error code. Fail with
   `TS_FAIL(code, "TypeSOL: …")` (logs the message, then returns the code) and propagate with `TS_TRY(call)`.
-  Nothing aborts: the instruction returns the code, and the runtime reports it as `Custom(code)`.
+  The instruction returns the code, and the runtime reports it as `Custom(code)`. The exceptions abort the program
+  instead: Rust-style panics (`panic`, `PANIC_ON_OVERFLOW`, `PANIC_STYLE`, `panicsAt`) and a RedBlackTree whose bytes
+  are inconsistent (`ts_rbt_bad_index`, `ts_rbt_too_deep`, as lib-sokoban panics), which end with the runtime's
+  "SBF program panicked".
+- **No C struct by value where it may alias.** The SBF target passes a C struct argument as a pointer to the caller's
+  object and makes no copy, so a function that writes memory the argument came from would see its own writes. A
+  runtime function taking a struct and an out-pointer it writes reads the struct into scalars first (`ts_str_append`
+  is an always-inlined wrapper of `ts_str_append_n`); generated helpers take such values by pointer.
+- **Bounds without wrapping.** Size checks compare `a + b > limit` only when the sum cannot overflow, else
+  `n > limit - at` with `at <= limit` known (`ts_alloc`); a check such as `n > len - at - rest` is wrong when `at` may
+  be past `len - rest`.
 - **Error codes follow Anchor.** Where Anchor has a framework error with the same meaning, its number is used (2006
   ConstraintSeeds, 3003 AccountDidNotDeserialize, …), so Anchor and Codama clients name failures correctly.
   TypeSOL-only conditions are 5100–5199; user errors start at 6000. Every code is listed in [errors.md](errors.md).

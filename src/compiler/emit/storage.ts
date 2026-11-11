@@ -439,9 +439,22 @@ export abstract class StorageEmitter extends AliasEmitter {
     const v = this.expr(n, U64);
     const idx = v.literal !== undefined ? this.literal(v.literal, U64, n) : v;
     if (idx.type.kind !== "int") this.fail(n, "array index must be an integer");
+    const t = this.indexTemp(idx);
+    return t;
+  }
+
+  /** An integer index in a u64 temporary: a negative one, or one past u64 (128-bit, u256 limbs), is out of bounds. */
+  private indexTemp(idx: Value): string {
+    if (idx.type.kind !== "int") throw new Error("unreachable: an index is an integer");
     const t = this.tmp("idx");
-    if (INT_INFO[idx.type.name].signed) this.line(`if (${idx.c} < 0) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
-    if (INT_INFO[idx.type.name].bytes === 16) this.line(`if (${idx.c} > UINT64_MAX) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
+    const oob = `TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds")`;
+    if (idx.type.name === "u256") {
+      this.line(`if (!ts_u256_fits(${idx.c}, 64)) ${oob};`);
+      this.line(`uint64_t ${t} = (${idx.c}).w[0];`);
+      return t;
+    }
+    if (INT_INFO[idx.type.name].signed) this.line(`if (${idx.c} < 0) ${oob};`);
+    if (INT_INFO[idx.type.name].bytes === 16) this.line(`if (${idx.c} > UINT64_MAX) ${oob};`);
     this.line(`uint64_t ${t} = (uint64_t)(${idx.c});`);
     return t;
   }
@@ -455,10 +468,7 @@ export abstract class StorageEmitter extends AliasEmitter {
     const v = this.expr(n, U64);
     const idx = v.literal !== undefined ? this.literal(v.literal, U64, n) : v;
     if (idx.type.kind !== "int") this.fail(n, "array index must be an integer");
-    const t = this.tmp("idx");
-    if (INT_INFO[idx.type.name].signed) this.line(`if (${idx.c} < 0) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
-    if (INT_INFO[idx.type.name].bytes === 16) this.line(`if (${idx.c} > UINT64_MAX) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
-    this.line(`uint64_t ${t} = (uint64_t)(${idx.c});`);
+    const t = this.indexTemp(idx);
     this.line(`if (${t} >= ${typeof len === "number" ? `${len}ULL` : len}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
     return t;
   }

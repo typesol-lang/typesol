@@ -371,6 +371,53 @@ describe("subset enforcement", () => {
       /the right side may change this Vec .*store its result in a local first/,
     ],
     ["require without an error", `export function f(b: Mut<Box>): void { require(b.value > 0n); }`, /Expected 2 arguments|takes two arguments/],
+    // Accepted before and failed in clang with C errors.
+    [
+      "a u256 shift amount",
+      `import { u256 as U256 } from "typesol";\nexport function f(a: u64): u64 { const s = U256(1n); return a << s; }`,
+      /shift by a u64 \(or smaller\) amount/,
+    ],
+    [
+      "a u256 exponent",
+      `import { u256 as U256 } from "typesol";\nexport function f(a: u64): u64 { const s = U256(2n); return a ** s; }`,
+      /the exponent of \*\* is a u128 or smaller integer/,
+    ],
+    [
+      "an associated token account created with a stored owner",
+      `import { type TokenAccount, type Ata, type AssociatedTokenProgram } from "typesol";\nexport interface Cfg { wallet: Pubkey; }\nexport function f(payer: Mut<Signer>, c: Account<Cfg>, mint: Mint, ata: Ata<Init<TokenAccount>, "@c.wallet", "mint">, tp: TokenProgram, ap: AssociatedTokenProgram, sp: SystemProgram): void { ata.create(payer); }`,
+      /needs the owner as an account: "@c\.wallet" is a stored key/,
+    ],
+    ["closing an account into itself", `export function f(b: CloseTo<Mut<Box>, "b">): void {}`, /CloseTo<…, "b">: the destination is the account being closed/],
+    [
+      "close() into the account itself",
+      `import { close } from "typesol";\nexport function f(b: Mut<Box>): void { close(b, b); }`,
+      /the destination is the account being closed/,
+    ],
+    [
+      "a Dup account closed with close()",
+      `import { type Dup, close } from "typesol";\nexport function f(b: Dup<Mut<Box>>, d: Mut<Box>): void { close(b, d); }`,
+      /Dup<…> is for accounts read and written in place: not created, closed or @layout borsh/,
+    ],
+    [
+      "an account written after close()",
+      `import { close } from "typesol";\nexport function f(b: Mut<Box>, d: Mut<Signer>): void { close(b, d); b.value = 5n; }`,
+      /b is closed by close\(b, …\) and used after it/,
+    ],
+    [
+      "an account read after close() in a loop",
+      `import { close } from "typesol";\nexport function f(b: Mut<Box>, d: Mut<Signer>, n: u64): void { for (let i = 0n; i < n; i++) { const v = b.value; if (v > 0n) close(b, d); } }`,
+      /b is closed by close\(b, …\) and used after it/,
+    ],
+    [
+      "a reference into an account read after close()",
+      `import { close } from "typesol";\nexport interface Pt { x: u64; }\nexport interface Holder { p: Pt; }\nexport function f(h: Mut<Holder>, d: Mut<Signer>): u64 { const r = h.p; close(h, d); return r.x; }`,
+      /h is closed by close\(h, …\) and used after it/,
+    ],
+    [
+      "the key of a closed account (still readable)",
+      `import { close, log } from "typesol";\nexport function f(b: Mut<Box>, d: Mut<Signer>): void { close(b, d); log(b.key); }`,
+      /^$/,
+    ],
   ];
 
   for (const [what, body, expected] of cases) {

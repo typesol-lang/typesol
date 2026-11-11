@@ -5,12 +5,27 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Diagnostic, type Sbpf } from "./compiler/index.js";
+import { createHash } from "node:crypto";
+import {
+  build,
+  CompileError,
+  COMPILER_VERSION,
+  describeToolchain,
+  elfLength,
+  generate,
+  SBPF_VERSIONS,
+  toolchainDifferences,
+  verifyBinary,
+  type BuildManifest,
+  type Diagnostic,
+  type Sbpf,
+} from "./compiler/index.js";
+import { setToolchainStrict } from "./compiler/toolchain.js";
 import { generateCpi, type Idl } from "./tools/cpigen.js";
 import { generatePort, type PortIdl } from "./tools/portgen.js";
 import { generateClient, writeClient, type ClientIdl } from "./tools/clientgen.js";
 import { buildIdl } from "./compiler/idl.js";
-import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
+import { base58, decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
 import { formatProfile, profileLogs } from "./tools/profile.js";
 import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
 import {
@@ -25,7 +40,17 @@ import {
   scaffold,
   type Workspace,
 } from "./workspace.js";
-import { clusterUrl, deployPreflight, doctorChecks, formatChecks, INSTALL_AGAVE, solanaConfig as readSolanaConfig, toolchainCheck } from "./tools/doctor.js";
+import {
+  cliRpc,
+  clusterUrl,
+  deployPreflight,
+  doctorChecks,
+  formatChecks,
+  INSTALL_AGAVE,
+  rpcHost,
+  solanaConfig as readSolanaConfig,
+  toolchainCheck,
+} from "./tools/doctor.js";
 
 const ASSETS = fileURLToPath(new URL("../assets/", import.meta.url));
 
@@ -57,6 +82,8 @@ function banner(): string {
 }
 
 const SBPF = `--sbpf v0|v1|v2      SBPF version (default v0, or "sbpf" in ${CONFIG}); v1/v2 need clusters that enabled them`;
+const TOOLCHAIN_STRICT =
+  "--toolchain-strict   refuse to build with platform-tools other than the tested ones (default: one warning); also TYPESOL_TOOLCHAIN=strict";
 
 interface Command {
   usage: string;
@@ -120,10 +147,10 @@ const COMMANDS: Record<string, Command> = {
         );
       log(
         `\n  next:\n` +
-          (rel === "." ? "" : `    cd ${rel}\n`) +
+          (rel === "." ? "" : `    cd ${shellQuote(rel)}\n`) +
           `    npm install\n` +
           `    npm test             # builds ${name} and runs its test in LiteSVM, a Solana runtime in-process\n` +
-          `    npx typesol doctor   # checks the toolchain, keypair and RPC before a deploy` +
+          `    npx --no-install typesol doctor   # checks the toolchain, keypair and RPC before a deploy` +
           (template === "counter" ? `\n\n  other starters: typesol init <dir> --template vault (SOL at a PDA) or --template escrow (SPL token escrow)` : ""),
       );
       return 0;
@@ -131,16 +158,25 @@ const COMMANDS: Record<string, Command> = {
   },
   build: {
     usage:
-      "typesol build [<program>…] [--sbpf v0|v1|v2] [--profile]\n  typesol build <program.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile]",
+      "typesol build [<program>…] [--sbpf v0|v1|v2] [--profile] [--toolchain-strict]\n  typesol build <program.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--toolchain-strict]",
     help: [
       `In a project (${CONFIG}): build every program, or the ones named, into <out>/<name>/ (.so, IDL .json, .client.ts, .c, .build.json).`,
       "Outside a project, or with a .ts file: build that file (its keypair is created next to the output if needed).",
       SBPF,
       "--profile            log a marker and the remaining compute units before every statement (for `typesol profile`; not for release)",
+      TOOLCHAIN_STRICT,
       "--quiet              no banner",
     ].join("\n  "),
-    options: { sbpf: { type: "string" }, profile: { type: "boolean" }, out: { type: "string" }, "program-id": { type: "string" }, quiet: { type: "boolean" } },
+    options: {
+      sbpf: { type: "string" },
+      profile: { type: "boolean" },
+      out: { type: "string" },
+      "program-id": { type: "string" },
+      quiet: { type: "boolean" },
+      "toolchain-strict": { type: "boolean" },
+    },
     run(v, args) {
+      if (v["toolchain-strict"]) setToolchainStrict();
       const sbpf = sbpfOf(v);
       const profile = !!v.profile;
       const ws = findWorkspace(process.cwd());
@@ -167,7 +203,11 @@ const COMMANDS: Record<string, Command> = {
       if (!v.quiet && process.stdout.isTTY) log(banner());
       const outDir = (v.out as string | undefined) ?? path.join(path.dirname(file), "target");
       const { model } = generate(file);
-      const keyFile = (v["program-id"] as string | undefined) ?? path.join(outDir, `${model.name}-keypair.json`);
+      const given = v["program-id"] as string | undefined;
+      // A keypair given by name must be there: creating one in its place would give the program a new address.
+      if (given !== undefined && !existsSync(given))
+        throw new UsageError(`--program-id ${given} does not exist (leave --program-id out to create a keypair next to the output)`);
+      const keyFile = given ?? path.join(outDir, `${model.name}-keypair.json`);
       mkdirSync(path.dirname(keyFile), { recursive: true });
       const { address, created } = loadOrCreateKeypair(keyFile);
       const res = build(file, outDir, address, { sbpf: sbpf ?? "v0", profile });
@@ -178,7 +218,7 @@ const COMMANDS: Record<string, Command> = {
       log(`  idl       ${res.idlPath}`);
       log(`  client    ${client.path}`);
       log(`  manifest  ${res.manifestPath}`);
-      log(`\n  deploy:   solana program deploy ${res.soPath} --program-id ${keyFile}`);
+      log(`\n  deploy:   solana program deploy ${shellQuote(res.soPath)} --program-id ${shellQuote(keyFile)}`);
       return 0;
     },
   },
@@ -192,41 +232,15 @@ const COMMANDS: Record<string, Command> = {
     ].join("\n  "),
     options: { json: { type: "boolean" }, stdin: { type: "boolean" }, files: { type: "boolean" } },
     run(v, args) {
-      // In a project: the named programs, or all of them.
-      const ws = !v.stdin && !v.files && !args.some((a) => a.endsWith(".ts")) ? findWorkspace(process.cwd()) : undefined;
-      if (ws) {
-        const diagnostics: Diagnostic[] = [];
-        for (const name of names(ws, args)) {
-          try {
-            const { model } = generate(programPaths(ws, name).entry);
-            if (!v.json)
-              log(`ok  ${name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
-          } catch (e) {
-            if (!(e instanceof CompileError)) throw e;
-            diagnostics.push(...e.diagnostics);
-            if (!v.json) console.error(`${name}:\n${showDiagnostics(e.diagnostics)}`);
-          }
-        }
-        if (v.json) log(JSON.stringify({ ok: !diagnostics.length, diagnostics }));
-        return diagnostics.length ? 1 : 0;
-      }
-      const file = path.resolve(one(args, "<program.ts>"));
-      let files: Map<string, string> | undefined;
-      if (v.stdin) files = new Map([[file, readFileSync(0, "utf8")]]);
-      else if (v.files) {
-        const given = (JSON.parse(readFileSync(0, "utf8")) as { files?: Record<string, string> }).files ?? {};
-        files = new Map(Object.entries(given).map(([p, t]) => [path.resolve(p), t]));
-      }
+      if (!v.json) return check(v, args);
+      // --json is read by programs (the editor plugin, agents): every outcome is one JSON object, never a usage text.
       try {
-        if (!files?.has(file)) mustExist(file);
-        const { model } = generate(file, { files });
-        if (v.json) log(JSON.stringify({ ok: true, diagnostics: [] }));
-        else log(`ok  ${model.name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
-        return 0;
+        return check(v, args);
       } catch (e) {
-        if (!v.json || !(e instanceof CompileError)) throw e;
-        log(JSON.stringify({ ok: false, diagnostics: e.diagnostics }));
-        return 1;
+        const message = e instanceof Error ? e.message : String(e);
+        if (e instanceof CompileError) log(JSON.stringify({ ok: false, diagnostics: e.diagnostics }));
+        else log(JSON.stringify({ ok: false, diagnostics: [], error: message }));
+        return e instanceof UsageError ? 2 : 1;
       }
     },
   },
@@ -246,7 +260,7 @@ const COMMANDS: Record<string, Command> = {
     help: [
       "Serve the Model Context Protocol on stdio for AI coding agents: tools to check a program (errors with hints), read",
       "its IDL, search the docs, and read the rules a TypeSOL program follows. `typesol init` writes .mcp.json (Claude",
-      "Code) and .cursor/mcp.json (Cursor) that start it as `npx typesol mcp`.",
+      "Code) and .cursor/mcp.json (Cursor) that start it as `npx --no-install typesol mcp`.",
     ].join("\n  "),
     options: {},
     async run() {
@@ -264,32 +278,49 @@ const COMMANDS: Record<string, Command> = {
     ].join("\n  "),
     options: { url: { type: "string" }, config: { type: "string" } },
     async run(v) {
+      if (v.config !== undefined) solanaConfig(v.config as string); // a --config that does not exist is a usage error, as elsewhere
       const checks = await doctorChecks({ cwd: process.cwd(), url: v.url as string | undefined, config: v.config as string | undefined });
       log(formatChecks(checks));
       return checks.some((c) => !c.ok && !c.optional) ? 1 : 0;
     },
   },
   deploy: {
-    usage: "typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--dry-run]",
+    usage:
+      "typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--dry-run] [--toolchain-strict]",
     help: [
       `In a project: build, then \`solana program deploy\` each program at its <out>/deploy/<name>-keypair.json address.`,
       "Deploying again upgrades it (the payer must be the upgrade authority). --dry-run builds and prints the commands.",
       "Needs the Agave CLI (`solana`) on PATH.",
+      TOOLCHAIN_STRICT,
     ].join("\n  "),
-    options: { url: { type: "string" }, keypair: { type: "string" }, config: { type: "string" }, "dry-run": { type: "boolean" }, sbpf: { type: "string" } },
+    options: {
+      url: { type: "string" },
+      keypair: { type: "string" },
+      config: { type: "string" },
+      "dry-run": { type: "boolean" },
+      sbpf: { type: "string" },
+      "toolchain-strict": { type: "boolean" },
+    },
     async run(v, args) {
+      if (v["toolchain-strict"]) setToolchainStrict();
       const ws = needWorkspace("deploy");
+      const cfg = solanaConfig(v.config as string | undefined);
+      const url = (v.url as string | undefined) ?? cfg.url;
+      // Without either, `solana program deploy` would pick its own default cluster (mainnet-beta): never silently.
+      if (!url && !v["dry-run"])
+        throw new Error(
+          "no cluster: pass --url (devnet, mainnet-beta, localhost or an RPC URL), or set json_rpc_url in the Solana CLI config (`solana config set --url devnet`)",
+        );
       const built = buildWorkspace(ws, names(ws, args), { sbpf: sbpfOf(v), needKeypair: true });
-      if (!v["dry-run"]) {
+      if (url && !v["dry-run"]) {
         // Before any transaction: the RPC answers and the payer can afford it, with what to do if not.
-        const cfg = solanaConfig(v.config as string | undefined);
-        const url = (v.url as string | undefined) ?? cfg.url;
-        if (url)
-          await deployPreflight({
-            url: clusterUrl(url),
-            payer: (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json"),
-            programs: built.map((b) => ({ soPath: b.result.soPath, address: b.address, name: b.paths.name })),
-          });
+        const payer = (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json");
+        await deployPreflight({
+          url: clusterUrl(url),
+          payer,
+          programs: built.map((b) => ({ soPath: b.result.soPath, address: b.address, name: b.paths.name })),
+        });
+        log(`  cluster ${rpcHost(clusterUrl(url))}, payer ${payerAddress(payer)}`);
       }
       for (const b of built) {
         const cliArgs = deployArgs(b.result.soPath, b.paths.keypair, { url: v.url as string, payer: v.keypair as string, config: v.config as string });
@@ -329,7 +360,8 @@ const COMMANDS: Record<string, Command> = {
       const kit = await import("@solana/kit");
       const { publishIdl, rpcChain } = await import("./tools/idlpublish.js");
       const signer = await kit.createKeyPairSignerFromBytes(readKeypair(keyFile));
-      const chain = rpcChain(kit.createSolanaRpc(clusterUrl(rpcUrl)));
+      const chain = rpcChain(await cliRpc(clusterUrl(rpcUrl)));
+      log(`  cluster ${rpcHost(clusterUrl(rpcUrl))}, payer ${signer.address}`);
       for (const name of names(ws, args)) {
         // The IDL only needs the compiled model and the program address: the deployed binary is left alone.
         const { address } = programAddress(ws, name);
@@ -357,9 +389,8 @@ const COMMANDS: Record<string, Command> = {
       const dir = path.resolve((v.out as string | undefined) ?? ws?.accounts ?? "accounts");
       const rpcUrl = (v.url as string | undefined) ?? solanaConfig(v.config as string | undefined).url;
       if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
-      const kit = await import("@solana/kit");
       const { cloneAccounts } = await import("./tools/clone.js");
-      const lines = await cloneAccounts(kit.createSolanaRpc(clusterUrl(rpcUrl)) as never, [...new Set(addresses)], dir);
+      const lines = await cloneAccounts((await cliRpc(clusterUrl(rpcUrl))) as never, [...new Set(addresses)], dir);
       for (const l of lines) log(`  ${l}`);
       log(`  ${lines.length} written to ${path.relative(process.cwd(), dir) || "."}`);
       return 0;
@@ -422,7 +453,7 @@ const COMMANDS: Record<string, Command> = {
         // Loaded only here: the other commands do not need an RPC client.
         const kit = await import("@solana/kit");
         const { fetchProgramIdl } = await import("./tools/idlpublish.js");
-        const found = await fetchProgramIdl(kit.createSolanaRpc(clusterUrl(rpcUrl)), kit.address(v.address as string));
+        const found = await fetchProgramIdl(await cliRpc(clusterUrl(rpcUrl)), kit.address(v.address as string));
         console.error(`  IDL from ${found.source === "anchor" ? "Anchor's IDL account" : "the Program Metadata program"}`);
         idl = found.idl;
       } else {
@@ -439,7 +470,8 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   verify: {
-    usage: "typesol verify <program.ts | program> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <solana cli config>] [--sbpf v0|v1|v2]",
+    usage:
+      "typesol verify <program.ts | program> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--manifest <name.build.json>]",
     help: [
       "Rebuild and compare with what is deployed. Exit 0 on a match, 3 on a mismatch.",
       "With a .so (e.g. from `solana program dump`): compare with that file.",
@@ -448,13 +480,18 @@ const COMMANDS: Record<string, Command> = {
       "on chain (`typesol idl publish`) with the one the source builds; a published IDL that differs is a mismatch.",
       "The SBPF version is read from the deployed binary unless --sbpf is given. Reproducible builds need the same",
       "TypeSOL version and platform-tools as the original (see its <name>.build.json).",
+      "On a mismatch, the toolchain of each side that is known: the rebuild's, and the deployed binary's from a build",
+      "manifest whose binary hash is the deployed one's (--manifest, <deployed>.build.json next to a given .so, or the",
+      "local build's). A program on chain carries no record of what built it: keep the .build.json with the deployment.",
+      "--manifest <file>   the <name>.build.json of the build that was deployed",
     ].join("\n  "),
-    options: { sbpf: { type: "string" }, address: { type: "string" }, url: { type: "string" }, config: { type: "string" } },
+    options: { sbpf: { type: "string" }, address: { type: "string" }, url: { type: "string" }, config: { type: "string" }, manifest: { type: "string" } },
     async run(v, args) {
       if (args.length < 1 || args.length > 2) throw new UsageError("verify takes the program and, optionally, the deployed .so");
       const [target, deployedPath] = args;
       if (deployedPath && (v.address || v.url)) throw new UsageError("give either a deployed .so or --address/--url, not both");
       if (v.address && !decodeAddress(v.address as string)) throw new UsageError(`--address "${v.address}" is not a base58 Solana address`);
+      if (v.manifest !== undefined && !existsSync(v.manifest as string)) throw new UsageError(`${v.manifest} does not exist`);
       const ws = findWorkspace(process.cwd());
       const name = ws && (ws.programs[target] ? target : programForEntry(ws, target));
       const entry = ws && name ? programPaths(ws, name).entry : target;
@@ -472,9 +509,8 @@ const COMMANDS: Record<string, Command> = {
         const rpcUrl = (v.url as string | undefined) ?? solanaConfig(v.config as string | undefined).url;
         if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
         // Loaded only here: the other commands do not need an RPC client.
-        const kit = await import("@solana/kit");
         const { fetchDeployed } = await import("./tools/onchain.js");
-        const rpc = kit.createSolanaRpc(clusterUrl(rpcUrl));
+        const rpc = await cliRpc(clusterUrl(rpcUrl));
         const info = await fetchDeployed(rpc, address);
         onChain = { address, info, rpc };
         deployed = info.elf;
@@ -498,6 +534,16 @@ const COMMANDS: Record<string, Command> = {
           ? `  match     ${res.manifest.binary} (sbpf ${sbpf})`
           : `  MISMATCH  ${what} is not what ${entry} builds to (${res.manifest.binary}, sbpf ${sbpf})`,
       );
+      if (!same) {
+        // The rebuild's own output directory was temporary; the local build's manifest sits in the usual place.
+        const local = ws && name ? programPaths(ws, name).outDir : path.join(path.dirname(entry), "target");
+        const candidates = [
+          v.manifest as string | undefined,
+          deployedPath ? deployedPath.replace(/\.so$/, "") + ".build.json" : undefined,
+          path.join(local, `${res.manifest.program}.build.json`),
+        ].filter((f): f is string => !!f);
+        for (const line of toolchainHint(res.manifest, deployed, candidates, !!v.manifest)) log(line);
+      }
       if (!onChain) return same ? 0 : 3;
 
       const { info } = onChain;
@@ -589,9 +635,102 @@ function showDiagnostics(diagnostics: Diagnostic[], sources?: Map<string, string
     .join("\n\n");
 }
 
+/** `typesol check`: diagnostics as text, or (--json) as JSON; CompileErrors from a single file are thrown. */
+function check(v: Record<string, string | boolean | undefined>, args: string[]): number {
+  // In a project: the named programs, or all of them.
+  const ws = !v.stdin && !v.files && !args.some((a) => a.endsWith(".ts")) ? findWorkspace(process.cwd()) : undefined;
+  if (ws) {
+    const diagnostics: Diagnostic[] = [];
+    for (const name of names(ws, args)) {
+      try {
+        const { model } = generate(programPaths(ws, name).entry);
+        if (!v.json)
+          log(`ok  ${name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
+      } catch (e) {
+        if (!(e instanceof CompileError)) throw e;
+        diagnostics.push(...e.diagnostics);
+        if (!v.json) console.error(`${name}:\n${showDiagnostics(e.diagnostics)}`);
+      }
+    }
+    if (v.json) log(JSON.stringify({ ok: !diagnostics.length, diagnostics }));
+    return diagnostics.length ? 1 : 0;
+  }
+  const file = path.resolve(one(args, "<program.ts>"));
+  let files: Map<string, string> | undefined;
+  if (v.stdin) files = new Map([[file, readFileSync(0, "utf8")]]);
+  else if (v.files) {
+    let given: unknown;
+    try {
+      given = (JSON.parse(readFileSync(0, "utf8")) as { files?: unknown } | null)?.files ?? {};
+    } catch (e) {
+      throw new UsageError(`--files: stdin is not JSON (${(e as Error).message})`);
+    }
+    if (typeof given !== "object" || given === null || Object.values(given).some((t) => typeof t !== "string"))
+      throw new UsageError('--files: expected { "files": { "<absolute path>": "<text>", … } } on stdin');
+    files = new Map(Object.entries(given as Record<string, string>).map(([p, t]) => [path.resolve(p), t]));
+  }
+  if (!files?.has(file)) mustExist(file);
+  const { model } = generate(file, { files });
+  if (v.json) log(JSON.stringify({ ok: true, diagnostics: [] }));
+  else log(`ok  ${model.name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
+  return 0;
+}
+
 function mustExist(file: string): string {
   if (!existsSync(file)) throw new UsageError(`${file} does not exist`);
   return file;
+}
+
+/**
+ * After a verify mismatch: the toolchain of the rebuild and, when a build manifest describes the deployed bytes (its
+ * binary hash is theirs), of the deployed build, and what differs. A manifest that describes other bytes (an older
+ * local build) is only mentioned: its toolchain says nothing about the deployed binary.
+ */
+function toolchainHint(rebuilt: BuildManifest, deployed: Buffer, candidates: string[], explicit: boolean): string[] {
+  const lines = [`  rebuilt   ${describeToolchain(rebuilt)}`];
+  const deployedHash = createHash("sha256")
+    .update(deployed.subarray(0, elfLength(deployed)))
+    .digest("hex");
+  let other: { file: string; manifest: BuildManifest } | undefined;
+  const unrelated: { file: string; manifest: BuildManifest }[] = [];
+  for (const file of [...new Set(candidates.map((c) => path.resolve(c)))]) {
+    if (!existsSync(file)) continue;
+    let manifest: BuildManifest;
+    try {
+      manifest = JSON.parse(readFileSync(file, "utf8")) as BuildManifest;
+    } catch {
+      continue;
+    }
+    if (typeof manifest?.clang !== "string" || typeof manifest.binary !== "string") continue;
+    if (manifest.binary === deployedHash) {
+      other = { file, manifest };
+      break;
+    }
+    unrelated.push({ file, manifest });
+  }
+  const rel = (f: string) => path.relative(process.cwd(), f) || f;
+  if (other) {
+    lines.push(`  deployed  ${describeToolchain(other.manifest)} (${rel(other.file)}, whose binary hash is the deployed one's)`);
+    const diff = toolchainDifferences(rebuilt, other.manifest);
+    lines.push(
+      diff.length
+        ? `  differs   ${diff.join(", ")}: ${diff.includes("clang") ? "another clang can compile the same C to other bytes; " : ""}rebuild with the deployed side's ${diff.join(" and ")} to compare like with like`
+        : "  same toolchain and compiler versions on both sides: the sources (or an import, or the runtime header) differ",
+    );
+    return lines;
+  }
+  lines.push(
+    "  deployed  toolchain unknown: a deployed program records nothing about what built it" +
+      (explicit ? "" : "; pass --manifest <name>.build.json, kept from the build that was deployed"),
+  );
+  for (const u of unrelated) {
+    const diff = toolchainDifferences(rebuilt, u.manifest);
+    lines.push(
+      `  note      ${rel(u.file)} describes another binary (${u.manifest.binary.slice(0, 12)}…, ${describeToolchain(u.manifest)})` +
+        (diff.length ? `; it differs from the rebuild in ${diff.join(", ")}` : ""),
+    );
+  }
+  return lines;
 }
 
 /** Quote a command-line word for a POSIX shell when it needs it. */
@@ -630,7 +769,16 @@ function readJson(file: string): unknown {
   }
 }
 
-/** Make the compiler read `text` for `file` (instead of the disk) until the returned function is called. */
+/** The address of a payer keypair file, for the line printed before a deploy (or why there is none). */
+function payerAddress(file: string): string {
+  if (!existsSync(file)) return `none at ${file} (the Solana CLI will refuse)`;
+  try {
+    return base58(readKeypair(file).subarray(32));
+  } catch (e) {
+    return `unreadable ${file} (${(e as Error).message})`;
+  }
+}
+
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
 function solanaConfig(file?: string): { url?: string; keypair?: string } {
   const cfg = readSolanaConfig(file);

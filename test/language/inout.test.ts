@@ -4,6 +4,9 @@
 // time; a helper costs about what the same code inline does.
 import { type Address, AccountRole, type Instruction, type KeyPairSigner, generateKeyPairSigner } from "@solana/kit";
 import { FailedTransactionMetadata, type TransactionMetadata } from "litesvm";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { generate } from "../../src/compiler/index.js";
@@ -403,5 +406,49 @@ export function go(${params}): void {
     expect(err("", "", "r: Inout<Rec>")).toMatch(/Inout<T> is for helper parameters/);
     expect(err("", "const r: Inout<Rec> = { count: 0n, total: 0n };")).toMatch(/Inout<T> is for helper parameters; a local needs none/);
     expect(err("function f(x: Inout<FixedVec<Rec, 0>>): void {}", "")).toMatch(/Inout<FixedVec<T, N>>: T is an integer.*N a literal of at least 1/);
+  });
+});
+
+// A string argument viewing text inside a place the helper takes as Inout (a FixedString field): the helper gets the
+// text as it was at the call, as JS passes the string, not a view the helper's own write changes.
+const INOUT_TEXT = `import { type u64, type Mut, type Signer, type Init, type SystemProgram, type FixedString, type Inout, log } from "typesol";
+export interface Rec { name: FixedString<8>; n: u64 }
+export interface L { rec: Rec }
+function rename(r: Inout<Rec>, s: string): string { r.name = "new"; return s; }
+function logAfter(r: Inout<Rec>, s: string): u64 { r.name = "new"; log(s); return 1n; }
+export function setup(payer: Mut<Signer>, a: Init<L>, sys: SystemProgram): void { a.create(payer, ["l"]); a.rec = { name: "old", n: 5n }; }
+export function viaAccount(a: Mut<L>): void { a.rec.name = "old"; log(rename(a.rec, a.rec.name)); }
+export function viaLog(a: Mut<L>): u64 { a.rec.name = "old"; return logAfter(a.rec, a.rec.name); }
+export function viaLocal(): void { const p: Rec = { name: "old", n: 5n }; log(rename(p, p.name)); }
+`;
+
+describe("a string viewing an Inout place, passed beside it", () => {
+  let d: Deployed;
+  let payer: KeyPairSigner;
+  let a: Address;
+  beforeAll(async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-inout-text-"));
+    writeFileSync(path.join(dir, "text.ts"), INOUT_TEXT);
+    d = await deployFile(path.join(dir, "text.ts"));
+    payer = await fundedSigner(d.svm);
+    [a] = await pda(d.programId, ["l"]);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "setup", {}, [{ address: payer.address, signer: payer, writable: true }, { address: a, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+  });
+  const logged = (res: TransactionMetadata | FailedTransactionMetadata) =>
+    expectOk(res)
+      .logs()
+      .filter((l) => l.startsWith("Program log: "))
+      .map((l) => l.slice(13));
+
+  it.each([["via_account"], ["via_log"]])("%s logs the old text", async (name) => {
+    expect(logged(await send(d.svm, payer, [ix(d, name, {}, [{ address: a, writable: true }])]))).toEqual(["old"]);
+  });
+
+  it("a local struct's text too", async () => {
+    expect(logged(await send(d.svm, payer, [ix(d, "via_local", {}, [])]))).toEqual(["old"]);
   });
 });

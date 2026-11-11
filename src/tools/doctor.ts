@@ -5,11 +5,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findToolchain } from "../compiler/toolchain.js";
+import type { Rpc, SolanaRpcApi } from "@solana/kit";
+import { findToolchain, INSTALL_TESTED_TOOLCHAIN, shortClang, TESTED_TOOLCHAIN, toolchainInfo, toolchainStrict } from "../compiler/toolchain.js";
 import { base58, readKeypair } from "../keys.js";
 import { findWorkspace } from "../workspace.js";
 
-export const INSTALL_AGAVE = 'sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"';
+/** The Agave CLI release TypeSOL is tested with (its platform-tools are the tested ones). */
+export const INSTALL_AGAVE = INSTALL_TESTED_TOOLCHAIN[0];
 const MIN_NODE = [22, 12] as const;
 
 export interface Check {
@@ -42,6 +44,34 @@ export function toolchainCheck(): Check {
       fix: [INSTALL_AGAVE, "cargo-build-sbf --version   # once: downloads the platform-tools TypeSOL compiles with"],
     };
   }
+}
+
+/**
+ * Whether the active platform-tools are the ones TypeSOL is tested with. An untested one is a warning, or an error
+ * under TYPESOL_TOOLCHAIN=strict (as it is for a build then). Undefined when there are no platform-tools at all.
+ */
+export function testedToolchainCheck(): Check | undefined {
+  let info;
+  try {
+    info = toolchainInfo();
+  } catch {
+    return undefined; // the platform-tools row says what is missing
+  }
+  const tested = `${shortClang(TESTED_TOOLCHAIN.clang)}, platform-tools ${TESTED_TOOLCHAIN.platformTools}`;
+  if (info.tested) return { ok: true, what: "toolchain", detail: `tested: ${shortClang(info.clang)}, platform-tools ${info.platformTools ?? "unknown"}` };
+  let strict = true;
+  try {
+    strict = toolchainStrict();
+  } catch {
+    /* a bad TYPESOL_TOOLCHAIN value fails the build itself; here it counts as strict */
+  }
+  return {
+    ok: false,
+    optional: !strict,
+    what: "toolchain",
+    detail: `untested: ${shortClang(info.clang)}, platform-tools ${info.platformTools ?? "unknown"}; TypeSOL is tested with ${tested} (Agave ${TESTED_TOOLCHAIN.agave}): binaries from another toolchain are not covered by its tests${strict ? " (TYPESOL_TOOLCHAIN=strict refuses it)" : ""}`,
+    fix: [`${INSTALL_TESTED_TOOLCHAIN[1]}   # the tested platform-tools`],
+  };
 }
 
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
@@ -100,10 +130,37 @@ export async function rpc<T>(url: string, method: string, params: unknown[] = []
 }
 
 /** fetch's "fetch failed" says little: the cause's code (ECONNREFUSED, ENOTFOUND, a timeout) says more. */
-export const errText = (e: unknown) => {
+export const errText = (e: unknown, timeoutSeconds = 10) => {
   const err = e as Error & { cause?: { code?: string; message?: string } };
-  return err.cause?.code ?? err.cause?.message ?? (err.name === "TimeoutError" ? "no answer in 10 s" : err.message);
+  return err.cause?.code ?? err.cause?.message ?? (err.name === "TimeoutError" ? `no answer in ${timeoutSeconds} s` : err.message);
 };
+
+/** How long one RPC request of the kit-based commands may take: TYPESOL_RPC_TIMEOUT seconds, default 30. */
+export function rpcTimeoutSeconds(): number {
+  const s = Number(process.env.TYPESOL_RPC_TIMEOUT);
+  return Number.isFinite(s) && s > 0 ? s : 30;
+}
+
+/**
+ * A kit RPC client for `clone`, `client --address`, `verify` and `idl publish`: each request gives up after
+ * rpcTimeoutSeconds(), and a request that fails on the way names only the host and the cause, as `doctor` and
+ * `deploy` do (the URL can carry an API key).
+ */
+export async function cliRpc(url: string): Promise<Rpc<SolanaRpcApi>> {
+  const kit = await import("@solana/kit");
+  const host = rpcHost(url);
+  const seconds = rpcTimeoutSeconds();
+  const base = kit.createDefaultRpcTransport({ url });
+  const transport = (async (config: Parameters<typeof base>[0]) => {
+    const timeout = AbortSignal.timeout(seconds * 1000);
+    try {
+      return await base({ ...config, signal: config.signal ? AbortSignal.any([config.signal, timeout]) : timeout });
+    } catch (e) {
+      throw new Error(`cannot reach ${host} (${errText(e, seconds)}): check --url, or json_rpc_url in the Solana CLI config`, { cause: e });
+    }
+  }) as typeof base;
+  return kit.createSolanaRpcFromTransport(transport);
+}
 
 const sol = (lamports: number) =>
   lamports === 0 ? "0 SOL" : lamports < 100_000 ? `${lamports} lamports` : `${(lamports / 1e9).toFixed(lamports < 1e7 ? 4 : 2)} SOL`;
@@ -158,6 +215,8 @@ export async function doctorChecks(opts: { cwd: string; url?: string; config?: s
     fix: nodeOk ? undefined : [`install Node.js ${MIN_NODE.join(".")} or later (https://nodejs.org)`],
   });
   checks.push(toolchainCheck());
+  const tested = testedToolchainCheck();
+  if (tested) checks.push(tested);
   let solanaVersion: string | undefined;
   try {
     solanaVersion = execFileSync("solana", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })

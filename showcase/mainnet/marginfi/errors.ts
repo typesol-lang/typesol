@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // MarginfiError (programs/marginfi/src/errors.rs of mrgnlabs/marginfi-v2 @ c5d440f6), generated from the on-chain
 // IDL (test/fixtures/marginfi/marginfi.idl.json): the same names, messages and codes (the jumps to 6200, 6300, … kept
 // with @code).

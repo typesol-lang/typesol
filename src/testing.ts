@@ -42,7 +42,7 @@ import { fileURLToPath } from "node:url";
 import { TYPESOL_ERRORS } from "./tools/clientgen.js";
 import { loadClonedAccounts } from "./tools/clone.js";
 import { type SvmConnection, svmConnection } from "./tools/svmrpc.js";
-import { buildWorkspace, findWorkspace } from "./workspace.js";
+import { buildForTest, findWorkspace } from "./workspace.js";
 
 export { type SvmConnection, svmConnection };
 export * from "./testing-stake.js";
@@ -169,13 +169,15 @@ export async function testProgram(program: string, from: string | URL): Promise<
   const ws = findWorkspace(start);
   if (!ws) throw new Error(`no typesol.json at or above ${start}`);
   if (!ws.programs[program]) throw new Error(`typesol.json has no program "${program}" (it has ${Object.keys(ws.programs).join(", ")})`);
-  const [built] = buildWorkspace(ws, [program]);
+  // Every test file calls this, often in parallel workers: an up-to-date build is reused, and concurrent builds of the
+  // same program wait for each other instead of writing over each other's files.
+  const built = buildForTest(ws, program);
   const svm = new LiteSVM();
   const programId = built.address as Address;
-  svm.addProgramFromFile(programId, built.result.soPath);
+  svm.addProgramFromFile(programId, built.soPath);
   // Accounts and programs `typesol clone` copied from a cluster (tests/accounts), in place before the first test.
   loadClonedAccounts(svm as never, ws.accounts);
-  return programHarness(svm, programId, built.result.idl as unknown as Idl);
+  return programHarness(svm, programId, built.idl as unknown as Idl);
 }
 
 /** The same helpers for a program already loaded into `svm` at `programId` with this IDL. */

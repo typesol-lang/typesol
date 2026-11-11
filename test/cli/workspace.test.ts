@@ -122,4 +122,36 @@ describe("projects: typesol init / build / deploy --dry-run", () => {
     expect(run(["cpi", "x.json", "--address", "nope"], dir).status).toBe(2);
     expect(run(["--version"], dir).stdout.trim()).toBe(JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")).version);
   });
+
+  it("check --json answers in JSON whatever goes wrong; printed hints quote paths; a missing --program-id is a message", () => {
+    const dir = tmp();
+    const json = (args: string[], input?: string) => {
+      const r = spawnSync("node", [CLI, "check", "--json", ...args], { cwd: dir, encoding: "utf8", input: input ?? "" });
+      return { status: r.status, out: JSON.parse(r.stdout) as { ok: boolean; diagnostics: unknown[]; error?: string } };
+    };
+    expect(json(["missing.ts"])).toEqual({ status: 2, out: { ok: false, diagnostics: [], error: expect.stringMatching(/missing\.ts does not exist/) } });
+    expect(json([])).toMatchObject({ status: 2, out: { ok: false, error: expect.stringMatching(/expected exactly one <program\.ts>/) } });
+    expect(json(["p.ts", "--files"], "not json")).toMatchObject({ status: 2, out: { ok: false, error: expect.stringMatching(/--files: stdin is not JSON/) } });
+    expect(json(["p.ts", "--files"], '{"files": {"/p.ts": 1}}')).toMatchObject({
+      status: 2,
+      out: { ok: false, error: expect.stringMatching(/--files: expected/) },
+    });
+
+    // A directory with a space: the hints are commands to paste.
+    const spaced = path.join(dir, "my app");
+    const init = run(["init", "my app", "--name", "app"], dir);
+    expect(init.status).toBe(0);
+    expect(init.stdout).toContain("cd 'my app'\n");
+    writeFileSync(path.join(spaced, "solo.ts"), readFileSync(path.join(spaced, "programs/app.ts"), "utf8"));
+    const other = tmp();
+    const built = run(["build", path.join(spaced, "solo.ts"), "--out", path.join(other, "out dir")], other);
+    expect(built.status).toBe(0);
+    expect(built.stdout).toContain(
+      `solana program deploy '${path.join(other, "out dir", "solo.so")}' --program-id '${path.join(other, "out dir", "solo-keypair.json")}'`,
+    );
+    const keyless = run(["build", path.join(spaced, "solo.ts"), "--program-id", "/no/such/dir/k.json"], other);
+    expect(keyless.status).toBe(2);
+    expect(keyless.stderr).toMatch(/--program-id \/no\/such\/dir\/k\.json does not exist/);
+    expect(keyless.stderr).not.toMatch(/ENOENT|EACCES|EROFS/);
+  });
 });

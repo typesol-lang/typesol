@@ -79,6 +79,11 @@ integers and floats are `number`, `Pubkey` is kit's `Address`, `string` and `Fix
 as in the program. Names are camelCase. For Anchor IDLs, data enums use `__kind`, as Codama-generated clients do. The
 file uses no TypeScript-only syntax (no `enum`), so it also runs under Node's type stripping.
 
+Anchor IDLs can also hold types a TypeSOL program does not: `u256`/`i256` are `bigint` (32 bytes, little-endian), and
+`Option<Option<T>>` is `Option<T> | null` with kit's `Option` inside, so the three values stay apart: `null` is None,
+`none()` is Some(None) and `some(x)` (or `x`) is Some(Some(x)). A type that holds itself through a Vec or an Option
+(`enum Shape { Dot, Rec { kids: Vec<Shape> } }`) is encoded and decoded to any depth.
+
 ## Safety
 
 An IDL can come from anywhere, so `typesol client` refuses one whose names are not identifiers, whose discriminators or
@@ -92,9 +97,12 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
   `Program data:` line only while this program is the innermost one running, and `eventsOf` reads only the `emitCpi`
   inner instructions that call this program (it needs `tx.transaction`'s account keys for that). `parseCpiEvents(data)`
   on its own does not check the program: give it this program's inner instructions only.
-- **Not filled in automatically** (pass them): PDAs seeded from struct fields (Anchor cannot seed with them either),
-  PDAs whose program is another account's field, and a PDA seeded from its own fields (derive it with its `pdas`
-  helper from the values). `typesol client` prints a note for each.
+- **Not filled in by the builder** (pass them): PDAs seeded from a field of another account's data (`state.owner`;
+  `resolve` reads the account and derives them), PDAs whose program is another account's field, and a PDA seeded from
+  its own fields (derive it with its `pdas` helper from the values). `typesol client` prints a note for each. PDAs
+  seeded from a field of a struct argument, at any depth (`params.inner.id`), are filled in.
+- **Left out, with a note**: instructions, accounts and types using `Option<Option<Option<T>>>` or deeper, and types
+  the client cannot express (listed by `typesol client`).
 - **Anchor IDLs**: zero-copy (`bytemuck`) accounts decode and encode at their `#[repr(C)]` offsets as the program sees
   them on SBF (padding included; `packed` and `align` honored; 128-bit integers align to 8). Generic types become one
   type per use with concrete arguments (`Pair<u64, 2>` is `PairU64N2`). Left out, with a note: zero-copy types with

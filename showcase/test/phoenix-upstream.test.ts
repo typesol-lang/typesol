@@ -1070,7 +1070,10 @@ describe("test_market.rs", () => {
     expect(-got.base).toBe(all);
     expect(got.quote).toBe((adjusted - l.bids[4]!.price * TICK) / PER_UNIT);
     // claim_all_funds for every trader with free funds.
-    const index = (t: Trader) => registeredTraders(d.data(m.market), m).find((e) => e.key.equals(key(t.key.address)))!;
+    // Read once: every lookup below would otherwise copy the whole market. Withdrawing and cancelling keep every maker
+    // registered at its seat, and each maker's entry is read before its own withdrawal.
+    const seats = registeredTraders(d.data(m.market), m);
+    const index = (t: Trader) => seats.find((e) => e.key.equals(key(t.key.address)))!;
     for (const [k, t] of makers.entries()) {
       const e = index(t);
       if (e.baseFree > 0n || e.quoteFree > 0n) {
@@ -1082,7 +1085,8 @@ describe("test_market.rs", () => {
     for (const [k, t] of makers.entries()) {
       if (rng.int(2) === 0) await d.ok(`simple: maker ${k} cancels its bids up to`, t.key, [BUDGET, ix.cancelUpTo(m, t, cancelUpToParams(BID))]);
       else {
-        const mine = restingOrders(d.data(m.market), m, BID).filter((o) => o.trader === BigInt(index(t).index));
+        const seat = BigInt(index(t).index);
+        const mine = restingOrders(d.data(m.market), m, BID).filter((o) => o.trader === seat);
         for (let i = 0; i < mine.length; i += 40)
           await d.ok(`simple: maker ${k} cancels its bids by id (${i / 40 + 1})`, t.key, [
             BUDGET,

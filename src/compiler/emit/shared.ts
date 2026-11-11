@@ -179,7 +179,14 @@ export interface Closure {
 export const cBytes = (bytes: number[]) => `{${bytes.join(", ")}}`;
 /** C expressions that nothing in a TypeSOL expression can change: temporaries, locals, arguments, account keys, constants. */
 export const isStable = (c: string) =>
-  /^\w+$/.test(c) || /^\(&\w+\)$/.test(c) || /^&\w+->key$/.test(c) || /^\(\(uint8_t\)\d+\)$/.test(c) || /^\(?-?\d+U?LL\)?$/.test(c);
+  /^\w+$/.test(c) ||
+  /^\(&\w+\)$/.test(c) ||
+  /^&\w+->key$/.test(c) ||
+  /^\(\(uint8_t\)\d+\)$/.test(c) ||
+  /^\(?-?\d+U?LL\)?$/.test(c) ||
+  // A helper's by-pointer parameter (see passedByPointer): nothing the helper does changes what it points at.
+  /^\(&?\(\*p_\w+\)\)$/.test(c) ||
+  /^\(\*p_\w+\)$/.test(c);
 
 /** A C string literal of the UTF-8 bytes. Octal escapes (at most three digits) cannot swallow following characters. */
 export const cString = (s: string) =>
@@ -361,6 +368,33 @@ export function accountMismatch(have: ParamKind, want: ParamKind): string | unde
   return ok && mutOk ? undefined : name(want);
 }
 
+/**
+ * Helper parameters held in a C struct (a Pubkey, an Option, a string view, a u256) that are passed as a const pointer
+ * instead of by value. The SBF target passes every C struct argument `byval`, as a pointer to the caller's object, and
+ * its backend makes no copy: a helper that is not inlined then reads the caller's object itself, and sees its own writes
+ * to it (`rotate(v, v.admin)` reading v.admin after `v.admin = …`). A copy written in C does not help either: clang
+ * forwards it into the byval argument, as byval promises a copy. So these are pointers, and the call site copies what
+ * the helper could write (see Calls.pointerArg); a pointer to a copy is kept, as the helper may write the original.
+ */
+export const passedByPointer = (t: ValueType): boolean =>
+  t.kind === "pubkey" || t.kind === "option" || t.kind === "string" || (t.kind === "int" && t.name === "u256");
+
+/**
+ * Whether a C argument names memory that no helper can write: a named C object (a local, a temporary, an instruction
+ * argument, a constant), a field of a struct instruction argument (decoded into memory of its own, read-only), an
+ * account's key, the program's id, or a helper's own by-pointer parameter. `c` is the pointer for a Pubkey, the
+ * value otherwise. A helper's by-pointer parameter points at a copy, or at an object the helper cannot reach: helpers
+ * reach memory only through the accounts, remaining accounts and Inout places they are given, and pass on a subset.
+ */
+export const unreachableArg = (c: string, pubkey: boolean): boolean =>
+  pubkey
+    ? /^\(&\w+\)$/.test(c) ||
+      /^\(?&\w+->key\)?$/.test(c) ||
+      /^\(&\(\*p_\w+\)\)$/.test(c) ||
+      c === "params->program_id" ||
+      /^\(&\(\*arg_\w+\)(?:\.\w+)+\)$/.test(c)
+    : /^\w+$/.test(c) || /^\(\*p_\w+\)$/.test(c) || /^\(\*arg_\w+\)(?:\.\w+)+$/.test(c);
+
 /** Helpers get the instruction's parameters (for CPIs and accounts), then their own, then the result slot. */
 export function helperSignature(h: Helper): string {
   const params = ["TsParams *params"];
@@ -375,8 +409,10 @@ export function helperSignature(h: Helper): string {
     else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
     // The remaining accounts: the index of the first one among the instruction's accounts.
     else if (p.type.kind === "remaining") params.push(`uint64_t p_${p.name}`);
-    else if (p.type.kind === "pubkey")
-      params.push(`SolPubkey p_${p.name}`); // by value: a copy taken at the call
+    // Pubkeys, Options, strings and u256s by pointer (see passedByPointer), never as a C struct by value. `restrict`:
+    // nothing changes what it points at while the helper runs (a copy taken for the call, or memory the helper cannot
+    // write), so clang may keep what it read in registers across the helper's other writes, as it did for byval.
+    else if (passedByPointer(p.type)) params.push(`const ${p.type.kind === "pubkey" ? "SolPubkey" : valueC(p.type)} *restrict p_${p.name}`);
     else if (p.type.kind === "arrayArg") params.push(storageDecl(p.type.array, `(*p_${p.name})`));
     else params.push(`${valueC(p.type)} p_${p.name}`);
   }

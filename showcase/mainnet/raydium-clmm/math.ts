@@ -1,3 +1,4 @@
+// Part of the TypeSOL port of Raydium CLMM (raydium-io/raydium-clmm @ 6d7a0f8, Apache-2.0).
 // The math of the Raydium CLMM port (programs/amm/src/libraries/ of raydium-io/raydium-clmm @ 6d7a0f8): full_math,
 // sqrt_price_math, tick_math, liquidity_math and swap_math. U128 and U256 are u128 and u256 here; where the original
 // returns None or an error, these fail with the same ErrorCode. U256::as_u128 / as_u64 truncate, as low128 / low64 do.

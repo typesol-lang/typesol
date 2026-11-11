@@ -7,9 +7,13 @@
  * so existing clients keep working. Account structs holding a String, Vec or Option get `@layout borsh`, so they keep
  * Anchor's bytes (existing accounts stay readable); where a layout still differs (a String or Vec nested in a struct, a
  * data enum, a COption) it says so in a note and a comment.
+ *
+ * The IDL is checked as `typesol client` checks it (checkIdl): names, addresses and byte lists reach the skeleton only
+ * when well-formed, and text from the IDL (docs, relations, the program's name) only inside comments, escaped.
  */
 import { createHash } from "node:crypto";
 import { ACCOUNT_MEMBERS, cNameProblem, fieldIdlName } from "../compiler/analyze.js";
+import { checkIdl, commentText, printable } from "./clientgen.js";
 
 type IdlType =
   | string
@@ -94,6 +98,15 @@ const PROGRAMS: Record<string, string> = {
 };
 
 export function generatePort(idl: PortIdl): PortResult {
+  // An IDL with an empty instructions list still ports its types (a skeleton to add instructions to).
+  checkIdl(idl);
+  const res = port(idl);
+  return { ...res, notes: res.notes.map(printable) };
+}
+
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function port(idl: PortIdl): PortResult {
   const notes: string[] = [];
   const imports = new Set<string>();
   const use = (n: string) => (imports.add(n), n);
@@ -294,13 +307,15 @@ export function generatePort(idl: PortIdl): PortResult {
     if (!fixedOk(t)) return undefined;
     return quiet ? "x" : tsType(t, "account", at);
   };
-  const esc = (s: string) => s.replace(/\*\//g, "* /");
-  const docs = (lines: string[] | undefined, pad = "", tags: string[] = []) =>
-    tags.length
+  const esc = (s: string) => commentText(String(s));
+  const docs = (given: string[] | undefined, pad = "", tags: string[] = []) => {
+    const lines = Array.isArray(given) ? given.filter((l) => typeof l === "string") : undefined;
+    return tags.length
       ? `${pad}/**\n${lines?.length ? `${pad} * ${esc(lines.join(" "))}\n` : ""}${tags.map((t) => `${pad} * ${t}\n`).join("")}${pad} */\n`
       : lines?.length
         ? `${pad}/** ${esc(lines.join(" "))} */\n`
         : "";
+  };
   // What an Anchor IDL says of a zero-copy type (repr, serialization), kept as tags so the port's IDL says it too.
   const metaTags = (def: IdlTypeDef) => [
     ...(def.serialization ? [`@serialization ${def.serialization}`] : []),
@@ -309,12 +324,20 @@ export function generatePort(idl: PortIdl): PortResult {
   const out: string[] = [];
 
   // Constants: integer literals and strings; expressions are left to port by hand.
-  for (const c of idl.constants ?? []) {
-    const ty = typeof c.type === "string" && INTS.has(c.type) ? c.type : undefined;
-    const name = /^[A-Za-z_][A-Za-z0-9_]*$/.test(c.name) ? c.name : ident(c.name);
-    if (ty && /^-?\d[\d_]*$/.test(c.value.trim())) out.push(`export const ${name}: ${use(ty)} = ${c.value.trim().replace(/_/g, "")}n;`);
-    else if (c.type === "string" && /^".*"$/.test(c.value.trim())) out.push(`export const ${name} = ${c.value.trim()};`);
-    else notes.push(`constant ${c.name} = ${c.value}: not a literal; port it by hand`);
+  for (const c of Array.isArray(idl.constants) ? idl.constants : []) {
+    const ty = typeof c?.type === "string" && INTS.has(c.type) ? c.type : undefined;
+    const value = typeof c?.value === "string" ? c.value.trim() : undefined;
+    // A string constant is copied only as the string it parses to, re-quoted: the IDL's text never becomes code.
+    let text: unknown;
+    try {
+      text = c?.type === "string" && value?.startsWith('"') ? JSON.parse(value) : undefined;
+    } catch {
+      text = undefined;
+    }
+    if (typeof c?.name !== "string" || !IDENT.test(c.name)) notes.push(`constant ${JSON.stringify(c?.name)}: not an identifier; port it by hand`);
+    else if (ty && value !== undefined && /^-?\d[\d_]*$/.test(value)) out.push(`export const ${c.name}: ${use(ty)} = ${value.replace(/_/g, "")}n;`);
+    else if (typeof text === "string") out.push(`export const ${c.name} = ${JSON.stringify(text)};`);
+    else notes.push(`constant ${c.name} = ${String(c.value)}: not a literal; port it by hand`);
   }
   if (out.length) out.push("");
 
@@ -384,7 +407,8 @@ export function generatePort(idl: PortIdl): PortResult {
   // Errors: TypeSOL numbers them from 6000 in order; `/** @code N */` keeps an IDL code that skips ahead. NotPorted,
   // last, marks the instructions still to write, so the codes of the program's own errors do not move.
   const errors = [...(idl.errors ?? [])].sort((a, b) => a.code - b.code);
-  const program = typeName(pascal(idl.metadata?.name ?? "program"));
+  const rawName = idl.metadata?.name;
+  const program = typeName(pascal(typeof rawName === "string" && IDENT.test(rawName) ? rawName : "program"));
   const errorEnum = `${program}Error`;
   if (errors.some((e, i) => e.code < 6000 || (i > 0 && e.code === errors[i - 1]!.code)))
     notes.push(`errors: codes below 6000 or repeated in the IDL (${errors.map((e) => e.code).join(", ")}) cannot be kept, so clients see other codes`);
@@ -443,7 +467,7 @@ export function generatePort(idl: PortIdl): PortResult {
         );
         comments.push(`${ident(a.name)}: PDA [${seeds.join(", ")}]`);
       }
-      if (a.relations?.length) comments.push(`${ident(a.name)}: has_one ${a.relations.map(camel).join(", ")}`);
+      if (Array.isArray(a.relations) && a.relations.length) comments.push(`${ident(a.name)}: has_one ${a.relations.map((r) => camel(String(r))).join(", ")}`);
     }
     for (const g of ix.args) params.push(`${unique(ident(g.name), "Arg")}: ${tsType(g.type, "arg", `${ix.name}(${g.name})`)}`);
 
@@ -468,7 +492,7 @@ export function generatePort(idl: PortIdl): PortResult {
   }
 
   const header = [
-    `// Ported from the ${idl.metadata?.name ?? "program"} IDL by \`typesol port\`. Fill in the instruction bodies;`,
+    `// Ported from the ${typeof rawName === "string" && rawName ? commentText(rawName) : "program"} IDL by \`typesol port\`. Fill in the instruction bodies;`,
     "// pick Account<T> / Mut<T> / Init<T> for the AccountInfo parameters that hold one of the structs below.",
     `import { ${[
       ...[...imports]

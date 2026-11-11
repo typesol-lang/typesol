@@ -1835,6 +1835,8 @@ extern __attribute__((noreturn)) void abort(void);
 
 /*
  * ---- BigVec (SPL's big_vec) ------------------------------------------------
+ * Follows SPL Stake Pool's big_vec.rs (solana-program/stake-pool, program/src/big_vec.rs), licensed under the Apache
+ * License, Version 2.0; see NOTICE.
  * The memmove syscall, for BigVec::retain's block moves as the Rust does: it costs max(10, n / 250) CU, where the
  * word loop of ts_memmove costs about n / 2 (a 1.4 MB validator list moves in a few thousand CU, not hundreds of
  * thousands). Overlapping ranges are allowed. The "no SDK byte loops" rule is about the SDK's C loops, not this.
@@ -1917,6 +1919,8 @@ static __attribute__((noinline, noreturn, unused)) void ts_rust_panic_u64(const 
 
 /*
  * ---- RedBlackTree (lib-sokoban 0.3's RedBlackTree<K, V, N>, byte for byte) ------------------------------------
+ * Ported from lib-sokoban 0.3.0 (https://github.com/jarry-xiao/sokoban), Copyright (c) 2022 Jarry Xiao, used under
+ * the MIT License (the crate is "MIT OR Apache-2.0"); the licence text is in NOTICE.
  * At `base`: root u32 (0 = SENTINEL), padding [u32; 3], then the NodeAllocator: size u64, bump_index u32,
  * free_list_head u32, then N nodes. Node i (1-based) is at base + 32 + (i - 1) * stride: registers [u32; 4] =
  * [left, right, parent, color (0 black, 1 red)], then the key, then the value. These functions are sokoban's own,
@@ -2275,7 +2279,8 @@ static inline uint64_t ts_alloc(uint64_t n, uint8_t **out) {
   uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
   uint64_t at = *next == 0 ? 8 : *next;
   at = (at + 7) & ~(uint64_t)7;
-  if (at + n > TS_HEAP_LENGTH) TS_FAIL(TS_ERR_HEAP, "TypeSOL: out of heap");
+  /* Not `at + n > …`: a size computed from untrusted lengths could wrap that sum. */
+  if (at > TS_HEAP_LENGTH || n > TS_HEAP_LENGTH - at) TS_FAIL(TS_ERR_HEAP, "TypeSOL: out of heap");
   *next = at + n;
   *out = (uint8_t *)(HEAP_START_ADDRESS + at);
   return SUCCESS;
@@ -2396,7 +2401,7 @@ static uint64_t ts_str_append_parts(TS_Str *s, const TS_Str *parts, uint64_t n) 
   uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
   uint64_t add = 0;
   for (uint64_t i = 0; i < n; i++) add += parts[i].len;
-  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && *next + add <= TS_HEAP_LENGTH) {
+  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && add <= TS_HEAP_LENGTH - *next) {
     for (uint64_t i = 0; i < n; i++) {
       ts_memcpy((uint8_t *)s->ptr + s->len, parts[i].ptr, parts[i].len);
       s->len += parts[i].len;
@@ -2416,22 +2421,26 @@ static uint64_t ts_str_append_parts(TS_Str *s, const TS_Str *parts, uint64_t n) 
   return SUCCESS;
 }
 
-/* `s += b` (and `a + b`, with `s` a copy of `a`): the one-piece case of ts_str_append_parts. */
-static uint64_t ts_str_append(TS_Str *s, TS_Str b) {
+/* `s += b` (and `a + b`, with `s` a copy of `a`): the one-piece case of ts_str_append_parts. The piece comes as its
+   pointer and length: `s += s` passes `*s` itself, and the SBF target hands a C struct argument over as a pointer to
+   the caller's object without copying it (see passedByPointer in the compiler), so a struct `b` would change with `*s`. */
+static uint64_t ts_str_append_n(TS_Str *s, const uint8_t *bp, uint64_t bl) {
   uint64_t *next = (uint64_t *)HEAP_START_ADDRESS;
-  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && *next + b.len <= TS_HEAP_LENGTH) {
-    ts_memcpy((uint8_t *)s->ptr + s->len, b.ptr, b.len);
-    *next += b.len;
-    s->len += b.len;
+  if (*next != 0 && s->len > 0 && (uint64_t)(s->ptr + s->len) == HEAP_START_ADDRESS + *next && bl <= TS_HEAP_LENGTH - *next) {
+    ts_memcpy((uint8_t *)s->ptr + s->len, bp, bl);
+    *next += bl;
+    s->len += bl;
     return SUCCESS;
   }
   uint8_t *p;
-  TS_TRY(ts_alloc(s->len + b.len, &p));
+  TS_TRY(ts_alloc(s->len + bl, &p));
   ts_memcpy(p, s->ptr, s->len);
-  ts_memcpy(p + s->len, b.ptr, b.len);
-  *s = ts_str(p, s->len + b.len);
+  ts_memcpy(p + s->len, bp, bl);
+  *s = ts_str(p, s->len + bl);
   return SUCCESS;
 }
+/* Always inlined, so `b` is read here, into scalars, before anything writes `*s`. */
+static inline __attribute__((always_inline)) uint64_t ts_str_append(TS_Str *s, TS_Str b) { return ts_str_append_n(s, b.ptr, b.len); }
 
 /* The pieces of a template literal, joined with one heap allocation and one copy each. */
 static uint64_t ts_str_join(const TS_Str *parts, uint64_t n, TS_Str *out) {
@@ -2725,8 +2734,8 @@ static const SolPubkey TS_STAKE_HISTORY_ID = {{6,167,213,23,25,53,132,208,254,23
 /* StakeHistory: u64 count, then (epoch, effective, activating, deactivating) u64 entries, newest first. The entry for
    `epoch` (field 1..3 of it), or 0 when it is not listed; `found` says which. */
 static inline uint64_t ts_stake_history(const TsAccount *a, uint64_t epoch, int field, bool *found) {
-  uint64_t n = ts_read_le(a->data, 8);
-  if (n > (a->data_len - 8) / 32) n = (a->data_len - 8) / 32;
+  uint64_t n = a->data_len < 8 ? 0 : ts_read_le(a->data, 8);
+  if (n > 0 && n > (a->data_len - 8) / 32) n = (a->data_len - 8) / 32;
   for (uint64_t i = 0; i < n; i++) {
     const uint8_t *e = a->data + 8 + 32 * i;
     if (ts_read_le(e, 8) == epoch) {

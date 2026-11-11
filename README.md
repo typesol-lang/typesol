@@ -141,27 +141,41 @@ transactions to both and compares the results.
 
 ## Quick start
 
-You need Node.js 22.12 or later and the Agave CLI (`sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"`).
-Run `cargo-build-sbf --version` once; this downloads the platform-tools that TypeSOL compiles with. Rust is not needed.
+You need Node.js 22.12 or later and the Agave CLI with its platform-tools, which hold the clang TypeSOL compiles with.
+Rust is not needed. TypeSOL is tested with **Agave 3.1.10 and platform-tools v1.52** (clang 20.1.7); to install exactly
+those:
+
+```sh
+sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+cargo-build-sbf --install-only --force-tools-install --tools-version v1.52
+```
+
+Other versions work, but their binaries are not covered by the project's tests: `typesol build` warns once when the
+clang is another one (`--toolchain-strict` or `TYPESOL_TOOLCHAIN=strict` makes that an error), and every build records
+its clang, platform-tools and host in `<name>.build.json`.
 
 ```sh
 npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
 cd my-app && npm install
 npm test                                      # builds the program and runs it in LiteSVM, an in-process Solana runtime
-npx typesol build                             # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
+npx --no-install typesol build                # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
 ```
 
-`npx typesol doctor` checks all of this (Node.js, platform-tools, Solana CLI, keypair, RPC) and prints the command
-that fixes anything missing. To deploy, on devnet:
+`npx --no-install typesol doctor` checks all of this (Node.js, platform-tools and whether they are the tested ones, Solana CLI, keypair, RPC) and prints the command
+that fixes anything missing. Inside a project, `npx --no-install typesol …` (or `npm run build`, `npm run deploy`) runs the
+project's own copy; outside one, use `npx @typesol/cli …`. Plain `npx typesol` is not TypeSOL: `typesol` is not the npm
+package's name, so where the project's copy is not installed npx would fetch whatever package has that name.
+
+To deploy, on devnet:
 
 ```sh
 solana-keygen new                             # once, if you have no keypair (~/.config/solana/id.json)
 solana airdrop 2 --url devnet                 # test SOL for the rent (rate-limited: https://faucet.solana.com also works)
-npx typesol deploy --url devnet
+npx --no-install typesol deploy --url devnet
 ```
 
 or on a local validator: `solana-test-validator` in another terminal, `solana airdrop 5 --url localhost`, then
-`npx typesol deploy --url localhost`. `deploy` checks the RPC and the payer's balance before sending anything.
+`npx --no-install typesol deploy --url localhost`. `deploy` checks the RPC and the payer's balance before sending anything.
 
 `--template vault` or `--template escrow` starts from a SOL vault or an SPL token escrow instead of the counter, each
 with a passing LiteSVM test.
@@ -268,16 +282,16 @@ toolchain and records them with every result:
 <!-- bench:table -->
 | Instruction | TypeSOL | Pinocchio 0.10 | Native Rust | Anchor 1.0.2 |
 | --- | ---: | ---: | ---: | ---: |
-| counter.initialize | **1,857** | 3,186 | 4,601 | 6,573 |
+| counter.initialize | **1,856** | 3,186 | 4,601 | 6,573 |
 | counter.increment | **110** | 113 | 857 | 2,323 |
-| vault.open | **1,874** | 3,185 | 4,613 | 6,627 |
+| vault.open | **1,875** | 3,185 | 4,613 | 6,627 |
 | vault.deposit | **1,314** | 1,377 | 2,832 | 4,355 |
 | vault.withdraw | **315** | 370 | 1,176 | 3,628 |
 | vault.shut | **161** | 167 | 950 | 2,024 |
-| escrow.make | **3,596** | 6,179 | 9,240 | 13,304 |
+| escrow.make | **3,595** | 6,179 | 9,240 | 13,304 |
 | escrow.take | **4,019** | 4,051 | 8,500 | 14,365 |
 | escrow.refund | **2,696** | 2,769 | 5,695 | 8,449 |
-| binary, counter / vault / escrow | 11.1 / 14.1 / 21.4 KB | 19.6 / 22.9 / 29.4 KB | 27.9 / 35.0 / 46.5 KB | 145.2 / 158.9 / 190.7 KB |
+| binary, counter / vault / escrow | 11.1 / 14.1 / 21.5 KB | 19.6 / 22.9 / 29.4 KB | 27.9 / 35.0 / 46.5 KB | 145.2 / 158.9 / 190.7 KB |
 <!-- /bench:table -->
 
 `initialize`, `open` and `make` include the PDA bump search. TypeSOL hashes PDA candidates with the sha256 and

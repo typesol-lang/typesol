@@ -1,7 +1,11 @@
 // Closures (local functions that read the enclosing function's variables), expanded where they are called.
+import { FailedTransactionMetadata } from "litesvm";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, SYSTEM_PROGRAM, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, compileErrors } from "../harness.js";
+import { BN, SYSTEM_PROGRAM, customError, decodeAccount, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, compileErrors } from "../harness.js";
 
 describe("closures", () => {
   let d: Deployed;
@@ -108,5 +112,54 @@ describe("closures", () => {
     const pick = "function pick<T>(f: (x: T) => T, v: T): T { return f(v); }\n";
     expect(errors(`${pick}export function f(x: u64): u64 { return pick<u64>((v: u64): u64 => v + x, 1n); }`)).toBe("");
     expect(errors(`export function f(x: u64): u64 { const g = (v: u64): u64 => v + x; return g(1n, 2n); }`)).toMatch(/Expected 1 arguments/);
+  });
+});
+
+// JS evaluates operands left to right: a local read before a closure (or a list callback) that writes it keeps the value
+// it had. A local was taken as stable and read where it was used, after the closure ran.
+const ORDER = `import { type u64, fixedArray } from "typesol";
+function two(a: u64, b: u64): u64 { return a * 100n + b; }
+export function addAssign(a: u64): u64 { let x = a; const bump = (): u64 => { x += 1n; return x; }; x += bump(); return x; }
+export function helperArgs(a: u64): u64 { let x = a; const bump = (): u64 => { x += 1n; return x; }; return two(x, bump()); }
+export function product(a: u64): u64 { let x = a; const bump = (): u64 => { x += 1n; return x; }; return x * 100n + bump(); }
+export function equal(a: u64): u64 { let x = a; const bump = (): u64 => { x += 1n; return x; }; return x === bump() ? 1n : 0n; }
+export function chain(a: u64, c: u64): u64 { let x = a; const bump = (): u64 => { x += 1n; return x; }; return x - bump() + 1000n + c; }
+export function callback(a: u64): u64 {
+  let x = a;
+  const xs = fixedArray<u64, 3>(1n);
+  return x * 100n + xs.reduce((acc: u64, v: u64): u64 => { x += v; return acc + v; }, 0n) + x * 10000n;
+}
+export function untouched(a: u64): u64 { let x = a; const y = a * 2n; const f = (): u64 => y + 1n; return x * 100n + f(); }
+`;
+
+describe("a local read before a closure that writes it", () => {
+  let d: Deployed;
+  beforeAll(async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-order-"));
+    writeFileSync(path.join(dir, "order.ts"), ORDER);
+    d = await deployFile(path.join(dir, "order.ts"));
+  });
+  const run = async (name: string, args: Record<string, unknown>) => {
+    const res = await send(d.svm, await fundedSigner(d.svm), [ix(d, name, args, [])]);
+    return res instanceof FailedTransactionMetadata ? customError(res) : Buffer.from(res.returnData().data()).readBigUInt64LE(0);
+  };
+
+  it.each([
+    ["add_assign", 15n], // 7 + 8
+    ["helper_args", 708n], // two(7, 8)
+    ["product", 708n],
+    ["equal", 0n], // 7 === 8
+    ["untouched", 715n], // nothing writes x: read in place
+  ])("%s", async (name, want) => {
+    expect(await run(name, { a: new BN(7) })).toBe(want);
+  });
+
+  it("keeps the value for a later operand of a chain (7 - 8 underflows in u64: 5100)", async () => {
+    expect(await run("chain", { a: new BN(7), c: new BN(0) })).toBe(5100);
+  });
+
+  it("a list callback writing the local", async () => {
+    // 7 * 100 + 3 + 10 * 10000
+    expect(await run("callback", { a: new BN(7) })).toBe(100703n);
   });
 });

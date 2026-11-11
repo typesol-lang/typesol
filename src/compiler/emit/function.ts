@@ -205,6 +205,15 @@ export class FunctionEmitter extends StatementEmitter {
     // here, not closed, not a @layout borsh heap copy (a lost update when packed back). A close destination is in place:
     // a duplicate shares its record, so the rent lands in both views.
     const closing = new Set(ix.accounts.flatMap((a) => (a.constraints.closeTo ? [a.name] : [])));
+    // An account the body closes with close(account, destination) is closed too.
+    const visitClose = (nd: ts.Node) => {
+      if (ts.isCallExpression(nd) && this.exportName(nd.expression) === "close" && nd.arguments[0]) {
+        const closed = this.accountAt(nd.arguments[0]);
+        if (closed) closing.add(closed.name);
+      }
+      ts.forEachChild(nd, visitClose);
+    };
+    visitClose(ix.node.body!);
     const inPlace = (a: (typeof writable)[number]) => {
       const k = a.kind;
       if (closing.has(a.name)) return false;

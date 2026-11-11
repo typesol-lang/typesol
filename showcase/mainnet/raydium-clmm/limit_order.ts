@@ -1,3 +1,4 @@
+// Part of the TypeSOL port of Raydium CLMM (raydium-io/raydium-clmm @ 6d7a0f8, Apache-2.0).
 // Limit orders of the Raydium CLMM port (instructions/limit_order/ and states/limit_order.rs of raydium-io/raydium-clmm
 // @ 6d7a0f8): the checks on a new order, and an order's share of what its tick filled. An order rests on one tick;
 // the tick counts the orders of its current phase (`orders_amount`) and what is left of the phase a swap partly filled

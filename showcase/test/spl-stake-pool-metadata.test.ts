@@ -4,7 +4,6 @@
 // them) and the bytes of every account it names (the metadata account and the payer's lamports included) must agree.
 // Metaplex is fetched by scripts/fetch-programs.sh (not kept in the repository); without it the file is skipped.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole } from "@solana/kit";
-import { existsSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   Diff,
@@ -23,6 +22,7 @@ import {
   u8,
   u32,
 } from "./spl-stake-pool-helpers.js";
+import { present } from "../../test/binaries.js";
 
 /** StakePoolError codes. */
 const E = { InvalidProgramAddress: 1, InvalidState: 2, WrongManager: 6, SignatureMissing: 7, WrongPoolMint: 10, InvalidMetadataAccount: 36 } as const;
@@ -73,7 +73,7 @@ const role = (i: Instruction, at: number, r: AccountRole) =>
 /** The same accounts with other data. */
 const withData = (i: Instruction, data: Buffer): Instruction => ({ ...i, data: new Uint8Array(data) });
 
-describe.skipIf(!existsSync(MPL_METADATA_SO))("token metadata", () => {
+describe.skipIf(!present(MPL_METADATA_SO))("token metadata", () => {
   let d: Diff;
   let payer: KeyPairSigner;
   /** Pays for the metadata account (not the fee payer, so that its signature can be left out). */
@@ -333,7 +333,7 @@ function metaplexUnits(logs: string): bigint {
   return m ? BigInt(m[1]!) : 0n;
 }
 
-describe.skipIf(!existsSync(MPL_METADATA_SO))("compute units", () => {
+describe.skipIf(!present(MPL_METADATA_SO))("compute units", () => {
   it("reports compute units", () => {
     const all: Record<string, [bigint, bigint]> = {};
     let compared = 0;

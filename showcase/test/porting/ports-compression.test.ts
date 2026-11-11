@@ -6,8 +6,8 @@ import { BN, SYSTEM_PROGRAM, TOKEN_PROGRAM, expectOk, fundedSigner, ix, send } f
 import { BUBBLEGUM, COMPRESSION, HAVE_BUBBLEGUM, NOOP, leafHash, makeTree, metadataHashes, nodeAddress, rootAndProof } from "../../../test/cnft-helpers.js";
 import { AccountRole, type Address, generateKeyPairSigner, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
 import { keccak_256 } from "@noble/hashes/sha3.js";
-import { existsSync } from "node:fs";
 import { METADATA_PROGRAM, createMint, deployPort, fundAta } from "../../../test/ports-helpers.js";
+import { present } from "../../../test/binaries.js";
 
 const programs = (f: string) => fileURLToPath(new URL(`../../../test/programs/${f}`, import.meta.url));
 const bytes = (b: Uint8Array) => Array.from(b);
@@ -140,7 +140,7 @@ describe.skipIf(!HAVE_BUBBLEGUM)("port: compression/cnft-vault", () => {
   });
 });
 
-describe.skipIf(!HAVE_BUBBLEGUM || !existsSync(programs("mpl_token_metadata.so")))("port: compression/cutils", () => {
+describe.skipIf(!HAVE_BUBBLEGUM || !present(programs("mpl_token_metadata.so")))("port: compression/cutils", () => {
   it("mints a cNFT into a sized collection, then verifies leaves against the tree", async () => {
     const d = await deployPort("compression/cutils.ts", "BuFyrgRYzg2nPhqYrxZ7d9uYUs4VXtxH71U8EcoAfTQZ");
     const { svm } = d;

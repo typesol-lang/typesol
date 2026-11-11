@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's events and the types they hold that are not account data (programs/marginfi/src/events.rs @ c5d440f6),
 // generated from the on-chain IDL by `typesol port`: Borsh (@layout borsh) where they hold Options, as Anchor emits them.
 // SetKeeperCloseFlagsEvent holds an Option<Vec<Pubkey>>, so it is not @layout borsh: emit writes it field by field,
