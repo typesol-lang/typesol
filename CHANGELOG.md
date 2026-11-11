@@ -109,6 +109,14 @@ codes, and says so here.
 - Docs: the README's quick start installs the tested Agave and platform-tools exactly; docs/mainnet.md has "the
   toolchain you deploy with" (keep the build manifest with the deployment; `verify` needs the same toolchain);
   docs/troubleshooting.md explains the warning and verify mismatches; docs/cli.md lists the new flags and rows.
+- Docs: docs/audit.md and docs/security-model.md record the internal review of 0.43.0 (2026-11-11): the defects above,
+  what it covered (compiler semantics probes, the runtime and generated C, the tooling) and what it did not (the
+  Metaplex and token CPI wrappers' emitters, oracles, SBPF v1/v2 builds, Windows); programs built with 0.43.0 or
+  earlier should be rebuilt, and docs/security-model.md says how to tell whether a program was exposed to the helper
+  argument defect. SECURITY.md and CONTRIBUTING.md add the fix-release rule (from 0.44.0 on, a release that only
+  fixes soundness or security defects is a patch of the latest minor, with no new language surface and the binary
+  diff in its notes; older minors are not maintained). docs/stability.md lists what a release gives today: the
+  checked tarball, the tested toolchain, the build record, fix releases.
 
 ## 0.43.0 — 2026-11-11
 

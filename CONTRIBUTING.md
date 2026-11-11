@@ -33,9 +33,16 @@ TypeSOL follows the organization's [versioning and release policy](https://githu
 For the compiler, before 1.0:
 - a **minor** release (0.x → 0.y) may change the language surface (`lib/typesol.d.ts`), the account/IDL layout of
   generated programs, or error codes — always listed under "Breaking" in CHANGELOG.md;
-- a **patch** release only fixes bugs without changing layouts or the meaning of valid programs.
-The TypeScript dependency is pinned exactly: it decides what type-checks, so it only changes in minor releases.
-Builds record the TypeSOL, TypeScript and clang versions in `<name>.build.json`.
+- a **patch** release only fixes bugs without changing layouts or the meaning of valid programs;
+- a **fix release** (from 0.44.0 on): a release that only fixes soundness or security defects is a patch of the latest
+  minor. It adds no language surface, changes no layout, IDL or error code beyond what the fix needs, names in the
+  CHANGELOG the programs it refuses or builds differently, and its release notes carry the binary diff against the
+  previous release. Older minors are not maintained ([SECURITY.md](SECURITY.md#fix-releases)).
+The TypeScript dependency is pinned exactly: it decides what type-checks, so it only changes in minor releases. The
+tested toolchain is declared once (`TESTED_TOOLCHAIN` in `src/compiler/toolchain.ts`) and must match what CI installs
+(`.github/workflows/ci.yml`; CI's `doctor` step fails otherwise): a change to it goes in the CHANGELOG with the binary
+diff it causes.
+Builds record the TypeSOL, TypeScript, clang and platform-tools versions and the host in `<name>.build.json`.
 
 Every change adds its entry under `## Unreleased` in CHANGELOG.md.
 

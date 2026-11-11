@@ -10,7 +10,7 @@ auditors, [SECURITY.md](../SECURITY.md) how to report a problem.
 | --- | --- |
 | The program's author | the program's logic: what it allows, to whom, for how much |
 | TypeSOL (this repository) | that the binary does what the source and these guarantees say, and nothing an attacker can steer beyond it |
-| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js |
+| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js. The guarantees are tested with one platform-tools release (v1.52, from Agave 3.1.10); a build with another warns, or fails with `--toolchain-strict`, and `<name>.build.json` records which one built a binary |
 | The Solana runtime | account ownership and signer flags as passed, the loader's account serialization, CPI privilege rules, sysvars |
 
 Everything a transaction carries is attacker-controlled: the instruction data, which accounts are passed in which
@@ -112,8 +112,35 @@ Each holds for every instruction of every program the compiler accepts. A break 
 - Arithmetic overflow returns an error code (5100) in every build; Anchor aborts the program, and only when
   overflow checks are enabled.
 
+## Review of 0.43.0 (2026-11-11)
+
+An internal review of 0.43.0 found that some of the guarantees above did not hold in every case; the defects are
+listed in [audit.md](audit.md#0430-2026-11-11) and fixed in the next release (0.44.0). Programs built with 0.43.0 or
+earlier should be rebuilt with it and redeployed: the fixes change the binary of programs that have a helper
+taking a Pubkey, Option, string or u256, exposed or not (35 of the 76 programs of the 0.43.0 sources build to the same
+binary, 41 to another).
+
+The defect that can break an authorization check is the first: a Pubkey, Option, string or u256 argument of a
+helper was not a copy. A program was exposed where all of these hold:
+
+- a helper takes a parameter of one of those types and also an account it writes (or remaining accounts, or an
+  `Inout` place);
+- a call passes that parameter a field of the same account (`rotate(v, v.admin, caller)`), or a value stored in it;
+- the helper reads the parameter after writing the field (`v.admin = v.pending`, then a check on `admin`): it read
+  the new value;
+- the helper was not inlined. A `/** @noinline */` helper never is; for the others it was clang's choice, which the
+  source does not show, so count every such call as exposed.
+
+Each of the other defects needs the construct it names: a seed list bound to a name, given to a helper or written
+beside an argument with side effects; a reference held across a helper that is given an account-group field or a
+loaded account; Borsh input with an Option of a struct that holds an Option (a bounded read past the input, no
+write); a closure or callback that changes a local read before it; a string viewing an `Inout` place; `close()` into
+the account itself, `Dup<…>` on a closed account, or an account used after `close()`. A program without them was not
+exposed to them.
+
 ## Status
 
-The compiler and runtime have had internal security reviews; the findings of the latest are fixed in 0.25.0
-(CHANGELOG). The releases after it have not had such a review yet, and there has been no external audit: see
+The compiler and runtime have had internal security reviews, the latest of 0.43.0 (above); its findings are fixed in
+the next release (0.44.0). It was an internal review, not an independent audit, and it did not cover the Metaplex and
+token CPI wrappers' emitters, the oracles, SBPF v1/v2 builds or Windows. There has been no external audit: see
 [audit.md](audit.md).

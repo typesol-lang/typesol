@@ -74,7 +74,7 @@ From 0.43.0 on, `releases/<version>.json` in the repository describes the packag
 tarball's size, sha1 shasum and sha512 integrity (the registry's `dist.shasum` and `dist.integrity`), and the sha256
 of every file in it. `scripts/release-check.ts` writes it from a clean export of the tag (`git archive`: install with
 the lockfile, build, lint, check the version and the CHANGELOG section, `npm pack`), and the maintainer publishes the
-tarball it produced, by hand ([CONTRIBUTING.md](../CONTRIBUTING.md#releasing)). To check a release yourself:
+tarball it produced, by hand ([CONTRIBUTING.md](https://github.com/typesol-lang/typesol/blob/main/CONTRIBUTING.md#releasing)). To check a release yourself:
 
 ```sh
 node scripts/release-check.ts 0.43.0                       # pack the tag again: git diff releases/ shows what moved

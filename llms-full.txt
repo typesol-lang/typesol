@@ -1317,7 +1317,7 @@ auditors, [SECURITY.md](../SECURITY.md) how to report a problem.
 | --- | --- |
 | The program's author | the program's logic: what it allows, to whom, for how much |
 | TypeSOL (this repository) | that the binary does what the source and these guarantees say, and nothing an attacker can steer beyond it |
-| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js |
+| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js. The guarantees are tested with one platform-tools release (v1.52, from Agave 3.1.10); a build with another warns, or fails with `--toolchain-strict`, and `<name>.build.json` records which one built a binary |
 | The Solana runtime | account ownership and signer flags as passed, the loader's account serialization, CPI privilege rules, sysvars |
 
 Everything a transaction carries is attacker-controlled: the instruction data, which accounts are passed in which
@@ -1419,10 +1419,37 @@ Each holds for every instruction of every program the compiler accepts. A break 
 - Arithmetic overflow returns an error code (5100) in every build; Anchor aborts the program, and only when
   overflow checks are enabled.
 
+## Review of 0.43.0 (2026-11-11)
+
+An internal review of 0.43.0 found that some of the guarantees above did not hold in every case; the defects are
+listed in [audit.md](audit.md#0430-2026-11-11) and fixed in the next release (0.44.0). Programs built with 0.43.0 or
+earlier should be rebuilt with it and redeployed: the fixes change the binary of programs that have a helper
+taking a Pubkey, Option, string or u256, exposed or not (35 of the 76 programs of the 0.43.0 sources build to the same
+binary, 41 to another).
+
+The defect that can break an authorization check is the first: a Pubkey, Option, string or u256 argument of a
+helper was not a copy. A program was exposed where all of these hold:
+
+- a helper takes a parameter of one of those types and also an account it writes (or remaining accounts, or an
+  `Inout` place);
+- a call passes that parameter a field of the same account (`rotate(v, v.admin, caller)`), or a value stored in it;
+- the helper reads the parameter after writing the field (`v.admin = v.pending`, then a check on `admin`): it read
+  the new value;
+- the helper was not inlined. A `/** @noinline */` helper never is; for the others it was clang's choice, which the
+  source does not show, so count every such call as exposed.
+
+Each of the other defects needs the construct it names: a seed list bound to a name, given to a helper or written
+beside an argument with side effects; a reference held across a helper that is given an account-group field or a
+loaded account; Borsh input with an Option of a struct that holds an Option (a bounded read past the input, no
+write); a closure or callback that changes a local read before it; a string viewing an `Inout` place; `close()` into
+the account itself, `Dup<…>` on a closed account, or an account used after `close()`. A program without them was not
+exposed to them.
+
 ## Status
 
-The compiler and runtime have had internal security reviews; the findings of the latest are fixed in 0.25.0
-(CHANGELOG). The releases after it have not had such a review yet, and there has been no external audit: see
+The compiler and runtime have had internal security reviews, the latest of 0.43.0 (above); its findings are fixed in
+the next release (0.44.0). It was an internal review, not an independent audit, and it did not cover the Metaplex and
+token CPI wrappers' emitters, the oracles, SBPF v1/v2 builds or Windows. There has been no external audit: see
 [audit.md](audit.md).
 
 <!-- docs/ai.md -->
@@ -1500,8 +1527,9 @@ From 1.0 on, within a major version:
 
 - **Sources keep compiling.** A program that compiles with 1.x compiles with every later 1.y, to a program with the same
   account layouts, IDL, instruction and account discriminators and error codes. New releases add; they do not take away.
-- **Binaries are reproducible and only change for a reason.** A release that changes the binary of a program that uses
-  none of its new features says so, with the release manifest's diff (`binary-diff.txt`) as the evidence.
+- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release and the toolchain it is
+  tested with, a source builds to the same bytes. A release that changes the binary of a program that uses none of
+  its new features says so, with the release manifest's diff (`binary-diff.txt`) as the evidence.
 - **The checks stay.** No check a program gets from its parameter types (owner, discriminator, signer, writability,
   aliasing, checked arithmetic, constraints) is removed or weakened.
 - **The tools keep their interfaces**: `typesol build`, `test` (via `typesol/testing`), `check --json`, `deploy`,
@@ -1519,6 +1547,24 @@ Meant to stay as they are; a change before 1.0 would be a breaking change listed
 - Errors and events: error enums and their codes, `require`, `AnchorError`, `emit`, `emitCpi`.
 - CPIs: System, SPL Token, Token-2022, Associated Token, Memo, generic `invoke` with PDA signing.
 - Layouts: account data (Anchor's discriminator and fixed or `@layout borsh` layout), the IDL, the client.
+
+## What a release gives you now
+
+- **The npm package is the one that was checked.** From 0.43.0 on, `releases/<version>.json` in the repository holds
+  the published tarball's shasum and integrity and every file's sha256, packed from a clean export of the release tag
+  after install, build and lint. `npm pack` is reproducible here, so anyone can pack the tag again and compare, or
+  compare the registry with `node scripts/release-check.ts <version> --verify --registry`
+  ([docs/testing.md](testing.md#the-npm-tarball)).
+- **The tests cover one toolchain.** Each release declares the Agave and platform-tools it is tested with
+  (`TESTED_TOOLCHAIN`, exported from `typesol/compiler`; Agave 3.1.10 and platform-tools v1.52 now). A binary built with
+  another clang is outside what the tests cover: `typesol build` and `deploy` warn once, `--toolchain-strict` (or
+  `TYPESOL_TOOLCHAIN=strict`) refuses it, and `typesol doctor` shows which one is active.
+- **A build says what made it.** `<name>.build.json` records the TypeSOL, TypeScript, clang and platform-tools versions,
+  the host, the SBPF version and the sha256 of every source and of the binary. `typesol verify` uses it to say, on a
+  mismatch, whether the toolchains differ. A program on chain records none of this: keep the file with the deployment.
+- **Fixes come as patches of the latest minor.** From 0.44.0 on, a release that only fixes soundness or security
+  defects is a patch (0.44.1, …) with no new language surface, and its notes carry the binary diff against the
+  previous release ([SECURITY.md](../SECURITY.md#fix-releases)). Older minors are not maintained.
 
 ## Experimental
 

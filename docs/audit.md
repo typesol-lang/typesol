@@ -27,7 +27,9 @@ documented behavior. [docs/language.md](language.md) is the reference; [docs/arc
 the code, [docs/runtime.md](runtime.md) the runtime's conventions.
 
 Out of scope: the Solana runtime, platform-tools (clang, lld), the TypeScript compiler, and programs written with
-TypeSOL.
+TypeSOL. The platform-tools are part of what a binary trusts all the same: the tests cover the toolchain the release
+declares (`TESTED_TOOLCHAIN` in `src/compiler/toolchain.ts`: Agave 3.1.10, platform-tools v1.52), builds with another
+one warn, and the review of 0.43.0 traced one defect to how that backend passes struct arguments.
 
 ## What to check
 
@@ -49,8 +51,48 @@ accepts. Areas where a bug would be most damaging, and where earlier internal re
 
 ## Earlier reviews
 
-Internal reviews, by the maintainers, in October 2026. Their findings and fixes are in the CHANGELOG. The releases
-after 0.25.0 (0.26.0 to 0.43.0) have had no review of this kind yet; they add, among others, `u256`, big-endian seeds
+Internal reviews, by the maintainers: none of them is an independent audit. Their findings and fixes are in the
+CHANGELOG.
+
+### 0.43.0 (2026-11-11)
+
+An internal review of 0.43.0 as published. It probed the compiler's semantics with targeted programs (helpers,
+references, closures, seeds, `close()`, Borsh decoding), read the runtime header and the C generated for those
+programs, and exercised the tooling (the CLI commands and `typesol/testing`). It did not cover the emitters of the
+Metaplex and token CPI wrappers, the oracles, builds for SBPF v1 and v2, or Windows.
+
+Defects found, fixed in the next release (0.44.0; the CHANGELOG's "Unreleased" section until it ships, with a test
+for each):
+
+- **Helper arguments were not copies.** A Pubkey, Option, string or u256 argument reaches a helper as a pointer to the
+  caller's object (that is how the SBF backend passes it), so a helper that was not inlined and wrote that object read
+  its own write through the parameter: an authorization check on the old value (`rotate(v, v.admin, caller)` with
+  `v.admin = v.pending` inside) passed on the new one. Whether it happened depended on clang's inlining.
+- **Seed lists were read at the CPI instead of where they are written.** A list bound to a name, given to a helper,
+  or written beside an argument with side effects read its seeds when the CPI ran, so after `st.count += 1n` the
+  program signed for another PDA than the one the source names.
+- **The reference rule was skipped for account-group fields and loaded accounts.** A reference into an account used
+  after a helper that may move the account's data is refused; it was not when the account reached the helper as an
+  account-group field or had been loaded with `loadAccountMut`, and such a program wrote through the stale reference.
+- **Borsh length checks wrapped.** The decoder subtracted before comparing, so for an `Option` of a struct holding an
+  Option (or a Vec of such structs) a short buffer wrapped the subtraction and the read went past the end of the
+  input: bounded by the struct's size, and read only.
+- **Evaluation order with closures.** A local read before a closure or list callback that changes it kept the new
+  value instead of the one it had when read; a string viewing text inside an `Inout` place was not copied for the
+  helper taking the place.
+- **`close()` gaps.** Closing an account into itself compiled, `Dup<…>` was accepted on an account the body closes,
+  and an account could be used after `close()` in the same instruction (its writes were dropped).
+- **Tooling: IDL text reached generated code unvalidated.** `typesol cpi` and `typesol port` wrote names and other text
+  from the IDL they were given into the TypeScript they generate without the checks `typesol client` makes.
+
+Programs built with 0.43.0 or earlier should be rebuilt with the fixed release and redeployed. The first defect is
+the one that can break an authorization check; [security-model.md](security-model.md#review-of-0430-2026-11-11)
+says how to tell whether a program was exposed to it.
+
+### Before 0.43.0
+
+Internal reviews in October 2026. The releases from 0.26.0 to 0.42.0 were not reviewed one by one: the 0.43.0 review
+read the code that includes them, but probed only the areas above. They add, among others, `u256`, big-endian seeds
 and accounts loaded in the body (0.37.0), stored bumps in nested fields and error members without messages (0.38.0),
 `@code`, `@repr` / `@serialization`, `@bytes` / `@idlName`, `f64`, Options inside Options in arguments and events,
 loop-scoped `loadAccountMut` with `Dup<T>`, account resizing and raw writes, `systemProgram.createPda` (0.39.0), and
@@ -59,7 +101,7 @@ error code 0, built-in ProgramErrors, `panic`, `PANIC_ON_OVERFLOW` (0.40.0), the
 Borsh accounts without a discriminator, `BigVec<T>`, typed CPIs on remaining accounts and the Stake program's CPIs
 (0.42.0), views at run-time offsets (`loadRawAt`, `rawArrayAt`), the built-in red-black tree (`rbTreeAt`), `Inout<T>`
 helper parameters and `closeRaw` (0.43.0). An external review should include them; the native-program surface first,
-since it skips the account checks Anchor-style parameters get.
+since it skips the account checks Anchor-style parameters get, and the areas the 0.43.0 review did not cover.
 
 - **0.25.0** (runtime and emitted checks): two Medium issues fixed, a remaining account loaded mutably twice through
   the same slot, and a Vec element written after its right side resized the Vec; plus a token program ambiguity,
