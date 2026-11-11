@@ -137,14 +137,7 @@ jobs:
             sleep 20
           done
           test -f test/programs/mpl_token_metadata.so
-      # Two workers: the largest files (the Phoenix cancel and upstream suites) hold 2-3 GB each, and the runner stops
-      # the job when several of them run at once.
-      - name: Run pnpm test:showcase (with a memory and disk line every 10 seconds, while the runner's shutdown is looked into)
-        run: |
-          (while sleep 10; do
-            echo "[watch] $(free -m | awk 'NR==2{print "used=" $3 "M available=" $7 "M"}') disk_free=$(df -m / | awk 'END{print $4}')M top: $(ps -eo rss,comm --sort=-rss | awk 'NR>1 && NR<5 {printf "%s=%dM ", $2, $1/1024}')"
-          done) &
-          pnpm test:showcase --maxWorkers=2
+      - run: pnpm test:showcase
 
   differential:
     # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on

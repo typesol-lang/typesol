@@ -117,6 +117,15 @@ function traderIndex(d: Diff, m: Market, t: Trader): bigint {
   return 0n;
 }
 
+/**
+ * Whether an order is the trader's. The trader's index is read once: `traderIndex` copies the market, 1.7 MB for the
+ * largest one, so a call for each of 8000 orders asks for 14 GB.
+ */
+function ownedBy(d: Diff, m: Market, t: Trader): (o: Order) => boolean {
+  const index = traderIndex(d, m, t);
+  return (o) => o.trader === index;
+}
+
 /** The trader's TraderState offset in the market. */
 function traderStateAt(d: Diff, m: Market, t: Trader): number {
   const i = Number(traderIndex(d, m, t));
@@ -207,7 +216,7 @@ for (const [bids, seats] of [
       const ask = book(d, m, "ask").find((o) => o.trader === traderIndex(d, m, a) && o.lots > 1n)!;
       await d.ok(`ReduceOrder ${tag}: part of an ask`, payer, [ix.reduceOrder(m, a, params(ask), ask.lots - 1n)]);
       await d.ok(`ReduceOrder ${tag}: the rest of the ask (exactly)`, payer, [ix.reduceOrder(m, a, params(ask), 1n)]);
-      const other = book(d, m, "ask").find((o) => o.trader === traderIndex(d, m, a))!;
+      const other = book(d, m, "ask").find(ownedBy(d, m, a))!;
       await d.ok(`ReduceOrder ${tag}: by zero lots`, payer, [ix.reduceOrder(m, a, params(other), 0n)]);
       await d.ok(`ReduceOrder ${tag}: an order that is not there`, payer, [ix.reduceOrder(m, a, cancelOrderParams(1, 5n, 77n), 1n)]);
       await d.ok(`ReduceOrder ${tag}: an order gone already`, payer, [ix.reduceOrder(m, a, params(ask), 1n)]);
@@ -215,23 +224,23 @@ for (const [bids, seats] of [
 
     it("keeps the funds on the market (WithFreeFunds)", async () => {
       const { d, payer, m } = S;
-      const bid = book(d, m, "bid").find((o) => o.trader === traderIndex(d, m, a))!;
+      const bid = book(d, m, "bid").find(ownedBy(d, m, a))!;
       await d.ok(`ReduceOrderWithFreeFunds ${tag}: a bid`, payer, [ix.reduceOrderWithFreeFunds(m, a, params(bid), 1n)]);
-      const ask = book(d, m, "ask").find((o) => o.trader === traderIndex(d, m, a))!;
+      const ask = book(d, m, "ask").find(ownedBy(d, m, a))!;
       await d.ok(`ReduceOrderWithFreeFunds ${tag}: a whole ask`, payer, [ix.reduceOrderWithFreeFunds(m, a, params(ask), ask.lots)]);
     });
 
     it("takes the book from the side argument, the order from the key", async () => {
       const { d, payer, m } = S;
-      const bid = book(d, m, "bid").find((o) => o.trader === traderIndex(d, m, a))!;
-      const ask = book(d, m, "ask").find((o) => o.trader === traderIndex(d, m, a))!;
+      const bid = book(d, m, "bid").find(ownedBy(d, m, a))!;
+      const ask = book(d, m, "ask").find(ownedBy(d, m, a))!;
       await d.ok(`ReduceOrder ${tag}: a bid's key on the asks`, payer, [ix.reduceOrder(m, a, params(bid, 1), 1n)]);
       await d.ok(`ReduceOrder ${tag}: an ask's key on the bids`, payer, [ix.reduceOrder(m, a, params(ask, 0), 1n)]);
     });
 
     it("fails for another trader's order and for a trader with no state", async () => {
       const { d, payer, m } = S;
-      const theirs = book(d, m, "bid").find((o) => o.trader === traderIndex(d, m, b))!;
+      const theirs = book(d, m, "bid").find(ownedBy(d, m, b))!;
       await d.fails(`ReduceOrder ${tag}: another trader's order`, payer, [ix.reduceOrder(m, a, params(theirs), 1n)], custom(E.ReduceOrderError!));
       await d.fails(
         `ReduceOrderWithFreeFunds ${tag}: another trader's order`,
@@ -251,7 +260,7 @@ for (const [bids, seats] of [
 
     it("decodes ReduceOrderParams exactly and checks the accounts of the plain form", async () => {
       const { d, payer, m } = S;
-      const o = book(d, m, "bid").find((x) => x.trader === traderIndex(d, m, a))!;
+      const o = book(d, m, "bid").find(ownedBy(d, m, a))!;
       const good = ix.reduceOrder(m, a, params(o), 1n);
       const data = Buffer.from(good.data!);
       for (const [label, bytes] of [
@@ -275,7 +284,7 @@ for (const [bids, seats] of [
 
     it("needs a market that allows reductions for the plain form only", async () => {
       const { d, payer, m } = S;
-      const o = book(d, m, "bid").find((x) => x.trader === traderIndex(d, m, a))!;
+      const o = book(d, m, "bid").find(ownedBy(d, m, a))!;
       const save = d.data(m.market);
       d.patch(m.market, (x) => x.writeBigUInt64LE(0n, OFF.status));
       await d.fails(`ReduceOrder ${tag}: market Uninitialized`, payer, [ix.reduceOrder(m, a, params(o), 1n)], builtin("InvalidAccountData"));
@@ -298,8 +307,8 @@ for (const [bids, seats] of [
       const { d, payer, m } = S;
       const save = d.data(m.market);
       const restore = () => d.patch(m.market, (x) => save.copy(x));
-      const bid = book(d, m, "bid").find((o) => o.trader === traderIndex(d, m, a))!;
-      const ask = book(d, m, "ask").find((o) => o.trader === traderIndex(d, m, a))!;
+      const bid = book(d, m, "bid").find(ownedBy(d, m, a))!;
+      const ask = book(d, m, "ask").find(ownedBy(d, m, a))!;
       const state = traderStateAt(d, m, a);
       // A lot size that does not divide: Phoenix warns, then the unlock goes below what is locked.
       d.patch(m.market, (x) => x.writeBigUInt64LE(7n, OFF.baseLotsPerBaseUnit));
@@ -365,7 +374,7 @@ for (const [bids, seats] of [
       await d.ok(`CancelAllOrders ${tag}: a trader with no state`, payer, [ix.cancelAllOrders(m, stranger)]);
       await d.ok(`CancelAllOrdersWithFreeFunds ${tag}: a trader with no state`, payer, [ix.cancelAllOrdersWithFreeFunds(m, stranger)]);
       // An order with no lots left stays (written: no instruction leaves one).
-      const one = book(d, m, "ask").find((o) => o.trader === traderIndex(d, m, b))!;
+      const one = book(d, m, "ask").find(ownedBy(d, m, b))!;
       d.patch(m.market, (x) => x.writeBigUInt64LE(0n, asksAt(m.bids) + TREE.nodes + (one.index - 1) * 64 + 40));
       await d.ok(`CancelAllOrdersWithFreeFunds ${tag}: one order of zero lots`, payer, [ix.cancelAllOrdersWithFreeFunds(m, b)]);
     });
@@ -474,8 +483,8 @@ for (const [bids, seats] of [
 
     it("cancels the listed orders, skipping others', unknown ones and wrong sides", async () => {
       const { d, payer, m } = S;
-      const mine = (side: "bid" | "ask") => book(d, m, side).filter((o) => o.trader === traderIndex(d, m, a));
-      const theirs = book(d, m, "bid").find((o) => o.trader === traderIndex(d, m, b))!;
+      const mine = (side: "bid" | "ask") => book(d, m, side).filter(ownedBy(d, m, a));
+      const theirs = book(d, m, "bid").find(ownedBy(d, m, b))!;
       const [b1, b2] = mine("bid");
       const [a1] = mine("ask");
       await d.ok(`CancelMultipleOrdersById ${tag}: one bid`, payer, [ix.cancelMultipleOrdersById(m, a, [params(b1!)])]);
@@ -494,7 +503,7 @@ for (const [bids, seats] of [
       // As many as a transaction holds: two batches of events.
       const t = await d.seated(m, RICH, RICH, `cancel by id ${tag} many`);
       await place(d, S.setup, m, t, ladder(25, 980n), ladderUp(25, 2100n));
-      const all = [...book(d, m, "bid"), ...book(d, m, "ask")].filter((o) => o.trader === traderIndex(d, m, t));
+      const all = [...book(d, m, "bid"), ...book(d, m, "ask")].filter(ownedBy(d, m, t));
       await d.ok(`CancelMultipleOrdersByIdWithFreeFunds ${tag}: 50 orders`, payer, [
         budget,
         ix.cancelMultipleOrdersByIdWithFreeFunds(
@@ -671,8 +680,8 @@ describe("a nearly full book (4096/8321)", () => {
     const { d, payer, m } = S;
     await d.ok("CancelUpTo 4096/8321: 3 asks of 7800 orders", payer, [ix.cancelUpTo(m, y, cancelUpToParams(1, null, null, 3))]);
     await d.ok("CancelUpTo 4096/8321: bids at or above 4000, searching 1500", payer, [budget, ix.cancelUpTo(m, z, cancelUpToParams(0, 4000n, 1500))]);
-    const mine = book(d, m, "bid").filter((o) => o.trader === traderIndex(d, m, y));
-    const asks = book(d, m, "ask").filter((o) => o.trader === traderIndex(d, m, y));
+    const mine = book(d, m, "bid").filter(ownedBy(d, m, y));
+    const asks = book(d, m, "ask").filter(ownedBy(d, m, y));
     await d.ok("CancelMultipleOrdersById 4096/8321: 1 of 7000 orders", payer, [ix.cancelMultipleOrdersById(m, y, [params(mine[700]!)])]);
     await d.ok("CancelMultipleOrdersById 4096/8321: 3 of 7000 orders", payer, [
       ix.cancelMultipleOrdersById(m, y, [params(mine[10]!), params(asks[5]!), params(mine[1200]!)]),
