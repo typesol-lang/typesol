@@ -1,9 +1,10 @@
 import ts from "typescript";
-import { MAX_RETURN_DATA, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
-import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type ValueType, isScalar, optionKey, scalarSize, typeName } from "../model.js";
+import { MAX_RETURN_DATA, type TypeScope, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
+import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type ValueType, isScalar, optionKey, sameType, scalarSize, typeName } from "../model.js";
 import {
   U64,
   BOOL,
+  PUBKEY,
   type Value,
   type Local,
   type Closure,
@@ -222,7 +223,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       const init = stmt.initializer;
       if (init) {
         if (ts.isVariableDeclarationList(init)) this.variable(init);
-        else this.expressionStatement(init, false);
+        else for (const e of commaList(init)) this.expressionStatement(e, false);
       }
       this.loop(stmt.condition, stmt.statement, stmt.incrementor);
     });
@@ -242,6 +243,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.fail(stmt.initializer, "write for (const x of list): one const name, no type annotation");
     if (this.isRemaining(stmt.expression)) this.fail(stmt.expression, "iterate remaining accounts with for (let i = 0n; i < rest.length; i++) and rest.get(i)");
     if (ts.isArrayLiteralExpression(stmt.expression) && this.functionList(stmt.expression)) return this.forOfFunctions(stmt, d!.name as ts.Identifier);
+    if (this.treeForOf(stmt, d!)) return;
     // Synthetic `list.length` / `list.get(i)` nodes placed at the loop, so errors and checks point at the source.
     const f = ts.factory;
     const index = `__of${this.temp++}`;
@@ -267,6 +269,85 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(`}`);
       this.loops.pop();
     });
+  }
+
+  /**
+   * `for (const e of tree)` / `for (const e of tree.reversed())` over a RedBlackTree: lib-sokoban's in-order
+   * iterator (a stack of nodes, left registers down, then the right one), smallest key first or, reversed, largest
+   * first. `e` is the node (`e.key`, `e.value`, `e.index`), each read where it lies. The body may change values
+   * but not the tree's structure (insert / remove / initialize on it are compile errors, as Rust's borrow forbids).
+   */
+  protected treeForOf(stmt: ts.ForOfStatement, d: ts.VariableDeclaration): boolean {
+    let src = stmt.expression;
+    while (ts.isParenthesizedExpression(src)) src = src.expression;
+    let reversed = false;
+    if (
+      ts.isCallExpression(src) &&
+      ts.isPropertyAccessExpression(src.expression) &&
+      src.expression.name.text === "reversed" &&
+      this.treeOf(src.expression.expression)
+    ) {
+      if (src.arguments.length) this.fail(src, "reversed() takes no arguments");
+      reversed = true;
+      src = src.expression.expression;
+    }
+    const tree = this.treeOf(src);
+    if (!tree) return false;
+    const t = tree.local.c;
+    const S = tree.inst.stride;
+    const [down, next] = reversed ? ["TS_RBT_RIGHT", "TS_RBT_LEFT"] : ["TS_RBT_LEFT", "TS_RBT_RIGHT"];
+    const stack = this.tmp("rbs");
+    const sp = this.tmp("rbsp");
+    const ptr = this.tmp("rbp");
+    const cur = this.tmp("rbc");
+    const e = this.tmp("rbe");
+    const label = this.tmp("ts_continue_");
+    const release = this.iterationClaims(stmt.statement);
+    this.line(`{`);
+    this.block(() => {
+      // The stack is walked with a pointer (no index arithmetic per step).
+      this.line(`uint32_t ${stack}[TS_RBT_STACK];`);
+      this.line(`uint32_t *${sp} = ${stack};`);
+      this.line(`uint32_t ${ptr} = TS_RBT_ROOT(${t}.base);`);
+      this.line(`while (1) {`);
+      this.block(() => {
+        // Each node's index is checked against the capacity once, when the walk steps onto it (the same panic, at the
+        // same point, as sokoban's indexing); popping it again reads its registers without a second check.
+        this.line(`while (${ptr} != 0) {`);
+        this.line(`  if (${sp} == ${stack} + TS_RBT_STACK) ts_rbt_too_deep();`);
+        this.line(`  *${sp}++ = ${ptr};`);
+        this.line(`  ${ptr} = ((ts_u32_unaligned *)ts_rbt_node(&${t}, ${S}, ${ptr}))[${down}];`);
+        this.line(`}`);
+        this.line(`if (${sp} == ${stack}) break;`);
+        this.line(`uint32_t ${cur} = *--${sp};`);
+        this.line(`TsRbtEntry ${e} = {ts_rbt_node_checked(&${t}, ${S}, ${cur}), ${cur}};`);
+        // sokoban reads the next pointer when it yields the node, before the caller sees it.
+        this.line(`${ptr} = ((ts_u32_unaligned *)${e}.node)[${next}];`);
+        this.scopes.at(-1)!.set((d.name as ts.Identifier).text, {
+          c: e,
+          type: { kind: "rbEntry", inst: tree.inst.key, writable: tree.writable },
+          mutable: false,
+          paths: [`@${t}[]`],
+          decl: d,
+        });
+        const walking = !this.iteratingTrees.has(t);
+        this.iteratingTrees.set(t, { name: src.getText(), acct: tree.local.viewAcct ?? "?" });
+        this.loops.push(label);
+        try {
+          this.line(`{`);
+          this.block(() => this.body(stmt.statement));
+          this.line(`}`);
+        } finally {
+          this.loops.pop();
+          if (walking) this.iteratingTrees.delete(t);
+        }
+        this.line(`${label}:;`);
+        release();
+      });
+      this.line(`}`);
+    });
+    this.line(`}`);
+    return true;
   }
 
   /** The functions a list literal names (`[f, g]`: closures, helpers or choices), or undefined when it holds anything else. */
@@ -806,7 +887,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     this.checkLocalListSize(t, init, "the new list");
     this.model.localVecs.set(fixedVecC(t), t);
     const pad = "  ".repeat(this.indent);
-    this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero(&${c}, sizeof(${c}));`;
+    this.lines[declAt] = `${pad}${fixedVecC(t)} ${c};\n${pad}ts_memzero_bulk(&${c}, sizeof(${c}));`;
     return t;
   }
   /** The element type of a Vec, FixedArray, FixedVec or Vec argument. */
@@ -854,7 +935,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.loops.pop();
       this.line(`${label}:;`);
       release();
-      if (step) this.expressionStatement(step, false);
+      // `i++, j--`: each update in order, all after the `continue` label.
+      if (step) for (const e of commaList(step)) this.expressionStatement(e, false);
     });
     this.line(`}`);
   }
@@ -865,6 +947,47 @@ export abstract class StatementEmitter extends CpiEmitter {
    * was declared with, so a block around the call that declares the same name does not change what it reads, and
    * writes to captured `let`s are seen by the enclosing function. Returns the result (undefined for no value).
    */
+  /**
+   * An `Inout<T>` parameter of a function expanded where it is called: a pointer to the caller's place (a struct,
+   * FixedArray or FixedVec), which must be writable, bound as a reference local.
+   */
+  protected inoutBinding(p: ts.ParameterDeclaration, arg: ts.Expression, calleeScope: TypeScope, fnName: string): Local {
+    const inner = (p.type as ts.TypeReferenceNode).typeArguments?.[0];
+    if (!inner || (p.type as ts.TypeReferenceNode).typeArguments!.length !== 1)
+      this.fail(p.type!, "Inout<T> takes one type: a struct, FixedArray<T, N> or FixedVec<T, N>");
+    const saved = this.scope;
+    this.scope = calleeScope;
+    let list: ReturnType<typeof this.listAnnotation>;
+    let struct: string | undefined;
+    try {
+      list = this.listAnnotation(inner);
+      const sn = list ? undefined : structNameOf(inner, calleeScope);
+      struct = sn && this.model.structs.has(sn) ? sn : undefined;
+    } finally {
+      this.scope = saved;
+    }
+    const name = (p.name as ts.Identifier).text;
+    const c2 = `l_${name}_${this.temp++}`;
+    const extra = { paths: this.pathsOf(arg), decl: p, ...(this.throughMovableList(arg) ? { movable: true } : {}) };
+    if (struct) {
+      const place = this.structPlace(arg);
+      if (!place || place.struct !== struct)
+        this.fail(arg, `${fnName}() takes ${name} as Inout<${struct}>: pass a ${struct} place of yours (a local, a field, a list element)`);
+      if (!place.writable) this.fail(arg, `${fnName}() changes ${name} (Inout), and this place is read-only`);
+      this.line(`TSS_${struct} *${c2} = ${place.ptr};`);
+      return { c: c2, type: { kind: "structRef", struct, writable: true }, mutable: false, ...extra };
+    }
+    if (!list) this.fail(inner, `Inout<${inner.getText()}>: Inout<T> takes a struct of fixed size, a FixedArray<T, N> or a FixedVec<T, N>`);
+    const r = this.ref(arg);
+    if (!r || !sameType(r.type, list)) this.fail(arg, `${fnName}() takes ${name} as Inout<${typeName(list)}>: pass a ${typeName(list)} of yours`);
+    if (!r.writable) this.fail(arg, `${fnName}() changes ${name} (Inout): ${this.readOnly(r)}`);
+    if (list.kind === "vec") {
+      this.model.localVecs.set(fixedVecC(list), list);
+      this.line(`${fixedVecC(list)} *${c2} = &${r.lv};`);
+    } else this.line(`${storageDecl(list, `(*${c2})`)} = &${r.lv};`);
+    return { c: `(*${c2})`, type: list, mutable: false, ...extra };
+  }
+
   protected expandClosure(c: Closure, args: readonly ts.Expression[], node: ts.Node, into?: Ref): Value | undefined {
     const fn = c.node;
     if (this.inlining.has(fn)) this.fail(node, `${c.name} calls itself: closures cannot be recursive`);
@@ -883,6 +1006,11 @@ export abstract class StatementEmitter extends CpiEmitter {
         params.set(name, { c: "", type: BOOL, mutable: false, closure: this.closureOf(arg) });
         return;
       }
+      // `Inout<T>` (a helper expanded here because it was given a closure): the caller's place, by reference.
+      if (p.type && typesolName(p.type, calleeScope.imports) === "Inout") {
+        params.set(name, this.inoutBinding(p, arg, calleeScope, c.name));
+        return;
+      }
       const passed = ts.isIdentifier(arg) && this.lookup(arg.text) ? undefined : this.accountAt(arg);
       if (p.type && passed && !resolveValueType(p.type, calleeScope)) {
         aliases.set(name, passed);
@@ -898,6 +1026,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           type: { kind: "structRef", struct: place.struct, writable: place.writable },
           mutable: false,
           paths: this.pathsOf(arg),
+          ...(this.throughMovableList(arg) ? { movable: true } : {}),
           decl: p,
         });
         return;
@@ -1254,6 +1383,10 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.destructure(list, d, d.name, d.initializer, topLevel);
         continue;
       }
+      if (ts.isArrayBindingPattern(d.name)) {
+        this.addressAndBump(d, d.name, mutable);
+        continue;
+      }
       if (!ts.isIdentifier(d.name) || !d.initializer) this.fail(d, "declare one plain name with an initializer");
       // A local function is a helper of its own (lifted when the program was analyzed): nothing to run here.
       if (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer)) {
@@ -1278,6 +1411,14 @@ export abstract class StatementEmitter extends CpiEmitter {
       const c = `l_${name}_${this.temp++}`;
 
       const init = d.initializer;
+      // `/** @heap */` names a list or struct type (checked again where such locals are made).
+      if (
+        [d, d.parent?.parent].some((n) => n && ts.getJSDocTags(n).some((t) => t.tagName.text === "heap")) &&
+        !(d.type && (["FixedVec", "FixedArray"].includes(typesolName(d.type, this.scope.imports) ?? "") || structNameOf(d.type, this.scope)))
+      )
+        this.heapLocal(d, false);
+      // Run-time offset views (loadRawAt, rawArrayAt, rbTreeAt) and references into a tree's nodes (views.ts).
+      if (this.bindView(d, init, name, c, mutable)) continue;
       // A function as a value: another name for one (`const h = g`), or the one a function returns (`adder(5n)`).
       const made = ts.isCallExpression(init) ? this.madeFunction(init) : undefined;
       const alias = ts.isIdentifier(init) ? this.functionNamed(init) : undefined;
@@ -1293,6 +1434,11 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       const fn = ts.isCallExpression(init) ? this.exportName(init.expression) : undefined;
+      if (d.type && typesolName(d.type, this.scope.imports) === "Inout")
+        this.fail(
+          d.type,
+          "Inout<T> is for helper parameters; a local needs none (const r = acct.rec refers to that place and changes it, const copy: Rec = acct.rec is a copy)",
+        );
       // The instruction's data as sent, discriminator included (a @fallback's input): a list of u8.
       if (fn === "instructionData") {
         if ((init as ts.CallExpression).arguments.length) this.fail(init, "instructionData() takes no arguments");
@@ -1355,7 +1501,16 @@ export abstract class StatementEmitter extends CpiEmitter {
           const h = /^\(\(TSS_\w+ \*\)\((\w+)->data \+ 8\)\)$/.exec(t.c)?.[1];
           if (h) loaded = { handle: h, struct: t.type.struct, mut: fn === "loadAccountMut" };
         }
-        this.scopes.at(-1)!.set(name, { c, type: t.type, mutable: false, paths: [`@${c}`], decl: d, loaded, ...(t.bigCap ? { bigCap: t.bigCap } : {}) });
+        this.scopes.at(-1)!.set(name, {
+          c,
+          type: t.type,
+          mutable: false,
+          paths: [`@${c}`],
+          decl: d,
+          loaded,
+          ...(fn === "loadRaw" || fn === "loadRawMut" ? { view: true, viewAcct: this.viewAccountKey((init as ts.CallExpression).arguments[0]!) } : {}),
+          ...(t.bigCap ? { bigCap: t.bigCap } : {}),
+        });
         continue;
       }
       // A local decoded from an account's Borsh bytes: `const pool = loadBorsh<StakePool>(acct)` (a copy, as Rust's).
@@ -1395,31 +1550,50 @@ export abstract class StatementEmitter extends CpiEmitter {
           for (const l of this.validation(`${c}__v`, { kind: "struct", name: S.name }, "", bad)) this.line(l.trim());
           this.line(`TSS_${S.name} *${c} = &${c}__v;`);
         }
-        this.scopes.at(-1)!.set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d });
+        // A copy of the return data: never account data (owned).
+        this.scopes
+          .at(-1)!
+          .set(name, { c, type: { kind: "structRef", struct: S.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
         continue;
       }
       // A local list declared with its type: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey, isSigner, … }])`,
       // `const buf: FixedVec<u8, 600> = fixedVec([])`, or a copy of another list (a Vec argument, instruction data).
       const listType = d.type ? this.listAnnotation(d.type) : undefined;
-      if (listType) {
-        this.checkLocalListSize(listType, d.type!);
-        if (listType.kind === "vec") {
-          this.model.localVecs.set(fixedVecC(listType), listType);
-          this.line(`${fixedVecC(listType)} ${c};`);
-          this.line(`ts_memzero(&${c}, sizeof(${c}));`);
-        } else this.line(`${storageDecl(listType, c)};`);
-        this.writeAggregate({ lv: c, type: listType, writable: true }, init, true);
-        this.scopes.at(-1)!.set(name, { c, type: listType, mutable });
-        continue;
-      }
       // Struct values: `const p: Point = { x, y }` (or a copy of another Point) is a local of its own.
       const structType = d.type && structNameOf(d.type, this.scope) ? this.model.structs.get(structNameOf(d.type, this.scope)!) : undefined;
+      // `/** @heap */`: the local lives on the heap instead of the 4 KiB stack frame.
+      const heap = this.heapLocal(d, !!listType || !!structType);
+      if (listType) {
+        if (heap) this.checkHeapRoom(this.fieldBytes(listType), d.type!);
+        else this.checkLocalListSize(listType, d.type!, undefined, true);
+        let lv = c;
+        if (listType.kind === "vec") this.model.localVecs.set(fixedVecC(listType), listType);
+        if (heap) {
+          // One allocation per declaration and instruction (a loop reuses it): the heap is never freed.
+          this.hoistLazy(c, (n) => (listType.kind === "vec" ? `${fixedVecC(listType)} *${n}` : storageDecl(listType, `(*${n})`)));
+          this.line(`if (${c} == NULL) TS_TRY(ts_alloc(sizeof(*${c}), (uint8_t **)&${c}));`);
+          lv = `(*${c})`;
+        } else this.line(listType.kind === "vec" ? `${fixedVecC(listType)} ${c};` : `${storageDecl(listType, c)};`);
+        // A literal zeroes its own free slots; anything else (a copy of another list) may fill only the first ones.
+        if (listType.kind === "vec" && !this.isListLiteral(init)) this.line(`ts_memzero_bulk(&${lv}, sizeof(${lv}));`);
+        this.writeAggregate({ lv, type: listType, writable: true }, init, true);
+        this.scopes.at(-1)!.set(name, { c: lv, type: listType, mutable });
+        continue;
+      }
       if (structType) {
         if (mutable) this.fail(d, "bind struct values with const (their fields can still be updated)");
         if (structType.size === undefined || structType.vec) this.fail(d.type!, `${structType.name} has variable-size fields and cannot be a local`);
-        this.line(`TSS_${structType.name} ${c}__v;`);
-        this.writeAggregate({ lv: `${c}__v`, type: { kind: "struct", name: structType.name }, writable: true }, init, true);
-        this.line(`TSS_${structType.name} *${c} = &${c}__v;`);
+        if (heap) {
+          this.checkHeapRoom(structType.size, d.type!);
+          this.hoistLazy(`${c}__h`, (n) => `TSS_${structType.name} *${n}`);
+          this.line(`if (${c}__h == NULL) TS_TRY(ts_alloc(sizeof(TSS_${structType.name}), (uint8_t **)&${c}__h));`);
+          this.writeAggregate({ lv: `(*${c}__h)`, type: { kind: "struct", name: structType.name }, writable: true }, init, true);
+          this.line(`TSS_${structType.name} *${c} = ${c}__h;`);
+        } else {
+          this.line(`TSS_${structType.name} ${c}__v;`);
+          this.writeAggregate({ lv: `${c}__v`, type: { kind: "struct", name: structType.name }, writable: true }, init, true);
+          this.line(`TSS_${structType.name} *${c} = &${c}__v;`);
+        }
         this.scopes
           .at(-1)!
           .set(name, { c, type: { kind: "structRef", struct: structType.name, writable: true }, mutable: false, paths: [`@${c}`], decl: d, owned: true });
@@ -1463,6 +1637,7 @@ export abstract class StatementEmitter extends CpiEmitter {
           type: { kind: "structRef", struct: target.struct, writable: target.writable },
           mutable: false,
           paths: owned ? [`@${c}`] : this.pathsOf(init),
+          ...(!owned && this.throughMovableList(init) ? { movable: true } : {}),
           decl: d,
           ...(owned ? { owned } : {}),
         });
@@ -1485,6 +1660,20 @@ export abstract class StatementEmitter extends CpiEmitter {
         this.scopes.at(-1)!.set(name, { c: v.c, type, mutable: false });
         continue;
       }
+      // A tree node reached any other way than `const e = tree.min()` (`c ? t.min() : t.max()`, `t.get(k)!`): it
+      // aliases the tree like the direct form, so it keeps the paths it may name; one whose tree is unknown is refused.
+      if (type.kind === "rbEntry" || (type.kind === "structRef" && type.nullable)) {
+        if (mutable) this.fail(d, "bind a tree node with const: it refers to a node of the tree");
+        const paths = this.pathsOf(init);
+        if (!paths)
+          this.fail(
+            init,
+            "this refers to a node of a tree, and which tree is not clear here: bind the tree's own call to a const (const e = tree.min(), const o = tree.get(key))",
+          );
+        this.line(`${valueC(type)} ${c} = ${v.c};`);
+        this.scopes.at(-1)!.set(name, { c, type, mutable: false, paths, decl: d });
+        continue;
+      }
       if ((type.kind === "account" || type.kind === "structRef") && mutable) this.fail(d, "bind accounts with const");
       if (type.kind === "pubkey") this.line(`SolPubkey ${c} = *(${v.c});`);
       else this.line(`${valueC(type)}${type.kind === "account" ? "" : " "}${c} = ${this.ownedString(v).c};`);
@@ -1492,6 +1681,65 @@ export abstract class StatementEmitter extends CpiEmitter {
       const owned = type.kind === "structRef" && ts.isCallExpression(init) && !!this.helperOf(init);
       this.scopes.at(-1)!.set(name, { c, type, mutable, ...(owned ? { paths: [`@${c}`], owned } : {}) });
     }
+  }
+
+  /**
+   * Whether a declaration is `/** @heap *\/`: a local list or struct kept on the heap (the bump allocator) rather
+   * than in the function's 4 KiB stack frame. Only in an instruction, which runs once per instruction: a helper may
+   * run any number of times and the heap is never freed.
+   */
+  protected heapLocal(d: ts.VariableDeclaration, aggregate: boolean): boolean {
+    const tag = [d, d.parent?.parent].flatMap((n) => (n ? ts.getJSDocTags(n) : [])).find((t) => t.tagName.text === "heap");
+    if (!tag) return false;
+    if (!aggregate) this.fail(d, "@heap is for a local list or struct declared with its type (const buf: FixedVec<u8, 1024> = …)");
+    if (this.helper)
+      this.fail(
+        d,
+        "@heap locals belong to instructions: a helper may run many times per instruction and the heap is never freed; declare it in the instruction and pass it (Inout<T>)",
+      );
+    return true;
+  }
+
+  /** A `@heap` local must fit in the heap (32 KiB, or HEAP_SIZE_KIB), which other allocations share. */
+  protected checkHeapRoom(bytes: number, at: ts.Node): void {
+    const kib = this.model.constants.get("HEAP_SIZE_KIB")?.value;
+    const room = (typeof kib === "bigint" ? Number(kib) : 32) * 1024 - 8;
+    if (bytes > room) this.fail(at, `this local takes ${bytes} bytes and the heap holds ${room} (raise HEAP_SIZE_KIB, at most 256)`);
+  }
+
+  /**
+   * `const [address, bump] = findProgramAddressWithBump(seeds, program)`: Rust's `let (address, bump) =
+   * Pubkey::find_program_address(…)`, both from one search (the only array destructuring the language has).
+   */
+  protected addressAndBump(d: ts.VariableDeclaration, pattern: ts.ArrayBindingPattern, mutable: boolean) {
+    const init = d.initializer;
+    const call = init && ts.isCallExpression(init) && this.exportName(init.expression) === "findProgramAddressWithBump" ? init : undefined;
+    if (!call) this.fail(d.name, "array destructuring is only for const [address, bump] = findProgramAddressWithBump(seeds, program)");
+    if (mutable) this.fail(d, "bind them with const: const [address, bump] = findProgramAddressWithBump(seeds, program)");
+    if (d.type) this.fail(d.type, "leave the type out: the address is a Pubkey and the bump a u8");
+    if (pattern.elements.length > 2) this.fail(pattern, "findProgramAddressWithBump gives two values: const [address, bump] = …");
+    const names: (string | undefined)[] = pattern.elements.map((el) => {
+      if (ts.isOmittedExpression(el)) return undefined;
+      if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name))
+        this.fail(el, "name the address and the bump: const [address, bump] = findProgramAddressWithBump(seeds, program)");
+      const name = el.name.text;
+      if (this.scopes.at(-1)!.has(name)) this.fail(el.name, `"${name}" is already declared`);
+      if (this.accounts.has(name) || this.args.has(name) || this.isGroup(name))
+        this.fail(el.name, `"${name}" shadows the parameter "${name}"; use another name`);
+      return name;
+    });
+    if (call.arguments.length !== 2) this.fail(call, "findProgramAddressWithBump(seeds, program) takes the seeds and the program's address");
+    const seeds = this.seeds(call.arguments[0]!, 0);
+    const program = this.expect(this.expr(call.arguments[1]!, PUBKEY), PUBKEY, call.arguments[1]!);
+    const [address, bump] = names;
+    const key = address ? `l_${address}_${this.temp++}` : this.tmp("pda");
+    const b = bump ? `l_${bump}_${this.temp++}` : this.tmp("bump");
+    this.line(`SolPubkey ${key}; uint8_t ${b};`);
+    this.line(
+      `if (ts_find_pda(${seeds.name}, ${seeds.count}, ${program.c}, &${key}, &${b}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no program address for these seeds");`,
+    );
+    if (address) this.scopes.at(-1)!.set(address, { c: key, type: PUBKEY, mutable: false });
+    if (bump) this.scopes.at(-1)!.set(bump, { c: b, type: { kind: "int", name: "u8" }, mutable: false });
   }
 
   /**
@@ -1660,4 +1908,11 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (ts.isIdentifier(target) || (value.type.kind === "string" && this.peekKind(target) === "string")) value = this.ownedString(value);
     this.line(place.write(value.c) + ";");
   }
+}
+
+/** The expressions of a comma list (`i++, j--` in a for loop's update or initializer), left to right. */
+function commaList(e: ts.Expression): ts.Expression[] {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.CommaToken) return [...commaList(e.left), ...commaList(e.right)];
+  return [e];
 }

@@ -124,6 +124,12 @@ export interface Vec<T> extends ListMethods<T> {
    * grows one `push` at a time, so calling it on a Vec is a compile error.
    */
   pushAll(items: IndexedList<T>): void;
+  /** A `FixedVec<u8, N>`'s byte builders (declared here for the same reason; a compile error on a Vec). */
+  pushLE<I extends bigint = bigint>(this: Vec<u8>, value: I): void;
+  pushKey(this: Vec<u8>, key: Pubkey): void;
+  pushBorsh<V = unknown>(this: Vec<u8>, value: V): void;
+  setLE<I extends bigint = bigint>(this: Vec<u8>, offset: u64, value: I): void;
+  truncate(this: Vec<u8>, length: u64): void;
   /** Remove and return the last element, shrinking the account. */
   pop(): T;
   /** Remove every element, shrinking the account. */
@@ -150,6 +156,28 @@ export interface FixedVec<T, N extends number> extends ListMethods<T> {
   pushAll(items: IndexedList<T>): void;
   pop(): T;
   clear(): void;
+  /**
+   * A `FixedVec<u8, N>` as a byte buffer: append an integer's little-endian bytes at its width (`buf.pushLE(count)`
+   * with `count: u16`; a literal needs one: `buf.pushLE<u16>(1n)` or `buf.pushLE(u16(1n))`). Every byte builder
+   * fails (5104) and appends nothing when the bytes do not fit in the room left.
+   */
+  pushLE<I extends bigint = bigint>(this: FixedVec<u8, N>, value: I): void;
+  /** Append a Pubkey's 32 bytes. */
+  pushKey(this: FixedVec<u8, N>, key: Pubkey): void;
+  /**
+   * Append a value's Borsh encoding, as invoke data, events and storeBorsh encode it: a struct (an object literal
+   * takes its type: `buf.pushBorsh<Header>({ … })`), a data enum (a tag byte, then the variant's fields), a
+   * FixedArray, a list (u32 count, then the elements), an integer at its width, a boolean, a Pubkey, a string or an
+   * Option.
+   */
+  pushBorsh<V = unknown>(this: FixedVec<u8, N>, value: V): void;
+  /**
+   * Overwrite the integer at byte `offset` with `value`'s little-endian bytes (`buf.setLE<u16>(91n, count)`): within the
+   * length, 5104 past it, as Rust's `data[a..b].copy_from_slice(…)` panics there.
+   */
+  setLE<I extends bigint = bigint>(this: FixedVec<u8, N>, offset: u64, value: I): void;
+  /** Keep the first `length` bytes (5104 when `length` is past the current length). */
+  truncate(this: FixedVec<u8, N>, length: u64): void;
   [Symbol.iterator](): Iterator<T>;
   readonly __capacity?: N;
 }
@@ -256,6 +284,125 @@ export declare function loadAccountMut<T>(account: RemainingAccount | AccountInf
  */
 export declare function loadRaw<T>(account: RemainingAccount | AccountInfo): Account<T>;
 export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
+/**
+ * `loadRaw` / `loadRawMut` at a byte offset known only at run time (a native account whose parts start where its header
+ * says: Phoenix's market at byte 576). Owned by this program (3007); `offset + size(T)` within the data, checked once
+ * here (ProgramError::AccountDataTooSmall); `loadRawMutAt` writable and claimed as `loadRawMut` is (2040; neither with
+ * `NATIVE_ACCOUNT_WRITES`). Bind it with const: `const market = loadRawMutAt<FifoMarket>(acct, 576n)`. A view (this one,
+ * `rawArrayAt`, `rbTreeAt` and what is read through them) is not used after `closeRaw` or `resizeAccount` of an account
+ * it may view, since its bounds were checked against the old length: take it again after (a compile error says so).
+ */
+export declare function loadRawAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Account<T>;
+export declare function loadRawMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Mut<T>;
+/**
+ * `capacity` elements of a fixed-size type packed in place from a run-time byte offset, the count known only at run
+ * time (a slab sized by its header). Bounds checked once when it is made (`offset + capacity × size(T)` within the
+ * data, overflow included: ProgramError::AccountDataTooSmall), then `get` / `set` check the index against the count
+ * (5104). Elements are references into the account (structs) or values. `.length` is the capacity.
+ */
+export interface RawArray<T> extends ListMethods<T> {
+  readonly length: u64;
+  get(index: bigint): T;
+  set(index: bigint, value: T): void;
+  [Symbol.iterator](): Iterator<T>;
+}
+/** A RawArray of a read-only view (`rawArrayAt`): elements are read, not written. */
+export interface ReadonlyRawArray<T> extends ListMethods<T> {
+  readonly length: u64;
+  get(index: bigint): Readonly<T>;
+  [Symbol.iterator](): Iterator<Readonly<T>>;
+}
+/** `const slab = rawArrayMutAt<Order>(acct, offset, capacity)`: see RawArray. */
+export declare function rawArrayAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>;
+export declare function rawArrayMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): RawArray<T>;
+
+/** A node of a RedBlackTree: its key (read-only), its value (in place) and its index in the tree's node array (1-based). */
+export interface RbEntry<K, V> {
+  readonly key: Readonly<K>;
+  value: V;
+  readonly index: u32;
+}
+/**
+ * lib-sokoban 0.3's `RedBlackTree<K, V, N>` in account data, byte for byte (Phoenix's order books and trader seats):
+ * at the offset, root u32, padding, the allocator (size u64, bump index u32, free list head u32), then `capacity` nodes
+ * of 16 register bytes + K + V, 1-based. Every operation makes the writes sokoban makes, so a port's account bytes
+ * match the original's after every instruction (freed nodes keep their key and value bytes; the free list is LIFO).
+ * Keys are ordered by the comparator given to `rbTreeMutAt`, called as `compare(searchedKey, nodeKey)`, or by default
+ * as Rust derives Ord (fields in order, integers by value, Pubkeys by their bytes).
+ */
+export interface RedBlackTree<K, V> {
+  /** The number of keys (sokoban's `len()`). */
+  readonly length: u64;
+  /** The number of nodes it was made with (sokoban's `capacity()`, its `N`). */
+  readonly capacity: u64;
+  /** NodeAllocator::initialize on zeroed bytes; anything else panics "Cannot reinitialize NodeAllocator", as sokoban. */
+  initialize(): void;
+  /** The value stored for `key`, in place (a reference: writes go to the tree), or null. */
+  get(key: K): V | null;
+  /**
+   * Insert, or replace the value of an equal key (keeping its node). The node index, or null when a new key finds the
+   * tree full (nothing written); a tree that is empty takes the key without that check, as sokoban's does.
+   * References into the tree's nodes (`get`, `min`, entries, however bound: `c ? t.min() : t.max()`, `t.get(k)!`)
+   * cannot be used after an insert (a freed node may be reused).
+   */
+  insert(key: K, value: V): u32 | null;
+  /** Remove `key`: its value (a struct in place in the freed node, which keeps its bytes until reused), or null. */
+  remove(key: K): V | null;
+  /**
+   * Remove the node at `index` (from `addrOf`, a node of `min` / `max` / `get`'s entry or a walk): the same writes as
+   * `remove(node.key)`, without searching the tree again. Its value, or null for index 0 or a node that holds no key
+   * (a freed one); past the capacity panics as `nodeAt` does.
+   */
+  removeAt(index: u32): V | null;
+  /** The node with the smallest key (sokoban's get_min_index), or null when empty. */
+  min(): RbEntry<K, V> | null;
+  /** The node with the largest key, or null. */
+  max(): RbEntry<K, V> | null;
+  /** The index of the node holding `key` (sokoban's get_addr), 0 when absent. */
+  addrOf(key: K): u32;
+  /** Node `index` as stored (sokoban's get_node), whether or not it holds a key; 0 or past the capacity panics as Rust's indexing. */
+  nodeAt(index: u32): RbEntry<K, V>;
+  /** `for (const e of tree.reversed())`: from the largest key down. */
+  reversed(): Iterable<RbEntry<K, V>>;
+  /**
+   * `for (const e of tree)`: from the smallest key up, `break` and `continue` as in any loop. The body may change values
+   * but not insert, remove or initialize on this tree or on any tree view of an account that may be this one (another
+   * view of the same tree), nor call a helper that takes accounts and makes an `rbTreeMutAt` view.
+   */
+  [Symbol.iterator](): Iterator<RbEntry<K, V>>;
+}
+/** A RedBlackTree of a read-only view (`rbTreeAt`): read, never changed. */
+export interface ReadonlyRedBlackTree<K, V> {
+  readonly length: u64;
+  readonly capacity: u64;
+  get(key: K): Readonly<V> | null;
+  min(): Readonly<RbEntry<K, Readonly<V>>> | null;
+  max(): Readonly<RbEntry<K, Readonly<V>>> | null;
+  addrOf(key: K): u32;
+  nodeAt(index: u32): Readonly<RbEntry<K, Readonly<V>>>;
+  reversed(): Iterable<Readonly<RbEntry<K, Readonly<V>>>>;
+  [Symbol.iterator](): Iterator<Readonly<RbEntry<K, Readonly<V>>>>;
+}
+/**
+ * lib-sokoban 0.3's RedBlackTree<K, V, capacity> at a run-time byte offset (see RedBlackTree): owned by this program
+ * (3007), its 32 + capacity × (16 + size(K) + size(V)) bytes within the data (ProgramError::AccountDataTooSmall),
+ * `rbTreeMutAt` writable and claimed as `loadRawMut` is. `compare`, a function of the program `(a: K, b: K) => i8`
+ * (negative: a first; any signed integer type, an unsigned result is refused as it could never say "less"), orders the keys; it is called as compare(searchedKey, nodeKey), so an order that depends on the
+ * left key (Phoenix's FIFOOrderId: bids descending, asks ascending, by the sequence number's top bit) works as in
+ * Rust. Without it, keys are ordered as Rust's derived Ord orders them.
+ */
+export declare function rbTreeAt<K, V>(
+  account: RemainingAccount | AccountInfo,
+  offset: u64,
+  capacity: u64,
+  compare?: (a: K, b: K) => bigint,
+): ReadonlyRedBlackTree<K, V>;
+export declare function rbTreeMutAt<K, V>(
+  account: RemainingAccount | AccountInfo,
+  offset: u64,
+  capacity: u64,
+  compare?: (a: K, b: K) => bigint,
+): RedBlackTree<K, V>;
 /**
  * A native program's Borsh account, as Rust's `try_from_slice_unchecked::<T>(&data)` reads it: the data from byte 0
  * decoded into a local `T` (a copy; write it back with `storeBorsh`). No owner check and no discriminator; bytes after
@@ -717,6 +864,12 @@ export declare function createProgramAddress(seeds: Seed[], program: Pubkey): Pu
 export declare function logBase64(prefix: string, value: object): void;
 /** The bump of that canonical program address (`Pubkey::find_program_address(seeds, program).1`), to sign with it. */
 export declare function findProgramAddressBump(seeds: Seed[], program: Pubkey): u8;
+/**
+ * The canonical program address and its bump from one search (Rust's `let (address, bump) =
+ * Pubkey::find_program_address(seeds, program)`), where `findProgramAddress` and `findProgramAddressBump` would search
+ * twice: bind both, `const [address, bump] = findProgramAddressWithBump(["seat", market, trader], PHOENIX_ID)`.
+ */
+export declare function findProgramAddressWithBump(seeds: Seed[], program: Pubkey): [address: Pubkey, bump: u8];
 /** This program's address (`crate::ID`). */
 export declare function programId(): Pubkey;
 /**
@@ -820,11 +973,30 @@ export declare const AuthorityType: {
  */
 export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<Signer>): void;
 /**
- * Resize a `Mut<AccountInfo>` of this program to `newSize` bytes (Rust's `AccountInfo::resize`): the data length only,
- * the new bytes zeroed. No rent moves: fund the account first (`rentExempt(newSize)`), the runtime refuses an account
- * left short. At most 10 KiB past its size when the instruction started (3016).
+ * Resize a `Mut<AccountInfo>` or a remaining account of this program to `newSize` bytes (Rust's `AccountInfo::resize` /
+ * `realloc(newSize, true)`): the data length only, the new bytes zeroed. No rent moves: fund the account first
+ * (`rentExempt(newSize)`), the runtime refuses an account left short. At most 10 KiB past its size when the
+ * instruction started (3016). A remaining account must be writable (3006) unless the program declares
+ * `NATIVE_ACCOUNT_WRITES`, which also lets an `AccountInfo` parameter be resized without `Mut<…>`. A view of the
+ * account made before (`loadRawMutAt`, `rbTreeMutAt` …) is not used after it: take the view again.
  */
-export declare function resizeAccount(account: Mut<AccountInfo>, newSize: u64): void;
+export declare function resizeAccount(account: RemainingAccount | Mut<AccountInfo>, newSize: u64): void;
+/**
+ * Close an account of this program as a native program does it by hand (Phoenix's Tombstone), in this order:
+ * `receiver.lamports += account.lamports`, `account.lamports = 0`, the owner set to the System Program, the data length
+ * set to 0 (`realloc(0, false)`: the bytes are not zeroed, the runtime drops them with the length). Unlike `close` it
+ * takes remaining accounts and `AccountInfo` parameters and leaves the data unwiped. Both accounts are checked writable
+ * (3006; `Mut<AccountInfo>` parameters) and passed once (2040), the account owned by this program (3007) and not the
+ * receiver itself; with `NATIVE_ACCOUNT_WRITES` nothing is checked and the runtime judges the result, as for the
+ * original. A view of the account made before is not used after it.
+ */
+export declare function closeRaw(account: RemainingAccount | Mut<AccountInfo>, receiver: RemainingAccount | Mut<AccountInfo>): void;
+/**
+ * Set an account's owner in place (Rust's `AccountInfo::assign`). The runtime accepts the change, at the end of the
+ * instruction or at the next CPI, only for a writable account of this program whose data is empty or zeroed. Checked
+ * as `closeRaw` checks its account (writable, passed once, this program's), or not at all under `NATIVE_ACCOUNT_WRITES`.
+ */
+export declare function assignOwner(account: RemainingAccount | Mut<AccountInfo>, owner: Pubkey): void;
 
 /**
  * Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none).
@@ -894,6 +1066,20 @@ export type Account<T> = Readonly<T> & AccountMeta;
  * argument fails with one of your errors when the account is not writable (Anchor's `mut @ ErrorCode.X`; else 2000).
  */
 export type Mut<T, E = never> = T & AccountMeta;
+
+/**
+ * A helper parameter the helper may change in place (Rust's `&mut T`): `function addEvent(rec: Inout<Recorder>, e:
+ * Event): void`. The helper gets the caller's place itself, not a copy, and the caller sees its writes after the call,
+ * as JS shares an object passed to a function. `T` is a fixed-size struct, a `FixedArray<T, N>` or a `FixedVec<T, N>`
+ * (whose `push`, `pop` and `clear` the caller sees too). The caller passes a writable place: a local struct or list,
+ * a `loadBorsh` local, a field of a `Mut<T>` account or of a `loadRawMut` view, a list element (`book.levels.get(i)`)
+ * or another `Inout` parameter. Two arguments of one call may not overlap: places that may be the same bytes only at
+ * run time (two `Dup` accounts, a writable and a read-only account, two native views under `NATIVE_ACCOUNT_WRITES`) are
+ * compared before the call, an Inout one with every other argument passed in place (2040 when they overlap). Other
+ * struct parameters stay read-only.
+ * Integers are values in JS too: return the new value, or wrap it in a struct.
+ */
+export type Inout<T> = T;
 
 /** A PDA seed: a string, a Pubkey, a Hash (its 32 bytes), an integer (at its width) or a unit enum value (one byte). */
 export type Seed = string | Pubkey | Hash | bigint | number;
@@ -2232,8 +2418,22 @@ export declare enum ProgramError {
  * `location` ("program/src/instruction.rs:482:17") is the place the runtime reports, as the original's panic gives it;
  * by default this source line. A `null` message logs nothing, for a program whose panic handler writes no line of its
  * own: `panic(null, "src/lib.rs:105:19")` leaves only the runtime's "SBF program Panicked in src/lib.rs at 105:19".
+ * Under `export const PANIC_STYLE = "solana-1.14"` (a program built with solana-program 1.14 to 1.17) it logs
+ * `panicked at '<message>', <location>` and aborts, so the runtime reports "SBF program panicked", as that panic
+ * handler does; a message is then required.
  */
 export declare function panic(message?: string | null, location?: string): never;
+/**
+ * `value`, with its checked arithmetic panicking as Rust's overflow checks do at `location` ("file:line:column", where
+ * the original's expression is): `panicsAt("src/quantities.rs:233:1", a + b)` logs "attempt to add with overflow"
+ * there (also "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the
+ * remainder with a divisor of zero", "attempt to negate with overflow", "attempt to divide with overflow", "attempt to
+ * shift left / right with overflow" for a shift amount past the width), as `panic` logs (see `PANIC_STYLE`), instead
+ * of failing with 5100 / 5101. Only the operators written inside it, not the helpers it calls; u256 arithmetic, `**`,
+ * `mulDiv`, casts and the bits `<<` loses keep TypeSOL's failures (Rust checks them otherwise, or with other messages); an inner `panicsAt`
+ * gives its own operators their own location. As a statement it takes an assignment: `panicsAt(loc, total += fee);`.
+ */
+export declare function panicsAt<T>(location: string, value: T): T;
 /**
  * Stop the program as Rust's `abort` does on SBF (the allocator's out-of-memory error, `std::process::abort`): the
  * runtime's `abort` syscall, which fails the instruction with ProgramFailedToComplete and logs "SBF program panicked"
@@ -2298,6 +2498,23 @@ export declare function emit<T>(event: T): void;
  * bytes do not decode to exactly it).
  */
 export declare function returnData<T extends bigint | boolean | Pubkey | Hash | object>(program: AccountMeta): T;
+
+/**
+ * Set this instruction's return data to `bytes` as they are (Rust's `set_return_data(&bytes)`): a list of u8 such as a
+ * local `FixedVec<u8, N>`, a Vec or FixedVec in account data, or the instruction data or a slice of it. For a native
+ * port's `@fallback` entry and helpers (`set_return_data(order_ids.try_to_vec()?.as_ref())`), and void instructions.
+ * The last call wins, and a CPI made afterwards replaces it with the callee's (call it after the last CPI, as Rust
+ * must). More than 1024 bytes fails as Rust's call does: the runtime refuses it ("Return data too large").
+ * An instruction that returns a value cannot call it (its return value is its return data); a helper it calls may, and
+ * the instruction's return value, set last, replaces what the helper set.
+ */
+export declare function setReturnData(bytes: IndexedList<u8>): void;
+
+/**
+ * Log the compute units left (Rust's `sol_log_compute_units()`): the runtime writes "Program consumption: <N> units
+ * remaining", as the original's line, at the same place.
+ */
+export declare function logComputeUnits(): void;
 
 /**
  * Verify `account.key` is the PDA for `seeds` + `bump` under this program. Any bump that gives a PDA passes (Anchor's

@@ -32,7 +32,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `ts-plugin/` | The editor plugin (`typesol/ts-plugin`) |
 | `examples/` | Example programs; the `typesol init` templates are copies of three of them |
 | `test/` | The compiler's test suite (`pnpm test:core`), by subject: `language/`, `security/`, `examples/`, `integrations/` (token, Metaplex, oracle and other CPIs), `client/`, `cli/`, `verification/` (differential and fuzz tests). Shared: `harness.ts` and the `*-helpers.ts`, `fixtures/` (programs the tests compile), `golden/` (pinned generated C and clients), `programs/` (third-party program binaries, see its SOURCES.md), `anchor-twins/` (below) |
-| `showcase/` | Ports, apart from the compiler's own tests (`pnpm test:showcase`, its own CI job): `mainnet/` (SPL Stake Pool, Raydium AMM v4, CP-Swap and CLMM, Jito's MEV programs, Marginfi, coral-xyz/multisig, each checked against the binary on mainnet), `program-examples/` (TypeSOL rewrites of solana-developers/program-examples), `test/` (their differential tests, fuzzers, helpers and fixtures; `porting/` for the program-examples) |
+| `showcase/` | Ports, apart from the compiler's own tests (`pnpm test:showcase`, its own CI job): `mainnet/` (Phoenix v1, SPL Stake Pool, Raydium AMM v4, CP-Swap and CLMM, Jito's MEV programs, Marginfi, coral-xyz/multisig, each checked against the binary on mainnet), `program-examples/` (TypeSOL rewrites of solana-developers/program-examples), `test/` (their differential tests, fuzzers, helpers and fixtures; `porting/` for the program-examples) |
 | `test/anchor-twins/` | Anchor twins of the counter, vault and escrow examples, for the differential tests (`pnpm build:twins`) and the zero-copy client test; the benchmarks themselves are in [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) |
 | `scripts/` | `smoke.ts`, `localnet.sh` and `localnet-fixtures.ts` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers), `codegen-snapshot.ts` (the generated C and IDL of every program, to diff a refactor), `release-manifest.ts` (a release's binary, IDL and toolchain hashes) |
 | `docs/` | User and contributor documentation (also published on typesol.com) |
@@ -82,6 +82,7 @@ call evaluates expressions), the method is declared `abstract` at the end of `ba
 | `storage.ts` | `StorageEmitter` | references into account data and locals, reads and writes, indexing, aliasing, argument validation |
 | `expressions.ts` | `ExpressionEmitter` | literals, operators and checked arithmetic, property reads, conditionals, text, casts |
 | `calls.ts` | `CallEmitter` | `call()` (the built-in dispatch), Vec methods, helpers, remaining accounts, foreign reads, return data |
+| `views.ts` | `ViewEmitter` | views at run-time offsets (`loadRawAt`, `rawArrayAt`) and the RedBlackTree's binding, methods and node references (its per-tree C is `rbtree.ts`, its structural code `ts_rbt_*` in the runtime) |
 | `cpi-core.ts` | `CpiCoreEmitter` | seeds and PDAs, signer seeds, remaining-account ranges, byte buffers and Borsh serialization |
 | `create.ts` | `CreateEmitter` | `create` / `createIfNeeded` of program accounts, mints (with Token-2022 extensions), token accounts and ATAs; System transfers |
 | `token.ts` | `TokenEmitter` | SPL Token / Token-2022 instructions and the ATA program |
@@ -137,8 +138,13 @@ These invariants are easy to break. Each one has tests.
   message.
 - **No SDK byte loops.** Generated code and the runtime compare, copy and zero memory with `ts_key_eq`, `ts_mem_eq`,
   `ts_memcpy` and `ts_memzero` (8 bytes per instruction), not `sol_memcmp`, `sol_memcpy`, `sol_memset` or
-  `SolPubkey_same`. `ts_bytes_cmp` stays byte-wise because it orders, not just compares. Checked u64 arithmetic uses
+  `SolPubkey_same`. Large regions go to the memory syscalls (max(10, n / 250) CU): `ts_memzero_bulk` and
+  `ts_memcpy_const` from 128 bytes, `ts_memcpy_bulk` (a run-time length) from 32, `sol_memmove_` for BigVec's moves.
+  `ts_bytes_cmp` stays byte-wise because it orders, not just compares. Checked u64 arithmetic uses
   `ts_add/sub/mul_overflow_u64`, which clang lowers to fewer instructions than the builtins on SBF.
+- **A FixedVec's free slots are zero.** Bytes past a FixedVec's length are never read element by element, but its
+  whole layout is copied (into account data, an event, another list), so a list made from a literal zeroes them
+  (once, `ts_memzero_bulk`) and the stack's earlier contents never reach an account or a log.
 - **Heap use is bounded.** The heap is a bump allocator (32 KiB by default) and is never freed. Anything that runs in
   a loop must not allocate on every pass; hoist a reusable buffer instead (see `snapshotPlace()`).
 
@@ -188,6 +194,7 @@ the change. The sha256 values in the `*.build.json` manifests must not change.
 | `test/language/diagnostics.test.ts` | Every rejected construct, plus the golden C. |
 | `test/security/hardening.test.ts`, `test/security/regressions.test.ts` | Attacks and edge cases that once failed. Keep each as a negative test. |
 | `test/verification/fuzz-*.test.ts`, `test/verification/differential.test.ts` | Randomized checks against BigInt, a TypeScript state model, and the Anchor twins in `test/anchor-twins`. See [testing.md](testing.md). |
+| `test/verification/rbtree-trace.test.ts` | The RedBlackTree replaying traces lib-sokoban 0.3 itself recorded (`test/verification/rbtree/`, rebuilt by its `regenerate.sh` with a small Rust oracle the tests do not need), bytes compared after every operation. |
 | `scripts/smoke.ts` | End to end against a real `solana-test-validator` (`scripts/localnet.sh`). |
 
 Some tests need optional inputs and are skipped without them:

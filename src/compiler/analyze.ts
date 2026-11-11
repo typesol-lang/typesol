@@ -2,7 +2,7 @@ import ts from "typescript";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CompileError, Reporter, type Diagnostic } from "./diagnostics.js";
+import { CompileError, Reporter, type Diagnostic, markAliasUse } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
 import { hintForTypeScript, unsupportedSyntax } from "./hints.js";
@@ -105,6 +105,7 @@ const TYPE_EXPORTS = new Set([
   "AccountInfo",
   "Account",
   "Mut",
+  "Inout",
   "Init",
   "Seed",
   "TokenAccount",
@@ -118,6 +119,11 @@ const TYPE_EXPORTS = new Set([
   "FixedVec",
   "BigVec",
   "BigVecSlice",
+  "RawArray",
+  "ReadonlyRawArray",
+  "RedBlackTree",
+  "ReadonlyRedBlackTree",
+  "RbEntry",
   "InstructionBytes",
   "Program",
   "UncheckedProgram",
@@ -402,6 +408,9 @@ function programFiles(program: ts.Program, entry: string): ts.SourceFile[] {
   return order;
 }
 
+/** The failure-line constants that may be `null`: such failures return their error without logging anything. */
+const SILENCEABLE_PREFIXES = ["ERROR_LOG_PREFIX", "PROGRAM_ERROR_LOG_PREFIX"];
+
 export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const entryPath = path.resolve(entry);
   checkImports(entryPath, files);
@@ -412,13 +421,16 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const options = new Map<string, OptionInner>();
   const dataEnums = new Map<string, DataEnumDef>();
   const constants = new Map<string, ConstDef>();
-  const pendingConstTypes: { def: ConstDef; type: ts.TypeNode; imports: Map<string, string> }[] = [];
+  const pendingConstTypes: { def: ConstDef; type?: ts.TypeNode; imports: Map<string, string>; init: ts.Expression }[] = [];
   const errors: ErrorDef[] = [];
   const functions: { node: ts.FunctionDeclaration; imports: Map<string, string> }[] = [];
   const helperNodes: HelperSource[] = [];
   const interfaces: { decl: ts.InterfaceDeclaration; imports: Map<string, string> }[] = [];
   const groups: AccountGroups = new Map();
   const aliases: { decl: ts.TypeAliasDeclaration; imports: Map<string, string> }[] = [];
+  /** `type Price = u64`: plain aliases (not data enums) and the imports of the file declaring each. */
+  const simpleAliases = new Map<ts.TypeAliasDeclaration, Map<string, string>>();
+  const fileImports = new Map<ts.SourceFile, Map<string, string>>();
   /** Program-wide names (structs, enums, helpers) -> declaring file, for collision errors. */
   const declared = new Map<string, string>();
   let entryImports = new Map<string, string>();
@@ -436,6 +448,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   for (const file of programFiles(program, entryPath)) {
     const isEntry = file === sourceFile;
     const imports = new Map<string, string>();
+    fileImports.set(file, imports);
     if (isEntry) entryImports = imports;
     for (const stmt of file.statements) {
       reporter.guard(() => {
@@ -451,15 +464,29 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               if (el.propertyName) reporter.fail(el, `renaming imports from TypeSOL files is not supported; import ${el.propertyName.text} as is`);
           }
         } else if (ts.isInterfaceDeclaration(stmt)) {
-          if (!isExported(stmt)) reporter.fail(stmt, "structs must be exported");
+          // A struct that is not exported is the file's own (helpers, locals): it stays out of the IDL (see
+          // checkLocalStructs). An account group is part of the instructions' accounts, so it is exported.
+          if (!isExported(stmt) && isAccountGroup(stmt, imports)) reporter.fail(stmt, "account groups must be exported: export interface …");
           declare(stmt.name, file);
           // An interface of accounts is an account group (Anchor's composite `#[derive(Accounts)]` field), not a struct.
           if (isAccountGroup(stmt, imports)) groups.set(stmt.name.text, { decl: stmt, imports });
           else interfaces.push({ decl: stmt, imports });
         } else if (ts.isTypeAliasDeclaration(stmt)) {
-          if (!isExported(stmt)) reporter.fail(stmt, "data enums (type X = { kind: ... } | ...) must be exported");
           declare(stmt.name, file);
-          aliases.push({ decl: stmt, imports });
+          const shape = aliasShape(stmt.type);
+          if (stmt.typeParameters?.length)
+            reporter.fail(stmt, shape === "alias" ? "type aliases cannot be generic: name one type, type Price = u64" : "data enums cannot be generic");
+          if (shape === "mixed")
+            reporter.fail(
+              stmt.type,
+              'a union of named types is not a data enum: list the variants as object types (type Event = { kind: "Fill"; price: u64 } | { kind: "Place"; … }), or alias a single type (type Price = u64, type Maybe = Point | null)',
+            );
+          // `type Price = u64`: another name for a type, replaced by that type wherever it is used (substituteAliases).
+          if (shape === "alias") simpleAliases.set(stmt, imports);
+          else {
+            if (!isExported(stmt)) reporter.fail(stmt, "data enums (type X = { kind: ... } | ...) must be exported");
+            aliases.push({ decl: stmt, imports });
+          }
         } else if (ts.isEnumDeclaration(stmt)) {
           if (!isExported(stmt)) reporter.fail(stmt, "enums must be exported");
           declare(stmt.name, file);
@@ -536,11 +563,28 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               value = -BigInt(init.operand.text.slice(0, -1).replace(/_/g, ""));
             else if (init.kind === ts.SyntaxKind.TrueKeyword || init.kind === ts.SyntaxKind.FalseKeyword) value = init.kind === ts.SyntaxKind.TrueKeyword;
             else if (ts.isStringLiteral(init)) value = init.text;
-            else reporter.fail(init, 'top-level constants must be bigint, boolean or string literals, or pubkey("…")');
+            // `const ERROR_LOG_PREFIX = null`: failures log nothing, as a native program returning an error.
+            else if (init.kind === ts.SyntaxKind.NullKeyword && SILENCEABLE_PREFIXES.includes(d.name.text)) {
+              if (d.type) reporter.fail(d.type, `leave the type out: const ${d.name.text} = null`);
+              value = null;
+            } else if (init.kind === ts.SyntaxKind.NullKeyword)
+              reporter.fail(
+                init,
+                `only ${SILENCEABLE_PREFIXES.join(" and ")} can be null (failures that log nothing); other constants are bigint, boolean or string literals, or pubkey("…")`,
+              );
+            // `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT = BIDS_AT + 2n * BOOK`: integers folded here.
+            else if (isConstantExpression(init)) value = foldConstant(init, constants, reporter);
+            else
+              reporter.fail(
+                init,
+                'top-level constants are bigint, boolean or string literals, pubkey("…"), or integer expressions over literals and earlier constants (const ROOM = 1280n - 34n)',
+              );
             declare(d.name, file);
             const def: ConstDef = { name: d.name.text, value };
             constants.set(def.name, def);
-            if (d.type) pendingConstTypes.push({ def, type: d.type, imports });
+            // Typed constants are folded again in their type below; untyped expressions are kept in order with them, as
+            // they may use one whose value that changes (`~` within an unsigned width).
+            if (d.type || (typeof value === "bigint" && isConstantExpression(init))) pendingConstTypes.push({ def, type: d.type, imports, init });
           }
         } else {
           reporter.fail(stmt, unsupportedSyntax(stmt.kind, "top level"));
@@ -552,12 +596,33 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
   const fstrings = new Set<number>();
   const fixedVecs = new Map<string, FieldType & { kind: "vec" }>();
   const scopeFor = (imports: Map<string, string>): TypeScope => ({ imports, enums, options, dataEnums });
+  if (simpleAliases.size) substituteAliases(program, entryPath, simpleAliases, fileImports, reporter);
+  // Constants whose typed value differs from the first, untyped fold: untyped expressions using them are folded again.
+  const refolded = new Set<string>();
+  const uses = (e: ts.Node): boolean => (ts.isIdentifier(e) && refolded.has(e.text)) || !!ts.forEachChild(e, (n) => uses(n) || undefined);
   for (const c of pendingConstTypes) {
     reporter.guard(() => {
+      if (!c.type) {
+        if (!uses(c.init)) return;
+        const v = foldConstant(c.init, constants, reporter);
+        if (v !== c.def.value) refolded.add(c.def.name);
+        c.def.value = v;
+        return;
+      }
       const t = resolveScalarType(c.type, scopeFor(c.imports));
       if (!t || t.kind !== "int") reporter.fail(c.type, "annotate constants with an integer type, or leave the type out");
       if (typeof c.def.value !== "bigint") reporter.fail(c.type, "only integer constants take a type annotation");
       const info = INT_INFO[t.name];
+      // An expression is computed in its type, as Rust's `const X: u64 = …` is: every step must fit, not only the result.
+      const literal =
+        ts.isBigIntLiteral(c.init) ||
+        (ts.isPrefixUnaryExpression(c.init) && c.init.operator === ts.SyntaxKind.MinusToken && ts.isBigIntLiteral(c.init.operand));
+      // The typed fold is the value (`~1n` is 254 in a u8, not -2).
+      if (!literal && isConstantExpression(c.init)) {
+        const v = foldConstant(c.init, constants, reporter, t.name);
+        if (v !== c.def.value) refolded.add(c.def.name);
+        c.def.value = v;
+      }
       if (c.def.value < info.min || c.def.value > info.max) reporter.fail(c.type, `${c.def.value} does not fit in ${t.name}`);
       c.def.type = t;
     });
@@ -920,6 +985,17 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
     reporter.error(sourceFile, "a TypeSOL program needs at least one exported function (instruction) in its entry file");
 
   const name = path.basename(sourceFile.fileName).replace(/\.ts$/, "");
+  const events = collectEvents([...functions, ...helperNodes], structs);
+  // What instructions take or return (collectStructs walks a returned struct only when given it as a reference).
+  const surface = new Set(argStructs);
+  for (const ix of instructions) {
+    if (ix.returns?.kind === "struct") collectStructs({ kind: "structRef", struct: ix.returns.name, writable: false }, structs, dataEnums, surface);
+    // An Option<Struct> argument (`p: Pair | null`): its struct too.
+    for (const a of ix.args)
+      if (a.type.kind === "optionArg" && a.type.option.inner.kind === "struct")
+        collectStructs({ kind: "structRef", struct: a.type.option.inner.name, writable: false }, structs, dataEnums, surface);
+  }
+  checkLocalStructs(structs, dataEnums, accountStructs, surface, events, reporter);
   return {
     model: {
       name: snakeCase(name).replace(/[^a-z0-9_]/g, "_"),
@@ -936,7 +1012,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       dataEnums,
       options,
       constants,
-      events: collectEvents([...functions, ...helperNodes], structs),
+      events,
       accountStructs,
       foreignAccounts: new Set([...foreignStructs].filter((n) => !ownStructs.has(n))),
       argStructs,
@@ -944,6 +1020,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
       fixedVecs,
       localVecs: new Map(),
       borshNative: new Set(),
+      rbTrees: new Map(),
     },
     sourceFile,
     files: programFiles(program, entryPath).map((f) => f.fileName),
@@ -955,6 +1032,136 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
 }
 
 /** Every struct an argument type contains (transitively), for IDL layout decisions. */
+/** An integer expression a top-level constant may be: operators, parentheses, bigint literals and names. */
+function isConstantExpression(e: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(e)) return isConstantExpression(e.expression);
+  if (ts.isBigIntLiteral(e) || ts.isIdentifier(e)) return true;
+  if (ts.isPrefixUnaryExpression(e))
+    return (e.operator === ts.SyntaxKind.MinusToken || e.operator === ts.SyntaxKind.TildeToken) && isConstantExpression(e.operand);
+  return ts.isBinaryExpression(e) && CONST_OPS.has(e.operatorToken.kind) && isConstantExpression(e.left) && isConstantExpression(e.right);
+}
+const CONST_OPS = new Set([
+  ts.SyntaxKind.PlusToken,
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+]);
+
+/**
+ * A top-level constant's integer expression, folded when the program is compiled: literals and integer constants
+ * declared before it (in this file or an imported one). JS's bigint results (division truncates, `%` keeps the
+ * dividend's sign, `>>` rounds down, as Rust's integers do). With `width` (a typed constant, `const X: u64 = …`), every
+ * step must fit in that type, as Rust computes a typed const; without one the result is a literal, checked where it is
+ * used. Division by zero, a negative exponent or shift, and a value past 256 bits are compile errors.
+ */
+function foldConstant(e: ts.Expression, constants: Map<string, ConstDef>, reporter: Reporter, width?: IntName): bigint {
+  const fit = (v: bigint, at: ts.Node): bigint => {
+    if (width) {
+      const info = INT_INFO[width];
+      if (v < info.min || v > info.max) reporter.fail(at, `${at.getText()} is ${v}, which does not fit in ${width}: the constant is computed in its type`);
+    } else if (v >= 1n << 256n || v < -(1n << 255n)) reporter.fail(at, `${at.getText()} does not fit in 256 bits`);
+    return v;
+  };
+  const fold = (n: ts.Expression): bigint => {
+    if (ts.isParenthesizedExpression(n)) return fold(n.expression);
+    if (ts.isBigIntLiteral(n)) return fit(BigInt(n.text.slice(0, -1).replace(/_/g, "")), n);
+    if (ts.isIdentifier(n)) {
+      const c = constants.get(n.text);
+      if (!c) reporter.fail(n, `${n.text} is not a top-level constant declared before this one: a constant is folded from literals and earlier constants`);
+      if (typeof c.value !== "bigint") reporter.fail(n, `${n.text} is not an integer constant`);
+      return fit(c.value, n);
+    }
+    // A negative literal is one value (i128's minimum is written -170141183460469231731687303715884105728n).
+    if (ts.isPrefixUnaryExpression(n) && n.operator === ts.SyntaxKind.MinusToken && ts.isBigIntLiteral(n.operand))
+      return fit(-BigInt(n.operand.text.slice(0, -1).replace(/_/g, "")), n);
+    if (ts.isPrefixUnaryExpression(n)) {
+      const v = fold(n.operand);
+      if (n.operator === ts.SyntaxKind.MinusToken) return fit(-v, n);
+      // `~x` within the type's width, as at run time; without a type, JS's -x - 1
+      if (width && !INT_INFO[width].signed) return fit(INT_INFO[width].max ^ v, n);
+      return fit(-v - 1n, n);
+    }
+    const b = n as ts.BinaryExpression;
+    const l = fold(b.left);
+    const r = fold(b.right);
+    switch (b.operatorToken.kind) {
+      case ts.SyntaxKind.PlusToken:
+        return fit(l + r, b);
+      case ts.SyntaxKind.MinusToken:
+        return fit(l - r, b);
+      case ts.SyntaxKind.AsteriskToken:
+        return fit(l * r, b);
+      case ts.SyntaxKind.SlashToken:
+      case ts.SyntaxKind.PercentToken:
+        if (r === 0n) reporter.fail(b, `${b.getText()} divides by zero`);
+        return fit(b.operatorToken.kind === ts.SyntaxKind.SlashToken ? l / r : l % r, b);
+      case ts.SyntaxKind.AsteriskAsteriskToken:
+        if (r < 0n) reporter.fail(b, `${b.getText()} has a negative exponent`);
+        if (r > 256n && l !== 0n && l !== 1n && l !== -1n) reporter.fail(b, `${b.getText()} does not fit in 256 bits`);
+        return fit(l ** r, b);
+      case ts.SyntaxKind.AmpersandToken:
+        return fit(l & r, b);
+      case ts.SyntaxKind.BarToken:
+        return fit(l | r, b);
+      case ts.SyntaxKind.CaretToken:
+        return fit(l ^ r, b);
+      default: {
+        // << and >>: an amount from 0 up to the width (256 without a type), and << may not lose bits (as at run time)
+        const bits = width ? INT_INFO[width].bytes * 8 : 256;
+        if (r < 0n || r >= BigInt(bits)) reporter.fail(b, `${b.getText()} shifts by ${r}: the amount is 0 to ${bits - 1}`);
+        return fit(b.operatorToken.kind === ts.SyntaxKind.LessThanLessThanToken ? l << r : l >> r, b);
+      }
+    }
+  };
+  return fold(e);
+}
+
+/**
+ * A struct that is not exported (`interface Pair { … }`) is its file's own: helpers, locals and other such structs use
+ * it, and the IDL leaves it out. What the IDL describes cannot hold one: account data, instruction arguments and
+ * results, events, an exported struct's fields, a data enum's variants. Each such use is one error naming the fix.
+ */
+function checkLocalStructs(
+  structs: Map<string, StructDef>,
+  dataEnums: Map<string, DataEnumDef>,
+  accountStructs: Set<string>,
+  argStructs: Set<string>,
+  events: Set<string>,
+  reporter: Reporter,
+) {
+  const local = (n: string) => structs.get(n)?.local === true;
+  const fix = (n: string, what: string) => `${n} is not exported, but ${what} uses it, which puts it in the IDL: export interface ${n}`;
+  const named = (t: FieldType): string[] =>
+    t.kind === "struct"
+      ? [t.name]
+      : t.kind === "array" || t.kind === "vec"
+        ? named(t.elem)
+        : t.kind === "option" && (t.inner.kind === "struct" || t.inner.kind === "array")
+          ? named(t.inner as FieldType)
+          : [];
+  for (const s of structs.values()) {
+    if (s.local) {
+      if (accountStructs.has(s.name)) reporter.error(s.node.name, fix(s.name, "account data"));
+      else if (argStructs.has(s.name)) reporter.error(s.node.name, fix(s.name, "an instruction's arguments or result"));
+      else if (events.has(s.name)) reporter.error(s.node.name, fix(s.name, "an event"));
+      continue;
+    }
+    for (const f of s.fields)
+      for (const n of named(f.type)) if (local(n)) reporter.error(structs.get(n)!.node.name, fix(n, `the exported struct ${s.name} (field ${f.name})`));
+  }
+  for (const e of dataEnums.values())
+    for (const v of e.variants)
+      for (const f of v.fields)
+        for (const n of named(f.type)) if (local(n)) reporter.error(structs.get(n)!.node.name, fix(n, `the data enum ${e.name} (${v.name}.${f.name})`));
+}
+
 function collectStructs(t: ValueType | FieldType, structs: Map<string, StructDef>, dataEnums: Map<string, DataEnumDef>, out: Set<string>) {
   const visitField = (f: FieldType): void => {
     if (f.kind === "struct") {
@@ -1108,6 +1315,151 @@ export function resolveValueType(node: ts.TypeNode, scope: TypeScope, allowVec =
 function numericLiteralArg(node: ts.TypeNode | undefined): number | undefined {
   if (!node || !ts.isLiteralTypeNode(node) || !ts.isNumericLiteral(node.literal)) return undefined;
   return Number(node.literal.text);
+}
+
+/**
+ * What a `type X = …` declares: a data enum (object types, `{ kind: "A"; … } | { kind: "B" }`), an alias of one type
+ * (`u64`, `Point`, `FixedVec<u8, 32>`, `Point | null`), or a union mixing named types, which is neither.
+ */
+function aliasShape(t: ts.TypeNode): "dataEnum" | "alias" | "mixed" {
+  while (ts.isParenthesizedTypeNode(t)) t = t.type;
+  if (ts.isTypeLiteralNode(t)) return "dataEnum";
+  if (!ts.isUnionTypeNode(t)) return "alias";
+  const members = t.types.filter((m) => !(ts.isLiteralTypeNode(m) && m.literal.kind === ts.SyntaxKind.NullKeyword));
+  if (members.every((m) => ts.isTypeLiteralNode(m))) return "dataEnum";
+  // `Point | null` (an Option) is one type; two named types are not.
+  return members.length === 1 && !members.some((m) => ts.isTypeLiteralNode(m)) ? "alias" : "mixed";
+}
+
+/**
+ * Replace every use of a plain alias (`type Price = u64`) in the program's files by the type it names, so everything
+ * after sees the type itself. The checker says which declaration a name refers to (a type parameter or a local name
+ * may hide an alias). The aliased type keeps its own file's names: the TypeSOL imports it needs are added to the using
+ * file's (the same name meaning two things there is an error).
+ */
+function substituteAliases(
+  program: ts.Program,
+  entry: string,
+  simple: Map<ts.TypeAliasDeclaration, Map<string, string>>,
+  fileImports: Map<ts.SourceFile, Map<string, string>>,
+  reporter: Reporter,
+): void {
+  const checker = program.getTypeChecker();
+  const aliasOf = (ref: ts.TypeReferenceNode): ts.TypeAliasDeclaration | undefined => {
+    if (!ts.isIdentifier(ref.typeName) || ref.typeArguments?.length) return undefined;
+    let sym = checker.getSymbolAtLocation(ref.typeName);
+    if (sym && sym.flags & ts.SymbolFlags.Alias) sym = checker.getAliasedSymbol(sym);
+    const decl = sym?.declarations?.find((x): x is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(x) && simple.has(x));
+    return decl;
+  };
+  // The type an alias stands for, itself without aliases (`type A = B; type B = u64`).
+  const resolved = new Map<ts.TypeAliasDeclaration, ts.TypeNode>();
+  const resolving = new Set<ts.TypeAliasDeclaration>();
+  const target = (decl: ts.TypeAliasDeclaration): ts.TypeNode => {
+    const done = resolved.get(decl);
+    if (done) return done;
+    if (resolving.has(decl)) reporter.fail(decl.name, `type ${decl.name.text} refers to itself`);
+    resolving.add(decl);
+    let t = decl.type;
+    while (ts.isParenthesizedTypeNode(t)) t = t.type;
+    if (ts.isTypeReferenceNode(t) && aliasOf(t)) t = target(aliasOf(t)!);
+    else replaceAliases(t);
+    resolving.delete(decl);
+    resolved.set(decl, t);
+    return t;
+  };
+  const replaceAliases = (root: ts.Node): void => {
+    const found: { ref: ts.TypeReferenceNode; decl: ts.TypeAliasDeclaration }[] = [];
+    const visit = (n: ts.Node): void => {
+      if (ts.isTypeAliasDeclaration(n) && simple.has(n)) return; // resolved on its own
+      if (ts.isTypeReferenceNode(n)) {
+        const decl = aliasOf(n);
+        if (decl) {
+          found.push({ ref: n, decl });
+          return;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(root);
+    for (const { ref, decl } of found)
+      reporter.guard(() => {
+        const to = target(decl);
+        if (!replaceChild(ref.parent, ref, copyForUse(to, ref))) reporter.fail(ref, `type ${decl.name.text} cannot be used here; write the type it names`);
+        // The names the aliased type uses, from its own file's imports, become the using file's too.
+        const from = simple.get(decl)!;
+        const into = fileImports.get(ref.getSourceFile());
+        if (!into || into === from) return;
+        const names = new Set<string>();
+        const collect = (n: ts.Node): void => {
+          if (ts.isIdentifier(n)) names.add(n.text);
+          ts.forEachChild(n, collect);
+        };
+        collect(to);
+        for (const name of names) {
+          const meant = from.get(name);
+          if (meant === undefined) continue;
+          const here = into.get(name);
+          if (here !== undefined && here !== meant)
+            reporter.fail(ref, `type ${decl.name.text} uses ${name} (${meant} from "typesol"), which names ${here} in this file; rename one import`);
+          into.set(name, meant);
+        }
+      });
+  };
+  for (const file of programFiles(program, entry)) replaceAliases(file);
+}
+
+/**
+ * A copy of an alias's type for one use of it: the same nodes field by field (positions, text and parents still in the
+ * alias's file, so names and source text read as before), but objects of their own, recorded as standing for `use`, so
+ * a diagnostic about the type is reported where the alias is used rather than at its declaration.
+ */
+function copyForUse(node: ts.Node, use: ts.Node, parent: ts.Node = node.parent): ts.Node {
+  const copy = Object.assign(Object.create(Object.getPrototypeOf(node) as object) as ts.Node, node);
+  (copy as { parent: ts.Node }).parent = parent;
+  markAliasUse(copy, use);
+  const nodes = new Set<ts.Node>();
+  const lists = new Set<ts.NodeArray<ts.Node>>();
+  ts.forEachChild(
+    node,
+    (n) => void nodes.add(n),
+    (l) => void lists.add(l),
+  );
+  const fields = copy as unknown as Record<string, unknown>;
+  for (const key of Object.keys(fields)) {
+    if (key === "parent") continue;
+    const v = fields[key];
+    if (nodes.has(v as ts.Node)) fields[key] = copyForUse(v as ts.Node, use, copy);
+    else if (lists.has(v as ts.NodeArray<ts.Node>)) {
+      const l = v as ts.NodeArray<ts.Node>;
+      fields[key] = Object.assign(
+        l.map((n) => copyForUse(n, use, copy)),
+        { pos: l.pos, end: l.end, hasTrailingComma: l.hasTrailingComma },
+      );
+    }
+  }
+  return copy;
+}
+
+/** Put `to` where `from` is among `parent`'s children (a property or an element of a node list). */
+function replaceChild(parent: ts.Node, from: ts.Node, to: ts.Node): boolean {
+  const p = parent as unknown as Record<string, unknown>;
+  for (const key of Object.keys(p)) {
+    if (key === "parent") continue;
+    const v = p[key];
+    if (v === from) {
+      p[key] = to;
+      return true;
+    }
+    if (Array.isArray(v)) {
+      const i = v.indexOf(from);
+      if (i >= 0) {
+        (v as unknown[])[i] = to;
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /**
@@ -1283,6 +1635,7 @@ function analyzeStructs(
       const declared = fields.map((f) => f.name);
       structs.set(name, {
         ...(idlMeta ? { idlMeta } : {}),
+        ...((ts.getModifiers(decl) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ? {} : { local: true }),
         ...(stored.some((f, i) => f.name !== declared[i]) ? { declared } : {}),
         name,
         fields: stored,
@@ -1304,7 +1657,8 @@ function analyzeStructs(
       const members = ts.isUnionTypeNode(decl.type) ? decl.type.types : [decl.type];
       const variants: DataEnumDef["variants"] = [];
       for (const m of members) {
-        if (!ts.isTypeLiteralNode(m)) reporter.fail(m, 'each variant is an object type: { kind: "Name"; field: Type }');
+        if (!ts.isTypeLiteralNode(m))
+          reporter.fail(m, 'each variant of a data enum is an object type, { kind: "Name"; field: Type } (null is not a variant: use Option<Enum>)');
         let vname: string | undefined;
         const fields: StructField[] = [];
         for (const p of m.members) {
@@ -1705,6 +2059,7 @@ function analyzeHelper(
       paramShape(p, reporter);
       // `p_<name>__n` carries a SignerSeeds count: "__" in a name could collide with it.
       if (p.name.text.includes("__") || p.name.text.includes("$")) reporter.error(p.name, `"${p.name.text}": "__" and "$" are reserved in names`);
+      if (typesolName(p.type, scope.imports) === "Inout") return inoutParam(p, reporter, scope, structs);
       const type = resolveValueType(p.type, scope, true) ?? resolveArgAggregate(p.type, scope, structs);
       if (type?.kind === "optionArg")
         reporter.fail(p.type, "helpers take the struct itself: check the Option argument is not null and pass it (or its fields)");
@@ -1739,7 +2094,83 @@ function analyzeHelper(
         reporter.fail(p.type, "helpers take accounts that exist: create Init/InitIfNeeded/Zeroed accounts in the instruction, then pass them as Mut<T>");
       return { name: p.name.text, type: { kind: "account" } as ValueType, account, node: p };
     });
-  return { name, display, params, returns, node: fn, statements: bodyStatements(fn, !returns), imports: scope.imports };
+  // `/** @noinline */` on the function (or on the `const f = …` declaring an arrow).
+  const noinline = [fn, ...(ts.isVariableDeclaration(fn.parent) ? [fn.parent] : [])].some((n) => ts.getJSDocTags(n).some((t) => t.tagName.text === "noinline"));
+  return {
+    name,
+    display,
+    params,
+    returns,
+    node: fn,
+    statements: bodyStatements(fn, !returns),
+    imports: scope.imports,
+    ...(noinline ? { noinline } : {}),
+  };
+}
+
+/**
+ * A helper parameter typed `Inout<T>`: a place of the caller's that the helper may change, passed as a pointer. T is a
+ * fixed-size struct, a FixedArray or a FixedVec, which JS passes by reference too; values (integers, Pubkeys, strings,
+ * Options) JS copies, so they are refused with what to write instead.
+ */
+function inoutParam(
+  p: ts.ParameterDeclaration & { name: ts.Identifier; type: ts.TypeNode },
+  reporter: Reporter,
+  scope: TypeScope,
+  structs: Map<string, StructDef>,
+): Helper["params"][number] {
+  const name = p.name.text;
+  const args = (p.type as ts.TypeReferenceNode).typeArguments ?? [];
+  if (args.length !== 1) reporter.fail(p.type, "Inout<T> takes one type: a struct, FixedArray<T, N> or FixedVec<T, N>");
+  const t = args[0]!;
+  const list = typesolName(t, scope.imports);
+  if (list === "FixedVec") {
+    const [e, n] = (t as ts.TypeReferenceNode).typeArguments ?? [];
+    const cap = numericLiteralArg(n);
+    let elem: FieldType | undefined = e && resolveScalarType(e, scope);
+    if (!elem && e && typesolName(e, scope.imports) === "FixedString") {
+      const fcap = numericLiteralArg((e as ts.TypeReferenceNode).typeArguments?.[0]);
+      if (fcap !== undefined && Number.isInteger(fcap) && fcap >= 1 && fcap <= MAX_STRING_CAP) elem = { kind: "fstring", cap: fcap };
+    }
+    if (!elem && e) {
+      const s = structs.get(structNameOf(e, scope) ?? "");
+      if (s && s.size !== undefined && !s.vec && !heapVecOf(s)) elem = { kind: "struct", name: s.name };
+    }
+    if (!elem || cap === undefined || !Number.isInteger(cap) || cap < 1)
+      reporter.fail(t, "Inout<FixedVec<T, N>>: T is an integer, boolean, Pubkey, enum, FixedString<N> or a struct of fixed size, N a literal of at least 1");
+    return { name, type: { kind: "vecArg", elem, cap }, inout: { kind: "vec", elem, cap }, node: p };
+  }
+  const agg = resolveArgAggregate(t, scope, structs);
+  if (agg?.kind === "structRef") return { name, type: { ...agg, writable: true }, inout: { kind: "struct", name: agg.struct }, node: p };
+  if (agg?.kind === "arrayArg") return { name, type: agg, inout: agg.array, node: p };
+  const what = t.getText();
+  const scalar = resolveScalarType(t, scope);
+  if (scalar || t.kind === ts.SyntaxKind.StringKeyword || optionInner(t, scope) || list === "FixedString")
+    reporter.fail(
+      p.type,
+      `Inout<${what}>: a ${scalar ? typeName(scalar) : what} is a value, which JS copies into a function too, so the helper cannot change the caller's. Return the new value (x = f(x)), or keep it in a struct and take Inout<ThatStruct>`,
+    );
+  if (list === "Vec" || list === "BigVec")
+    reporter.fail(
+      p.type,
+      `Inout<${what}>: a growable list's elements move when it grows; take Inout<FixedVec<T, N>> (fixed room), the struct holding a BigVec's view stays in the function that loaded it`,
+    );
+  if (list && ACCOUNT_TYPES.has(list))
+    reporter.fail(
+      p.type,
+      `Inout<${what}>: accounts are passed as they are (Mut<T> is already written in place); Inout<T> takes a struct, FixedArray or FixedVec`,
+    );
+  const s = structs.get(structNameOf(t, scope) ?? "");
+  if (s)
+    reporter.fail(
+      p.type,
+      s.bigVec
+        ? `Inout<${s.name}>: ${s.name} ends in a BigVec, whose room depends on its account; pass the account (RemainingAccount) and load it with loadRawMut in the helper, or pass the fields the helper changes`
+        : `Inout<${s.name}>: ${s.name} has variable-size fields; Inout<T> takes a struct of fixed size`,
+    );
+  if (ts.isTypeReferenceNode(t) && ts.isIdentifier(t.typeName) && scope.dataEnums?.has(t.typeName.text))
+    reporter.fail(p.type, `Inout<${what}>: a data enum cannot be passed to change yet; keep it in a struct and take Inout<ThatStruct>`);
+  reporter.fail(p.type, `Inout<${what}>: Inout<T> takes a struct of fixed size, a FixedArray<T, N> or a FixedVec<T, N>`);
 }
 
 /** A function's statements; an arrow's expression body is a `return expr;` (or `expr;` when it returns void). */
@@ -2429,6 +2860,11 @@ function resolveAccountKind(node: ts.TypeNode, reporter: Reporter, imports: Map<
     );
   if (typesolName(node, imports) === "BigVec")
     reporter.fail(node, "BigVec<T> is the last field of a native account's struct (read with loadRaw), not an argument; a list argument is a Vec<T>");
+  if (typesolName(node, imports) === "Inout")
+    reporter.fail(
+      node,
+      "Inout<T> is for helper parameters (a place of the caller's the helper may change); an instruction takes struct arguments by value and accounts as Mut<T>",
+    );
   reporter.fail(
     node,
     "parameter type must be an integer, boolean, Pubkey, string, or an account type (Signer, Account<T>, Mut<T>, Init<T>, AccountInfo, TokenAccount, Mint, SystemProgram, TokenProgram, Token2022Program, TokenInterface, Program<...>)",

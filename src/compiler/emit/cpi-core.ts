@@ -1,11 +1,32 @@
 import ts from "typescript";
-import { argIdlName, fieldIdlName, snakeCase } from "../analyze.js";
+import { argIdlName, fieldIdlName, resolveScalarType, snakeCase } from "../analyze.js";
 import { INT_INFO, type AccountParam, type FieldType, type IdlSeed, type IntName, isScalar, scalarSize, typeName } from "../model.js";
-import { accountLimit, MAX_SEEDS, U64, type Value, type CpiAcct, isStable, cString, scalarStorageC, optC } from "./shared.js";
-import { CallEmitter } from "./calls.js";
+import {
+  accountLimit,
+  MAX_SEEDS,
+  PUBKEY,
+  U64,
+  type Value,
+  type Ref,
+  type CpiAcct,
+  isStable,
+  cString,
+  fieldC,
+  scalarStorageC,
+  optC,
+  vecCount,
+} from "./shared.js";
+import { borshIdentical, borshNativeStructUnsupported } from "./borsh.js";
+import { ViewEmitter } from "./views.js";
+
+/**
+ * Writes a value's bytes after a byte list's length: through `put(src, n)` (room-checked copies), or straight into the
+ * room (`dst + at`, `cap - at` bytes left; advance `at`) for an encoder that reports what it wrote.
+ */
+type ByteWriter = (put: (src: string, n: string) => void, room: { dst: string; cap: string; at: string }) => void;
 
 /** Seeds and signer seeds, the byte buffers and Borsh serialization every CPI builds on, remaining-account ranges. */
-export abstract class CpiCoreEmitter extends CallEmitter {
+export abstract class CpiCoreEmitter extends ViewEmitter {
   /**
    * Lower a seeds array literal into a `SolSignerSeed[]` with `extra` spare slots. Also describes
    * the seeds in Anchor IDL terms when every element is a constant, an argument or an account path.
@@ -124,7 +145,7 @@ export abstract class CpiCoreEmitter extends CallEmitter {
     if (ts.isIdentifier(el) && !this.lookup(el.text)) {
       const k = this.model.constants.get(el.text);
       if (k && typeof k.value === "string") return { kind: "const", value: [...Buffer.from(k.value, "utf8")] };
-      if (k && typeof k.value === "object") return { kind: "const", value: k.value.pubkey };
+      if (k && typeof k.value === "object" && k.value !== null) return { kind: "const", value: k.value.pubkey };
       if (k && typeof k.value === "bigint") {
         // Little-endian two's complement in the constant's width (16 bytes for u128/i128), as the program hashes it.
         const bytes = k.type ? scalarSize(k.type) : 8;
@@ -383,5 +404,213 @@ export abstract class CpiCoreEmitter extends CallEmitter {
     };
     for (const name of [...this.model.accountStructs, ...this.model.argStructs]) visit({ kind: "struct", name });
     return out;
+  }
+
+  /**
+   * Byte builders on a `FixedVec<u8, N>` (a local list or one in account data), for a native program's hand-built byte
+   * strings (Phoenix's event batches: `[15] ‖ Borsh(header) ‖ events`, a u16 count patched in, truncated back to the
+   * header after each flush): `pushLE` (an integer at its width), `pushKey` (32 bytes), `pushBorsh` (a value's Borsh
+   * encoding, the codecs invoke, events and storeBorsh use), `setLE(offset, v)` (overwrite within the length) and
+   * `truncate(n)`. Every write is bounds-checked (5104) and the length moves only once all of it fit, so a failed call
+   * appends nothing.
+   */
+  protected byteListMethod(node: ts.CallExpression, method: string, v: Ref): Value | undefined {
+    const args = node.arguments;
+    const info = v.vec!;
+    const vt = v.type as FieldType & { kind: "vec" };
+    if (info.cap === undefined || info.heap || info.big !== undefined || vt.elem.kind !== "int" || vt.elem.name !== "u8")
+      this.fail(node.expression, `${method}() builds bytes in a FixedVec<u8, N> (a local list, or one in account data)`);
+    if (!v.writable) this.fail(node, this.readOnly(v));
+    const cap = info.cap;
+    const bytes = `((uint8_t *)${info.items})`;
+    const count = vecCount(info);
+    /** An integer at a width: the type argument's, or the value's own (a bare literal has none). */
+    const intValue = (valueNode: ts.Expression, fn: string): Value & { type: { kind: "int"; name: IntName } } => {
+      const targ = node.typeArguments?.[0];
+      const t = targ ? resolveScalarType(targ, this.scope) : undefined;
+      if (targ && (!t || t.kind !== "int")) this.fail(targ, `${fn}<T>: T is an integer type (u8 … u128, i8 … i128)`);
+      const val = t ? this.expect(this.expr(valueNode, t), t, valueNode) : this.expr(valueNode);
+      if (val.literal !== undefined) this.fail(valueNode, `${fn} needs the integer's width: ${fn}<u16>(…) or ${fn}(u16(…))`);
+      if (val.type.kind !== "int")
+        this.fail(valueNode, `${fn} takes an integer (u8 … u128, i8 … i128)${val.type.kind === "pubkey" ? "; a Pubkey is pushKey(key)" : ""}`);
+      if (val.type.name === "u256") this.fail(valueNode, "u256 is for computation: convert to u128 (or smaller) first");
+      return val as Value & { type: { kind: "int"; name: IntName } };
+    };
+    switch (method) {
+      case "truncate": {
+        // Vec::truncate, but a length past the current one fails (Rust's `drain(n..)` panics there) instead of doing nothing.
+        if (args.length !== 1) this.fail(node, "truncate(length) takes the new length");
+        const k = this.expect(this.expr(args[0], U64), U64, args[0]);
+        const n = this.tmp("n");
+        this.line(`uint64_t ${n} = ${k.c};`);
+        this.line(`if (${n} > ${count}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: truncate() past the FixedVec's length");`);
+        this.line(`${info.len} = (uint32_t)${n};`);
+        return undefined;
+      }
+      case "setLE": {
+        // `data[off..off + size].copy_from_slice(&v.to_le_bytes())`: within the length, as Rust's slice indexing.
+        if (args.length !== 2) this.fail(node, "setLE(offset, value) takes a byte offset and an integer");
+        const off = this.expect(this.expr(args[0], U64), U64, args[0]);
+        const o = this.tmp("off");
+        this.line(`uint64_t ${o} = ${off.c};`);
+        const val = intValue(args[1]!, "setLE");
+        const size = scalarSize(val.type);
+        const ct = scalarStorageC(val.type);
+        const w = this.tmp("le");
+        this.line(`${ct} ${w} = (${ct})(${val.c});`);
+        this.line(`if (${o} > ${count} || ${count} - ${o} < ${size}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: setLE() past the FixedVec's length");`);
+        this.line(`ts_memcpy(${bytes} + ${o}, &${w}, ${size});`);
+        return undefined;
+      }
+    }
+    if (args.length !== 1) this.fail(node, `${method}(value) takes one value`);
+    const arg = args[0]!;
+    // The value first (as JS evaluates the argument before the call runs), then its bytes after the current length.
+    let write: ByteWriter;
+    if (method === "pushLE") {
+      const val = intValue(arg, "pushLE");
+      const ct = scalarStorageC(val.type);
+      const w = this.tmp("le");
+      this.line(`${ct} ${w} = (${ct})(${val.c});`);
+      write = (put) => put(`&${w}`, String(scalarSize(val.type)));
+    } else if (method === "pushKey") {
+      if (node.typeArguments?.length) this.fail(node, "pushKey(key) takes no type argument");
+      const k = this.expect(this.expr(arg, PUBKEY), PUBKEY, arg);
+      const t = this.tmp("key");
+      this.line(`SolPubkey ${t} = *(${k.c});`);
+      write = (put) => put(`&${t}`, "32");
+    } else write = this.borshPiece(node, arg);
+    const at = this.tmp("at");
+    this.line(`uint64_t ${at} = ${count};`);
+    write(
+      (src, n) => {
+        this.line(`if (${n} > ${cap} - ${at}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: ${method}() past the FixedVec's room");`);
+        this.line(`ts_memcpy(${bytes} + ${at}, ${src}, ${n});`);
+        this.line(`${at} += ${n};`);
+      },
+      { dst: bytes, cap: String(cap), at },
+    );
+    this.line(`${info.len} = (uint32_t)${at};`);
+    return undefined;
+  }
+
+  /**
+   * `pushBorsh(value)`: lower the value now and return the writer of its Borsh bytes. Structs (a place, or an object
+   * literal given its type: `pushBorsh<Header>({ … })`) are their fixed layout when that is their Borsh form, else go
+   * through the struct's Borsh encoder (storeBorsh's); data enums are a tag and the variant's fields, FixedArrays their
+   * elements, lists a u32 count and their elements, and integers, booleans, Pubkeys, strings and Options as in invoke
+   * data.
+   */
+  private borshPiece(node: ts.CallExpression, arg: ts.Expression): ByteWriter {
+    const targ = node.typeArguments?.[0];
+    let r: Ref | undefined;
+    if (ts.isObjectLiteralExpression(arg)) {
+      const name = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? targ.typeName.text : undefined;
+      const type: FieldType | undefined =
+        name && this.model.structs.get(name)?.size !== undefined
+          ? { kind: "struct", name }
+          : name && this.model.dataEnums.has(name)
+            ? { kind: "dataEnum", name }
+            : undefined;
+      if (!type)
+        this.fail(arg, "pushBorsh({ … }) needs the value's type: buf.pushBorsh<Header>({ … }) (a struct or data enum), or bind it to a typed const first");
+      // A data enum literal of a fixed-size variant: the tag and the variant's fields (packed, their Borsh form) in a
+      // temporary of exactly those bytes, then one room check and one copy. Not the whole enum zeroed, filled and
+      // copied, then written as a tag and a switch on it.
+      if (type.kind === "dataEnum") {
+        const lit = this.dataEnumLiteral(type.name, arg);
+        const size = 1 + lit.variant.fields.reduce((n, f) => n + this.fieldBytes(f.type), 0);
+        // Integers, booleans, enums and Pubkeys: each field's value in a local of its own (in source order), then one
+        // room check and a store of each at its offset, as pushLE would write them one by one.
+        if (lit.variant.fields.every((f) => isScalar(f.type))) {
+          const locals = new Map(lit.variant.fields.map((f) => [f.name, this.tmp("bf")]));
+          for (const f of lit.variant.fields) this.line(`${fieldC(f.type)} ${locals.get(f.name)};`);
+          lit.writeFields((field) => locals.get(field)!);
+          return (_put, room) => {
+            this.line(`if (${size} > ${room.cap} - ${room.at}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: pushBorsh() past the FixedVec's room");`);
+            this.line(`${room.dst}[${room.at}] = ${lit.vi};`);
+            let off = 1;
+            for (const f of lit.variant.fields) {
+              const n = this.fieldBytes(f.type);
+              this.line(`ts_memcpy(${room.dst} + ${room.at} + ${off}, &${locals.get(f.name)}, ${n});`);
+              off += n;
+            }
+            this.line(`${room.at} += ${size};`);
+          };
+        }
+        if (lit.variant.fields.every((f) => borshIdentical(f.type, this.model))) {
+          const t = this.tmp("bv");
+          this.line(`struct __attribute__((packed)) { uint8_t tag; TSV_${lit.e.name}__${lit.variant.name} v; } ${t};`);
+          this.line(`${t}.tag = ${lit.vi};`);
+          lit.writeFields(`${t}.v`);
+          return (put) => put(`&${t}`, String(size));
+        }
+      }
+      const t = this.tmp("bv");
+      this.line(`${fieldC(type)} ${t};`);
+      if (type.kind === "struct") this.line(`ts_memzero(&${t}, sizeof(${t}));`);
+      this.writeAggregate({ lv: t, type, writable: true }, arg, true);
+      r = { lv: t, type, writable: true };
+    } else if (targ) this.fail(targ, "pushBorsh<T> takes a type only for an object literal; the value's own type is used otherwise");
+    const kind = r?.type.kind ?? this.peekKind(arg);
+    if (kind === "struct" || kind === "array" || kind === "dataEnum") {
+      r ??= this.ref(arg)!;
+      const place = r;
+      if (place.type.kind === "dataEnum") {
+        const name = place.type.name;
+        const e = this.model.dataEnums.get(name)!;
+        // Fixed-size payloads are packed in the variant's C struct as Borsh lays them out: the tag, then one copy.
+        if (e.variants.every((v) => v.fields.every((f) => borshIdentical(f.type, this.model))))
+          return (put) => {
+            put(`&${place.lv}.tag`, "1");
+            if (e.variants.every((v) => !v.fields.length)) return;
+            this.line(`switch (${place.lv}.tag) {`);
+            e.variants.forEach((v, i) => {
+              const size = v.fields.reduce((n, f) => n + this.fieldBytes(f.type), 0);
+              if (!size) return;
+              this.line(`case ${i}: {`);
+              put(`&${place.lv}.v.${v.name}`, String(size));
+              this.line(`break; }`);
+            });
+            this.line(`}`);
+          };
+        return (put) => this.serializeDataEnumLv(place.lv, name, (src, n) => put(src, n));
+      }
+      if (borshIdentical(place.type, this.model)) {
+        const n = this.fieldBytes(place.type);
+        return (put) => put(`&${place.lv}`, String(n));
+      }
+      if (place.type.kind === "array")
+        this.fail(arg, `${typeName(place.type)} has no Borsh form of its own here (its elements hold Options, data enums or text)`);
+      const s = this.model.structs.get((place.type as { name: string }).name)!;
+      const why = borshNativeStructUnsupported(s, this.model);
+      if (why) this.fail(arg, `pushBorsh cannot encode ${s.name}: ${why}`);
+      this.model.borshNative.add(s.name);
+      return (_put, room) => {
+        // The encoder writes into the room left and reports how much it wrote; the length moves only afterwards.
+        const w = this.tmp("bw");
+        this.line(`uint64_t ${w} = 0;`);
+        this.line(
+          `if (ts_benc_${s.name}(&${place.lv}, ${room.dst} + ${room.at}, ${room.cap} - ${room.at}, &${w})) TS_FAIL(TS_ERR_INDEX, "TypeSOL: pushBorsh() past the FixedVec's room");`,
+        );
+        this.line(`${room.at} += ${w};`);
+      };
+    }
+    const list = kind === "vec" ? this.listSpan(arg) : undefined;
+    if (list) {
+      // A Borsh Vec: the count as u32, then the elements (their fixed layout is their Borsh form).
+      if (!borshIdentical(list.elem, this.model)) this.fail(arg, `a list of ${typeName(list.elem)} has no Borsh form of its own here`);
+      const size = this.fieldBytes(list.elem);
+      const c = this.tmp("vn");
+      this.line(`uint32_t ${c} = (uint32_t)${list.count};`);
+      return (put) => {
+        put(`&${c}`, "4");
+        put(`(const uint8_t *)${list.items}`, `(uint64_t)${c} * ${size}`);
+      };
+    }
+    const val = this.expr(arg);
+    if (val.literal !== undefined) this.fail(arg, "pushBorsh needs the integer's width: pushLE<u16>(…), pushBorsh(u16(…))");
+    // serialize() emits its temporaries between the pieces; collect them and replay into the writer.
+    return (put) => this.serialize(val, arg, (src, n) => put(src, n));
   }
 }

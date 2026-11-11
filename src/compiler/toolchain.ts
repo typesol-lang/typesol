@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -99,7 +99,17 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
   try {
     run(tc.clang, [...cflags, ...incs, "-o", obj, "-c", cFile]);
   } catch (e) {
-    throw stackError((e as Error).message) ?? e;
+    const message = (e as Error).message;
+    if (!STACK_OVER.test(message)) throw e;
+    // Compiled again with debug info for clang's frame layout: which locals take the room.
+    const layoutFlags = cflags.filter((f) => f !== "-Werror" && !f.startsWith("-Wframe-larger-than"));
+    const res = spawnSync(tc.clang, [...layoutFlags, ...incs, "-g", "-w", "-Rpass-analysis=stack-frame-layout", "-o", obj, "-c", cFile], {
+      encoding: "utf8",
+      // A large program's remarks (one per function, every slot listed) run past the default 1 MiB.
+      maxBuffer: 256 * 1024 * 1024,
+    });
+    rmSync(obj, { force: true });
+    throw stackError(message, frameLayouts(res.stderr ?? ""), readFileSync(cFile, "utf8"));
   }
   run(tc.lld, [
     "-z",
@@ -131,10 +141,44 @@ export function toolchainVersion(tc = findToolchain()): string {
   return execFileSync(tc.clang, ["--version"], { encoding: "utf8" }).split("\n")[0].trim();
 }
 
-/** clang's frame-size errors, in the program's terms: which instruction or helper, how much, what to do. */
-function stackError(message: string): Error | undefined {
-  const over = [...message.matchAll(/stack frame size \((\d+)\) exceeds limit \((\d+)\) in '(\w+)'/g)];
-  if (!over.length) return undefined;
+const STACK_OVER = /stack frame size \((\d+)\) exceeds limit \((\d+)\) in '(\w+)'/;
+
+/** One variable slot of a function's stack frame as clang laid it out: its size and the C variables sharing it. */
+export interface FrameSlot {
+  size: number;
+  vars: { name: string; line: number }[];
+}
+
+/** clang's `-Rpass-analysis=stack-frame-layout` remarks: each function's variable slots. */
+export function frameLayouts(remarks: string): Map<string, FrameSlot[]> {
+  const out = new Map<string, FrameSlot[]>();
+  for (const block of remarks.split(/^Function: /m).slice(1)) {
+    const lines = block.split("\n");
+    const fn = lines[0]!.trim().split(/\s/)[0]!;
+    const slots: FrameSlot[] = [];
+    let slot: FrameSlot | undefined;
+    for (const l of lines.slice(1)) {
+      const off = /^Offset: \[SP-?\d+\], Type: (\w+), Align: \d+, Size: (\d+)/.exec(l);
+      if (off) {
+        slot = off[1] === "Variable" ? { size: Number(off[2]), vars: [] } : undefined;
+        if (slot) slots.push(slot);
+        continue;
+      }
+      const v = /^ {4}(\w+) @ .*:(\d+)(\s|$)/.exec(l);
+      if (v && slot) slot.vars.push({ name: v[1]!, line: Number(v[2]) });
+      else slot = undefined;
+    }
+    out.set(fn, slots);
+  }
+  return out;
+}
+
+/**
+ * clang's frame-size errors in the program's terms: which instruction or helper, how much, the locals that take the
+ * room (from `layouts`, clang's frame layout of the generated C `c`) and what to do.
+ */
+export function stackError(message: string, layouts = new Map<string, FrameSlot[]>(), c = ""): Error {
+  const over = [...message.matchAll(new RegExp(STACK_OVER.source, "g"))];
   // clang inlines helpers into their callers, so an instruction's frame includes theirs.
   const what = (fn: string) =>
     fn.startsWith("ix_") ? `instruction ${fn.slice(3)} (with the helpers inlined into it)` : fn.startsWith("fn_") ? `helper ${fn.slice(3)}()` : fn;
@@ -143,16 +187,104 @@ function stackError(message: string): Error | undefined {
     .split("\n")
     .filter((l) => / error: /.test(l) && !/-Wframe-larger-than/.test(l))
     .join("\n");
+  const cLines = c.split("\n");
+  // The C function a line of the generated C belongs to.
+  const fnAt = (line: number): string | undefined => {
+    for (let i = line - 1; i >= 0; i--) {
+      const m = /^(?:__attribute__\(\(noinline\)\) )?static uint64_t ((?:fn|ix)_\w+)\(.*\) \{$/.exec(cLines[i] ?? "");
+      if (m) return m[1];
+    }
+    return undefined;
+  };
+  // The source location nearest a line: the generated C carries one in its runtime messages ("(file.ts:12)").
+  const near = (line: number): string | undefined => {
+    for (let d = 0; d < 40; d++)
+      for (const i of [line - 1 + d, line - 1 - d]) {
+        const m = /\(([\w.-]+\.ts):(\d+)\)/.exec(cLines[i] ?? "");
+        if (m) return `${m[1]}:${m[2]}`;
+      }
+    return undefined;
+  };
+  // The C functions' bodies, and the struct and list locals of the helpers `fn` calls that clang may inline into it.
+  const bodies = new Map<string, string[]>();
+  let current: string[] | undefined;
+  for (const l of cLines) {
+    const m = /^(__attribute__\(\(noinline\)\) )?static uint64_t ((?:fn|ix)_\w+)\(.*\) \{$/.exec(l);
+    if (m) bodies.set(m[2]!, (current = []));
+    else if (l === "}") current = undefined;
+    else current?.push(l);
+  }
+  const noinline = new Set(cLines.flatMap((l) => /^__attribute__\(\(noinline\)\) static uint64_t ((?:fn|ix)_\w+)\(/.exec(l)?.[1] ?? []));
+  const inlinedLocals = (fn: string): string[] => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const visit = (f: string) => {
+      for (const l of bodies.get(f) ?? [])
+        for (const call of l.matchAll(/\b(fn_\w+)\(/g)) {
+          const callee = call[1]!;
+          if (seen.has(callee) || noinline.has(callee)) continue;
+          seen.add(callee);
+          for (const d of bodies.get(callee) ?? []) {
+            const local = /^\s+TS[SFE]_\w+ l_(\w+?)_\d+(__v)?;$/.exec(d);
+            if (local) out.push(`\`${local[1]}\` (${callee.slice(3)}())`);
+          }
+          visit(callee);
+        }
+    };
+    visit(fn);
+    return out;
+  };
+  const describe = (name: string): string => {
+    const local = /^l_(\w+?)_\d+(__v|__h)?$/.exec(name);
+    if (local) return `\`${local[1]}\``;
+    if (/^p_\w+$/.test(name)) return `parameter \`${name.slice(2)}\``;
+    const temps: [RegExp, string][] = [
+      [/^fv\d+$/, "a list literal's temporary"],
+      [/^st\d+$/, "a struct literal's temporary"],
+      [/^de\d+$/, "a data enum literal's temporary"],
+      [/^evv\d+$/, "an event's FixedVec"],
+      [/^bv\d+$/, "a pushBorsh value"],
+      [/^t\d+$/, "a helper's result"],
+      [/^s\d+$/, "a log line's text"],
+    ];
+    return temps.find(([re]) => re.test(name))?.[1] ?? `a temporary (${name})`;
+  };
+  const locals = (fn: string): string => {
+    const slots = (layouts.get(fn) ?? []).filter((s) => s.size >= 64).sort((a, b) => b.size - a.size);
+    if (!slots.length) return "";
+    const shown = slots.slice(0, 5).map((s) => {
+      const names = s.vars.map((v) => {
+        const owner = fnAt(v.line);
+        const at = near(v.line);
+        const where = [owner && owner !== fn ? `in ${what(owner).replace(" (with the helpers inlined into it)", "")}` : "", at ? `near ${at}` : ""]
+          .filter(Boolean)
+          .join(", ");
+        return `${describe(v.name)}${where ? ` (${where})` : ""}`;
+      });
+      // Variables whose lifetimes do not overlap share a slot. clang names no variable of an inlined helper.
+      return `${s.size} bytes: ${names.length ? [...new Set(names)].join(" / ") : "unnamed"}`;
+    });
+    const unnamed = slots.slice(0, 5).some((s) => !s.vars.length);
+    const inlined = unnamed ? inlinedLocals(fn) : [];
+    return (
+      `\n  biggest locals: ${shown.join("; ")}` +
+      (unnamed
+        ? inlined.length
+          ? `\n  (unnamed: locals of the helpers inlined into it, among ${inlined.join(", ")}, or copies clang made)`
+          : "\n  (unnamed: copies clang made)"
+        : "")
+    );
+  };
   return new Error(
-    over.map((m) => `${what(m[3])} needs ${m[1]} bytes of stack; SBPF v0 gives each function ${m[2]}`).join("\n") +
-      "\nKeep large structs and arrays in account data: bind them with const (a reference) instead of a typed local copy, or split the work into helpers." +
+    over.map((m) => `${what(m[3]!)} needs ${m[1]} bytes of stack; SBPF v0 gives each function ${m[2]}${locals(m[3]!)}`).join("\n") +
+      "\nKeep large structs and arrays in account data (bind them with const: a reference, not a copy), give a large local list or struct its own room with /** @heap */ (in an instruction), or move work that needs large locals of its own into a /** @noinline */ helper, which gets its own 4 KiB frame." +
       (rest ? `\n${rest}` : ""),
   );
 }
 
 function run(cmd: string, args: string[]) {
   try {
-    execFileSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    execFileSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
   } catch (e) {
     const err = e as { stderr?: Buffer; stdout?: Buffer };
     throw new Error(`${path.basename(cmd)} failed:\n${err.stderr?.toString() ?? ""}${err.stdout?.toString() ?? ""}`);

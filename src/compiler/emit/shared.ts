@@ -115,6 +115,8 @@ export interface Ref {
     big?: string;
     /** `bigVec.slice(start, end)`: a view of some of its elements (`len` is then a value, not the stored length). */
     slice?: boolean;
+    /** A `rawArrayAt` view (with `big` and `slice`): `len` its run-time count, nothing stored. */
+    raw?: boolean;
     /** Growable Vecs stored after this one move when it grows or shrinks: where its elements end, and their paths. */
     tail?: { end: string; dataEnd: string; paths: string[] };
   };
@@ -138,6 +140,12 @@ export interface Local {
   /** For struct / data-enum references: the storage paths they alias (e.g. "book.asks[]"), and the declaration. */
   paths?: string[];
   decl?: ts.VariableDeclaration | ts.ParameterDeclaration;
+  /** A struct reference into an element of a list whose elements can move (a growable Vec, a heap Vec, a BigVec). */
+  movable?: boolean;
+  /** A native view (`loadRaw`, `loadRawMutAt`, `rawArrayMutAt`, `rbTreeMutAt` …): under NATIVE_ACCOUNT_WRITES two views may share bytes. */
+  view?: boolean;
+  /** For a native view: the account it reads (see `viewAccountKey`), so closeRaw / resizeAccount can end it. */
+  viewAcct?: string;
   /** A local closure (`const f = (…) => …` reading the enclosing function's variables), expanded where it is called. */
   closure?: Closure;
   /**
@@ -227,6 +235,12 @@ export function valueC(t: ValueType): string {
       return "TsEpochRewards";
     case "structRef":
       return `TSS_${t.struct} *`;
+    case "rawArray":
+      return `${fieldC(t.elem)} *`;
+    case "rbTree":
+      return "TsRbt";
+    case "rbEntry":
+      return "TsRbtEntry";
     case "enumRef":
     case "dataEnumArg":
       return `TSE_${t.name} *`;
@@ -356,7 +370,9 @@ export function helperSignature(h: Helper): string {
       if (p.account.kind === "account" && p.account.struct.layout === "borsh") params.push(`TSS_${p.account.struct.name} *d_${p.name}`);
       // A writable account with a growable Vec: its length at instruction entry, for push / pop / clear.
       if (p.account.kind === "account" && p.account.mut && p.account.struct.vec) params.push(`uint64_t entry_${p.name}`);
-    } else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
+    } else if (p.inout?.kind === "vec")
+      params.push(`${fixedVecC(p.inout)} *p_${p.name}`); // the caller's list itself (Inout<FixedVec<T, N>>)
+    else if (p.type.kind === "signerSeeds") params.push(`const SolSignerSeed *p_${p.name}`, `int p_${p.name}__n`);
     // The remaining accounts: the index of the first one among the instruction's accounts.
     else if (p.type.kind === "remaining") params.push(`uint64_t p_${p.name}`);
     else if (p.type.kind === "pubkey")
@@ -366,7 +382,7 @@ export function helperSignature(h: Helper): string {
   }
   if (h.returns)
     params.push(h.returns.kind === "struct" ? `TSS_${h.returns.name} *ret` : h.returns.kind === "string" ? `TS_Str *ret` : `${scalarC(h.returns)} *ret`);
-  return `static uint64_t fn_${h.name}(${params.join(", ")})`;
+  return `${h.noinline ? "__attribute__((noinline)) " : ""}static uint64_t fn_${h.name}(${params.join(", ")})`;
 }
 
 export interface EmitOptions {

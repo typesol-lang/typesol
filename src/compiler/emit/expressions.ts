@@ -242,13 +242,15 @@ export abstract class ExpressionEmitter extends StorageEmitter {
             `"${node.text}" is a function: call it (${node.text}(…)), bind it with const, or pass it to a helper or list method; it cannot be stored or returned as a value`,
           );
         if (l.type.kind === "array") this.fail(node, `"${node.text}" is an array; use .get(i)`);
-        if (l.type.kind === "vec") this.fail(node, `"${node.text}" is a list; use .get(i) and .length`);
+        if (l.type.kind === "vec" || l.type.kind === "rawArray") this.fail(node, `"${node.text}" is a list; use .get(i) and .length`);
+        if (l.type.kind === "rbTree") this.fail(node, `"${node.text}" is a RedBlackTree; use its methods (get, insert, remove, min, max, for … of)`);
         if (l.type.kind === "remaining") return { c: l.c, type: l.type };
         return l.type.kind === "pubkey" && !l.ptr ? { c: `(&${l.c})`, type: l.type } : { c: l.c, type: l.type };
       }
       const k = this.model.constants.get(node.text);
       if (k) {
         if (typeof k.value === "boolean") return { c: k.value ? "true" : "false", type: BOOL };
+        if (k.value === null) this.fail(node, `${k.name} = null only tells failures to log nothing; it is not a value`);
         if (typeof k.value === "object") return { c: `(&TSK_${k.name})`, type: PUBKEY };
         if (typeof k.value === "string") {
           const len = Buffer.byteLength(k.value, "utf8");
@@ -322,6 +324,8 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   protected property(node: ts.PropertyAccessExpression): Value {
     const field = node.name.text;
+    const view = this.viewProperty(node);
+    if (view) return view;
     // A BigVec's room: the elements the account holds past the struct.
     if (field === "capacity" && this.peekKind(node.expression) === "vec") {
       const r = this.ref(node.expression);
@@ -592,7 +596,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     if (ts.isIdentifier(e) && !this.lookup(e.text)) {
       const k = this.model.constants.get(e.text);
       if (k && typeof k.value === "string") return k.value;
-      if (k && typeof k.value === "object") return base58(Uint8Array.from(k.value.pubkey));
+      if (k && typeof k.value === "object" && k.value !== null) return base58(Uint8Array.from(k.value.pubkey));
     }
     return undefined;
   }
@@ -849,6 +853,9 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       const neg = op === K.ExclamationEqualsEqualsToken || op === K.ExclamationEqualsToken;
       // An Option<Vec<T>> argument: None leaves its view's pointer NULL (a Some, empty or not, points into the data).
       if (v.type.kind === "vecArg" && v.type.optional) return { c: `((${v.c}).ptr ${neg ? "!=" : "=="} NULL)`, type: BOOL };
+      // A RedBlackTree's get / remove of a struct value (a reference, NULL when absent) and its min / max node.
+      if (v.type.kind === "structRef" && v.type.nullable) return { c: `(${v.c} ${neg ? "!=" : "=="} NULL)`, type: BOOL };
+      if (v.type.kind === "rbEntry") return { c: `((${v.c}).index ${neg ? "!=" : "=="} 0)`, type: BOOL };
       if (v.type.kind !== "option" && v.type.kind !== "optionArg") this.fail(other, "only Option values can be compared with null");
       return { c: neg ? `((${v.c}).some != 0)` : `((${v.c}).some == 0)`, type: BOOL };
     }
@@ -949,8 +956,24 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const t = this.tmp();
     const K = ts.SyntaxKind;
     this.line(`${ct} ${t};`);
-    const overflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow")`;
-    if (type.name === "u256") return this.arith256(op, left, right, node, t, overflow);
+    const failOverflow = `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow")`;
+    if (type.name === "u256") return this.arith256(op, left, right, node, t, failOverflow);
+    // Inside panicsAt(location, …): Rust's panic, with the message its overflow checks give this operator.
+    const at = this.panicAt;
+    const rust = (message: string) => `{ ${this.panicC(message, at!).join(" ")} }`;
+    const negate = ts.isPrefixUnaryExpression(node) && node.operator === K.MinusToken;
+    const rustOverflow: Partial<Record<ts.SyntaxKind, string>> = {
+      [K.PlusToken]: "attempt to add with overflow",
+      [K.MinusToken]: negate ? "attempt to negate with overflow" : "attempt to subtract with overflow",
+      [K.AsteriskToken]: "attempt to multiply with overflow",
+      [K.SlashToken]: "attempt to divide with overflow",
+      [K.PercentToken]: "attempt to calculate the remainder with overflow",
+    };
+    const overflow = at && rustOverflow[op] ? rust(rustOverflow[op]!) : failOverflow;
+    const divZero =
+      at && (op === K.SlashToken || op === K.PercentToken)
+        ? rust(op === K.SlashToken ? "attempt to divide by zero" : "attempt to calculate the remainder with a divisor of zero")
+        : `TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero")`;
     switch (op) {
       case K.PlusToken:
         // u64 through the runtime helpers: one compare instead of a materialized carry flag on SBF.
@@ -968,7 +991,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         break;
       case K.SlashToken:
       case K.PercentToken: {
-        this.line(`if (${right.c} == 0) TS_FAIL(TS_ERR_DIV_ZERO, "TypeSOL: division by zero");`);
+        this.line(`if (${right.c} == 0) ${divZero};`);
         if (INT_INFO[type.name].signed) this.line(`if (${left.c} == ${intLiteral(INT_INFO[type.name].min, type.name)} && ${right.c} == -1) ${overflow};`);
         if (type.name === "u128") this.line(`${t} = ${op === K.SlashToken ? "ts_div_u128" : "ts_rem_u128"}(${left.c}, ${right.c});`);
         else this.line(`${t} = ${left.c} ${op === K.SlashToken ? "/" : "%"} ${right.c};`);
@@ -987,12 +1010,17 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         const bits = INT_INFO[type.name].bytes * 8;
         const sh = this.tmp("sh");
         const rinfo = INT_INFO[right.type.name];
-        this.line(`if (${rinfo.signed ? `${right.c} < 0 || ` : ""}${right.c} >= ${bits}) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: shift amount out of range");`);
+        // Rust's shift check is the amount only; the bits `<<` loses below stay TypeSOL's failure (JS's bigint keeps them).
+        const range =
+          at !== undefined
+            ? rust(op === K.LessThanLessThanToken ? "attempt to shift left with overflow" : "attempt to shift right with overflow")
+            : `TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: shift amount out of range")`;
+        this.line(`if (${rinfo.signed ? `${right.c} < 0 || ` : ""}${right.c} >= ${bits}) ${range};`);
         this.line(`uint64_t ${sh} = (uint64_t)(${right.c});`);
         if (op === K.GreaterThanGreaterThanToken) this.line(`${t} = (${ct})(${left.c} >> ${sh});`);
         else {
           this.line(`${t} = (${ct})((${unsignedC(type.name)})${left.c} << ${sh});`);
-          this.line(`if ((${ct})(${t} >> ${sh}) != ${left.c}) ${overflow};`);
+          this.line(`if ((${ct})(${t} >> ${sh}) != ${left.c}) ${failOverflow};`);
         }
         break;
       }

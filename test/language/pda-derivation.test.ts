@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { type Address, generateKeyPairSigner, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress, isOffCurveAddress } from "@solana/kit";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
+import { BN, compileErrors, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
 import { pk } from "../ports-helpers.js";
 
 const enc = getAddressEncoder();
@@ -90,5 +90,45 @@ describe("PDA derivation (sha256 + curve check) matches the runtime's", () => {
     const [expected] = await getProgramDerivedAddress({ programAddress: program, seeds });
     const ok = expectOk(await send(d.svm, payer, [ix(d, "most_seeds", { program: pk(program) }, [])]));
     expect(getAddressDecoder().decode(ok.returnData().data())).toBe(expected);
+  });
+
+  it("gives the address and its bump from one search (findProgramAddressWithBump)", async () => {
+    const payer = await fundedSigner(d.svm);
+    const saved: number[] = [];
+    for (let i = 0; i < 24; i++) {
+      const seedA = `pair-${i}`;
+      const seedB = (await generateKeyPairSigner()).address;
+      const program = (await generateKeyPairSigner()).address;
+      const [expected, bump] = await getProgramDerivedAddress({ programAddress: program, seeds: [seedA, enc.encode(seedB), u64le(BigInt(i))] });
+      const args = { seed_a: seedA, seed_b: pk(seedB), seed_n: new BN(i), program: pk(program) };
+      const one = expectOk(await send(d.svm, payer, [ix(d, "derive_both", args, [])]));
+      const two = expectOk(await send(d.svm, payer, [ix(d, "derive_twice", args, [])]));
+      for (const r of [one, two]) {
+        const out = r.returnData().data();
+        expect(getAddressDecoder().decode(out.subarray(0, 32))).toBe(expected);
+        expect(out[32]).toBe(bump);
+      }
+      saved.push(Number(two.computeUnitsConsumed() - one.computeUnitsConsumed()));
+      const only = expectOk(await send(d.svm, payer, [ix(d, "bump_only", { seed_a: seedA, program: pk(program) }, [])]));
+      expect(only.returnData().data()[0]).toBe((await getProgramDerivedAddress({ programAddress: program, seeds: [seedA] }))[1]);
+    }
+    // The second search cost what the first does: one sha256 and curve check per bump tried (453 to 2,118 CU here).
+    expect(Math.min(...saved)).toBeGreaterThan(400);
+  });
+
+  it("refuses findProgramAddressWithBump anywhere but `const [address, bump] = …`", () => {
+    const src = (body: string) =>
+      `import { type Pubkey, findProgramAddressWithBump, log, programId } from "typesol";\nexport function f(k: Pubkey): void {\n${body}\n}`;
+    expect(compileErrors(src(`  const [a, b] = findProgramAddressWithBump(["x", k], programId());\n  log(a);\n  log(b);`))).toBe("");
+    expect(compileErrors(src(`  const pair = findProgramAddressWithBump(["x", k], programId());\n  log(pair[1]);`))).toContain(
+      "bind both results where it is called: const [address, bump] = findProgramAddressWithBump(seeds, program)",
+    );
+    expect(compileErrors(src(`  let [a, b] = findProgramAddressWithBump(["x", k], programId());\n  log(a);`))).toContain("bind them with const");
+    expect(compileErrors(src(`  const [a, b] = [k, k];\n  log(a);`))).toContain(
+      "array destructuring is only for const [address, bump] = findProgramAddressWithBump",
+    );
+    expect(compileErrors(src(`  const [k2, ...rest] = findProgramAddressWithBump(["x", k], programId());\n  log(k2);`))).toContain(
+      "name the address and the bump",
+    );
   });
 });

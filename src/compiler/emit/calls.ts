@@ -86,6 +86,8 @@ const PROGRAM_ERRORS = [
 ];
 
 const LIST_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "reduce", "includes", "indexOf"]);
+/** The byte builders of a FixedVec<u8, N> (byteListMethod). */
+const BYTE_METHODS = new Set(["pushLE", "pushKey", "pushBorsh", "setLE", "truncate"]);
 
 export abstract class CallEmitter extends ExpressionEmitter {
   protected call(node: ts.CallExpression, topLevel: boolean): Value | undefined {
@@ -116,7 +118,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
               "require's error is a string literal, a member of an error enum (CounterError.X) or a u32 code; a template string or string variable is not: give the message to an error enum member",
             );
           const code = v.literal !== undefined ? this.literal(v.literal, U32, args[1]) : this.expect(v, U32, args[1]);
-          this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
+          if (this.quietErrors()) this.line(`if (!${cond.c}) return ts_fail_code_quiet(${code.c});`);
+          else this.line(`if (!${cond.c}) return ts_fail_code(${code.c}, ${cString(`Error: the code returned (${this.location(node)})`)});`);
           return undefined;
         }
         // A built-in ProgramError: its u64 form (the index shifted into the high 32 bits), as solana_program returns it.
@@ -127,9 +130,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
         }
         const err = this.errorRef(args[1]);
         // `const ERROR_LOG_PREFIX = "AMM error: "`: the program's errors log as its native entrypoint logs them.
+        // `const ERROR_LOG_PREFIX = null`: nothing logged, only the code returned.
         const prefix = this.model.constants.get("ERROR_LOG_PREFIX")?.value;
         const text = typeof prefix === "string" ? `${prefix}${err.msg}` : `Error ${err.code} ${err.name}: ${err.msg} (${this.location(node)})`;
-        this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
+        if (prefix === null) this.line(`if (!${cond.c}) return ts_fail_quiet(${err.code});`);
+        else this.line(`if (!${cond.c}) TS_FAIL(${err.code}, ${cString(text)});`);
         return undefined;
       }
       case "panic": {
@@ -147,15 +152,50 @@ export abstract class CallEmitter extends ExpressionEmitter {
             'panic() takes an optional message (or null to log nothing) and an optional "file:line:column" location: string literals or string constants',
           );
         const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
-        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"): the given one, as a
-        // ported program's panic reports it, else this source line.
-        const at = args.length > 1 ? text(args[1]!)! : this.location(node);
-        const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(at);
-        const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [at, "0", "0"];
-        if (msg !== undefined) this.line(`sol_log(${cString(msg)});`);
-        this.line(`sol_panic_(${cString(file)}, ${Buffer.byteLength(file)}, ${line}, ${col});`);
-        this.line(`__builtin_unreachable();`);
+        if (silent && this.panicStyle())
+          this.fail(
+            args[0]!,
+            'under PANIC_STYLE "solana-1.14" a panic logs its message, as solana_program 1.14\'s panic handler always does: pass the message',
+          );
+        // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"), or the panic line
+        // logs: the given one, as a ported program's panic reports it, else this source line (with its column under
+        // PANIC_STYLE, as Rust always gives one).
+        const at = args.length > 1 ? text(args[1]!)! : this.panicStyle() ? this.locationWithColumn(node) : this.location(node);
+        for (const l of this.panicC(msg, at)) this.line(l);
         return undefined;
+      }
+      case "panicsAt": {
+        // The checked arithmetic of `expression` panics as Rust's does at `location`, with Rust's messages.
+        const first = args[0];
+        const loc = first && (ts.isStringLiteralLike(first) ? first.text : ts.isIdentifier(first) ? this.model.constants.get(first.text)?.value : undefined);
+        if (args.length !== 2 || typeof loc !== "string" || !/^.+:\d+:\d+$/.test(loc))
+          this.fail(
+            node,
+            'panicsAt(location, expression) takes a "file:line:column" string literal (or string constant) and the expression whose arithmetic panics there',
+          );
+        // Prettier writes an assignment argument in parentheses: `panicsAt(loc, (total += fee))`.
+        let inner = args[1]!;
+        while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+        const outer = this.panicAt;
+        this.panicAt = loc;
+        try {
+          // A statement: an assignment, a compound assignment (`total += fee`) or ++ / --.
+          const assigns =
+            (ts.isBinaryExpression(inner) &&
+              inner.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+              inner.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            ((ts.isPrefixUnaryExpression(inner) || ts.isPostfixUnaryExpression(inner)) &&
+              (inner.operator === ts.SyntaxKind.PlusPlusToken || inner.operator === ts.SyntaxKind.MinusMinusToken));
+          if (assigns) {
+            if (!ts.isExpressionStatement(node.parent))
+              this.fail(inner, "an assignment inside panicsAt is a statement of its own: panicsAt(location, total += fee);");
+            this.expressionStatement(inner, topLevel);
+            return undefined;
+          }
+          return this.expr(inner);
+        } finally {
+          this.panicAt = outer;
+        }
       }
       case "abort": {
         // Rust's abort on SBF: the runtime's `abort` syscall ("SBF program panicked", no location, nothing logged).
@@ -217,6 +257,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const d = this.accountParam(args[1], "close's destination");
         if (!isWritable(d.kind)) this.fail(args[1], "the destination must be writable (Mut<...>)");
         this.line(`TS_TRY(ts_close(a_${a.name}, a_${d.name}));`);
+        this.forgetOwners();
         return undefined;
       }
       case "minimumBalance": {
@@ -624,6 +665,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`ts_log_base64(${cString(prefix)}, ${Buffer.byteLength(prefix)}, (const uint8_t *)${place.ptr}, sizeof(TSS_${sd.name}));`);
         return undefined;
       }
+      case "findProgramAddressWithBump":
+        this.fail(node, "bind both results where it is called: const [address, bump] = findProgramAddressWithBump(seeds, program)");
       case "findProgramAddress": {
         // Pubkey::find_program_address(seeds, program).0: the canonical PDA of any program.
         if (args.length !== 2) this.fail(node, "findProgramAddress(seeds, program) takes the seeds and the program's address");
@@ -670,11 +713,52 @@ export abstract class CallEmitter extends ExpressionEmitter {
         return this.writeData(node);
       case "resizeAccount": {
         if (args.length !== 2) this.fail(node, "resizeAccount(account, newSize) takes the account and its new size");
-        if (!this.ix) this.fail(node, "resizeAccount() is only available in instructions");
+        this.assertNoViewAfter(this.viewAccountKey(args[0]!), node, "resizeAccount()");
+        // A remaining account (or a helper's RemainingAccount): its size when the instruction started is the one the
+        // entrypoint recorded in the record's padding, as solana_program 1.14's entrypoint records it for realloc.
+        const h = this.handle(args[0]!);
+        if (h) {
+          if (!this.nativeAccountWrites()) this.line(`TS_TRY(ts_check_writable(${h}));`);
+          const size = this.expect(this.expr(args[1], U64), U64, args[1]);
+          this.line(`TS_TRY(ts_resize_raw(${h}, ${size.c}, ts_entry_len(${h})));`);
+          return undefined;
+        }
+        if (!this.ix) this.fail(node, "resizeAccount() is only available in instructions (or on a remaining account a helper was given)");
         const acct = this.accountParam(args[0], "resizeAccount's account");
-        if (acct.kind.kind !== "info" || !isWritable(acct.kind)) this.fail(args[0], "resizeAccount needs a Mut<AccountInfo> parameter");
+        if (acct.kind.kind !== "info" || (!isWritable(acct.kind) && !this.nativeAccountWrites()))
+          this.fail(args[0], "resizeAccount needs a Mut<AccountInfo> parameter or a remaining account");
         const size = this.expect(this.expr(args[1], U64), U64, args[1]);
         this.line(`TS_TRY(ts_resize_raw(a_${acct.name}, ${size.c}, entry_${acct.name}));`);
+        return undefined;
+      }
+      case "closeRaw": {
+        // Phoenix's Tombstone, in its order: receiver.lamports = receiver.lamports + account.lamports;
+        // account.lamports = 0; account.assign(&system_program::id()); account.realloc(0, false). The data is not
+        // zeroed (realloc's zero_init is false): the runtime drops it with the length, and then accepts the new owner.
+        if (args.length !== 2) this.fail(node, "closeRaw(account, receiver) takes the account to close and the account that gets its lamports");
+        this.assertNoViewAfter(this.viewAccountKey(args[0]!), node, "closeRaw()");
+        const a = this.inPlaceAccount(args[0]!, "closeRaw's account", true);
+        const r = this.inPlaceAccount(args[1]!, "closeRaw's receiver", false);
+        // Closing an account into itself would burn its lamports (the runtime then refuses the instruction).
+        if (!this.nativeAccountWrites()) this.line(`if (${a} == ${r}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: closeRaw's receiver is the account itself");`);
+        const sum = this.tmp("sum");
+        this.line(`uint64_t ${sum};`);
+        this.line(`if (ts_add_overflow_u64(${r}->lamports, ${a}->lamports, &${sum})) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");`);
+        this.line(`${r}->lamports = ${sum};`);
+        this.line(`${a}->lamports = 0;`);
+        this.line(`ts_memcpy(&${a}->owner, &TS_SYSTEM_PROGRAM_ID, 32);`);
+        this.forgetOwners();
+        this.line(`${a}->data_len = 0;`);
+        return undefined;
+      }
+      case "assignOwner": {
+        // AccountInfo::assign: the owner field written in place; the runtime accepts it at the end of the instruction
+        // (or at a CPI) only for an account of this program that is writable and whose data is empty or zeroed.
+        if (args.length !== 2) this.fail(node, "assignOwner(account, owner) takes the account and its new owner's address");
+        const a = this.inPlaceAccount(args[0]!, "assignOwner's account", true);
+        const owner = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
+        this.line(`ts_memcpy(&${a}->owner, ${owner.c}, 32);`);
+        this.forgetOwners();
         return undefined;
       }
       case "bigEndian":
@@ -686,6 +770,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "loadForeign":
       case "loadBorsh":
         this.fail(node, `bind ${builtin}<T>(...) to a const first: const p = ${builtin}<T>(account)`);
+      case "loadRawAt":
+      case "loadRawMutAt":
+      case "rawArrayAt":
+      case "rawArrayMutAt":
+      case "rbTreeAt":
+      case "rbTreeMutAt":
+        this.fail(node, `bind ${builtin}(…) to a const first: const v = ${builtin}<…>(account, offset${builtin.startsWith("load") ? "" : ", capacity"})`);
       case "storeBorsh":
         return this.storeBorsh(node);
       case "emit":
@@ -702,6 +793,26 @@ export abstract class CallEmitter extends ExpressionEmitter {
       }
       case "returnData":
         return this.returnData(node);
+      case "setReturnData": {
+        // Rust's set_return_data(&bytes): the bytes as they are. More than 1024 is left to the syscall, which refuses
+        // it exactly as it refuses the original's call.
+        if (args.length !== 1) this.fail(node, "setReturnData(bytes) takes one list of u8");
+        if (this.ix?.returns)
+          this.fail(
+            node,
+            `${this.ix.name} returns a value, which is its return data: return it instead of calling setReturnData (or declare the instruction void)`,
+          );
+        const what = "setReturnData takes a list of u8: a local FixedVec<u8, N>, a Vec or FixedVec in account data, or the instruction data or a slice of it";
+        const s = this.listSpan(args[0]!) ?? this.fail(args[0]!, what);
+        if (s.elem.kind !== "int" || s.elem.name !== "u8") this.fail(args[0]!, what);
+        this.line(`sol_set_return_data((const uint8_t *)${s.items}, ${s.count});`);
+        return undefined;
+      }
+      case "logComputeUnits": {
+        if (args.length) this.fail(node, "logComputeUnits() takes no arguments");
+        this.line(`sol_log_compute_units();`);
+        return undefined;
+      }
       case "programAt":
       case "sysvarAt":
         return this.programAt(node, builtin);
@@ -744,6 +855,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
 
     if (ts.isPropertyAccessExpression(callee)) {
       const method = callee.name.text;
+      // A RedBlackTree's methods (rbTreeAt / rbTreeMutAt).
+      const onTree = this.treeCall(node);
+      if (onTree) return onTree.value;
       const introspected = this.instructionsCall(node, callee, method);
       if (introspected) return introspected;
       // xs.some(…) and friends on a Vec, FixedArray, FixedVec or Vec argument: a loop with the callback expanded in it.
@@ -963,6 +1077,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!info.resizable || !v.account) this.fail(node, "only Vecs of Mut<...> / Init<...> accounts can grow or shrink");
       this.line(`TS_TRY(ts_resize(params, ${payer}, a_${v.account.name}, 8 + ${info.fixed} + (${newLen}) * ${info.elemSize}, entry_${v.account.name}));`);
     };
+    if (BYTE_METHODS.has(method)) return this.byteListMethod(node, method, v);
     if (info.big !== undefined) {
       const done = this.bigVecMethod(node, method, v, { stageElem, needWritable, elemPaths });
       if (done) return done.value;
@@ -1104,6 +1219,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const info = v.vec!;
     const vt = v.type as FieldType & { kind: "vec" };
     if (method === "set") return undefined;
+    if (info.raw)
+      this.fail(node, `a RawArray has get, set, .length, for … of and the list methods (its length is the capacity it was made with), not ${method}()`);
     if (method === "slice")
       this.fail(node, "use slice(start, end) right where it is read: for (const x of list.slice(a, b)), list.slice(a, b).forEach(…) or .get(i)");
     if (info.slice) this.fail(node, `a slice has get, set, .length, for … of and the list methods; call ${method}() on the BigVec itself`);
@@ -1667,7 +1784,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
     const text = typeof pre === "string" ? `${pre}${PROGRAM_ERRORS[err]}` : `TypeSOL: not ${what}`;
     const bad = id ? `!ts_key_eq(&${h}->key, &${id})` : `!ts_is_token_program(&${h}->key)`;
-    this.line(`if (${bad}) TS_FAIL(((uint64_t)${err + 2}) << 32, ${cString(text)});`);
+    this.line(`if (${bad}) ${this.programFail(`((uint64_t)${err + 2}) << 32`, text)};`);
     if (kind.kind === "stakeHistory") this.line(`if (${h}->data_len < 8) TS_FAIL(TS_ERR_SYSVAR, "TypeSOL: not the StakeHistory sysvar's data");`);
     return { c: h, type: { kind: "account", program: kind } };
   }
@@ -1813,21 +1930,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (!s || s.size === undefined || (s.vec && !s.bigVec)) this.fail(node, `${fn} needs a fixed-size struct type: ${fn}<MyStruct>(account)`);
     if (s.layout === "borsh") this.fail(node, `${s.name} is @layout borsh: ${fn} reads fixed layouts only`);
     if (node.arguments.length !== 1) this.fail(node, `${fn}<T>(account) takes one remaining account or AccountInfo parameter`);
-    let h = this.handle(node.arguments[0]);
-    let param: number | undefined;
-    if (!h) {
-      const acct = this.accountParam(node.arguments[0], "the account");
-      if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
-      if (mut && !isWritable(acct.kind) && !this.nativeAccountWrites())
-        this.fail(
-          node.arguments[0],
-          `${acct.name} must be Mut<AccountInfo> to load it with loadRawMut (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
-        );
-      if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
-      h = `a_${acct.name}`;
-      param = this.ix.accounts.indexOf(acct);
-    }
-    this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    const { h, param } = this.rawAccount(node, fn, mut);
+    this.line(this.viewOwnerCheck(h));
     this.line(`if (${h}->data_len < sizeof(TSS_${s.name})) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account data too small");`);
     // A BigVec's stored length must fit in the account. Its capacity is kept in a local: every access is clamped to it
     // (the length may be written again after this), without a division each time.
@@ -1839,21 +1943,57 @@ export abstract class CallEmitter extends ExpressionEmitter {
       // Named in scope, so a loop moved into a function of its own is given it (see outlinedLoop).
       this.scopes.at(-1)!.set(`__${bigCap}`, { c: bigCap, type: U64, mutable: false });
     }
-    // NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
-    // instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
-    // gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
-    if (mut && !this.nativeAccountWrites()) {
-      this.line(`TS_TRY(ts_check_writable(${h}));`);
-      const slot = this.claimSlots.get(node);
-      if (slot)
-        this.line(
-          param === undefined
-            ? `TS_TRY(ts_claim_mut_rec(params, ${h}, &${slot}, params->ka_num));`
-            : `TS_TRY(ts_claim_mut_at_rec(params, ${param}, &${slot}));`,
-        );
-      else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
-    }
+    if (mut) this.claimRawMut(node, h, param);
     return { c: `((TSS_${s.name} *)(${h}->data))`, type: { kind: "structRef", struct: s.name, writable: mut }, ...(bigCap ? { bigCap } : {}) };
+  }
+
+  /**
+   * A native account view's owner check (3007). In a program that makes such views the check goes through ts_owned: the
+   * last account found this program's passes with a pointer compare until a CPI or an owner write forgets it.
+   */
+  protected viewOwnerCheck(h: string): string {
+    const fail = `TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program")`;
+    return this.model.ownerCache ? `if (!ts_owned(params, ${h})) ${fail};` : `if (!ts_key_eq(&${h}->owner, params->program_id)) ${fail};`;
+  }
+
+  /** An owner write or a CPI: the owner checks' cache (viewOwnerCheck) is forgotten. */
+  protected forgetOwners(): void {
+    if (this.model.ownerCache) this.line(`TS_OWNER_FORGET(params);`);
+  }
+
+  /**
+   * The account a loadRaw-style view reads (its first argument): a remaining account, or an AccountInfo parameter of
+   * the instruction (`param`: its position, for the claim). `fn` names the call in messages.
+   */
+  protected rawAccount(node: ts.CallExpression, fn: string, mut: boolean): { h: string; param?: number } {
+    const h = this.handle(node.arguments[0]);
+    if (h) return { h };
+    const acct = this.accountParam(node.arguments[0], "the account");
+    if (acct.kind.kind !== "info") this.fail(node.arguments[0], "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter");
+    if (mut && !isWritable(acct.kind) && !this.nativeAccountWrites())
+      this.fail(
+        node.arguments[0],
+        `${acct.name} must be Mut<AccountInfo> to load it with ${fn} (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+      );
+    if (!this.ix) this.fail(node, `load ${acct.name} in the instruction and pass the struct on`);
+    return { h: `a_${acct.name}`, param: this.ix.accounts.indexOf(acct) };
+  }
+
+  /**
+   * A writable view's checks: the account is writable and loaded mutably once in the instruction (2040).
+   * NATIVE_ACCOUNT_WRITES: no writability check and no claim. The view writes in place; the runtime refuses the
+   * instruction if a read-only account's data changed, and two views of one account share its bytes (the loader
+   * gives a duplicate the same record), as two AccountInfos of one account share one buffer in Rust.
+   */
+  protected claimRawMut(node: ts.CallExpression, h: string, param: number | undefined): void {
+    if (this.nativeAccountWrites()) return;
+    this.line(`TS_TRY(ts_check_writable(${h}));`);
+    const slot = this.claimSlots.get(node);
+    if (slot)
+      this.line(
+        param === undefined ? `TS_TRY(ts_claim_mut_rec(params, ${h}, &${slot}, params->ka_num));` : `TS_TRY(ts_claim_mut_at_rec(params, ${param}, &${slot}));`,
+      );
+    else this.line(param === undefined ? `TS_TRY(ts_claim_mut(params, ${h}));` : `TS_TRY(ts_claim_mut_at(params, ${param}));`);
   }
 
   /**
@@ -1948,13 +2088,50 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return `a_${acct.name}`;
   }
 
+  /**
+   * An account `closeRaw` / `assignOwner` writes in place: a remaining account (a helper's RemainingAccount, a ternary
+   * between them) or an AccountInfo parameter. Without NATIVE_ACCOUNT_WRITES it is checked as the other writes to
+   * accounts the compiler cannot see are: writable (3006; a parameter must be Mut<AccountInfo>), passed once (2040), and
+   * for `owned` this program's (3007). With the flag nothing is checked: the runtime judges the result, as it judges a
+   * native program's.
+   */
+  protected inPlaceAccount(node: ts.Expression, what: string, owned: boolean): string {
+    const native = this.nativeAccountWrites();
+    let h = this.handle(node);
+    if (!h) {
+      const acct = this.accountParam(node, what);
+      if (acct.kind.kind !== "info") this.fail(node, `${what} is a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter`);
+      if (!isWritable(acct.kind) && !native)
+        this.fail(
+          node,
+          `${acct.name} must be Mut<AccountInfo> to change it in place (or declare const NATIVE_ACCOUNT_WRITES = true to leave writability to the runtime, as a native program does)`,
+        );
+      h = `a_${acct.name}`;
+    } else if (!native) this.line(`TS_TRY(ts_check_writable(${h}));`);
+    if (native) return h;
+    this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+    if (owned) this.line(`if (!ts_key_eq(&${h}->owner, params->program_id)) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: account not owned by this program");`);
+    return h;
+  }
+
   /** `TS_FAIL` with a built-in ProgramError (no custom code), logged as `require(…, ProgramError.X)` logs it. */
   protected programErrorFail(name: string, node: ts.Node): string {
     const idx = PROGRAM_ERRORS.indexOf(name);
     // `const PROGRAM_ERROR_LOG_PREFIX = "Program error: "`: the log line a native entrypoint writes for it.
     const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
     const text = typeof pre === "string" ? `${pre}${name}` : `Error: ${name} (${this.location(node)})`;
-    return `TS_FAIL(((uint64_t)${idx + 2}) << 32, ${cString(text)})`;
+    return this.programFail(`((uint64_t)${idx + 2}) << 32`, text);
+  }
+
+  /** A failure with a built-in ProgramError's code: logged with `text`, or nothing under `PROGRAM_ERROR_LOG_PREFIX = null`. */
+  protected programFail(code: string, text: string): string {
+    if (this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value === null) return `return ts_fail_quiet(${code})`;
+    return `TS_FAIL(${code}, ${cString(text)})`;
+  }
+
+  /** `const ERROR_LOG_PREFIX = null`: the program's own errors (and codes returned by its helpers) log nothing. */
+  protected quietErrors(): boolean {
+    return this.model.constants.get("ERROR_LOG_PREFIX")?.value === null;
   }
 
   /** `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)`: checked view of a program account. */
@@ -2058,6 +2235,38 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return found;
   }
 
+  /** Whether a helper's body (or a helper it calls) closes or resizes an account: closeRaw / resizeAccount. */
+  private helperResizes(body: ts.Node): boolean {
+    return this.helperCalls(body, ["closeRaw", "resizeAccount"]);
+  }
+
+  /** Whether a helper's body (or a helper it calls) makes a writable tree view, which may change a tree's structure. */
+  private helperMakesMutTree(body: ts.Node): boolean {
+    return this.helperCalls(body, ["rbTreeMutAt"]);
+  }
+
+  /** Whether a helper's body (or a helper it calls) calls one of these built-ins. */
+  private helperCalls(body: ts.Node, builtins: string[], seen = new Set<ts.Node>()): boolean {
+    if (seen.has(body)) return false;
+    seen.add(body);
+    let found = false;
+    const visit = (n: ts.Node) => {
+      if (found) return;
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+        const fn = this.exportName(n.expression);
+        if (fn && builtins.includes(fn)) found = true;
+        else {
+          const name = calleeName(n.expression, this.model.helperDecls, this.checker);
+          const callee = name ? (this.model.generics.get(name)?.node ?? this.model.helpers.get(name)?.node) : undefined;
+          if (callee && this.helperCalls(callee, builtins, seen)) found = true;
+        }
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return found;
+  }
+
   /**
    * A helper given a closure (a function that reads the caller's variables) for a function parameter: a closure only
    * runs where it is declared, so the helper is expanded here, like a closure, with the closure bound to the
@@ -2066,6 +2275,9 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected helperWithClosure(node: ts.CallExpression): { value: Value | undefined } | undefined {
     const g = this.givenClosure(node);
     if (!g) return undefined;
+    const tagged = [g.node, ...(ts.isVariableDeclaration(g.node.parent) ? [g.node.parent] : [])];
+    if (tagged.some((n) => ts.getJSDocTags(n).some((t) => t.tagName.text === "noinline")))
+      this.fail(node, `${g.display}() is @noinline, but given a closure it is expanded where it is called: pass a named function`);
     // Type parameters: bound from the call (as an instance would be) while the body is expanded.
     const saved = this.scope;
     if (g.typeParams.length) {
@@ -2164,6 +2376,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // A helper that takes accounts may change account data, so account text it gets is copied first.
     // A RemainingAccount(s) parameter counts: the helper may load and write a struct through it.
     const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining");
+    // A helper that closes or resizes an account it is given ends the caller's views of it (any account it may be).
+    if (takesAccounts && this.helperResizes(h.node)) this.assertNoViewAfter("?", node, `${h.display}() (it may close or resize an account it is given)`);
+    // Nor may a helper change a tree of an account a for … of is walking.
+    if (takesAccounts && this.iteratingTrees.size && this.helperMakesMutTree(h.node))
+      this.fail(
+        node,
+        `${h.display}() takes accounts and makes an rbTreeMutAt view, so it may change the tree a for … of is walking (${[...this.iteratingTrees.values()].map((w) => w.name).join(", ")}): collect what it needs in the loop, then call it after`,
+      );
     const values: Value[] = [];
     const pieces: (number | string)[] = [];
     h.params.forEach((p, i) => {
@@ -2177,6 +2397,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         values.push(takesAccounts ? this.ownedString(raw) : raw);
       }
     });
+    if (h.params.some((p) => p.inout))
+      this.checkInoutCall(
+        node,
+        h,
+        argNodes,
+        pieces.map((x) => (typeof x === "string" ? x : undefined)),
+      );
     // A helper that takes a writable struct account may replace anything stored in it (see assertNotAliased).
     for (const [i, p] of h.params.entries())
       if (p.account && p.account.kind === "account" && p.account.mut && ts.isIdentifier(argNodes[i]))
@@ -2231,6 +2458,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (p.account.kind === "account" && p.account.mut && p.account.struct.vec) return `a_${acct.name}, entry_${acct.name}`;
       return `a_${acct.name}`;
     }
+    if (p.inout) return this.inoutArg(h, p, n);
     switch (p.type.kind) {
       case "signerSeeds": {
         const seeds = this.signerSeedsArg(n);
@@ -2264,12 +2492,173 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
         // An Option<Vec<T>> argument passes as its list once checked against null (TypeScript narrows it).
         const t = l?.type.kind === "vecArg" && l.type.optional ? { ...l.type, optional: undefined } : l?.type;
-        if (!l || !t || !sameType(t, p.type)) this.fail(n, `expected a ${typeName(p.type)} instruction argument`);
-        return l.c;
+        if (l && t && sameType(t, p.type)) return l.c;
+        // A list of the caller's (a local FixedVec or FixedArray, a field of a local struct, or one in account data): a
+        // read-only view of its elements, passed by pointer.
+        const view = this.listViewArg(n, p.type, h);
+        if (view) return view;
+        const what = p.type.elem.kind === "int" && p.type.elem.name === "u8" && p.type.cap === undefined ? "list of u8" : `list of ${typeName(p.type.elem)}`;
+        this.fail(
+          n,
+          `expected a ${what}: an instruction argument, the instruction data or a slice of it, or a FixedVec / FixedArray of ${typeName(p.type.elem)} (a local, a field)`,
+        );
       }
       default:
         return this.expect(this.expr(n, p.type), p.type, n);
     }
+  }
+
+  /**
+   * An `Inout<T>` argument: a pointer to the caller's place itself (never a copy), which must be writable. A literal
+   * (`f({ … })`, `fixedArray(…)`) is built in a local of its own, as JS passes a fresh object; a ternary must pick
+   * between two places (a literal branch would be a copy the helper's writes never reach).
+   */
+  protected inoutArg(h: Helper, p: Helper["params"][number], n: ts.Expression): string {
+    const want = p.inout!;
+    const what = `Inout<${typeName(want)}>`;
+    let bare = n;
+    while (ts.isParenthesizedExpression(bare)) bare = bare.expression;
+    if (want.kind !== "vec" && (ts.isObjectLiteralExpression(bare) || (ts.isCallExpression(bare) && this.exportName(bare.expression) === "fixedArray")))
+      return this.literalArg(n, want)!;
+    if (ts.isConditionalExpression(bare)) {
+      if (want.kind !== "struct") this.fail(n, `${h.display}() takes ${p.name} as ${what}: pass the list itself, not a choice between lists`);
+      const place = this.structPlace(bare);
+      if (!place)
+        this.fail(n, `${h.display}() takes ${p.name} as ${what}: both branches must be ${want.name} places (a local, a field, a list element), not values`);
+      if (place.struct !== want.name) this.fail(n, `${h.display}() takes ${p.name} as ${what}; this is a ${place.struct}`);
+      if (!place.writable) this.fail(n, `${h.display}() changes ${p.name} (Inout), and a branch of this choice is read-only`);
+      return place.ptr;
+    }
+    let r = this.ref(n);
+    // A narrowed Option<Struct> / Option<FixedArray> place (`c.opt !== null` before it): the value inside it.
+    if (r && r.type.kind === "option" && sameType(r.type.inner as FieldType, want)) r = this.someValue(r);
+    if (!r || !sameType(r.type, want)) {
+      const l = ts.isIdentifier(n) ? this.lookup(n.text) : undefined;
+      if (l?.type.kind === "vecArg" || l?.type.kind === "optionArg")
+        this.fail(n, `${h.display}() changes ${p.name} (Inout): instruction arguments are read-only; copy the value into a local first`);
+      this.fail(n, `${h.display}() takes ${p.name} as ${what}: pass a ${typeName(want)} place of yours (a local, a field, a list element) for it to change`);
+    }
+    if (!r.writable) this.fail(n, `${h.display}() changes ${p.name} (Inout): ${this.readOnly(r)}`);
+    if (r.vec?.slice) this.fail(n, `${h.display}() takes ${p.name} as ${what}: pass the list, not a slice of it`);
+    return `(&${r.lv})`;
+  }
+
+  /**
+   * The rules of a call with `Inout<T>` arguments, so the helper's pointer is the only way to the place while it runs
+   * (Rust's one `&mut` at a time) and stays valid: no other argument may share storage with an Inout one (two places,
+   * one inside the other, the same list's elements whatever their indexes, an account and a place in it); a place in
+   * a list whose elements can move is refused when the call may move them; a reference into the place read after the
+   * call is refused (the helper may replace what it points at). Places whose roots differ but may be the same bytes at
+   * run time (two `Dup<…>` accounts, two loadRawMut views under NATIVE_ACCOUNT_WRITES, a helper's account parameters)
+   * are compared at run time (2040).
+   */
+  protected checkInoutCall(node: ts.CallExpression, h: Helper, argNodes: readonly ts.Expression[], passed: (string | undefined)[]) {
+    const show = (e: ts.Expression) => {
+      try {
+        return e.getText();
+      } catch {
+        return "this argument";
+      }
+    };
+    const fresh = (e: ts.Expression): boolean => {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      // A literal, or a struct a helper returns: a value of its own that nothing else reaches.
+      if (ts.isObjectLiteralExpression(e)) return true;
+      if (!ts.isCallExpression(e)) return false;
+      return this.exportName(e.expression) === "fixedArray" || this.helperOf(e)?.returns?.kind === "struct";
+    };
+    // Each argument passed by reference (Inout, read-only structs and lists, accounts, loaded structs) and its storage.
+    const refs: { i: number; inout: boolean; paths: string[] }[] = [];
+    h.params.forEach((p, i) => {
+      const n = argNodes[i]!;
+      if (p.inout) {
+        const paths = this.pathsOf(n);
+        if (!paths && !fresh(n))
+          this.fail(n, `${h.display}() changes ${p.name} (Inout): pass a local, a field path or a list element (bind anything else to a const first)`);
+        if (paths) refs.push({ i, inout: true, paths });
+        return;
+      }
+      const byRef = p.account || p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg" || p.type.kind === "vecArg";
+      const paths = byRef ? this.pathsOf(n) : undefined;
+      if (paths) refs.push({ i, inout: false, paths });
+    });
+    for (let a = 0; a < refs.length; a++)
+      for (let b = a + 1; b < refs.length; b++) {
+        const x = refs[a]!;
+        const y = refs[b]!;
+        if ((!x.inout && !y.inout) || !this.placesOverlap(x.paths, y.paths)) continue;
+        const [w, o] = x.inout ? [x, y] : [y, x];
+        const wn = show(argNodes[w.i]!);
+        const on = show(argNodes[o.i]!);
+        const op = h.params[o.i]!;
+        const why = `${wn} and ${on} share storage, and ${h.display}() changes ${h.params[w.i]!.name} (Inout) in place: while it runs, its parameter must be the only way to that place`;
+        if (op.inout)
+          this.fail(
+            argNodes[Math.max(w.i, o.i)]!,
+            `${why}. Two elements of one list count as one place whatever their indexes; pass what holds both, or copy one into a local and store it back after the call`,
+          );
+        if (op.account) this.fail(argNodes[o.i]!, `${why}. Pass the account alone and reach ${wn} through it in the helper, or pass only ${wn}`);
+        this.fail(argNodes[o.i]!, `${why}. Copy ${on} into a local first (const copy: T = ${on}) and pass the copy`);
+      }
+    for (const r of refs) {
+      if (!r.inout) continue;
+      const n = argNodes[r.i]!;
+      if (this.throughMovableList(n) && this.mayResizeVecs(node))
+        this.fail(
+          n,
+          `${show(n)} is in a list whose elements move when it grows, shrinks or is filtered (a Vec or BigVec), and ${h.display}() may do that (it takes writable or remaining accounts) while it holds ${show(n)}; copy the element into a local (const e: T = …), pass the local and store it back after the call`,
+        );
+      this.assertNothingInside(r.paths, node, h.display, show(n));
+    }
+    // Different roots that may still be the same bytes: compared at run time.
+    const root = (p: string) => p.split(/[.[]/)[0]!;
+    const local = (c: string) => {
+      for (const s of [...this.scopes, this.args]) for (const l of s.values()) if (l.c === c) return l;
+      return undefined;
+    };
+    const mayShare = (a: string, b: string): boolean => {
+      if (a === b) return false;
+      const acct = (r: string) => (r.startsWith("@") ? undefined : this.accounts.get(r));
+      const view = (r: string) => (r.startsWith("@") && local(r.slice(1))?.view ? r : undefined);
+      const [aa, ba] = [acct(a), acct(b)];
+      if (aa && ba) return aa.index === -1 || ba.index === -1 || !!aa.constraints.dup || !!ba.constraints.dup;
+      if (!this.nativeAccountWrites()) return false;
+      return !!((aa || view(a)) && (ba || view(b)));
+    };
+    // A read-only argument beside an Inout one may also be the same bytes: an account the runtime does not keep apart
+    // from a writable one (a read-only parameter is not checked against the writable ones).
+    const readOnlyAccount = (r: string) => {
+      const a = r.startsWith("@") ? undefined : this.accounts.get(r);
+      return !!a && !isWritable(a.kind);
+    };
+    const mayShareRead = (a: string, b: string): boolean =>
+      mayShare(a, b) || (a !== b && !!this.accounts.get(a) && !!this.accounts.get(b) && (readOnlyAccount(a) || readOnlyAccount(b)));
+    // The bytes an argument is passed as, when they are the caller's own: a place's pointer, an account's data, a list
+    // view's elements. A copy taken for the call (a helper that takes accounts gets one) shares nothing.
+    const bytes = (r: (typeof refs)[number]): { lo: string; hi: string } | undefined => {
+      const v = passed[r.i];
+      if (!v) return undefined;
+      const p = h.params[r.i]!;
+      if (r.inout || (v.startsWith("(&") && (p.type.kind === "structRef" || p.type.kind === "arrayArg" || p.type.kind === "dataEnumArg")))
+        return { lo: `(uint8_t *)${v}`, hi: `(uint8_t *)${v} + sizeof(*${v})` };
+      if (p.account && /^\w+$/.test(v)) return { lo: `${v}->data`, hi: `${v}->data + ${v}->data_len` };
+      if (p.type.kind === "vecArg" && /^\w+$/.test(v) && !h.params.some((q) => q.account || q.type.kind === "account" || q.type.kind === "remaining"))
+        return { lo: `${v}.ptr`, hi: `${v}.ptr + (uint64_t)${v}.len * ${this.fieldBytes(p.type.elem)}` };
+      return undefined;
+    };
+    for (let a = 0; a < refs.length; a++)
+      for (let b = a + 1; b < refs.length; b++) {
+        const x = refs[a]!;
+        const y = refs[b]!;
+        if (!x.inout && !y.inout) continue;
+        const share = x.inout && y.inout ? mayShare : mayShareRead;
+        if (!x.paths.some((p) => y.paths.some((q) => share(root(p), root(q))))) continue;
+        const [bx, by] = [bytes(x), bytes(y)];
+        if (!bx || !by) continue;
+        this.line(
+          `if (${bx.lo} < ${by.hi} && ${by.lo} < ${bx.hi}) TS_FAIL(TS_ERR_DUPLICATE_MUT, ${cString(`TypeSOL: ${h.display}() was given ${show(argNodes[x.i]!)} and ${show(argNodes[y.i]!)}, which share storage`)});`,
+        );
+      }
   }
 
   /**
@@ -2311,6 +2700,71 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
     this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
     return t;
+  }
+
+  /**
+   * A FixedVec or FixedArray of `elem` given for a read-only list parameter: a `TS_VecArg` view of its elements (the
+   * length as it is at the call). A list this function holds (a local, a field of a struct it owns) is read in place;
+   * one in account data is copied first when the helper takes accounts, as a struct argument is (the helper may write
+   * the account). Undefined when `n` is not such a list.
+   */
+  protected listViewArg(n: ts.Expression, want: ValueType & { kind: "vecArg" }, h: Helper): string | undefined {
+    const r = this.probe(() => this.ref(n));
+    if (!r) return undefined;
+    const elem = want.elem;
+    // A FixedVec<T, N> parameter holds at most N elements: a list with room for more is refused here, as an
+    // instruction argument with more is refused when decoded.
+    const holds = r.type.kind === "vec" ? r.type.cap : r.type.kind === "array" ? r.type.len : undefined;
+    if (want.cap !== undefined && holds !== undefined && holds > want.cap && (r.type.kind === "vec" || r.type.kind === "array") && sameType(r.type.elem, elem))
+      this.fail(
+        n,
+        `${h.display}() takes at most ${want.cap} elements here (FixedVec<${typeName(elem)}, ${want.cap}>) and this list holds up to ${holds}: declare the parameter FixedVec<${typeName(elem)}, ${holds}> (or InstructionBytes / Vec<${typeName(elem)}>, no limit)`,
+      );
+    let items: string;
+    let count: string;
+    let room: number;
+    if (r.type.kind === "vec" && r.type.cap !== undefined && !r.type.heap && !r.type.big && !r.type.raw && r.vec && !r.vec.slice) {
+      if (!sameType(r.type.elem, elem)) return undefined;
+      const fresh = this.ref(n)!;
+      items = fresh.vec!.items;
+      count = vecCount(fresh.vec!);
+      room = r.type.cap;
+    } else if (r.type.kind === "array") {
+      if (!sameType(r.type.elem, elem)) return undefined;
+      items = this.ref(n)!.lv;
+      count = String(r.type.len);
+      room = r.type.len;
+    } else return undefined;
+    const size = this.fieldBytes(elem);
+    const t = this.tmp("lview");
+    if (h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining") && !this.callerHoldsList(n)) {
+      // One buffer per call site, allocated on first use: a call in a loop must not take new heap every pass.
+      const buf = this.tmp("argl");
+      this.hoistLazy(buf, (v) => `uint8_t *${v}`);
+      this.line(`if (${buf} == NULL) TS_TRY(ts_alloc(${room * size}, &${buf}));`);
+      this.line(`TS_VecArg ${t} = {${buf}, (uint32_t)${count}};`);
+      this.line(`ts_memcpy_bulk(${buf}, (const uint8_t *)${items}, (uint64_t)${t}.len * ${size});`);
+      return t;
+    }
+    this.line(`TS_VecArg ${t} = {(const uint8_t *)${items}, (uint32_t)${count}};`);
+    return t;
+  }
+
+  /** Whether `node` is a list this function holds on its stack (a local list, a field of a struct it owns), not account data. */
+  protected callerHoldsList(node: ts.Expression): boolean {
+    let n: ts.Expression = node;
+    for (;;) {
+      if (ts.isParenthesizedExpression(n)) n = n.expression;
+      else if (ts.isPropertyAccessExpression(n)) n = n.expression;
+      else if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "get") n = n.expression.expression;
+      else break;
+    }
+    if (!ts.isIdentifier(n)) return false;
+    const l = this.lookup(n.text);
+    if (!l) return false;
+    // A declared list local has no storage paths; an Inout parameter's (`@p_x`) may be account data.
+    if ((l.type.kind === "vec" || l.type.kind === "array") && !l.paths && !l.readonly) return true;
+    return !!l.owned;
   }
 
   /** Whether `node` is (part of) a struct value this function owns: `h`, `h.inner`, `h.list.get(i)`. */

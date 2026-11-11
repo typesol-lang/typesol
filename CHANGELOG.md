@@ -6,6 +6,222 @@ codes, and says so here.
 
 ## Unreleased
 
+- Examples: showcase/mainnet/phoenix, a port of Phoenix v1 (Ellipsis Labs' on-chain limit order book at PhoeNiXZ8…, a
+  native program, all 28 instructions), from the commit a reproducible build proves is the mainnet binary (c16694d,
+  relicensed under MIT with its sources unchanged), checked against that binary on 3,575 transactions in five files
+  (the original's 50 test functions mapped: 11 covered, 37 added as differential cases, 2 not applicable) and a random
+  walk over two order books with a balance oracle, with the same outcomes, log lines, event batches, return data and
+  account bytes; 13–61% of the original's compute units (up to 86% at the heap limits, with hundreds of account
+  entries or a forwarding program's CPI; a PostOnly order 6,452 against 20,577, a swap of 30 fills 26,344 against
+  61,313, cancelling 512 orders 434,446 against 760,087), 256,360 bytes against 1,344,472. Phoenix's 32 KiB bump heap
+  is counted (showcase/mainnet/phoenix/heap.ts): each allocation is charged where the Rust makes it, so a transaction
+  that fills the heap (many account entries, a CPI's larger instruction data) aborts at the same allocation, after the
+  same log lines and batches; phoenix-limits.test.ts (162 transactions) compares both sides of each boundary, through
+  a forwarding caller program where a CPI is needed. What Phoenix formats only when it fails is not charged, the one
+  documented difference. A multiple-order packet passed through a CPI is decoded whatever its length, divisions by a
+  zero tick size or base lot size panic at Rust's locations, and the clock's timestamp wraps as `as u64`. Its events
+  are appended by `pushBorsh` of their literals: in the port, whose batch is an `Inout` parameter, a Reduce event costs
+  47 CU less than the six `pushLE` calls it replaced (one room check instead of six; the 19 against 16 below is a local
+  buffer). docs/case-study-phoenix.md.
+- Tests: the Phoenix files keep every compared transaction's compute units and fail unless the port uses fewer on
+  every one that succeeds (2,390 of the 3,575) and each compares exactly its expected count; the upstream cases pin
+  every refusal to the original's error and message and make the original tests' own assertions on chain. The random
+  walk draws its choices and keys from fixed seeds (1, 2 and 3, 300 steps on each market: 1,801 transactions), so a
+  seed reproduces it, and requires minimum counts of fills, evictions, expiries and fees decoded from the events. The
+  lib-sokoban traces are 21,650 operations (seeds 1–3, five key shapes, capacities 1 to 4096, fill and drain cycles).
+- Language: a top-level integer constant may be an expression over literals and constants declared before it (in its
+  file or an imported one): `const EVENT_ROOM = 1280n - 34n`, `const ASKS_AT: u64 = BIDS_AT + 2n * BOOK`, with
+  `+ - * / % ** & | ^ << >>`, unary `-` and `~`. It is folded when the program is compiled and inlined like a literal.
+  A typed constant is computed in its type, as Rust computes `const X: u64 = …`: every step must fit (`1n - 2n + 5n`
+  as a u64 is an error naming the step); division by zero, a negative exponent and a shift past the width are compile
+  errors too. Only literals were accepted (test/language/port-syntax.test.ts).
+- Language: a struct that is not exported (`interface Pair { … }`) is its file's own: helpers take, return and change
+  it (`Inout<Pair>`), locals hold it, and the IDL leaves it out. It failed with "structs must be exported" and a
+  misleading second error about the helper's return type. Used where the IDL describes it (account data, an
+  instruction's arguments or result, an event, an exported struct's field, a data enum's variant), it is one error
+  naming the use and the fix, `export interface Pair` (test/language/port-syntax.test.ts). A non-exported account group
+  is refused as before, with its own message.
+- Language: a read-only native view can be read where it is made: `loadRaw<Header>(market).inner.b`,
+  `loadRawAt<Prefix>(market, 576n).tick` and `rbTreeAt<K, V>(…).length` / `.capacity` ("unsupported property access"
+  and "bind … to a const first" before). A writable view (`loadRawMut`, `loadRawMutAt`) is still bound first, now
+  with the reason: it claims its account once per instruction (test/language/port-syntax.test.ts).
+- Language: a local list may hold 2 KiB of elements, its FixedVec length word aside: `const ids: FixedVec<u32, 512> =
+  fixedVec([])` (2,052 bytes, Phoenix's collected order ids) was refused. A frame that then overflows is still reported
+  by the frame check, which names the biggest locals; the refusal of a bigger list now gives the element bytes and, on
+  a declaration, the `/** @heap */` remedy (test/language/port-syntax.test.ts).
+- Language: comma-separated updates in a `for` loop, `for (let i = 0n, j = n; i < j; i++, j--)`, run in order after
+  each pass (`continue` included), and so do comma-separated assignments in its initializer; they were refused ("this
+  expression has no effect"). A comma anywhere else still is (test/language/port-syntax.test.ts).
+- Faster: `buf.pushBorsh<DataEnum>({ kind: "Reduce", … })`, a data-enum literal of a fixed-size variant, builds only
+  that variant: its fields evaluated in source order into locals, then one room check, the tag and a store of each
+  field at its offset (a variant holding a struct or FixedArray: one temporary of exactly its bytes and one copy). It
+  zeroed, filled and copied the whole enum (92 bytes for Phoenix's PhoenixMarketEvent), then wrote the tag and the
+  variant behind a switch on it: Phoenix's 35-byte Reduce event 54 → 19 CU against 16 for the same bytes by `pushLE`
+  (test/language/phx-costs.test.ts, which also checks every field kind's bytes). Changes the generated C of programs
+  that push data-enum literals (Phoenix, test/fixtures/byte-builders.ts), whose tests pass unchanged.
+- Faster: a read-only struct, FixedArray or data-enum argument of a helper that also takes accounts is copied at the
+  call only when it may be account data (a field of a view or of a loaded account), which the helper's writes could
+  change. A struct parameter of a helper that itself takes accounts, an instruction's struct argument and return data
+  are now passed in place like the caller's other owned structs (locals, helper results): they arrived as copies and
+  no account write reaches them. Phoenix's book helpers now take their MarketShape as a plain struct, where they took
+  it as `Inout<T>` only to avoid the copy (test/language/phx-costs.test.ts: 97.6 → 43.3 CU per call of a helper
+  passing it on, test/language/helper-copies.test.ts). Changes the generated C of SPL Stake Pool, Marginfi and Raydium
+  CLMM (a copy fewer at such calls), whose tests pass unchanged.
+- Faster: the owner check of native account views (`loadRaw` / `loadRawMut`, `loadRawAt`, `rawArrayAt`, `rbTreeAt` and
+  their Mut forms) remembers the last account it found this program's, until a CPI or an owner write (`assignOwner`,
+  `closeRaw`, `close`) forgets it: the same account passes again with a pointer compare instead of a 32-byte one.
+  Phoenix's helpers each view the market again, often in loops that write it, where clang could not drop the
+  repeated compare (test/language/phx-costs.test.ts: a view per pass of a writing loop 21 → 15 CU, two views 35 → 21,
+  a helper call taking the market 54 → 43). A view after the account changed hands still fails with 3007
+  (test/language/owner-cache.test.ts: after assignOwner, closeRaw and a self-CPI that assigns it). Only programs that
+  make such views carry the cache (`TS_OWNER_CACHE`, a pointer in TsParams); their generated C changes (SPL Stake
+  Pool, Raydium AMM v4, Phoenix and the test fixtures that use views), and their tests pass unchanged.
+- Faster: a RedBlackTree walk (`for (const e of tree)`, `tree.reversed()`) checks each node's index against the
+  capacity once, when it steps onto the node, instead of three times, and keeps its stack by pointer: 59 → 40 CU per
+  node for a walk summing a field of a 400-order book (test/language/phx-costs.test.ts; 18 CU less per node read-only).
+  The same panics at the same points on a damaged tree (an index past the capacity, a cycle filling the stack; both
+  now tested). Changes the generated C of programs that walk a tree (Phoenix, test/fixtures/rbtree.ts and
+  rbtree-api.ts).
+- New: `tree.removeAt(index)` on a RedBlackTree removes the node at that index (from `addrOf`, or a node's `.index`
+  from `min` / `max` / a walk) with exactly the writes `remove(node.key)` makes, without searching the tree a second
+  time: Phoenix's cancel finds the order, checks whose it is, then removes it (691 → 547 CU in
+  test/language/phx-costs.test.ts). It gives the removed value, or null for index 0 or a node in no tree (a freed one,
+  which is left as it is); past the capacity it panics as `nodeAt` does. The lib-sokoban trace replay runs a second
+  time with every `remove(key)` as `removeAt(addrOf(key))`, and the bytes after each operation are still the crate's
+  (test/verification/rbtree-trace.test.ts).
+- New: room beyond one 4 KiB stack frame. `/** @noinline */` on a helper keeps it a C function of its own, so its
+  locals get their own frame instead of the instruction's it would be inlined into (3 to 5 CU per call);
+  `/** @heap */` on an instruction's list or struct local keeps it on the heap (one allocation per declaration,
+  reused by a loop; 17 to 19 CU). A native port's entry holding a 1,284-byte log buffer could not also build a second
+  one, or the order ids after its recorder's last CPI (test/fixtures/frames.ts: 4,672 bytes inlined). The frame-size
+  error now lists the biggest locals from clang's frame layout (names and the source line near each; unnamed slots
+  with the locals of the helpers inlined there) and names both remedies (test/language/stack-limit.test.ts).
+- Language: plain type aliases, `type Price = u64` (or `Pubkey`, a struct, `FixedVec<u8, 32>`, `Point | null`, another
+  alias), replaced by the type they name wherever they are used, so layouts and the IDL are the type's own; exported
+  or not, imported from other files (the aliased type keeps its own file's import names). Every `type X = …` was taken
+  for a data enum, and a union of named types (`type Event = Fill | Place`) failed with "each variant is an object
+  type"; it now says to list the variants as object types or alias one type. Generic aliases and `null` among a data
+  enum's variants are refused with what to write instead (test/language/aliases.test.ts).
+- New: `const [address, bump] = findProgramAddressWithBump(seeds, program)`, Rust's `let (address, bump) =
+  Pubkey::find_program_address(…)`: the canonical address and its bump from one search, where `findProgramAddress`
+  and `findProgramAddressBump` searched twice (453 to 2,118 CU saved in test/language/pda-derivation.test.ts,
+  depending on how many bumps the search tries). `[, bump]` keeps only the bump; any other use is a compile error
+  showing the form.
+- Language: a read-only `FixedVec<T, N>` (or `Vec<T>`) helper parameter takes the caller's own lists, as the language
+  reference said helpers do: a local FixedVec, a FixedVec field of a local struct or of account data, passed as a view
+  of its elements by pointer (nothing copied; a list in account data is copied first when the helper also takes
+  accounts, as a struct argument is). It was refused ("expected a Vec<u8> instruction argument"), so ports wrote the
+  helper with `Inout<T>`. A list with room for more than N elements is refused with the parameter to declare, and a
+  list given for an `Inout` parameter of the same call too (test/language/list-params.test.ts).
+- Faster: a local `FixedVec` is set up in about constant compute units. `fixedVec([])` of 1280 bytes zeroed the list
+  twice (1,436 CU in test/language/fixedvec-setup.test.ts, now 152 with the rest of the instruction); `fixedVec([15n])`
+  also built and copied a temporary (3,216 → 155); a FixedVec field in a struct literal zeroed and copied a temporary,
+  doubling the stack (2,571 → 153). The free slots are now zeroed once, by the memset syscall from 128 bytes
+  (`ts_memzero_bulk`), and the elements are written in place; `list = fixedVec([…])` still builds in a temporary (its
+  elements may read the old list) but zeroes and copies it with the syscalls. The free slots stay zero, since a list's
+  whole layout is copied into account data and events. Changes the generated C of programs with local FixedVecs
+  (Phoenix, SPL Stake Pool, Marginfi, coral multisig, favorites and seven test fixtures), whose tests pass unchanged.
+- New: `const ERROR_LOG_PREFIX = null` / `const PROGRAM_ERROR_LOG_PREFIX = null`: failures return their error and log
+  nothing, as a native program's do when its own checks already logged (Phoenix). `ERROR_LOG_PREFIX = null` covers
+  `require(…, MyError.X)` and codes computed at run time, `PROGRAM_ERROR_LOG_PREFIX = null` built-in ProgramErrors
+  (`require(…, ProgramError.X)`, `loadBorsh`, views) and `programAt` / `sysvarAt`. With `""` a failure still logged
+  "Program log: " plus the message; now it costs 105 to 124 CU less (test/language/quiet-errors.test.ts). Only these
+  two constants may be `null`. Programs that do not use it compile to the same C.
+- Language: `Inout<T>` helper parameters, Rust's `&mut T`. `function addEvent(rec: Inout<Recorder>, e: Event): void`
+  gets the caller's place itself (a pointer, never a copy) and may change it; the caller sees the writes after the
+  call, as JS shares an object passed to a function. `T` is a fixed-size struct, `FixedArray<T, N>` or
+  `FixedVec<T, N>` (`push` / `pop` / `clear` included); the argument is a writable place: a local struct or list, a
+  `loadBorsh` local, a field of a `Mut<T>` account or of a `loadRawMut` view, a list element, another `Inout`
+  parameter. Until now helpers could only change accounts (`Mut<T>`), so ports inlined their mutating helpers (an
+  order book's matching engine and event recorder cannot sensibly be inlined). At each call no other argument may
+  share storage with an Inout one (two elements of one list count as one place), an element of a Vec or BigVec is
+  refused when the call may move it, and a reference into the place read after the call is refused; places that may
+  be one account only at run time (two `Dup` accounts, two `loadRawMut` views under `NATIVE_ACCOUNT_WRITES`) are
+  compared before the call (2040). Integers, Pubkeys, strings and Options are refused with a hint (JS copies values
+  too: return the new one, or keep it in a struct). About the compute units of the same code written inline
+  (test/language/inout.test.ts). Writing to a read-only helper parameter now says to declare it `Inout<T>`.
+  docs/language.md (`Inout<T>` parameters), docs/stability.md (Experimental; the open edge of helpers taking a
+  writable struct that is not an account is settled). Programs that do not use it compile to the same C.
+- New: `loadRawAt<T>(acct, offset)` / `loadRawMutAt<T>(…)`, a native account's struct at a byte offset known at run
+  time, and `rawArrayAt<T>(acct, offset, capacity)` / `rawArrayMutAt<T>(…)`, a run-time number of elements in place
+  (`get`, `set`, `.length`, `for … of`, the list methods). Bounds checked once when made (ProgramError::AccountDataTooSmall,
+  overflow included); owner, writability and claim as `loadRaw` / `loadRawMut`.
+- New: `rbTreeAt<K, V>(acct, offset, capacity, compare?)` / `rbTreeMutAt`, lib-sokoban 0.3's `RedBlackTree<K, V, N>`
+  over account bytes, byte for byte (Phoenix's order books and seats): `get`, `insert`, `remove`, `min`, `max`,
+  `addrOf`, `nodeAt`, `initialize`, `length`, `capacity`, `for … of` and `reversed()`. A comparator function orders
+  the keys (called as `compare(searched, node)`), or Rust's derived order. Replayed against the crate itself with
+  identical bytes after every operation: the committed test's 21,650 recorded operations (seeds 1–3, capacities 1 to
+  4096, strides 32, 64 and 144; test/verification/rbtree/regenerate.sh), and, with the previous trace generator, a
+  one-off run of 1,020,000 (capacities 1 to 512). sokoban's panics are logged as solana-program up to 1.17 logs a
+  panic, with sokoban's messages and locations. Faster than the crate built with cargo-build-sbf at 4,096 entries
+  (get 215 CU against 384, insert 595 / 742, remove 355 / 618).
+- Native entries set their own return data and log compute units: `setReturnData(bytes)` (Rust's `set_return_data`,
+  from a list of u8: a local `FixedVec<u8, N>`, account data, the instruction data or a slice) in a `@fallback` entry,
+  its helpers and void instructions, and `logComputeUnits()` (`sol_log_compute_units`, the runtime's "Program
+  consumption: N units remaining"), which were only emitted under `--profile`. An instruction that returns a value
+  refuses `setReturnData` (its return value is its return data). Checked against the lines the Phoenix v1 binary
+  writes.
+- Native account lifecycle on remaining accounts and `AccountInfo` parameters: `closeRaw(account, receiver)` (Phoenix's
+  Tombstone: lamports to the receiver, owner to the System Program, length to 0, in that order and without zeroing the
+  data, ending as Phoenix's own Tombstone ends), `assignOwner(account, owner)` (`AccountInfo::assign`), and
+  `resizeAccount` on remaining accounts (the 10 KiB growth limit against the size the entrypoint records when the
+  instruction starts, as solana_program 1.14 records it). Checked writable, passed once and owned by this program, or
+  left to the runtime under `NATIVE_ACCOUNT_WRITES`.
+- Byte builders on `FixedVec<u8, N>` (a local list or one in account data), for byte strings a native program builds by
+  hand: `pushLE(x)` (an integer at its width), `pushKey(key)`, `pushBorsh(value)` (Borsh, with the codecs `invoke`,
+  events and `storeBorsh` use; object literals take their type, `pushBorsh<Header>({ … })`), `setLE(offset, x)` and
+  `truncate(n)`, each bounds-checked (5104) with the length moved only when everything fit. Phoenix's event recorder
+  written with them sends the same batches, byte for byte, as the Phoenix binary.
+- Rust panics as solana-program 1.14 to 1.17 leave them: `export const PANIC_STYLE = "solana-1.14"` makes `panic(message,
+  location)` log `panicked at '<message>', <location>` and abort ("SBF program panicked"), and `PANIC_ON_OVERFLOW`'s
+  panics abort too; `panicsAt(location, expression)` makes the expression's checked arithmetic panic with Rust's
+  messages ("attempt to add with overflow", "attempt to divide by zero", …) at the original's location instead of
+  failing with 5100 / 5101, in either style. Checked line for line against the Phoenix v1 binary's panics (its
+  entrypoint's assertion, and its overflow and remainder checks in initialize.rs and quantities.rs).
+- Fixed: a tree comparator returning an unsigned integer (`function cmp(a: u64, b: u64): u8`) was accepted and could
+  never report "less", so every search went one way and the tree was silently out of order. It is a compile error
+  naming the type; a comparator returns a signed integer (test/language/rbtree.test.ts).
+- Fixed: two writable views of one account's bytes through `loadRawMutAt`, `rawArrayMutAt` or `rbTreeMutAt` passed as
+  two `Inout` arguments under `NATIVE_ACCOUNT_WRITES` were not compared at run time (only `loadRawMut` views were), so
+  overlapping places reached the helper. They are compared before the call as `loadRawMut` views are: 2040 when they
+  overlap (test/language/inout.test.ts, test/fixtures/inout-views.ts).
+- Fixed: an `Inout` argument was compared at run time only with other `Inout` arguments, so a read-only argument that
+  is the same bytes (`h(a.s, b.s)` with two `Dup` accounts that are one, a place of a writable account beside a
+  read-only account that is the same, two native views) changed under the helper as it wrote. Every argument passed
+  in place is now compared with the `Inout` one when their roots may be one account (2040 when they overlap); calls
+  whose arguments cannot alias, and arguments copied for the call, are not compared, so no existing program changed
+  (test/language/inout.test.ts, test/fixtures/inout-share.ts).
+- Fixed: a tree node bound any other way than directly (`const e = c ? t.min() : t.max()`, `const v = t.get(k)!`)
+  escaped the rule that a reference into a tree is not used after an `insert`; it compiled and could read a reused
+  node. It refers to the tree like the direct form (`"e" still refers to t`), and binding one with `let` is refused
+  (test/language/rbtree.test.ts).
+- Fixed: a typed constant kept the value folded without its type, so `const T: u8 = ~1n` failed with "-2 does not fit
+  in u8" although `~` within a u8 is 254. The value is the one folded in its type, and an untyped constant using it
+  gets that value; out-of-range results are still refused (test/language/port-syntax.test.ts).
+- Fixed: a problem with an aliased type (`export type Buf = BigVec<u64>` used as an argument in another file) was
+  reported at the alias's declaration, once, instead of where it is used. Each use now gets its own report at the use
+  (test/language/aliases.test.ts).
+- Fixed: a view made before `closeRaw` or `resizeAccount` of its account (`const v = t.get(1n)!`, a `rawArrayMutAt`)
+  could still be used after it, its bounds checked against the old length, so writes landed past the new end and reads
+  were stale. Using one after either, or after a helper that may close or resize an account it is given, is a compile
+  error saying to take the view again (test/language/raw-views.test.ts).
+- Fixed: the rule that a `for … of` over a tree may not change its structure was kept per variable, so another view
+  of the same tree (`const t2 = rbTreeMutAt(…same account and offset…)`) could remove from it during the walk. It is
+  kept per account: no tree view of an account that may be the walked one's may insert, remove or initialize in the
+  loop, nor may a helper that takes accounts and makes an `rbTreeMutAt` view be called there
+  (test/language/rbtree.test.ts).
+- Language: a reference into a local `FixedVec` (`const e = xs.get(0n)`) read after the element is replaced
+  (`xs.set(0n, { … })`, `pop`, `clear`) is refused as one into account data is (`"e" still refers to xs[]`); before, a
+  local FixedVec's elements had no storage path and the read compiled, seeing the new value where JS keeps the old
+  object (test/language/fixedvec.test.ts). Such messages also name a `@heap` list as the source does (they printed its C
+  name).
+- Diagnostics: a node size that is not a multiple of 8 with a scalar value (`rbTreeMutAt<u64, u32>`) says to make the
+  value a struct with padding fields, not to add padding to `u32`; the stack-frame report after an overflowing build
+  reads clang's remarks without the 1 MiB output limit, which cut them short on large programs
+  (test/language/rbtree.test.ts).
+- Programs that use none of the new features above compile to the same C as before; the "Faster" entries name the
+  programs whose generated C they change.
+
 ## 0.42.0 — 2026-11-09
 
 SPL Stake Pool ported in full, the native program behind most liquid staking tokens, from the tag a reproducible build

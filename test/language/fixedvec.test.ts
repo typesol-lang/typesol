@@ -88,4 +88,21 @@ describe("FixedVec", () => {
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: Mut<S>): void { s.a = fixedVec([1n, 2n, 3n]); }`)).toMatch(/do not fit/);
     expect(errors(`export interface S { a: FixedVec<u64, 2> }\nexport function f(s: Mut<S>): void { s.a.push(1n); s.a.set(0n, 2n); }`)).toBe("");
   });
+
+  it("an element of a local list read after the element is replaced is refused, named as the source names the list", () => {
+    const f = (heap: string) =>
+      compileErrors(`import { type FixedVec, type u64, fixedVec, log } from "typesol";
+export interface S { a: u64; b: u64; }
+export function f(): void {
+  ${heap}const xs: FixedVec<S, 4> = fixedVec([]);
+  xs.push({ a: 1n, b: 2n });
+  const e = xs.get(0n);
+  xs.set(0n, { a: 3n, b: 4n });
+  log(e.a);
+}`);
+    const still = `"e" still refers to xs[]; replacing it here would change what "e" reads (in JS it keeps the old value). Copy the fields you need into locals first`;
+    expect(f("")).toBe(still);
+    // A @heap list is reached through its pointer; the message still names it xs.
+    expect(f("/** @heap */\n  ")).toBe(still);
+  });
 });

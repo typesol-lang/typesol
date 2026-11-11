@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { type ValueType, isWritable } from "../model.js";
-import { U64, U8, I64, BOOL, PUBKEY, STRING, type CpiAcct, type CpiProgram, type Value, cBytes, cString, optC } from "./shared.js";
+import { U64, U8, I64, BOOL, PUBKEY, STRING, type CpiAcct, type CpiProgram, type Value, cBytes, optC } from "./shared.js";
 import { CreateEmitter } from "./create.js";
 
 /** SPL Token and Token-2022 instructions (`tokenProgram.transfer(…)` and the rest) and the ATA program's. */
@@ -946,7 +946,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const n = this.tmp("n");
         const pre = this.model.constants.get("PROGRAM_ERROR_LOG_PREFIX")?.value;
         const fail = (code: number, name: string, why: string) =>
-          `TS_FAIL(((uint64_t)${code}) << 32, ${cString(typeof pre === "string" ? `${pre}${name}` : `TypeSOL: ${why}`)})`;
+          this.programFail(`((uint64_t)${code}) << 32`, typeof pre === "string" ? `${pre}${name}` : `TypeSOL: ${why}`);
         this.line(`uint32_t ${t} = 13;`);
         this.line(`TS_TRY(ts_cpi(params, ${program.c}, (uint8_t *)&${t}, 4, NULL, 0, NULL, 0));`);
         this.line(`uint64_t ${out} = 0;`);

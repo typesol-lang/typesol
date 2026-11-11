@@ -37,6 +37,9 @@ uses. Publishing works on mainnet-beta. The error shows the failing transaction'
 SBPF v0 (the default) every function gets a fixed 4 KiB stack frame, and going past it corrupts memory, so the build
 refuses it. SBPF v1 and v2 (`--sbpf v1` / `v2`) grow frames dynamically, so this limit does not apply there. Large structs and arrays copied into typed
 locals (`const q: Big = acct.big`) are the usual cause: bind them without a type (`const q = acct.big`, a reference
-into the account data) or move the work into helpers. Helpers are often inlined into their instruction, so their
-locals count toward its frame.
+into the account data). The message lists the biggest locals (clang's frame layout: a local's name and the source
+line near it; the locals of an inlined helper show as unnamed, with the helpers' locals that may be them). Helpers are
+often inlined into their instruction, so their locals count toward its frame: mark one `/** @noinline */` to give it a
+4 KiB frame of its own (a few compute units per call), or declare a large local list or struct of an instruction
+`/** @heap */` to keep it on the heap (about 18 CU for the allocation).
 

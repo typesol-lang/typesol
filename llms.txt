@@ -27,4 +27,4 @@ The rules and the whole reference in one file: https://typesol.com/llms-full.txt
 
 ## Optional
 
-- [Case studies](https://typesol.com/docs/case-study-marginfi/): mainnet programs (Marginfi v2, SPL Stake Pool, Raydium AMM v4, CLMM, CP-Swap, Jito) ported and checked against their binaries
+- [Case studies](https://typesol.com/docs/case-study-marginfi/): mainnet programs (Marginfi v2, Phoenix v1, SPL Stake Pool, Raydium AMM v4, CLMM, CP-Swap, Jito) ported and checked against their binaries

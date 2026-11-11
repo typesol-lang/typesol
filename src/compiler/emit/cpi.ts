@@ -229,6 +229,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
     this.line(`for (uint64_t ${i}b = ${base} + ${range.from}; ${i}b < ${base} + ${range.to}; ${i}b++) ts_info(params->ka[${i}b], &params->infos[${k}++]);`);
     const ixName = this.tmp("cpi");
     this.line(`SolInstruction ${ixName} = {&${programKey}, ${m}, ${n}, (uint8_t *)${data.items}, ${data.count}};`);
+    this.forgetOwners();
     if (multi) this.line(`TS_TRY(sol_invoke_signed(&${ixName}, params->infos, ${k}, ${multi.ptr}, ${multi.count}));`);
     else if (seeds) {
       const signer = this.tmp("signer");
@@ -317,8 +318,12 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         const ft = f.type;
         const t = this.tmp("evv");
         this.line(`${fixedVecC(ft)} ${t};`);
-        this.line(`ts_memzero(&${t}, sizeof(${t}));`);
-        this.writeAggregate({ lv: t, type: ft, writable: true }, e);
+        // A literal is built in place, its free slots zeroed; anything else may fill only the first ones.
+        if (this.isListLiteral(e)) this.writeAggregate({ lv: t, type: ft, writable: true }, e, true);
+        else {
+          this.line(`ts_memzero_bulk(&${t}, sizeof(${t}));`);
+          this.writeAggregate({ lv: t, type: ft, writable: true }, e);
+        }
         const n = this.fieldBytes(ft);
         return (put) => put(`&${t}`, String(n), n);
       }
