@@ -34,7 +34,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 3010 | account must sign (AccountNotSigner; also a new keypair account a `create(payer, null, …)` makes) |
 | 3011 | a `SystemAccount` owned by another program (AccountNotSystemOwned) |
 | 3012 | account not initialized: empty system account where a program account, a token account or a mint was expected (AccountNotInitialized; not for zero-copy accounts, which Anchor's AccountLoader reports as 3007) |
-| 3016 | account would grow more than 10 KiB in one instruction, or grow without a payer (AccountReallocExceedsLimit) |
+| 3016 | account would grow more than 10 KiB in one instruction (counted from its length when the instruction started), or grow without a payer (AccountReallocExceedsLimit) |
 | 4101 | an `Init` / `create` whose payer is the account being created (TryingToInitPayerAsProgramAccount) |
 | 4102 | cast overflow (InvalidNumericConversion) |
 | 5100 / 5101 | arithmetic overflow (including shifts) / division by zero |

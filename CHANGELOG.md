@@ -6,6 +6,54 @@ codes, and says so here.
 
 ## Unreleased
 
+Fixes from a second internal review, of 0.44.0 (docs/audit.md). Of the 76 programs of the 0.44.0 sources, 74 compile
+to the same binary as in 0.44.0 and 2 to a different one (mint-close-authority and allow-block-list-token, below); no
+program of those sources is refused.
+
+- Fixed: `mint.create(…, { transferFee })` with a `null` (or run-time None) config or withdraw authority made a mint
+  with fee 0 and no withdraw authority. Token-2022 reads a None COption as one byte and the compiler sent 33, so the
+  32 zero bytes were read as the next fields. A None authority is now one byte, for `transferFee`'s two and
+  `closeAuthority` (where Token-2022 ignored the extra bytes, now exact too); `initializeTransferFeeConfig` and the
+  other wrappers already encoded it right. Programs using `transferFee` or `closeAuthority` in `mint.create` /
+  `createIfNeeded` compile differently (transfer-fee to the same binary, mint-close-authority to another)
+  (test/integrations/token-init.test.ts, decoded by the Token-2022 decoder for each authority null, constant and
+  run-time).
+- Fixed: a reference into account data held across a resize made through another parameter that may be the same
+  account was not refused: with `a: Dup<Mut<Bag>>` and `b: Mut<Bag>` (or a read-only `a: Account<Bag>`, or a struct
+  loaded with `loadAccount` / `loadAccountMut`) one account in both slots, `const e = a.entries.get(1n); b.tags.pop();
+  e.score = v` wrote another record, and a `for (const x of a.entries)` loop read shifted fields. The reference rule
+  now treats parameters that may be one account (a Dup pair, a read-only and a writable account of one type, a loaded
+  struct) as one name for push, pop, clear and a helper given the account: such a program is a compile error, as with
+  one name. Programs that hold no reference across the resize compile as before; none of the examples and ports is
+  refused (test/security/dup.test.ts).
+- Fixed: twelve token wrappers (approve, approveChecked, mintToChecked, burnChecked, setAuthority,
+  updateTransferHook, updateInterestRate, transferCheckedWithFee, setTransferFee, initializeTokenGroup,
+  updateGroupMaxSize, updateGroupAuthority) and the Stake program's split, authorize and withdraw read
+  their signer seeds before an earlier argument ran: `approve(src, d, owner, next(st), ["vault", st.count, bump])`
+  signed for the count before `next(st)` changed it. The seeds are now lowered after the other arguments when an
+  argument runs code; calls whose arguments run none compile as before (test/integrations/tokenops.test.ts).
+- Fixed: arguments read after later ones ran. The amount of `transfer`, `transferChecked`, `mintTo`, `burn` and
+  `systemProgram.transfer` was read at the CPI, after a seed list that runs code (`["vault", next(st), bump]`); account
+  text passed to `initializeMetadata`, `removeMetadataKey` and Metaplex `updateMetadataAccountsV2` (and that
+  call's `primarySaleHappened` / `isMutable`) changed when a later argument rewrote it. Each is now read first, only
+  where a later argument runs code, so other calls compile as before (test/integrations/tokenops.test.ts).
+- Fixed: `mint.create` with extensions adding up to exactly 355 bytes (a Multisig's length) always failed: Token-2022
+  sizes such a mint 357 bytes and refuses any other size. The mint is now made 357 bytes; `createIfNeeded` accepts
+  that size already, and cannot reach 355 with the extensions it checks (test/integrations/token-init.test.ts).
+- Fixed: `updateExtraAccountMetas` limited growth to 10 KiB past the account's current length instead of its length
+  when the instruction started, so after `resizeAccount(metas, metas.dataLen + 10240n)` it could write past the room
+  the runtime leaves, into the next account's record. It now counts from the length at entry (3016), in an
+  instruction and in a helper. Programs that call it compile differently (allow-block-list-token, to another binary)
+  (test/integrations/hook.test.ts).
+- Fixed: the runtime grew a heap Vec (`ts_hvec_reserve`) through its own struct type while the program reads it
+  through the generated one, which the C aliasing rules let the optimizer treat as unrelated (no miscompile was
+  observed). The runtime's type is `may_alias`; no build flag changed, and no program of the 0.44.0 sources (heap Vecs
+  included) builds to another binary (test/language/borsh-vec.test.ts).
+- Docs: docs/security-model.md and docs/language.md say what `pythPrice` and `switchboardValue` leave to the author
+  (the price's sign and zero, the confidence, a publish time or result slot in the future, rounding toward zero when
+  scaling) and that Switchboard staleness counts from `result.slot`; the review of 0.44.0 is recorded in
+  docs/audit.md and docs/security-model.md.
+
 ## 0.44.0 — 2026-11-11
 
 Fixes from an internal review of 0.43.0, and the means to check a release. A helper's Pubkey, Option, string or u256
