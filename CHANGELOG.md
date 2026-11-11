@@ -6,6 +6,17 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.43.0 — 2026-11-11
+
+Phoenix v1 ported in full, Ellipsis Labs' on-chain limit order book and a native program, from the commit a
+reproducible build proves is the mainnet binary, and checked against that binary on 3,575 transactions and a seeded
+random walk over two order books. The compiler gained what it needed: views at run-time offsets (`loadRawAt`,
+`rawArrayAt`), a built-in red-black tree in lib-sokoban 0.3's byte layout (`rbTreeAt`), `Inout<T>` helper parameters,
+byte builders on `FixedVec<u8, N>`, return data and compute-unit logs in native entries, `closeRaw`, Rust 1.14's panic
+lines (`panicsAt`), constant expressions, type aliases and file-local structs. Of the 74 programs of the 0.42.0 sources,
+68 compile to the same binary as in 0.42.0; Marginfi, multisig, Raydium AMM v4, Raydium CLMM, SPL Stake Pool and
+favorites compile to a different one (the "Faster" entries below).
+
 - Examples: showcase/mainnet/phoenix, a port of Phoenix v1 (Ellipsis Labs' on-chain limit order book at PhoeNiXZ8…, a
   native program, all 28 instructions), from the commit a reproducible build proves is the mainnet binary (c16694d,
   relicensed under MIT with its sources unchanged), checked against that binary on 3,575 transactions in five files

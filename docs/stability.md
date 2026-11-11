@@ -40,31 +40,31 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   `createProgramAddress`.
 - `loadBorsh` / `storeBorsh` (0.42.0): a native program's Borsh accounts read into a local struct and written back.
 - `BigVec<T>` (0.42.0): SPL's `big_vec`, a list over the rest of a native account.
-- Views at run-time offsets (unreleased): `loadRawAt` / `loadRawMutAt`, `rawArrayAt` / `rawArrayMutAt`; a read-only
+- Views at run-time offsets (0.43.0): `loadRawAt` / `loadRawMutAt`, `rawArrayAt` / `rawArrayMutAt`; a read-only
   view read where it is made (`loadRaw<T>(a).field`, `rbTreeAt(…).length`), and the owner check's cache the views share.
-- The built-in RedBlackTree (unreleased): `rbTreeAt` / `rbTreeMutAt`, lib-sokoban 0.3's byte layout and algorithms,
+- The built-in RedBlackTree (0.43.0): `rbTreeAt` / `rbTreeMutAt`, lib-sokoban 0.3's byte layout and algorithms,
   its panics in solana-program 1.14–1.17's format, `removeAt(index)` (what it gives for a node in no tree may change).
 - `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
-- Failures without a log line (unreleased): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
-- `findProgramAddressWithBump` (unreleased), with `const [address, bump] = …` its only array destructuring.
-- Plain type aliases (unreleased): `type Price = u64`, replaced by the type they name.
-- File-local structs (unreleased): `interface Pair { … }` without `export`, for helpers and locals, out of the IDL.
-- Constant expressions (unreleased): top-level integer constants folded from literals and earlier constants, a typed
+- Failures without a log line (0.43.0): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
+- `findProgramAddressWithBump` (0.43.0), with `const [address, bump] = …` its only array destructuring.
+- Plain type aliases (0.43.0): `type Price = u64`, replaced by the type they name.
+- File-local structs (0.43.0): `interface Pair { … }` without `export`, for helpers and locals, out of the IDL.
+- Constant expressions (0.43.0): top-level integer constants folded from literals and earlier constants, a typed
   one computed in its type.
-- Comma-separated `for` updates and initializers (unreleased).
-- Stack room (unreleased): `/** @noinline */` helpers and `/** @heap */` locals.
+- Comma-separated `for` updates and initializers (0.43.0).
+- Stack room (0.43.0): `/** @noinline */` helpers and `/** @heap */` locals.
 - Local `FixedVec` / `FixedArray` lists of structs, `FixedVec.pushAll`, the instruction data as a list (`slice`,
   `InstructionBytes` helper parameters), `invokeInstruction` in helpers (0.42.0); local FixedVecs given for read-only
-  `FixedVec<T, N>` / `Vec<T>` helper parameters (unreleased).
+  `FixedVec<T, N>` / `Vec<T>` helper parameters (0.43.0).
 - `epochRewards()` and `EpochRewards` (0.42.0): the EpochRewards sysvar through its syscall.
 - `NATIVE_ACCOUNT_WRITES` (0.42.0): opt-in native write semantics for `loadRawMut`, `storeBorsh` and BigVec writes
   (writability and aliasing left to the runtime). It drops checks a program would otherwise get, so it stays outside
   "the checks stay" promise above: it only applies to programs that declare it.
-- `Inout<T>` helper parameters (unreleased): a helper that changes a struct, FixedArray or FixedVec of the caller's
+- `Inout<T>` helper parameters (0.43.0): a helper that changes a struct, FixedArray or FixedVec of the caller's
   that is not an account (a local, a `loadBorsh` local, a field of a `loadRawMut` view, a list element), with the
   aliasing rules at each call. It settles the open edge of helpers taking a writable struct that is not an account,
   which were refused; the rules (what counts as overlapping, which places may move) may still be refined.
-- For native ports (Unreleased): `setReturnData` and `logComputeUnits` in a native entry; `closeRaw`, `assignOwner`
+- For native ports (0.43.0): `setReturnData` and `logComputeUnits` in a native entry; `closeRaw`, `assignOwner`
   and `resizeAccount` on remaining accounts; the byte builders of `FixedVec<u8, N>` (`pushLE`, `pushKey`, `pushBorsh`,
   `setLE`, `truncate`); `PANIC_STYLE = "solana-1.14"` and `panicsAt(location, expression)`.
 - Metaplex CPIs (Token Metadata, Core, Bubblegum), oracles (Pyth, Switchboard), the Stake program.
