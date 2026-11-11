@@ -194,7 +194,9 @@ describe("the tested toolchain", () => {
     expect(describeToolchain({ clang: FAKE_CLANG, compiler: "0.43.0" })).toBe(
       "clang 99.1.0 (example/llvm-project 01234567), platform-tools unknown, host unknown, TypeSOL 0.43.0",
     );
-    expect(toolchainDifferences(a, { ...a, host: { os: "darwin", arch: "arm64" } })).toEqual([]);
+    // Each platform-tools host package has its own compiler-builtins: the host is a difference (docs/stability.md).
+    expect(toolchainDifferences(a, { ...a, host: { os: "darwin", arch: "arm64" } })).toEqual(["host"]);
+    expect(toolchainDifferences(a, { ...a, host: undefined })).toEqual([]);
     expect(toolchainDifferences(a, { ...a, clang: FAKE_CLANG, platformTools: "v1.57", compiler: "0.43.0" })).toEqual([
       "TypeSOL version",
       "clang",
@@ -238,7 +240,7 @@ describe("the tested toolchain", () => {
       "  deployed  clang 99.1.0 (example/llvm-project 01234567), platform-tools v9.99, linux-x64, TypeSOL " +
         `${local.compiler} (deployed.build.json, whose binary hash is the deployed one's)`,
     );
-    expect(next.stdout).toMatch(/ {2}differs {3}clang(, platform-tools)?: another clang can compile the same C to other bytes/);
+    expect(next.stdout).toMatch(/ {2}differs {3}clang(, platform-tools)?(, host)?: another clang can compile the same C to other bytes/);
 
     // The same manifest given by name, from elsewhere.
     mkdirSync(path.join(dir, "records"));

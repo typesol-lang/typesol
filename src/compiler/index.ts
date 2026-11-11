@@ -54,6 +54,28 @@ export interface BuildManifest {
   sources: Record<string, string>;
   /** sha256 of the .so. */
   binary: string;
+  /** Set when the build ran in the pinned container (`typesol build --docker`, after 0.44.0): what that environment is. */
+  container?: ContainerIdentity;
+}
+
+/**
+ * The build container of `--docker` (docker/Dockerfile): everything that decides what is inside it, so that another
+ * machine can build the same environment and compare. `image` is this machine's local image id; it can differ between
+ * machines that built the same Dockerfile (layer dates), so it identifies the image used, not the environment.
+ */
+export interface ContainerIdentity {
+  /** The container platform: `linux/amd64` (the binaries of some programs depend on the platform-tools host package). */
+  platform: string;
+  /** sha256 of docker/Dockerfile. */
+  dockerfile: string;
+  /** The local image id (`sha256:…`). */
+  image: string;
+  /** The base images, each pinned by digest (`node:24.22.2-bookworm-slim@sha256:…`). */
+  base: string[];
+  /** The Agave and platform-tools release files, with the sha256 the Dockerfile requires of them. */
+  downloads: { url: string; sha256: string }[];
+  /** The TypeSOL package installed in the image, as its release record (releases/<version>.json) describes it. */
+  typesol: { version: string; shasum: string; integrity: string; commit: string };
 }
 
 const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
@@ -106,13 +128,14 @@ export function build(entry: string, outDir: string, programAddress: string, opt
 export const COMPILER_VERSION: string = (createRequire(import.meta.url)("../../package.json") as { version: string }).version;
 
 /** A build's toolchain in one line: `clang 20.1.7-rust-dev (…), platform-tools v1.52, darwin-arm64, TypeSOL 0.44.0`. */
-export function describeToolchain(m: Pick<BuildManifest, "clang" | "platformTools" | "host" | "compiler">): string {
+export function describeToolchain(m: Pick<BuildManifest, "clang" | "platformTools" | "host" | "compiler" | "container">): string {
   return [
     shortClang(m.clang),
     `platform-tools ${m.platformTools ?? "unknown"}`,
     m.host ? `${m.host.os}-${m.host.arch}` : "host unknown",
     `TypeSOL ${m.compiler}`,
     ...(m.clang === TESTED_TOOLCHAIN.clang ? ["the tested toolchain"] : []),
+    ...(m.container ? [`in the build container (Dockerfile ${m.container.dockerfile.slice(0, 12)}…)`] : []),
   ].join(", ");
 }
 
@@ -124,7 +147,9 @@ export function toolchainDifferences(a: Partial<BuildManifest>, b: Partial<Build
   if (a.platformTools && b.platformTools && a.platformTools !== b.platformTools) out.push("platform-tools");
   if (a.typescript !== b.typescript) out.push("TypeScript");
   if (a.sbpf !== b.sbpf) out.push("SBPF version");
-  // The host is recorded, not compared: one clang version is meant to give the same bytes on every host.
+  // The same clang gives the same object code on every host, but each platform-tools host package ships its own build
+  // of compiler-builtins, so a program that links its 128-bit or signed division differs between hosts.
+  if (a.host && b.host && (a.host.os !== b.host.os || a.host.arch !== b.host.arch)) out.push("host");
   return out;
 }
 

@@ -58,6 +58,8 @@
     "CHANGELOG.md",
     "SECURITY.md",
     "docs",
+    "docker",
+    "releases",
     "llms.txt",
     "llms-full.txt"
   ],
