@@ -34,8 +34,12 @@ clients read TypeSOL programs unchanged.
 - **Small and fast.** In the LiteSVM benchmarks below, TypeSOL uses 5–32% of Anchor's compute units, with binaries
   about 10× smaller, and fewer compute units than native Rust and hand-tuned Pinocchio on every instruction. On
   mainnet the results differ by instruction; see [the mainnet table](#on-mainnet).
-- **Reproducible.** The same sources and toolchain produce the same bytes. `typesol verify` reads a deployed program
-  from the cluster and checks it, and the IDL published on chain, against its source.
+- **Checked against mainnet.** Eight deployed programs are ported in full, among them Marginfi v2, Phoenix v1 and
+  SPL Stake Pool, and run beside the original binaries: the same outcomes, log lines, events and account bytes on
+  thousands of transactions, for fewer compute units ([the ports](#ported-and-checked-against-mainnet-binaries)).
+- **Verifiable.** `typesol verify` reads a deployed program from the cluster and checks it, and the IDL published on
+  chain, against its source. Every release records the hashes of its npm tarball and of every program it builds
+  ([releases/](releases), [docs/testing.md](docs/testing.md#reproducing-a-release)).
 
 <p align="center">
   <a href="#numbers">
@@ -45,6 +49,28 @@ clients read TypeSOL programs unchanged.
     </picture>
   </a>
 </p>
+
+## Ported and checked against mainnet binaries
+
+Each port is the whole program, written in TypeSOL from the original's source. Its tests send every transaction to
+the port and to the binary deployed on mainnet, both in LiteSVM, and require the same outcome, error, log lines,
+events, return data and bytes in every account; the port must also use fewer compute units on every transaction that
+succeeds. A case study for each says what was compared and what was not.
+
+| Program | Kind | Instructions | Transactions compared |
+| --- | --- | ---: | ---: |
+| [Marginfi v2](docs/case-study-marginfi.md) | Anchor, lending | 124 | 2,081 |
+| [Phoenix v1](docs/case-study-phoenix.md) | native, limit order book | 28 | 3,575 |
+| [SPL Stake Pool](docs/case-study-spl-stake-pool.md) | native, liquid staking | 27 | 2,107 |
+| [Raydium CLMM](docs/case-study-raydium-clmm.md) | Anchor, concentrated liquidity | 37 | 302 |
+| [Raydium CP-Swap](docs/case-study-raydium-cp-swap.md) | Anchor, constant product | 21 | 136 |
+| [Raydium AMM v4](docs/case-study-raydium-amm.md) | native, constant product | all | 484 |
+| [Jito MEV](docs/case-study-jito-mev.md) | Anchor, three programs | 24 | 150 |
+| [coral-xyz/multisig](docs/case-study-multisig.md) | Anchor | all | 52 |
+
+Random walks with fixed or printed seeds run on top of these counts ([docs/testing.md](docs/testing.md)). The
+sources are in [`showcase/mainnet`](showcase/mainnet), and where each original binary comes from is recorded in
+[test/programs/SOURCES.md](test/programs/SOURCES.md).
 
 ## At a glance
 
@@ -150,16 +176,16 @@ sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
 cargo-build-sbf --install-only --force-tools-install --tools-version v1.52
 ```
 
-Other versions work, but their binaries are not covered by the project's tests: `typesol build` warns once when the
-clang is another one (`--toolchain-strict` or `TYPESOL_TOOLCHAIN=strict` makes that an error), and every build records
-its clang, platform-tools and host in `<name>.build.json`.
-
 ```sh
 npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
 cd my-app && npm install
 npm test                                      # builds the program and runs it in LiteSVM, an in-process Solana runtime
 npx --no-install typesol build                # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
 ```
+
+Other versions work, but their binaries are not covered by the project's tests: `typesol build` warns once when the
+clang is another one (`--toolchain-strict` or `TYPESOL_TOOLCHAIN=strict` makes that an error), and every build records
+its clang, platform-tools and host in `<name>.build.json`.
 
 `npx --no-install typesol doctor` checks all of this (Node.js, platform-tools and whether they are the tested ones, Solana CLI, keypair, RPC) and prints the command
 that fixes anything missing. Inside a project, `npx --no-install typesol …` (or `npm run build`, `npm run deploy`) runs the
@@ -337,7 +363,10 @@ upgrade, is in [typesol-lang/benchmarks](https://github.com/typesol-lang/benchma
   - Stateful vault, escrow and ledger runs are checked against a TypeScript model.
   - Differential runs send the same transactions to TypeSOL and to the Anchor twins and compare outcomes, account
     contents and balances.
-- **Localnet smoke test.** A smoke script deploys every example to a local validator and drives it end to end.
+- **Ports against mainnet binaries.** The eight ports above run beside the deployed originals, transaction by
+  transaction, and random walks over them compare every step.
+- **Localnet smoke test.** A script deploys every example to a local validator and drives it end to end; it is run
+  by hand, not in CI.
 
 Details are in [docs/testing.md](docs/testing.md).
 
@@ -381,6 +410,12 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Phoenix v1](docs/case
 [versioning policy](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md); [CHANGELOG.md](CHANGELOG.md) lists every
 change.
 - The compiler, runtime and tooling have been through internal security reviews and are covered by the tests above.
+  The two latest, of 0.43.0 and 0.44.0 in November 2026, found defects that made a program that compiled behave
+  differently from its source; each is fixed with a test, and [docs/audit.md](docs/audit.md) lists them, what the
+  reviews covered and what they did not. Programs built before 0.44.1 should be rebuilt.
+- From 0.44.0 on, a release that only fixes defects is a patch with no new language surface and a binary diff in its
+  notes ([SECURITY.md](SECURITY.md#fix-releases)), and the npm tarball is the one packed from the tag and recorded
+  in [releases/](releases).
 - They have **not been audited by an independent firm**. Do not put significant value behind programs built with
   TypeSOL until such an audit is published.
 - Audit your own programs as you would any Solana program. What a compiled program can rely on, and what is left to
@@ -408,5 +443,6 @@ built-in, a constraint or an error code. Then read [CONTRIBUTING.md](CONTRIBUTIN
 
 ## License
 
-[MIT](LICENSE). The tests also use third-party program binaries and data, none of it in the npm package: see
-[NOTICE](NOTICE) and [test/programs/SOURCES.md](test/programs/SOURCES.md).
+[MIT](LICENSE). The runtime and `typesol/testing` include code ported from MIT and Apache-2.0 projects, and the tests
+use third-party program binaries and data that are not in the npm package: see [NOTICE](NOTICE) and
+[test/programs/SOURCES.md](test/programs/SOURCES.md).
