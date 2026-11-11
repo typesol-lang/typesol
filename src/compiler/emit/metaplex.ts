@@ -324,9 +324,12 @@ export abstract class MetaplexEmitter extends TokenEmitter {
       if (!ts.isObjectLiteralExpression(a[2])) this.fail(a[2], "data is { name, symbol, uri, sellerFeeBasisPoints, creators?, collection? } or null");
       const props = this.literalProps(a[2], ["name", "symbol", "uri", "sellerFeeBasisPoints", "creators", "collection"], "data");
       for (const k of ["name", "symbol", "uri", "sellerFeeBasisPoints"]) if (!props.has(k)) this.fail(a[2], `data needs ${k} (it replaces the whole DataV2)`);
+      // A view of account text is read at the call: copied first when another argument runs code that may rewrite it.
+      const others = (n: ts.Expression) => [...props.values(), ...a.slice(3)].some((o) => o !== n && this.runsCode(o, true));
       const text = (k: string) => {
         const t = this.tmp("md");
-        this.line(`TS_Str ${t} = ${this.expect(this.expr(props.get(k)!, STRING), STRING, props.get(k)!).c};`);
+        const v = this.expect(this.expr(props.get(k)!, STRING), STRING, props.get(k)!);
+        this.line(`TS_Str ${t} = ${(others(props.get(k)!) ? this.ownedString(v) : v).c};`);
         return t;
       };
       [name, symbol, uri] = ["name", "symbol", "uri"].map(text);
@@ -349,9 +352,17 @@ export abstract class MetaplexEmitter extends TokenEmitter {
       this.line(`SolPubkey ${t} = *(${key.c});`);
       next = `&${t}`;
     }
-    const flag = (n: ts.Expression) => (isNull(n) ? "-1" : `((${this.expect(this.expr(n, BOOL), BOOL, n).c}) ? 1 : 0)`);
-    const primary = flag(a[4]);
-    const mutable = flag(a[5]);
+    const flag = (i: number) => {
+      if (isNull(a[i]!)) return "-1";
+      const f = `((${this.expect(this.expr(a[i]!, BOOL), BOOL, a[i]!).c}) ? 1 : 0)`;
+      if (!a.slice(i + 1).some((n) => this.runsCode(n, true))) return f;
+      // Read before a later argument that runs code, as JS reads it.
+      const t = this.tmp("flag");
+      this.line(`int ${t} = ${f};`);
+      return t;
+    };
+    const primary = flag(4);
+    const mutable = flag(5);
     const seeds = this.signerSeeds(a[6], ua, a[1]);
     this.line(
       `TS_TRY(ts_mpl_update_v2(params, a_${program.name}, a_${metadata.name}, a_${ua.name}, ${hasData}, ${name}, ${symbol}, ${uri}, ${fee}, ${creators}, ${ncreators}, ${collection}, ${next}, ${primary}, ${mutable}, ${seeds.name}, ${seeds.count}));`,

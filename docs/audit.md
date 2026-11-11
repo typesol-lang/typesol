@@ -7,16 +7,16 @@ with TypeSOL are out of scope; their authors audit them.
 
 ## Scope
 
-In order of priority. Line counts at 0.43.0 (November 2026).
+In order of priority. Line counts at 0.44.0 (November 2026).
 
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |
-| 1 | C runtime | `runtime/typesol_rt.h` | 2,995 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
-| 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 879 | Which checks each account parameter gets, and their order |
-| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 3,742 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
-| 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,633 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
+| 1 | C runtime | `runtime/typesol_rt.h` | 2,998 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
+| 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 876 | Which checks each account parameter gets, and their order |
+| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 3,799 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
+| 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,694 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
 | 1 | Raw views and the red-black tree | `src/compiler/emit/views.ts`, `rbtree.ts` | 655 | Accounts read without a discriminator at run-time offsets (`loadRaw`, `loadRawAt`, `rawArrayAt`, `BigVec`), their bounds, and the red-black tree's node indexes (`rbTreeAt`) |
-| 1 | Metaplex CPIs | `src/compiler/emit/metaplex.ts` | 1,454 | Token Metadata, Core and Bubblegum instruction layouts and their account lists |
+| 1 | Metaplex CPIs | `src/compiler/emit/metaplex.ts` | 1,465 | Token Metadata, Core and Bubblegum instruction layouts and their account lists |
 | 1 | Expressions | `src/compiler/emit/expressions.ts`, `shared.ts`, `borsh.ts` | 2,088 | Checked arithmetic and casts, Borsh encoding of arguments and `@layout borsh` accounts |
 | 2 | Front end | `src/compiler/analyze.ts`, `model.ts` | 3,486 | What the language accepts; constraints and account types as parsed from the source |
 | 2 | Interface | `src/compiler/idl.ts`, `src/tools/clientgen.ts` | 2,460 | The IDL and the generated client must describe the program exactly (a mismatch can make clients sign the wrong thing) |
@@ -53,6 +53,45 @@ accepts. Areas where a bug would be most damaging, and where earlier internal re
 
 Internal reviews, by the maintainers: none of them is an independent audit. Their findings and fixes are in the
 CHANGELOG.
+
+### 0.44.0 (2026-11-11)
+
+A second internal review, of 0.44.0 as published, over the areas the review of 0.43.0 left out: the token,
+Token-2022 and Metaplex CPI wrappers' emitters, the oracle readers, the Stake wrappers and signature introspection,
+SBPF v1 and v2 builds, optional accounts, `Dup<…>`, and the heap and stack limits. It probed each with targeted
+programs run in LiteSVM against the real token programs, and read the runtime header and the C generated for them.
+
+Defects found, fixed in 0.44.1 (its CHANGELOG section, with a test for each):
+
+- **A None authority in `mint.create`'s `transferFee` was 33 bytes.** Token-2022 reads a None COption as one byte,
+  so the 32 zero bytes after it became the next fields: a mint with a null config authority got no withdraw
+  authority and a fee of 0. The standalone `initializeTransferFeeConfig` was right.
+- **A reference held across a resize through another slot.** The reference rule compared names only: with a
+  `Dup<…>` pair, a read-only and a writable account of one type, or a loaded struct naming one account, a reference
+  made through one slot outlived a push, pop or clear through the other and reached another record. Such programs are
+  now refused, as with one name.
+- **Wrapper arguments out of source order.** Twelve token wrappers and the Stake wrappers read their signer seeds
+  before an earlier argument's code ran (a PDA other than the one the source names); amounts of `transfer` and the
+  like, and account text given to the metadata wrappers, were read after a later argument's code ran.
+- **A 355-byte mint.** Extensions adding up to a Multisig's length made `mint.create` fail every time (Token-2022
+  sizes such a mint 357).
+- **`updateExtraAccountMetas` growth.** The 10 KiB limit was counted from the current length, so after a
+  `resizeAccount` it could write past the runtime's room into the next account's record.
+- **Heap Vec aliasing in the runtime.** `ts_hvec_reserve` wrote through a type the C aliasing rules let the optimizer
+  treat as unrelated to the generated code's (latent; no miscompile seen).
+- **Oracle documentation.** What `pythPrice` and `switchboardValue` do not check was not said plainly; the readers are
+  unchanged (docs/security-model.md).
+
+Examined and found sound: the other token and Token-2022 wrappers' optional keys (the standalone initializers'
+COptions and Borsh Options, the OptionalNonZero keys of the pointer, hook, group and interest extensions); Token-2022
+mints and accounts with extensions not taken for one another; several large token-metadata buffers in one
+instruction; the Ed25519 signature readers against hostile offsets (into another instruction, a zero count, the same
+bytes under another program id, a fake Instructions sysvar); optional accounts left out or passed unsigned; `Dup<…>`
+pairs without references across a resize; the heap frame and stack limits; and checked arithmetic at every integer
+width, built for SBPF v0, v1 and v2 from the same source, with the same results.
+
+Not reviewed: the Metaplex wrappers for unusual argument shapes beyond reading them, the large ports (Marginfi,
+Phoenix, Raydium, the Stake Pool) built for SBPF v1 and v2, and Windows.
 
 ### 0.43.0 (2026-11-11)
 

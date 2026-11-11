@@ -101,6 +101,49 @@ describe("Vec<T> in a @layout borsh struct", () => {
     expect(b.readBigUInt64LE()).toBe(1015n);
   });
 
+  // ts_hvec_reserve writes a Vec's room through the runtime's own type while the program reads it through its own
+  // struct: the runtime type is may_alias, so the optimizer cannot keep a read of the old room across a push.
+  it("reads what each push wrote while two Vecs grow and move on the heap", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-hvec-"));
+    writeFileSync(
+      path.join(dir, "hvec.ts"),
+      `import { type Init, type Mut, type Signer, type SystemProgram, type Vec, type u64 } from "typesol";
+/** @layout borsh */
+export interface Bag { n: u64; xs: Vec<u64>; mid: u64; ys: Vec<u64> }
+export function open(payer: Mut<Signer>, bag: Init<Bag>, systemProgram: SystemProgram, space: u64): void { bag.create(payer, ["bag"], space); }
+export function grow(bag: Mut<Bag>, k: u64): u64 {
+  bag.xs.push(5n);
+  let s = bag.xs.get(0n);
+  for (let i = 0n; i < k; i++) {
+    bag.xs.push(i);
+    bag.ys.push(i * 2n);
+    bag.xs.set(0n, bag.xs.get(0n) + 1n);
+    s += bag.xs.get(0n) + bag.xs.get(i + 1n) + bag.ys.get(i);
+  }
+  return s * 1000n + bag.xs.length + bag.ys.length;
+}
+`,
+    );
+    const d = await deployFile(path.join(dir, "hvec.ts"));
+    const payer = await fundedSigner(d.svm);
+    const [bag] = await pda(d.programId, ["bag"]);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "open", { space: new BN(10_000) }, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: bag, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    // Room 4, 8, 16, 32, 64: k = 40 moves both Vecs five times.
+    const k = 40n;
+    let want = 5n;
+    for (let i = 0n; i < k; i++) want += 5n + i + 1n + i + i * 2n;
+    const r = expectOk(await send(d.svm, payer, [ix(d, "grow", { k: new BN(k.toString()) }, [{ address: bag, writable: true }])]));
+    expect(Buffer.from(r.returnData().data()).readBigUInt64LE()).toBe(want * 1000n + 2n * k + 1n);
+  });
+
   it("refuses what would share or outlive a list on the heap", () => {
     const head = `import { type FixedArray, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type Vec, type u64, emit } from "typesol";\n/** @layout borsh */\nexport interface R { xs: Vec<u64>; n: u64 }\n`;
     const errors = (body: string) => compileErrors(head + body);

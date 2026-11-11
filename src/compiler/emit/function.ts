@@ -161,17 +161,14 @@ export class FunctionEmitter extends StatementEmitter {
           if (k.kind === "account") head.push(...vecLenCheck(k.struct, v, `d_${a.name}`));
         }
       }
-      // realloc(x, …) needs the size the account had when the instruction started (the 10 KiB growth limit).
+      // realloc(x, …) needs the size the account had when the instruction started (the 10 KiB growth limit), as does
+      // updateExtraAccountMetas(payer, x, …).
       const reallocated = (() => {
         let found = false;
         const visit = (nd: ts.Node) => {
-          if (
-            ts.isCallExpression(nd) &&
-            ["realloc", "resizeAccount"].includes(this.exportName(nd.expression) ?? "") &&
-            nd.arguments[0] &&
-            this.accountAt(nd.arguments[0]) === a
-          )
-            found = true;
+          const fn = ts.isCallExpression(nd) ? (this.exportName(nd.expression) ?? "") : "";
+          const target = ts.isCallExpression(nd) ? nd.arguments[fn === "updateExtraAccountMetas" ? 1 : 0] : undefined;
+          if (["realloc", "resizeAccount", "updateExtraAccountMetas"].includes(fn) && target && this.accountAt(target) === a) found = true;
           ts.forEachChild(nd, visit);
         };
         visit(ix.node.body!);

@@ -2299,8 +2299,10 @@ static inline uint64_t ts_return_data_any(const TsAccount *program, uint8_t **ou
 
 /* A heap Vec (a Vec<T> in a @layout borsh struct, held on the heap while the instruction runs): room for at least
    `need` elements of `size` bytes, doubling as Rust's Vec does. Elements move when it grows (the compiler refuses
-   references into it that would outlive a push). Bounded by the heap; the account bounds it when it is packed (3004). */
-typedef struct __attribute__((packed)) {
+   references into it that would outlive a push). Bounded by the heap; the account bounds it when it is packed (3004).
+   The generated code reads the Vec through its own struct type, of this layout: may_alias lets these accesses alias
+   that type, so the build needs no -fno-strict-aliasing for the compiler to see the writes here. */
+typedef struct __attribute__((packed, may_alias)) {
   uint32_t len;
   uint32_t cap;
   uint8_t *items;
@@ -2967,10 +2969,11 @@ static inline uint64_t ts_init_extra_metas(TsParams *params, TsAccount *payer, T
 /*
  * ExtraAccountMetaList::update: rewrite an existing list (this program's PDA ["extra-account-metas", mint], holding the
  * execute discriminator), resizing it to `n` records. The payer tops it up to the rent of the new size when its
- * lamports fall short, as the program-examples do before `resize`.
+ * lamports fall short, as the program-examples do before `resize`. `entry_len` is the account's length when the
+ * instruction started: the runtime's room for growth is 10 KiB past that, however the account was resized since.
  */
 static inline uint64_t ts_update_extra_metas(TsParams *params, TsAccount *payer, TsAccount *acct, const SolPubkey *mint, const uint8_t *entries,
-                                             uint32_t n) {
+                                             uint32_t n, uint64_t entry_len) {
   SolSignerSeed seeds[2] = {{(const uint8_t *)"extra-account-metas", 19}, {(const uint8_t *)mint, 32}};
   SolPubkey pda;
   uint8_t bump;
@@ -2983,7 +2986,7 @@ static inline uint64_t ts_update_extra_metas(TsParams *params, TsAccount *payer,
   uint64_t rent;
   TS_TRY(ts_minimum_balance(new_len, &rent));
   if (rent > acct->lamports) TS_TRY(ts_system_transfer(params, payer, acct, rent - acct->lamports));
-  if (new_len > acct->data_len + MAX_PERMITTED_DATA_INCREASE) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: account would grow more than 10 KiB in one instruction");
+  if (new_len > entry_len + MAX_PERMITTED_DATA_INCREASE) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: account would grow more than 10 KiB in one instruction");
   if (new_len > acct->data_len) ts_memzero(acct->data + acct->data_len, new_len - acct->data_len);
   acct->data_len = new_len;
   uint32_t len = 4 + 35 * n;

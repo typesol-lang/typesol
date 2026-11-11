@@ -1,9 +1,12 @@
 import { getCreateAccountInstruction } from "@solana-program/system";
 import * as t22 from "@solana-program/token-2022";
 import { type Address, AccountRole, generateKeyPairSigner, lamports } from "@solana/kit";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { SYSTEM_PROGRAM, customError, deployFile, expectOk, fundedSigner, pda, send, type Deployed, TOKEN_2022 } from "../harness.js";
+import { SYSTEM_PROGRAM, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, TOKEN_2022 } from "../harness.js";
 
 describe("Token-2022 transfer hook written in TypeSOL (test/fixtures/hook.ts)", () => {
   let d: Deployed;
@@ -72,5 +75,64 @@ describe("Token-2022 transfer hook written in TypeSOL (test/fixtures/hook.ts)", 
     expect(customError(await send(svm, alice, [transfer(1500n) as never]))).toBe(6000);
     const bal = (a: Address) => Buffer.from((svm.getAccount(a) as { data: Uint8Array }).data).readBigUInt64LE(64);
     expect([bal(from), bal(to)]).toEqual([4300n, 700n]);
+  });
+});
+
+// updateExtraAccountMetas grows the list at most 10 KiB past the account's length when the instruction started (the
+// room the runtime leaves after each account), not past its current length: after resizeAccount(+10240), 10 KiB more
+// would write into the next account's record.
+describe("updateExtraAccountMetas and the 10 KiB growth limit", () => {
+  const list = (n: number) =>
+    `[${Array.from({ length: n }, () => `{ seeds: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], isSigner: false, isWritable: false }`).join(", ")}]`;
+  const source = (
+    n: number,
+  ) => `import { type AccountInfo, type Mut, type Signer, type SystemProgram, initExtraAccountMetas, updateExtraAccountMetas, resizeAccount } from "typesol";
+export function setup(payer: Mut<Signer>, mint: AccountInfo, metas: Mut<AccountInfo>, systemProgram: SystemProgram): void { initExtraAccountMetas(payer, metas, mint, systemProgram, []); }
+export function grow(payer: Mut<Signer>, mint: AccountInfo, metas: Mut<AccountInfo>, systemProgram: SystemProgram, first: boolean): void {
+  if (first) resizeAccount(metas, metas.dataLen + 10240n);
+  updateExtraAccountMetas(payer, metas, mint, systemProgram, ${list(n)});
+  updateExtraAccountMetas(payer, metas, mint, systemProgram, []);
+}
+function update(payer: Mut<Signer>, metas: Mut<AccountInfo>, mint: AccountInfo, systemProgram: SystemProgram): void { updateExtraAccountMetas(payer, metas, mint, systemProgram, ${list(n)}); }
+export function viaHelper(payer: Mut<Signer>, mint: AccountInfo, metas: Mut<AccountInfo>, systemProgram: SystemProgram): void {
+  resizeAccount(metas, metas.dataLen + 10240n);
+  update(payer, metas, mint, systemProgram);
+}
+`;
+  it("counts from the length at entry, in an instruction and in a helper (3016)", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-extra-metas-"));
+    const data = Buffer.alloc(5);
+    data[0] = 2; // ComputeBudget SetComputeUnitLimit
+    data.writeUInt32LE(1_400_000, 1);
+    const cuLimit = { programAddress: "ComputeBudget111111111111111111111111111111" as Address, accounts: [], data: new Uint8Array(data) };
+    // 292 records end within 10 KiB of the 16-byte list; 293 end past it.
+    for (const [n, fits] of [
+      [292, true],
+      [293, false],
+    ] as const) {
+      writeFileSync(path.join(dir, `m${n}.ts`), source(n));
+      const d = await deployFile(path.join(dir, `m${n}.ts`));
+      const payer = await fundedSigner(d.svm, 20n);
+      const mint = (await generateKeyPairSigner()).address;
+      const [metas] = await pda(d.programId, ["extra-account-metas", mint]);
+      const accounts = [
+        { address: payer.address, signer: payer, writable: true },
+        { address: mint },
+        { address: metas, writable: true },
+        { address: SYSTEM_PROGRAM },
+      ];
+      expectOk(await send(d.svm, payer, [ix(d, "setup", {}, accounts)]));
+      for (const first of [false, true]) {
+        d.svm.expireBlockhash();
+        const r = await send(d.svm, payer, [cuLimit as never, ix(d, "grow", { first }, accounts)]);
+        // The same limit whether or not resizeAccount grew the account first (it then ends past 10 KiB: 10256).
+        if (fits) expectOk(r);
+        else expect(customError(r)).toBe(3016);
+      }
+      d.svm.expireBlockhash();
+      const helper = await send(d.svm, payer, [cuLimit as never, ix(d, "via_helper", {}, accounts)]);
+      if (fits) expectOk(helper);
+      else expect(customError(helper)).toBe(3016);
+    }
   });
 });

@@ -19,7 +19,9 @@ const TREE_NODE_METHODS = new Set(["min", "max", "nodeAt", "remove", "removeAt"]
  *   assignment whose target is reached through a Vec element (`writesThroughVec`) is then refused (statements.ts).
  *
  * Accounts passed twice are a separate rule: function.ts refuses two writable parameters naming one account (2040)
- * unless `Dup<…>` allows it for in-place accounts.
+ * unless `Dup<…>` allows it for in-place accounts. Where data moves (a Vec resized, an account given to a helper:
+ * `moves`), `assertNotAliased` also treats the names that may be one account (`maySharePlace`: a Dup pair, a
+ * read-only and a writable account of one type, a loaded struct) as one, since the data moves under each of them.
  */
 export abstract class AliasEmitter extends EmitterBase {
   /**
@@ -71,22 +73,77 @@ export abstract class AliasEmitter extends EmitterBase {
    * to the old object unchanged. Here a reference is a pointer into account data, so it would see the new
    * value. Refuse when a live reference into the replaced place is still used afterwards.
    */
-  protected assertNotAliased(replaced: string[] | undefined, at: ts.Node, helper?: string, inPlace = false) {
+  protected assertNotAliased(replaced: string[] | undefined, at: ts.Node, helper?: string, inPlace = false, moves = false) {
     if (!replaced) return;
     for (const scope of this.scopes)
       for (const [name, l] of scope) {
         if (!l.paths || !l.decl) continue;
         // A helper given an account changes it in place (`inPlace`): a local naming the whole account (a struct loaded
         // with loadAccountMut) then reads what JS's object would. Only references into it are stale.
-        const hit = replaced.find((r) => l.paths!.some((p) => (p === r && !inPlace) || p.startsWith(`${r}.`) || p.startsWith(`${r}[]`)));
-        if (!hit || !this.usedAfter(l.decl, at)) continue;
+        const inside = (p: string, r: string) => (p === r && !inPlace) || p.startsWith(`${r}.`) || p.startsWith(`${r}[]`);
+        const hit = replaced.find((r) => l.paths!.some((p) => inside(p, r)));
+        // Data that moves (`moves`: a Vec resized, so the Vecs after it shift; an account a helper may resize) moves
+        // under every name of the account: a reference made through another parameter (or loaded struct) that may be
+        // this account is stale too.
+        const shared = !hit && moves ? this.sharedPlace(replaced, l.paths, inside) : undefined;
+        if ((!hit && !shared) || !this.usedAfter(l.decl, at)) continue;
+        if (shared)
+          this.fail(
+            at,
+            `"${name}" still refers to ${this.showPath(shared.path)}, and ${this.showPath(shared.root)} may be the same account as ${this.showPath(shared.other)} (${shared.why}): ${helper ? `${helper}() may move` : "this moves"} that data, so "${name}" would then reach another record. Copy the fields you need into locals first`,
+          );
         this.fail(
           at,
           helper
-            ? `"${name}" still refers to data in ${this.showPath(hit)}, and ${helper}() may replace it (then "${name}" would read the new value; in JS it keeps the old one). Copy the fields you need into locals first`
-            : `"${name}" still refers to ${this.showPath(hit)}; replacing it here would change what "${name}" reads (in JS it keeps the old value). Copy the fields you need into locals first`,
+            ? `"${name}" still refers to data in ${this.showPath(hit!)}, and ${helper}() may replace it (then "${name}" would read the new value; in JS it keeps the old one). Copy the fields you need into locals first`
+            : `"${name}" still refers to ${this.showPath(hit!)}; replacing it here would change what "${name}" reads (in JS it keeps the old value). Copy the fields you need into locals first`,
         );
       }
+  }
+
+  /**
+   * A reference path (`a.entries[]`) inside one of the `replaced` places named through another root that may be the
+   * same account (`b.entries` when `a` and `b` may be one account): the path, the two roots and why.
+   */
+  private sharedPlace(
+    replaced: string[],
+    paths: string[],
+    inside: (p: string, r: string) => boolean,
+  ): { path: string; root: string; other: string; why: string } | undefined {
+    const rootOf = (p: string) => p.split(/[.[]/)[0]!;
+    for (const r of replaced)
+      for (const p of paths) {
+        const [R, P] = [rootOf(r), rootOf(p)];
+        if (R === P) continue;
+        const why = this.maySharePlace(R, P);
+        if (why && inside(p, P + r.slice(R.length))) return { path: p, root: P, other: R, why };
+      }
+    return undefined;
+  }
+
+  /**
+   * Whether two reference roots may name one account's data, read in place: both structs of one type (a struct
+   * account parameter or group field not `@layout borsh`, or a struct loaded with loadAccount / loadAccountMut), and
+   * accounts the entry checks do not keep apart (`mayBeSameAccount`: a Dup<…> or read-only one, a helper's). Returns
+   * why, for the message.
+   */
+  protected maySharePlace(a: string, b: string): string | undefined {
+    const struct = (root: string) => {
+      if (root.startsWith("@")) {
+        for (const s of this.scopes) for (const l of s.values()) if (`@${l.c}` === root && l.loaded) return l.loaded.struct;
+        return undefined;
+      }
+      const k = this.accounts.get(root)?.kind;
+      return k?.kind === "account" && k.struct.layout !== "borsh" ? k.struct.name : undefined;
+    };
+    const s = struct(a);
+    if (!s || s !== struct(b)) return undefined;
+    if (a.startsWith("@") || b.startsWith("@")) return "a struct loaded from an account";
+    if (!this.mayBeSameAccount(a, b)) return undefined;
+    const [x, y] = [this.accounts.get(a)!, this.accounts.get(b)!];
+    if (x.constraints.dup || y.constraints.dup) return "Dup<…>";
+    if (!isWritable(x.kind) || !isWritable(y.kind)) return "a read-only account may be a writable one";
+    return "the entry checks do not keep them apart";
   }
 
   /**

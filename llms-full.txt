@@ -124,7 +124,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Events | `emit<Deposited>({ owner: owner.key, amount })` — Anchor-format `Program data:` logs, listed under `events` in the IDL; event structs may hold `string`, `Option`, `FixedVec<T, N>` (its fixed layout, as in account data), `Vec<T>` (Borsh: from a Vec argument or a list in account data) and `Option<Vec<T>>`; a nested struct given as a literal is Borsh too |
 | Enums | `export enum Status { Pending, Approved }` — unit variants stored as the Borsh u8 index; `Status.Approved`, `===` |
 | Options | `best: Option<u64>` (or `u64 \| null`) — `null`, `=== null`, TypeScript narrowing; `===` between options or with a value follows JS (null equals null, empty never equals a value); empty use aborts (5108); `acct?.field` on an optional account and `x.home?.field` on an `Option<struct>` give an Option (empty when the account was left out / the option is empty), `a ?? b` takes b only when a is empty (b runs only then; the result is an Option when b can be null), `x!` is the value or aborts with 5108; `${opt}` prints the value or `null`. Borsh `option` in arguments/events, fixed `{ is_some, value }` in account data |
-| Vecs | `entries: Vec<Entry>` in account data, any number of them, declared anywhere: they are stored after the fixed-size fields in the order declared (so every other field keeps its offset; the IDL lists that order), and a push, pop or clear moves the Vecs after it (a reference into one of those cannot be used across it). In a `@layout borsh` struct a Vec is the last field (Anchor's order) — `get`, `set`, `push(v, payer)`, `pop()`, `clear()`, `.length`; the account is resized (realloc) and rent topped up by `payer`; `Vec<u64>` arguments are read-only views; `Vec<string>` arguments (Anchor's `Vec<String>`) are views of the instruction data, each checked as UTF-8 on entry (102), and go back out as Borsh through `invoke`; `pop()` of a Vec of structs works as a statement |
+| Vecs | `entries: Vec<Entry>` in account data, any number of them, declared anywhere: they are stored after the fixed-size fields in the order declared (so every other field keeps its offset; the IDL lists that order), and a push, pop or clear moves the Vecs after it (a reference into one of those cannot be used across it, also when it was made through another parameter that may be the same account: a `Dup<…>` pair, a read-only and a writable account of one type, a struct loaded with `loadAccount` / `loadAccountMut`). In a `@layout borsh` struct a Vec is the last field (Anchor's order) — `get`, `set`, `push(v, payer)`, `pop()`, `clear()`, `.length`; the account is resized (realloc) and rent topped up by `payer`; `Vec<u64>` arguments are read-only views; `Vec<string>` arguments (Anchor's `Vec<String>`) are views of the instruction data, each checked as UTF-8 on entry (102), and go back out as Borsh through `invoke`; `pop()` of a Vec of structs works as a statement |
 | Anchor's account bytes | `/** @layout borsh */` on an account struct stores it as Anchor does (Borsh: a `FixedString<N>` is a String, a `FixedVec<T, N>` or `Vec<T>` a Vec, an `Option` one byte when empty, and the fields after them move), so a TypeSOL program can take over accounts an Anchor program wrote and the IDL lists Anchor's own types. The instruction unpacks it into the usual fixed layout when it starts (bad bytes fail with 3003) and packs it back when it returns (3004 when the account is too small for the new value), so everything else works on it unchanged. A `Vec<T>` field (any position; integers, booleans, Pubkeys, unit enums or fixed-size structs) is Anchor's own: held on the heap while the instruction runs, growing as Rust's Vec does, bounded only by the account when it is written back (3004); its elements move when it grows, so a reference into one cannot outlive a `push` or an assignment. `Init` of such a struct takes its space, `create(payer, seeds, space)`. Programs invoked from the body (CPIs) see the account's bytes as they were when the instruction started. Costs more compute than the fixed layout (the whole account is read and written each time; see the benchmarks); nested structs and list elements must be fixed-size (FixedString elements allowed). The same struct is Borsh as a whole instruction argument (checked like Borsh deserialization, UTF-8 included), as return data and as an event; as those (not as account data) it may also hold `string` fields and data enums carrying strings, Anchor's `String` and enums in argument structs (account data takes data enums without strings); not inside list or enum arguments or `loadAccount`, and a struct holding a `Vec<T>` is account data or a whole argument, not return data or an event |
 | A native program's Borsh accounts | `const pool = loadBorsh<StakePool>(acct)` / `storeBorsh(acct, pool)`: Borsh from byte 0 with no discriminator and no owner check, read into a local struct and written back, as Rust's `try_from_slice_unchecked` and `serialize` do (trailing bytes ignored when reading, left as they were when writing; invalid bytes or an account too small fail with `ProgramError.BorshIoError`). Any struct of integers, booleans, Pubkeys, enums, FixedArrays, FixedStrings, FixedVecs, Options, data enums with fixed-size payloads and nested structs of those; see [Porting a native program](#porting-a-native-program) |
 | Zero-copy types as Anchor's IDL describes them | `/** @repr c */` (`@repr c packed`, `@repr c align 8`, `@repr rust` on an enum) and `/** @serialization bytemuck */` on a struct or enum put the IDL's `repr` and `serialization` there, as Anchor's `#[account(zero_copy)]` / `#[repr(C)]` types have them. TypeSOL stores fields back to back, so an unpacked `@repr c` struct must have its fields where C puts them: a field off its alignment, or a size that is not a multiple of the struct's, is a compile error naming the padding to add (Anchor zero-copy types spell their padding out as `_pad` fields, so a port matches). A 16-byte integer's alignment differs between targets: hold it as below or mark the struct packed |
@@ -149,7 +149,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | Strings at runtime | `"hello, " + name`, `` `#${n}` ``, `` `owner ${acct.owner}` `` (a Pubkey or Hash as base58; an `Option` of an integer, boolean, Pubkey or Hash as its value, or `null` when empty, as JS prints it: after `x !== null` that is the value) — built on the 32 KiB heap (5110 when full): a template is joined in one allocation, text known at compile time (literals, string and Pubkey constants) is folded in, and `s += …` grows the newest heap string in place |
 | `switch` | on integers (128-bit ones too), enums and data-enum `.kind`, with JS `break` / fallthrough; case labels are literals, constants or enum members |
 | Hashing & signatures | `sha256(...)`, `keccak256(...)` → `Hash` (a PDA seed too: its 32 bytes, as Marginfi seeds an order with the hash of its bank keys); `findProgramAddress(seeds, program)` → the canonical PDA of any program (Rust `Pubkey::find_program_address(..).0`, e.g. a Bubblegum asset id) and `findProgramAddressBump(seeds, program)` its bump, or both from one search with `const [address, bump] = findProgramAddressWithBump(seeds, program)` (Rust's `let (address, bump) = …`; each separate search costs about 450 CU per bump tried); `programId()` → this program's address; `a.compare(b)` orders Pubkeys and Hashes as Rust orders their 32 bytes (-1 / 0 / 1); `merkleVerify(leaf, proof: Vec<Hash>, root)` (sorted-pair keccak, OpenZeppelin convention; inner nodes and leaves are hashed alike, so hash leaves as OpenZeppelin does, `keccak256(keccak256(data))`, and never take the leaf itself from the arguments: an inner node would pass as a leaf); `verifyEd25519(instructionsSysvar, signer, message)` checks an Ed25519 precompile instruction in the same transaction; `stackHeight()` is 1 when the transaction calls the program directly, more under a CPI (`require(stackHeight() === 1n, …)` refuses CPI callers); `verifySecp256k1(keccak256(...message) | ethMessageHash(message), recoveryId, r, s, ethAddress)` (the hash must be computed in the program; a passed-in hash could be forged) |
-| Oracles | `pythPrice(update: PythPriceUpdate, feedId, maxAgeSeconds, exponent?)` (fully verified, feed-matched, fresh; with `exponent`, a feed at another scale is refused); raw `update.price / conf / exponent / publishTime` are unchecked (any feed, partially verified or stale: check `feedId`, `fullyVerified` and the age yourself, or use `pythPrice`); `switchboardValue(feed: SwitchboardFeed, expectedFeed, maxStaleSlots, decimals, minSamples?)` (the feed must be the expected one: anyone can create feeds; `minSamples`, default 1, the fewest oracle samples accepted) (mainnet program unless `SwitchboardFeed<"devnet">`) |
+| Oracles | `pythPrice(update: PythPriceUpdate, feedId, maxAgeSeconds, exponent?)` (fully verified, feed-matched, fresh; with `exponent`, a feed at another scale is refused); raw `update.price / conf / exponent / publishTime` are unchecked (any feed, partially verified or stale: check `feedId`, `fullyVerified` and the age yourself, or use `pythPrice`); `switchboardValue(feed: SwitchboardFeed, expectedFeed, maxStaleSlots, decimals, minSamples?)` (the feed must be the expected one: anyone can create feeds; `minSamples`, default 1, the fewest oracle samples accepted; staleness counts slots from the feed's `result.slot`; the 18-decimal result is scaled to `decimals` rounding toward zero) (mainnet program unless `SwitchboardFeed<"devnet">`). Neither reader checks the price's sign or zero, the confidence (Pyth's `conf`, Switchboard's spread of samples), or a publish time or result slot in the future (it counts as fresh): check what your program relies on |
 | Randomness | A chain has no secret randomness of its own: slot hashes and timestamps are known to, or chosen by, the block producer. `SwitchboardRandomness` (Switchboard On-Demand's RandomnessAccountData; owner, discriminator and size checked) gives verifiable randomness by commit and reveal: commit while `r.seedSlot === currentSlot() - 1n` and store `r.key` and `r.seedSlot`; settle in a later transaction after checking both, with `r.value()` (32 bytes) or `r.valueU64()`, which fail (5111) unless the value was revealed in this slot. See test/fixtures/coinflip.ts |
 | Multiple files | `import { Side, min } from "./math"` — structs, enums, constants and helpers can live in other files; only the entry file's exported functions are instructions; names are program-wide, so imports from TypeSOL files cannot be renamed; error codes number imported files first |
 | Loops | `for (let i = 0n; i < n; i++)` (or two counters, `for (let i = 0n, j = n; i < j; i++, j--)`: several declarations, and comma-separated updates run in order after each pass, `continue` included), `while`, `do … while`, `for (const x of list)` over a `Vec` or `FixedArray` (each `x` is what `list.get(i)` gives: a value, or a reference into account data for structs; the length is read again every step, as in JS), `break`, `continue` — bounded by the compute budget. Remaining accounts are iterated by index |
@@ -195,7 +195,7 @@ The full reference. For a tour, start with the [README](../README.md).
 | `Migrate<From, To>` | Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size) rewritten as `To` by `acct.migrate(payer, value)`, a top-level statement the instruction must reach. `acct.from` (read-only) before it, `acct.to` after; the value is built in full before the rewrite, so it may read `acct.from`. Resized to `To` (the payer tops up rent when it grows, at most 10 KiB; shrinking keeps the lamports; growing needs `SystemProgram`). Fixed-layout structs without growable Vecs; no constraints yet; the account cannot be passed to a helper (use `acct.to` fields in the instruction). An account already migrated fails with 3002. Keep the old struct under a new name with its discriminator: `/** @discriminator account:Counter */ interface CounterV1 { … }` |
 | `Zeroed<T>` | accounts (up to 10 MiB) the client allocated with System `CreateAccount`, Anchor's `zero`: discriminator still zero (2013, checked first as under Anchor), owned by this program, big enough, rent-exempt — then initialized. A `@layout borsh` struct starts empty and is written as Borsh when the instruction returns |
 | `Signed<A>` | the account must sign the transaction (Anchor's `signer` constraint, 2002), e.g. `Signed<Zeroed<Multisig>>` for an account the client creates with a fresh keypair; the IDL marks it a signer |
-| `Init<Mint>`, `InitIfNeeded<Mint>` | Anchor `init` / `init_if_needed` with `mint::decimals` / `mint::authority` / `mint::freeze_authority`: `const bump = mint.create(payer, ["mint", payer.key], 6n, authority, freezeAuthority \| null)` creates the mint at that PDA of this program, or with `null` seeds as a new keypair account that signs (3010 if it did not), under the instruction's token program (its only token program parameter, or one passed as the last argument of `create` / `createIfNeeded`; plus `SystemProgram`). Token-2022 extensions (Anchor's `extensions::…`) go after the freeze authority: `mint.create(payer, null, 6n, authority, null, { metadataPointer: { authority, metadataAddress: mint.key }, transferHook: { authority, programId }, closeAuthority, permanentDelegate, nonTransferable: true, defaultAccountState: true, interestBearing: { rateAuthority, rate }, transferFee: { configAuthority, withdrawAuthority, basisPoints, maximumFee }, groupPointer, groupMemberPointer })` sizes the mint for them and initializes each before InitializeMint2. With `createIfNeeded` an existing mint must carry groupPointer / groupMemberPointer / metadataPointer / closeAuthority / permanentDelegate / transferHook with those keys (Anchor's 2024–2039); extensions not listed are not looked at, so an existing mint may carry others (a permanent delegate, say). `createIfNeeded(…)` returns whether it created it; an existing one must be that PDA and have those decimals and authorities (2018 / 2016 / 2017) |
+| `Init<Mint>`, `InitIfNeeded<Mint>` | Anchor `init` / `init_if_needed` with `mint::decimals` / `mint::authority` / `mint::freeze_authority`: `const bump = mint.create(payer, ["mint", payer.key], 6n, authority, freezeAuthority \| null)` creates the mint at that PDA of this program, or with `null` seeds as a new keypair account that signs (3010 if it did not), under the instruction's token program (its only token program parameter, or one passed as the last argument of `create` / `createIfNeeded`; plus `SystemProgram`). Token-2022 extensions (Anchor's `extensions::…`) go after the freeze authority: `mint.create(payer, null, 6n, authority, null, { metadataPointer: { authority, metadataAddress: mint.key }, transferHook: { authority, programId }, closeAuthority, permanentDelegate, nonTransferable: true, defaultAccountState: true, interestBearing: { rateAuthority, rate }, transferFee: { configAuthority, withdrawAuthority, basisPoints, maximumFee }, groupPointer, groupMemberPointer })` sizes the mint for them (as Token-2022 does: extensions adding up to a Multisig's 355 bytes give a 357-byte mint) and initializes each before InitializeMint2; a `null` authority is sent as Token-2022's empty COption. With `createIfNeeded` an existing mint must carry groupPointer / groupMemberPointer / metadataPointer / closeAuthority / permanentDelegate / transferHook with those keys (Anchor's 2024–2039); extensions not listed are not looked at, so an existing mint may carry others (a permanent delegate, say). `createIfNeeded(…)` returns whether it created it; an existing one must be that PDA and have those decimals and authorities (2018 / 2016 / 2017) |
 | `Init<TokenAccount>`, `InitIfNeeded<TokenAccount>` (no `Ata<…>`) | Anchor `init` / `init_if_needed` with `token::mint` / `token::authority`: `vault.create(payer, ["vault", mint.key], mint, authority)` (the authority may be `vault.key` itself) creates a token account at that PDA (or a keypair account with `null`), sized for the mint's extensions under Token-2022. `createIfNeeded` checks an existing one has that mint and owner (2014 / 2015), not its delegate or close authority (as Anchor) |
 | `TokenAccount` / `Mut<TokenAccount>` | owned by SPL Token or Token-2022 (extensions allowed, multisig accounts refused), initialized (an account never created: 3012, as Anchor; a `Mint` likewise); `mint`, `owner`, `amount`, `delegate`, `delegatedAmount`, `isFrozen`, `isNative`, `closeAuthority`, `tokenProgram` |
 | `Mint` / `Mut<Mint>` | owned by SPL Token or Token-2022, initialized; `decimals`, `supply`, `mintAuthority`, `freezeAuthority`, `tokenProgram` |
@@ -218,7 +218,9 @@ Two writable parameters can never be the same account: aliasing is refused with 
 account written through `.lamports` or `loadAccountMut` is another account of the instruction). `Dup<Mut<T>>`
 (Anchor's `dup`) lifts that for one parameter when both accounts are read and written in place (not created, closed
 or `@layout borsh`; a close destination may be one, the rent reaching it through either): a write through either is
-seen through the other, so read what you need before writing. A remaining account
+seen through the other, so read what you need before writing. A reference into one of them (`const e = a.entries.get(i)`)
+cannot be used after a push, pop or clear through the other moved that data, as with one name (compile error); copy
+the fields first. A remaining account
 can be loaded with `loadAccountMut` once per instruction: loading the same one again (`rest.get(i)` and `rest.get(j)`
 with `i == j`) is refused with 2040 too, since the two views would alias. So is a second `loadAccountMut` of one
 `AccountInfo` parameter; two `Dup<…>` parameters that are one account may each be loaded (one array holding both ticks
@@ -609,7 +611,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 3010 | account must sign (AccountNotSigner; also a new keypair account a `create(payer, null, …)` makes) |
 | 3011 | a `SystemAccount` owned by another program (AccountNotSystemOwned) |
 | 3012 | account not initialized: empty system account where a program account, a token account or a mint was expected (AccountNotInitialized; not for zero-copy accounts, which Anchor's AccountLoader reports as 3007) |
-| 3016 | account would grow more than 10 KiB in one instruction, or grow without a payer (AccountReallocExceedsLimit) |
+| 3016 | account would grow more than 10 KiB in one instruction (counted from its length when the instruction started), or grow without a payer (AccountReallocExceedsLimit) |
 | 4101 | an `Init` / `create` whose payer is the account being created (TryingToInitPayerAsProgramAccount) |
 | 4102 | cast overflow (InvalidNumericConversion) |
 | 5100 / 5101 | arithmetic overflow (including shifts) / division by zero |
@@ -1366,16 +1368,23 @@ Each holds for every instruction of every program the compiler accepts. A break 
    replacing or resizing what a live reference points into is a compile error, as is writing a Vec element with a
    right side that may resize the Vec. A helper given a writable struct account may replace anything in it, however
    the account is named at the call (a parameter, an account group's field, a struct loaded with `loadAccountMut`): a
-   reference into it read after the call is a compile error. A helper that can write gets its Pubkey, Option and
+   reference into it read after the call is a compile error. Data that moves (a Vec of the account resized, so the
+   Vecs after it shift, or a helper given the account) moves under every name of the account: a reference made
+   through another parameter that may be the same account (a `Dup<…>` pair, a read-only and a writable account of one
+   type, a struct loaded with `loadAccount` / `loadAccountMut`) is held to the same rule. A helper that can write gets its Pubkey, Option and
    string arguments as they were at the call (a copy unless nothing it is given reaches them), and a closed account
    is not used after `close()` (compile error).
 10. **Remaining accounts.** Writing one (`.lamports`, `loadAccountMut`) checks it is writable (3006) and not another
     account of the instruction (2040); `loadAccountMut` loads a given account once per instruction (2040);
     `loadAccount<T>` checks owner, discriminator and size, and validates the data as instruction arguments are.
-11. **Growth.** An account grows by at most 10 KiB per instruction (3016), the payer is a `Mut<Signer>`, new bytes are
-    zero and the new rent is paid; shrinking keeps the lamports in the account.
+11. **Growth.** An account grows by at most 10 KiB per instruction (3016), counted from its length when the
+    instruction started, the payer is a `Mut<Signer>`, new bytes are zero and the new rent is paid; shrinking keeps
+    the lamports in the account.
 12. **CPIs.** A program signs only for its own PDAs (the runtime enforces it; the seeds are those written in the
-    source, with the values they had where the list was written, also for a named list or one given to a helper). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
+    source, with the values they had where the list was written, also for a named list or one given to a helper; a
+    wrapper's arguments are evaluated left to right, as JS evaluates them, the seeds after the arguments before
+    them). Token-2022 and SPL Token instruction data is laid out as the program reads it (a `COption` key that is
+    None is one byte). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
     signs for it; remaining accounts keep the flags they were passed with, or are checked for the role requested.
     `invokeInstruction` is the exception by design: its program, account flags and data come from values (stored in
     account data or passed in), so the compiler cannot check them; the runtime does, refusing any account the
@@ -1398,15 +1407,23 @@ Each holds for every instruction of every program the compiler accepts. A break 
 - **`requirePda(account, seeds, bump)`.** Any valid bump passes (Anchor's `bump = expr`). Use a stored bump, never one
   from the arguments.
 - **`Dup<…>`.** A parameter marked `Dup` may be the same account as another writable one. Reads see every write
-  (both are the same bytes), so a value read before a write through the other slot is stale: read, then write.
+  (both are the same bytes), so a value read before a write through the other slot is stale: read, then write. (A
+  reference held across a resize through the other slot is a compile error, guarantee 9.)
 - **`NATIVE_ACCOUNT_WRITES`.** A program that declares it gives up the up-front writability check and the
   one-view-per-account refusal for `loadRawMut`, `storeBorsh` and BigVec writes, as a native program has neither: the
   runtime still refuses a changed read-only account, but two loads of one account alias each other. Make the
   original's address and type checks before loading.
 - **Instruction introspection.** The Instructions sysvar holds what the transaction's author put there. Require things
   of the transaction with it (that a repay instruction follows), never treat it as proof of who did what.
-- **Oracles.** `pythPrice` checks verification, feed and age (pass the exponent you scale by); the raw `update.*`
-  fields are unchecked. `switchboardValue` needs the expected feed; set `minSamples`.
+- **Oracles.** `pythPrice` checks the owner and account type, full verification, the feed id, the age and (when
+  passed) the exponent; the raw `update.*` fields are unchecked. `switchboardValue` checks the owner, the account
+  type, the expected feed, the sample count (`minSamples`, default 1) and staleness, measured in slots from the
+  feed's `result.slot`. Neither checks, and both leave to the author:
+  - the price's sign and zero: a negative or zero price is returned as it is;
+  - the confidence: Pyth's `conf` and Switchboard's spread of samples are not compared with anything;
+  - a publish time (Pyth) or result slot (Switchboard) in the future: it counts as fresh;
+  - rounding: `switchboardValue` scales the 18-decimal result to `decimals` rounding toward zero, and a price scaled
+    by its exponent in the program rounds as that code does.
 - **`merkleVerify`.** Leaves and inner nodes hash alike: build leaves as `keccak256(keccak256(data))` in the program.
 - **Existing accounts in `createIfNeeded`.** An existing token account's delegate and close authority, and a mint's
   extensions the call does not name, are not checked (as in Anchor).
@@ -1418,6 +1435,25 @@ Each holds for every instruction of every program the compiler accepts. A break 
   and token accounts, and `dup` lifts that).
 - Arithmetic overflow returns an error code (5100) in every build; Anchor aborts the program, and only when
   overflow checks are enabled.
+
+## Review of 0.44.0 (2026-11-11)
+
+A second internal review, of 0.44.0, found guarantees 9 and 12 and the token wrappers' instruction data broken in the
+cases listed in [audit.md](audit.md#0440-2026-11-11); they are fixed in 0.44.1. Of the 76 programs of the 0.44.0
+sources, 74 build to the same binary with 0.44.1 and 2 to another (mint-close-authority and allow-block-list-token);
+none is refused. A program was exposed only if it uses the construct a defect names:
+
+- `mint.create` / `createIfNeeded` with `transferFee` whose config or withdraw authority is `null` or a run-time None
+  (the mint got another fee and no withdraw authority: check the mint), or extensions adding up to 355 bytes (the
+  call always failed);
+- a `Dup<…>` pair, a read-only and a writable account of one struct type, or a struct loaded with `loadAccount` /
+  `loadAccountMut`, with a reference made through one held across a push, pop or clear (or a helper given the
+  account) through the other, when the transaction passes one account for both;
+- a token or Stake wrapper call with signer seeds and an argument that runs code (a helper call, an assignment) whose
+  effects the seeds, the amount or a metadata string read;
+- `updateExtraAccountMetas` after the account was already grown in the same instruction.
+
+A program that uses none of them was not exposed to these defects; rebuilding it with 0.44.1 gives the same binary.
 
 ## Review of 0.43.0 (2026-11-11)
 
@@ -1447,10 +1483,11 @@ exposed to them.
 
 ## Status
 
-The compiler and runtime have had internal security reviews, the latest of 0.43.0 (above); its findings are fixed in
-0.44.0. It was an internal review, not an independent audit, and it did not cover the Metaplex and
-token CPI wrappers' emitters, the oracles, SBPF v1/v2 builds or Windows. There has been no external audit: see
-[audit.md](audit.md).
+The compiler and runtime have had internal security reviews, the latest of 0.44.0 (above); its findings are fixed in
+0.44.1. It was an internal review, not an independent audit; it covered the token, Token-2022, Metaplex and Stake
+wrappers, the oracles and SBPF v1/v2 builds of the examples that the review of 0.43.0 left out, but not the Metaplex
+wrappers for unusual argument shapes beyond reading them, the large ports on SBPF v1/v2, or Windows. There has been no
+external audit: see [audit.md](audit.md).
 
 <!-- docs/ai.md -->
 

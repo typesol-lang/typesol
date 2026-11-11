@@ -59,16 +59,23 @@ Each holds for every instruction of every program the compiler accepts. A break 
    replacing or resizing what a live reference points into is a compile error, as is writing a Vec element with a
    right side that may resize the Vec. A helper given a writable struct account may replace anything in it, however
    the account is named at the call (a parameter, an account group's field, a struct loaded with `loadAccountMut`): a
-   reference into it read after the call is a compile error. A helper that can write gets its Pubkey, Option and
+   reference into it read after the call is a compile error. Data that moves (a Vec of the account resized, so the
+   Vecs after it shift, or a helper given the account) moves under every name of the account: a reference made
+   through another parameter that may be the same account (a `Dup<…>` pair, a read-only and a writable account of one
+   type, a struct loaded with `loadAccount` / `loadAccountMut`) is held to the same rule. A helper that can write gets its Pubkey, Option and
    string arguments as they were at the call (a copy unless nothing it is given reaches them), and a closed account
    is not used after `close()` (compile error).
 10. **Remaining accounts.** Writing one (`.lamports`, `loadAccountMut`) checks it is writable (3006) and not another
     account of the instruction (2040); `loadAccountMut` loads a given account once per instruction (2040);
     `loadAccount<T>` checks owner, discriminator and size, and validates the data as instruction arguments are.
-11. **Growth.** An account grows by at most 10 KiB per instruction (3016), the payer is a `Mut<Signer>`, new bytes are
-    zero and the new rent is paid; shrinking keeps the lamports in the account.
+11. **Growth.** An account grows by at most 10 KiB per instruction (3016), counted from its length when the
+    instruction started, the payer is a `Mut<Signer>`, new bytes are zero and the new rent is paid; shrinking keeps
+    the lamports in the account.
 12. **CPIs.** A program signs only for its own PDAs (the runtime enforces it; the seeds are those written in the
-    source, with the values they had where the list was written, also for a named list or one given to a helper). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
+    source, with the values they had where the list was written, also for a named list or one given to a helper; a
+    wrapper's arguments are evaluated left to right, as JS evaluates them, the seeds after the arguments before
+    them). Token-2022 and SPL Token instruction data is laid out as the program reads it (a `COption` key that is
+    None is one byte). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
     signs for it; remaining accounts keep the flags they were passed with, or are checked for the role requested.
     `invokeInstruction` is the exception by design: its program, account flags and data come from values (stored in
     account data or passed in), so the compiler cannot check them; the runtime does, refusing any account the
@@ -91,15 +98,23 @@ Each holds for every instruction of every program the compiler accepts. A break 
 - **`requirePda(account, seeds, bump)`.** Any valid bump passes (Anchor's `bump = expr`). Use a stored bump, never one
   from the arguments.
 - **`Dup<…>`.** A parameter marked `Dup` may be the same account as another writable one. Reads see every write
-  (both are the same bytes), so a value read before a write through the other slot is stale: read, then write.
+  (both are the same bytes), so a value read before a write through the other slot is stale: read, then write. (A
+  reference held across a resize through the other slot is a compile error, guarantee 9.)
 - **`NATIVE_ACCOUNT_WRITES`.** A program that declares it gives up the up-front writability check and the
   one-view-per-account refusal for `loadRawMut`, `storeBorsh` and BigVec writes, as a native program has neither: the
   runtime still refuses a changed read-only account, but two loads of one account alias each other. Make the
   original's address and type checks before loading.
 - **Instruction introspection.** The Instructions sysvar holds what the transaction's author put there. Require things
   of the transaction with it (that a repay instruction follows), never treat it as proof of who did what.
-- **Oracles.** `pythPrice` checks verification, feed and age (pass the exponent you scale by); the raw `update.*`
-  fields are unchecked. `switchboardValue` needs the expected feed; set `minSamples`.
+- **Oracles.** `pythPrice` checks the owner and account type, full verification, the feed id, the age and (when
+  passed) the exponent; the raw `update.*` fields are unchecked. `switchboardValue` checks the owner, the account
+  type, the expected feed, the sample count (`minSamples`, default 1) and staleness, measured in slots from the
+  feed's `result.slot`. Neither checks, and both leave to the author:
+  - the price's sign and zero: a negative or zero price is returned as it is;
+  - the confidence: Pyth's `conf` and Switchboard's spread of samples are not compared with anything;
+  - a publish time (Pyth) or result slot (Switchboard) in the future: it counts as fresh;
+  - rounding: `switchboardValue` scales the 18-decimal result to `decimals` rounding toward zero, and a price scaled
+    by its exponent in the program rounds as that code does.
 - **`merkleVerify`.** Leaves and inner nodes hash alike: build leaves as `keccak256(keccak256(data))` in the program.
 - **Existing accounts in `createIfNeeded`.** An existing token account's delegate and close authority, and a mint's
   extensions the call does not name, are not checked (as in Anchor).
@@ -111,6 +126,25 @@ Each holds for every instruction of every program the compiler accepts. A break 
   and token accounts, and `dup` lifts that).
 - Arithmetic overflow returns an error code (5100) in every build; Anchor aborts the program, and only when
   overflow checks are enabled.
+
+## Review of 0.44.0 (2026-11-11)
+
+A second internal review, of 0.44.0, found guarantees 9 and 12 and the token wrappers' instruction data broken in the
+cases listed in [audit.md](audit.md#0440-2026-11-11); they are fixed in 0.44.1. Of the 76 programs of the 0.44.0
+sources, 74 build to the same binary with 0.44.1 and 2 to another (mint-close-authority and allow-block-list-token);
+none is refused. A program was exposed only if it uses the construct a defect names:
+
+- `mint.create` / `createIfNeeded` with `transferFee` whose config or withdraw authority is `null` or a run-time None
+  (the mint got another fee and no withdraw authority: check the mint), or extensions adding up to 355 bytes (the
+  call always failed);
+- a `Dup<…>` pair, a read-only and a writable account of one struct type, or a struct loaded with `loadAccount` /
+  `loadAccountMut`, with a reference made through one held across a push, pop or clear (or a helper given the
+  account) through the other, when the transaction passes one account for both;
+- a token or Stake wrapper call with signer seeds and an argument that runs code (a helper call, an assignment) whose
+  effects the seeds, the amount or a metadata string read;
+- `updateExtraAccountMetas` after the account was already grown in the same instruction.
+
+A program that uses none of them was not exposed to these defects; rebuilding it with 0.44.1 gives the same binary.
 
 ## Review of 0.43.0 (2026-11-11)
 
@@ -140,7 +174,8 @@ exposed to them.
 
 ## Status
 
-The compiler and runtime have had internal security reviews, the latest of 0.43.0 (above); its findings are fixed in
-0.44.0. It was an internal review, not an independent audit, and it did not cover the Metaplex and
-token CPI wrappers' emitters, the oracles, SBPF v1/v2 builds or Windows. There has been no external audit: see
-[audit.md](audit.md).
+The compiler and runtime have had internal security reviews, the latest of 0.44.0 (above); its findings are fixed in
+0.44.1. It was an internal review, not an independent audit; it covered the token, Token-2022, Metaplex and Stake
+wrappers, the oracles and SBPF v1/v2 builds of the examples that the review of 0.43.0 left out, but not the Metaplex
+wrappers for unusual argument shapes beyond reading them, the large ports on SBPF v1/v2, or Windows. There has been no
+external audit: see [audit.md](audit.md).

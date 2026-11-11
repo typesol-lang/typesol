@@ -2,9 +2,27 @@ import * as spl from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
 import { lamports } from "@solana/kit";
 import { type Address, type KeyPairSigner, address, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, SYSTEM_PROGRAM, TOKEN_PROGRAM, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed, TOKEN_2022 } from "../harness.js";
+import { generate } from "../../src/compiler/index.js";
+import {
+  BN,
+  SYSTEM_PROGRAM,
+  TOKEN_PROGRAM,
+  acct,
+  customError,
+  deployFile,
+  expectOk,
+  fundedSigner,
+  ix,
+  pda,
+  send,
+  type Deployed,
+  TOKEN_2022,
+} from "../harness.js";
 
 const TREASURY = address("4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T");
 const NATIVE_MINT = address("So11111111111111111111111111111111111111112");
@@ -244,5 +262,220 @@ describe("token operations, constraints and fields (test/fixtures/tokenops.ts)",
       ]),
     );
     expect(ret(r)).toBe(2_000_000n);
+  });
+});
+
+// Wrapper arguments are evaluated left to right, as JS evaluates them: a signer seed list reads what an earlier
+// argument's code left, and an amount is read before a seed list's code runs.
+describe("token and system wrappers evaluate their arguments in source order", () => {
+  const HEAD = `import { type u64, type u8, type u16, type i16, type Mut, type Signer, type TokenAccount, type Mint, type AccountInfo, type TokenProgram, type TokenInterface, type StakeProgram, type SystemProgram, type Pubkey, type Init, AuthorityType } from "typesol";
+export interface St { count: u64; bump: u8; admin: Pubkey }
+function next(st: Mut<St>): u64 { st.count += 1n; return 5n; }
+function nextKey(st: Mut<St>): Pubkey { st.count += 1n; return st.admin; }
+function next16(st: Mut<St>): u16 { st.count += 1n; return 5n; }
+function nexti16(st: Mut<St>): i16 { st.count += 1n; return 5n; }
+`;
+  const le64 = (n: bigint) => {
+    const b = Buffer.alloc(8);
+    b.writeBigUInt64LE(n);
+    return new Uint8Array(b);
+  };
+
+  it("approve signs for the seeds after its amount ran; transfer and systemProgram.transfer send the amount read first", async () => {
+    const file = path.join(mkdtempSync(path.join(os.tmpdir(), "typesol-wrapper-order-")), "order.ts");
+    writeFileSync(
+      file,
+      `${HEAD}export function setup(payer: Mut<Signer>, st: Init<St>, systemProgram: SystemProgram): void { st.create(payer, ["st"]); }
+export function viaApprove(st: Mut<St>, src: Mut<TokenAccount>, delegate: AccountInfo, owner: AccountInfo, tokenProgram: TokenProgram, bump: u8): void {
+  tokenProgram.approve(src, delegate, owner, next(st), ["vault", st.count, bump]);
+}
+export function viaTransfer(st: Mut<St>, src: Mut<TokenAccount>, to: Mut<TokenAccount>, owner: AccountInfo, tokenProgram: TokenProgram, bump: u8): void {
+  tokenProgram.transfer(src, to, owner, st.count, ["vault", next(st), bump]);
+}
+export function viaSystem(st: Mut<St>, from: Mut<AccountInfo>, to: Mut<AccountInfo>, systemProgram: SystemProgram, bump: u8): void {
+  systemProgram.transfer(from, to, st.count, ["vault", next(st), bump]);
+}
+`,
+    );
+    const d = await deployFile(file);
+    const payer = await fundedSigner(d.svm);
+    const [st] = await pda(d.programId, ["st"]);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "setup", {}, [{ address: payer.address, signer: payer, writable: true }, { address: st, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+    const mint = await generateKeyPairSigner();
+    const { getCreateAccountInstruction } = await import("@solana-program/system");
+    expectOk(
+      await send(d.svm, payer, [
+        getCreateAccountInstruction({ payer, newAccount: mint, lamports: d.svm.minimumBalanceForRentExemption(82n), space: 82, programAddress: TOKEN_PROGRAM }),
+        spl.getInitializeMint2Instruction({ mint: mint.address, decimals: 0, mintAuthority: payer.address }),
+      ] as never),
+    );
+    const tokenOf = async (owner: Address, amount = 0n) => {
+      const a = await generateKeyPairSigner();
+      expectOk(
+        await send(d.svm, payer, [
+          getCreateAccountInstruction({
+            payer,
+            newAccount: a,
+            lamports: d.svm.minimumBalanceForRentExemption(165n),
+            space: 165,
+            programAddress: TOKEN_PROGRAM,
+          }),
+          spl.getInitializeAccount3Instruction({ account: a.address, mint: mint.address, owner }),
+          ...(amount ? [spl.getMintToInstruction({ mint: mint.address, token: a.address, mintAuthority: payer, amount })] : []),
+        ] as never),
+      );
+      return a.address;
+    };
+    const [v0, b0] = await pda(d.programId, ["vault", le64(0n)]);
+    const [v1, b1] = await pda(d.programId, ["vault", le64(1n)]);
+    const t0 = await tokenOf(v0);
+    const t1 = await tokenOf(v1);
+    const delegate = (await generateKeyPairSigner()).address;
+    const approve = (src: Address, owner: Address, bump: number) =>
+      send(d.svm, payer, [
+        ix(d, "via_approve", { bump }, [
+          { address: st, writable: true },
+          { address: src, writable: true },
+          { address: delegate },
+          { address: owner },
+          { address: TOKEN_PROGRAM },
+        ]),
+      ]);
+    // count is 0; next(st) makes it 1 before the list is written: the program signs for ["vault", 1] only.
+    const stale = await approve(t0, v0, b0);
+    expect(() => expectOk(stale)).toThrow(/transaction failed/);
+    d.svm.expireBlockhash();
+    expectOk(await approve(t1, v1, b1));
+    expect(spl.getTokenDecoder().decode(new Uint8Array(acct(d.svm, t1).data)).delegatedAmount).toBe(5n);
+    // count is now 1 (the failed call changed nothing); transfer sends st.count as read before the seeds' next(st): 1, not 2.
+    const [v5, b5] = await pda(d.programId, ["vault", le64(5n)]);
+    const src = await tokenOf(v5, 10n);
+    const dst = await tokenOf(payer.address);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "via_transfer", { bump: b5 }, [
+          { address: st, writable: true },
+          { address: src, writable: true },
+          { address: dst, writable: true },
+          { address: v5 },
+          { address: TOKEN_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(spl.getTokenDecoder().decode(new Uint8Array(acct(d.svm, dst).data)).amount).toBe(1n);
+    // count is 2: the system transfer moves 2 lamports from the vault PDA, not 3.
+    d.svm.airdrop(v5, lamports(1_000_000_000n));
+    const to = (await generateKeyPairSigner()).address;
+    d.svm.airdrop(to, lamports(1_000_000_000n));
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "via_system", { bump: b5 }, [
+          { address: st, writable: true },
+          { address: v5, writable: true },
+          { address: to, writable: true },
+          { address: SYSTEM_PROGRAM },
+        ]),
+      ]),
+    );
+    expect(d.svm.getBalance(to)).toBe(1_000_000_002n);
+  });
+
+  it("account text passed as a metadata string keeps what it held when a later argument rewrites it", async () => {
+    const file = path.join(mkdtempSync(path.join(os.tmpdir(), "typesol-meta-order-")), "meta.ts");
+    const src = `import { type Mut, type Signer, type AccountInfo, type Token2022Program, type TokenMetadataProgram, type SystemProgram, type Init, type FixedString } from "typesol";
+export interface Named { name: FixedString<32> }
+function rename(st: Mut<Named>): string { st.name = "EVIL"; return "SYM"; }
+export function setup(payer: Mut<Signer>, st: Init<Named>, systemProgram: SystemProgram): void { st.create(payer, ["st"]); st.name = "orig"; }
+export function meta(st: Mut<Named>, mint: Mut<AccountInfo>, ua: AccountInfo, ma: Signer, tokenProgram: Token2022Program): void {
+  tokenProgram.initializeMetadata(mint, ua, ma, st.name, rename(st), "uri");
+}
+export function rm(st: Mut<Named>, mint: Mut<AccountInfo>, ua: Signer, tokenProgram: Token2022Program): void {
+  tokenProgram.removeMetadataKey(mint, ua, st.name, rename(st) === "SYM");
+}
+export function upd(st: Mut<Named>, md: Mut<AccountInfo>, ua: Signer, metadataProgram: TokenMetadataProgram): void {
+  metadataProgram.updateMetadataAccountsV2(md, ua, { name: st.name, symbol: rename(st), uri: "u", sellerFeeBasisPoints: 0n }, null, null, null);
+}
+`;
+    writeFileSync(file, src);
+    // removeMetadataKey and updateMetadataAccountsV2: the name's bytes are copied before rename() runs.
+    const c = generate(file).c;
+    for (const fn of ["ix_rm", "ix_upd"]) {
+      const body = c.slice(c.indexOf(`static uint64_t ${fn}(`));
+      const copy = body.search(/ts_str_copy\(ts_fstr_view/);
+      expect([fn, copy >= 0 && copy < body.search(/fn_rename\(params/)]).toEqual([fn, true]);
+    }
+    const d = await deployFile(file);
+    const payer = await fundedSigner(d.svm);
+    const [st] = await pda(d.programId, ["st"]);
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "setup", {}, [{ address: payer.address, signer: payer, writable: true }, { address: st, writable: true }, { address: SYSTEM_PROGRAM }]),
+      ]),
+    );
+    const mint = await generateKeyPairSigner();
+    const { getCreateAccountInstruction } = await import("@solana-program/system");
+    expectOk(
+      await send(d.svm, payer, [
+        getCreateAccountInstruction({ payer, newAccount: mint, lamports: d.svm.minimumBalanceForRentExemption(1000n), space: 234, programAddress: TOKEN_2022 }),
+        t22.getInitializeMetadataPointerInstruction({ mint: mint.address, authority: payer.address, metadataAddress: mint.address }),
+        t22.getInitializeMint2Instruction({ mint: mint.address, decimals: 0, mintAuthority: payer.address }),
+      ] as never),
+    );
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, "meta", {}, [
+          { address: st, writable: true },
+          { address: mint.address, writable: true },
+          { address: payer.address },
+          { address: payer.address, signer: payer },
+          { address: TOKEN_2022 },
+        ]),
+      ]),
+    );
+    const m = t22.getMintDecoder().decode(new Uint8Array(acct(d.svm, mint.address).data));
+    const md = (m.extensions as { value: ({ __kind: string } & Record<string, unknown>)[] }).value.find((e) => e.__kind === "TokenMetadata")!;
+    expect([md.name, md.symbol]).toEqual(["orig", "SYM"]);
+  });
+
+  it("every wrapper with signer seeds reads them after an earlier argument's code ran", () => {
+    const S = `["vault", st.count, st.bump]`;
+    const cases: Record<string, [string, string]> = {
+      approve: ["src: Mut<TokenAccount>, dl: AccountInfo, tp: TokenInterface", `tp.approve(src, dl, auth, next(st), ${S})`],
+      approveChecked: ["src: Mut<TokenAccount>, mint: Mint, dl: AccountInfo, tp: TokenInterface", `tp.approveChecked(src, mint, dl, auth, next(st), ${S})`],
+      mintToChecked: ["mint: Mut<Mint>, to: Mut<TokenAccount>, tp: TokenInterface", `tp.mintToChecked(mint, to, auth, next(st), ${S})`],
+      burnChecked: ["src: Mut<TokenAccount>, mint: Mut<Mint>, tp: TokenInterface", `tp.burnChecked(src, mint, auth, next(st), ${S})`],
+      setAuthority: ["src: Mut<TokenAccount>, tp: TokenInterface", `tp.setAuthority(src, auth, AuthorityType.AccountOwner, nextKey(st), ${S})`],
+      updateTransferHook: ["mint: Mut<Mint>, tp: TokenInterface", `tp.updateTransferHook(mint, auth, nextKey(st), ${S})`],
+      updateInterestRate: ["mint: Mut<Mint>, tp: TokenInterface", `tp.updateInterestRate(mint, auth, nexti16(st), ${S})`],
+      transferCheckedWithFee: [
+        "src: Mut<TokenAccount>, mint: Mint, to: Mut<TokenAccount>, tp: TokenInterface",
+        `tp.transferCheckedWithFee(src, mint, to, auth, next(st), 0n, ${S})`,
+      ],
+      setTransferFee: ["mint: Mut<Mint>, tp: TokenInterface", `tp.setTransferFee(mint, auth, next16(st), 0n, ${S})`],
+      initializeTokenGroup: ["g: Mut<AccountInfo>, mint: Mint, tp: TokenInterface", `tp.initializeTokenGroup(g, mint, auth, null, next(st), ${S})`],
+      updateGroupMaxSize: ["g: Mut<AccountInfo>, tp: TokenInterface", `tp.updateGroupMaxSize(g, auth, next(st), ${S})`],
+      updateGroupAuthority: ["g: Mut<AccountInfo>, tp: TokenInterface", `tp.updateGroupAuthority(g, auth, nextKey(st), ${S})`],
+      stakeSplit: ["stake: Mut<AccountInfo>, split: Mut<AccountInfo>, sp: StakeProgram", `sp.split(stake, split, auth, next(st), ${S})`],
+      stakeAuthorize: ["stake: Mut<AccountInfo>, clock: AccountInfo, sp: StakeProgram", `sp.authorize(stake, clock, auth, nextKey(st), "staker", ${S})`],
+      stakeWithdraw: [
+        "stake: Mut<AccountInfo>, to: Mut<AccountInfo>, clock: AccountInfo, hist: AccountInfo, sp: StakeProgram",
+        `sp.withdraw(stake, to, clock, hist, auth, next(st), ${S})`,
+      ],
+    };
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-seed-order-"));
+    for (const [name, [params, call]] of Object.entries(cases)) {
+      const file = path.join(dir, `${name}.ts`);
+      writeFileSync(file, `${HEAD}export function go(st: Mut<St>, auth: AccountInfo, ${params}): void {\n  ${call};\n}\n`);
+      const body = generate(file).c;
+      const ixBody = body.slice(body.indexOf("static uint64_t ix_go"));
+      // The seed's copy of st.count comes after the call to the helper that changes it.
+      const seedAt = ixBody.search(/= d_st->count;/);
+      const callAt = ixBody.search(/fn_next\w*\(params/);
+      expect([name, seedAt > callAt && callAt > 0]).toEqual([name, true]);
+    }
   });
 });
