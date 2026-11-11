@@ -49,14 +49,24 @@ compiler:
    (start a new empty `## Unreleased` above it), commit as `Release v<version>`.
 3. Tag it: `git tag -a v<version> -m "TypeSOL <version>"`, push the tag, and create the GitHub Release from the tag
    with that CHANGELOG section as notes.
-4. Publishing to npm (as `@typesol/cli`) is separate and manual, from a maintainer's machine: check out the tag in a
-   clean clone, run `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm lint` and `pnpm test`, check that
-   `package.json` has the tag's version, then `npm publish --access public --ignore-scripts`. Tags and GitHub Releases
-   never publish on their own, and no workflow publishes. Afterwards build the release manifest
-   (`node scripts/release-manifest.ts --out typesol-<version>-manifest.json`) and the binary diff against the previous
-   release ([docs/testing.md](docs/testing.md#reproducing-a-release)), and attach both to the GitHub Release by hand.
-   Clean clones lack the fetch-only reference binaries (`bash scripts/fetch-programs.sh`); without them the showcase
-   tests that need them fail.
+4. Publishing to npm (as `@typesol/cli`) is separate and manual, from a maintainer's machine with npm 2FA. Tags and
+   GitHub Releases never publish on their own, and no workflow publishes.
+   1. Run `pnpm test` on the tag (a clean clone of it; clean clones lack the fetch-only reference binaries, so run
+      `bash scripts/fetch-programs.sh` first, or the showcase tests that need them fail).
+   2. `node scripts/release-check.ts <version>`: it exports the tag with `git archive` into a temporary directory
+      (never your working tree), runs `pnpm install --frozen-lockfile`, `pnpm build` and `pnpm lint` there, checks
+      that `package.json` has the tag's version and that CHANGELOG.md has its `## <version> — <date>` section, packs
+      the tarball and writes `releases/<version>.json` (the tag's commit, the tarball's size, sha1 shasum and sha512
+      integrity, every file's sha256, and the Node, pnpm and npm versions used). It prints the tarball's path.
+      `--tests` runs the suite there as well.
+   3. Publish that tarball, not a folder: `npm publish <path printed above>.tgz --access public`. A tarball is
+      published as it is (npm runs no scripts for it), so the bytes on the registry are the ones the check produced.
+   4. `node scripts/release-check.ts <version> --verify --registry` compares the registry's `dist.shasum` and
+      `dist.integrity` with the record and exits 1 on a difference. Commit `releases/<version>.json` to `main`
+      ("Release record for v<version>"): it is the published package's description, kept with the sources.
+   5. Build the release manifest (`node scripts/release-manifest.ts --out typesol-<version>-manifest.json`) and the
+      binary diff against the previous release ([docs/testing.md](docs/testing.md#reproducing-a-release)), and attach
+      both to the GitHub Release by hand.
 
 ## Code style
 

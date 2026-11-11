@@ -82,6 +82,13 @@ codes, and says so here.
   failure (test/binaries.ts).
 - Docs: docs/testing.md lists the SPL Stake Pool and Phoenix random walks and the red-black tree's trace replay
   against lib-sokoban among the checks against an independent oracle.
+- Releases: `scripts/release-check.ts <version>` packs the npm tarball from a clean `git archive` of the tag (frozen
+  install, build, lint, the version and CHANGELOG section checked; `--tests` adds the suite) and writes
+  `releases/<version>.json`: the commit, the tarball's shasum and integrity as the registry reports them, and each
+  file's sha256. The maintainer publishes that tarball (`npm publish <file>.tgz`) instead of a folder with
+  `--ignore-scripts`, and `--verify --registry` compares the registry with the record afterwards. `npm pack` is
+  reproducible: two clean packs of v0.43.0 and the published 0.43.0 are the same bytes (shasum 10c2883b…), recorded
+  in releases/0.43.0.json (CONTRIBUTING.md, docs/testing.md).
 
 ## 0.43.0 — 2026-11-11
 
