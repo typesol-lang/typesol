@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -136,9 +136,124 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
   rmSync(obj, { force: true }); // the object file is only an intermediate
 }
 
-/** The clang version string, for build manifests. */
+/**
+ * The toolchain this release is tested with: CI installs exactly this Agave CLI and platform-tools, and every
+ * execution, differential and fuzz test runs on binaries this clang built. The C TypeSOL emits is only checked
+ * against this backend; another clang can compile it differently (how struct arguments are passed, for one), so
+ * binaries from another toolchain are outside what the tests cover. Changing it is a release note.
+ */
+export const TESTED_TOOLCHAIN = {
+  agave: "3.1.10",
+  platformTools: "v1.52",
+  clang: "clang version 20.1.7-rust-dev (https://github.com/anza-xyz/llvm-project.git 78496716176191b2dfb728e5e38501812e7467db)",
+} as const;
+
+/** The commands that install the tested toolchain (the Agave CLI, then its platform-tools). */
+export const INSTALL_TESTED_TOOLCHAIN = [
+  `sh -c "$(curl -sSfL https://release.anza.xyz/v${TESTED_TOOLCHAIN.agave}/install)"`,
+  `cargo-build-sbf --install-only --force-tools-install --tools-version ${TESTED_TOOLCHAIN.platformTools}`,
+] as const;
+
+// One `clang --version` per clang a process uses: up-to-date checks and manifests ask for it on every build.
+const clangVersions = new Map<string, string>();
+
+/** The clang version string (the first line of `clang --version`), for build manifests. */
 export function toolchainVersion(tc = findToolchain()): string {
-  return execFileSync(tc.clang, ["--version"], { encoding: "utf8" }).split("\n")[0].trim();
+  let v = clangVersions.get(tc.clang);
+  if (v === undefined) {
+    v = execFileSync(tc.clang, ["--version"], { encoding: "utf8" }).split("\n")[0]!.trim();
+    clangVersions.set(tc.clang, v);
+  }
+  return v;
+}
+
+/**
+ * The platform-tools version of an SDK, or undefined when it cannot be told for sure. cargo-build-sbf records the
+ * installed version as an empty `dependencies/platform-tools-<version>.md` next to `dependencies/platform-tools`,
+ * which links into `~/.cache/solana/<version>/platform-tools`; both have to agree when both are there.
+ */
+export function platformToolsVersion(tc: Pick<Toolchain, "sdk"> = findToolchain()): string | undefined {
+  const deps = path.join(tc.sdk, "dependencies");
+  let markers: string[];
+  try {
+    markers = readdirSync(deps).flatMap((f) => /^platform-tools-(v\d+\.\d+(?:\.\d+)?)\.md$/.exec(f)?.[1] ?? []);
+  } catch {
+    return undefined;
+  }
+  let linked: string | undefined;
+  try {
+    linked = /[/\\](v\d+\.\d+(?:\.\d+)?)[/\\]platform-tools$/.exec(realpathSync(path.join(deps, "platform-tools")))?.[1];
+  } catch {
+    /* no platform-tools directory */
+  }
+  if (linked) return markers.length === 0 || markers.includes(linked) ? linked : undefined;
+  return markers.length === 1 ? markers[0] : undefined;
+}
+
+/** A clang version line made short enough for a message: `clang 20.1.7-rust-dev (anza-xyz/llvm-project 78496716)`. */
+export function shortClang(version: string): string {
+  return version
+    .replace(/^clang version /, "clang ")
+    .replace(/\(https:\/\/github\.com\/([^\s)]+?)(?:\.git)? ([0-9a-f]{8})[0-9a-f]*\)/, "($1 $2)")
+    .trim();
+}
+
+export interface ToolchainInfo {
+  clang: string;
+  platformTools?: string;
+  /** The clang is the one the release is tested with. */
+  tested: boolean;
+}
+
+/** The active toolchain's versions, and whether it is the tested one (the clang is what compiles, so it decides). */
+export function toolchainInfo(tc = findToolchain()): ToolchainInfo {
+  const clang = toolchainVersion(tc);
+  return { clang, platformTools: platformToolsVersion(tc), tested: clang === TESTED_TOOLCHAIN.clang };
+}
+
+/** What to say about a toolchain that is not the tested one; undefined for the tested one. */
+export function untestedToolchainMessage(info: ToolchainInfo): string | undefined {
+  if (info.tested) return undefined;
+  const t = TESTED_TOOLCHAIN;
+  return (
+    `this build uses ${shortClang(info.clang)}${info.platformTools ? ` (platform-tools ${info.platformTools})` : ""}; ` +
+    `TypeSOL is tested with ${shortClang(t.clang)} (platform-tools ${t.platformTools}, Agave ${t.agave}). ` +
+    `Binaries from an untested toolchain are not covered by the project's tests. ` +
+    `Install the tested one: ${INSTALL_TESTED_TOOLCHAIN[1]}`
+  );
+}
+
+let strictFlag = false;
+let warned = false;
+
+/** `--toolchain-strict`: refuse an untested toolchain for the rest of the process, as TYPESOL_TOOLCHAIN=strict does. */
+export function setToolchainStrict(on = true): void {
+  strictFlag = on;
+}
+
+/** Whether an untested toolchain is an error: `--toolchain-strict` or TYPESOL_TOOLCHAIN=strict ("warn", the default). */
+export function toolchainStrict(): boolean {
+  const env = process.env.TYPESOL_TOOLCHAIN;
+  if (env && env !== "strict" && env !== "warn") throw new Error(`TYPESOL_TOOLCHAIN=${env}: expected "strict" or "warn"`);
+  return strictFlag || env === "strict";
+}
+
+/**
+ * Before a build: an untested toolchain gets one warning per process on stderr (a workspace or a test run builds many
+ * programs), or an error in strict mode. `info` is the active toolchain's, unless given.
+ */
+export function checkToolchain(info: ToolchainInfo = toolchainInfo(), warn: (message: string) => void = (m) => console.error(`warning: ${m}`)): ToolchainInfo {
+  const message = untestedToolchainMessage(info);
+  if (!message) return info;
+  if (toolchainStrict())
+    throw new Error(
+      `${message.replace(/^this build uses/, "refusing to build with")} (an untested toolchain is an error with --toolchain-strict or TYPESOL_TOOLCHAIN=strict)`,
+    );
+  if (!warned) {
+    warned = true;
+    warn(message);
+  }
+  return info;
 }
 
 const STACK_OVER = /stack frame size \((\d+)\) exceeds limit \((\d+)\) in '(\w+)'/;

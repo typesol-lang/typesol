@@ -5,7 +5,15 @@ the deployed binary is the one your source builds. The program here is the count
 (11,400 bytes, 11.1 KiB, built with TypeSOL 0.43.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
 slightly); any TypeSOL project works the same way.
 
-You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Requirements).
+You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Quick start).
+
+**The toolchain you deploy with.** The binary is what the platform-tools' clang makes of the generated C, so the
+toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
+`typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). Keep
+`target/my_app/my_app.build.json` with each deployment, next to the commit you deployed: it records the TypeSOL,
+TypeScript, clang and platform-tools versions and the host, and the deployed bytes' sha256. Step 6's `verify` matches
+only when it rebuilds with the same TypeSOL version and toolchain, and on a mismatch `--manifest` with that file shows
+what differs.
 
 ## 1. Create and test
 
@@ -85,7 +93,7 @@ npx --no-install typesol verify my_app
 
 `verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
 the cluster in your Solana CLI config, and compares the bytes. `match` means anyone with your source and the same
-TypeSOL version gets exactly the program on chain. It also prints the upgrade authority and checks the IDL you
+TypeSOL version and toolchain gets exactly the program on chain. It also prints the upgrade authority and checks the IDL you
 published in step 5. Anyone can run it against your program with `--address <program id> --url mainnet-beta`.
 
 ## 7. Call it

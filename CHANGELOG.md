@@ -89,6 +89,26 @@ codes, and says so here.
   `--ignore-scripts`, and `--verify --registry` compares the registry with the record afterwards. `npm pack` is
   reproducible: two clean packs of v0.43.0 and the published 0.43.0 are the same bytes (shasum 10c2883b…), recorded
   in releases/0.43.0.json (CONTRIBUTING.md, docs/testing.md).
+- Toolchain: the toolchain the release is tested with is declared in one place (`TESTED_TOOLCHAIN`, exported from
+  `typesol/compiler`: Agave 3.1.10, platform-tools v1.52, its clang 20.1.7 version line). A build with another clang
+  (`build`, `deploy`, `verify`, `typesol/testing`, a reused up-to-date build too) prints one warning per process naming
+  both and saying its binaries are not covered by the tests; `--toolchain-strict` on `build` and `deploy`, or
+  `TYPESOL_TOOLCHAIN=strict` anywhere, makes it an error. `typesol doctor` has a `toolchain` row (tested, or untested
+  with both versions; an error under strict), and its install hint is Agave 3.1.10 instead of "stable". CI runs
+  `doctor` under strict, so the tests run on the declared toolchain (test/cli/toolchain.test.ts).
+- Build manifests: `<name>.build.json` records `platformTools` (from the SDK's `platform-tools-<version>.md` marker
+  and its link into the cache, when they agree) and `host` (`os`, `arch`) beside `clang`. A manifest without `host`
+  (from 0.43.0 or earlier) makes the up-to-date check rebuild once instead of reusing the build; a different
+  platform-tools or host rebuilds too. `scripts/release-manifest.ts` takes the platform-tools version from the same
+  place (its path pattern found none).
+- CLI: `typesol verify` on a mismatch prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the
+  deployed build's when a build manifest's binary hash is the deployed bytes' (`--manifest <file>`, `<name>.build.json`
+  next to a given `.so`, or the local build's), and which of them differ. A program on chain records no toolchain, so
+  without such a manifest it says the deployed side is unknown and names the local manifest as describing another
+  binary.
+- Docs: the README's quick start installs the tested Agave and platform-tools exactly; docs/mainnet.md has "the
+  toolchain you deploy with" (keep the build manifest with the deployment; `verify` needs the same toolchain);
+  docs/troubleshooting.md explains the warning and verify mismatches; docs/cli.md lists the new flags and rows.
 
 ## 0.43.0 — 2026-11-11
 

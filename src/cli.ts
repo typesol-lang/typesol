@@ -5,7 +5,22 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
-import { build, CompileError, COMPILER_VERSION, generate, SBPF_VERSIONS, verifyBinary, type Diagnostic, type Sbpf } from "./compiler/index.js";
+import { createHash } from "node:crypto";
+import {
+  build,
+  CompileError,
+  COMPILER_VERSION,
+  describeToolchain,
+  elfLength,
+  generate,
+  SBPF_VERSIONS,
+  toolchainDifferences,
+  verifyBinary,
+  type BuildManifest,
+  type Diagnostic,
+  type Sbpf,
+} from "./compiler/index.js";
+import { setToolchainStrict } from "./compiler/toolchain.js";
 import { generateCpi, type Idl } from "./tools/cpigen.js";
 import { generatePort, type PortIdl } from "./tools/portgen.js";
 import { generateClient, writeClient, type ClientIdl } from "./tools/clientgen.js";
@@ -67,6 +82,8 @@ function banner(): string {
 }
 
 const SBPF = `--sbpf v0|v1|v2      SBPF version (default v0, or "sbpf" in ${CONFIG}); v1/v2 need clusters that enabled them`;
+const TOOLCHAIN_STRICT =
+  "--toolchain-strict   refuse to build with platform-tools other than the tested ones (default: one warning); also TYPESOL_TOOLCHAIN=strict";
 
 interface Command {
   usage: string;
@@ -141,16 +158,25 @@ const COMMANDS: Record<string, Command> = {
   },
   build: {
     usage:
-      "typesol build [<program>…] [--sbpf v0|v1|v2] [--profile]\n  typesol build <program.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile]",
+      "typesol build [<program>…] [--sbpf v0|v1|v2] [--profile] [--toolchain-strict]\n  typesol build <program.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--toolchain-strict]",
     help: [
       `In a project (${CONFIG}): build every program, or the ones named, into <out>/<name>/ (.so, IDL .json, .client.ts, .c, .build.json).`,
       "Outside a project, or with a .ts file: build that file (its keypair is created next to the output if needed).",
       SBPF,
       "--profile            log a marker and the remaining compute units before every statement (for `typesol profile`; not for release)",
+      TOOLCHAIN_STRICT,
       "--quiet              no banner",
     ].join("\n  "),
-    options: { sbpf: { type: "string" }, profile: { type: "boolean" }, out: { type: "string" }, "program-id": { type: "string" }, quiet: { type: "boolean" } },
+    options: {
+      sbpf: { type: "string" },
+      profile: { type: "boolean" },
+      out: { type: "string" },
+      "program-id": { type: "string" },
+      quiet: { type: "boolean" },
+      "toolchain-strict": { type: "boolean" },
+    },
     run(v, args) {
+      if (v["toolchain-strict"]) setToolchainStrict();
       const sbpf = sbpfOf(v);
       const profile = !!v.profile;
       const ws = findWorkspace(process.cwd());
@@ -259,14 +285,24 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   deploy: {
-    usage: "typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--dry-run]",
+    usage:
+      "typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--dry-run] [--toolchain-strict]",
     help: [
       `In a project: build, then \`solana program deploy\` each program at its <out>/deploy/<name>-keypair.json address.`,
       "Deploying again upgrades it (the payer must be the upgrade authority). --dry-run builds and prints the commands.",
       "Needs the Agave CLI (`solana`) on PATH.",
+      TOOLCHAIN_STRICT,
     ].join("\n  "),
-    options: { url: { type: "string" }, keypair: { type: "string" }, config: { type: "string" }, "dry-run": { type: "boolean" }, sbpf: { type: "string" } },
+    options: {
+      url: { type: "string" },
+      keypair: { type: "string" },
+      config: { type: "string" },
+      "dry-run": { type: "boolean" },
+      sbpf: { type: "string" },
+      "toolchain-strict": { type: "boolean" },
+    },
     async run(v, args) {
+      if (v["toolchain-strict"]) setToolchainStrict();
       const ws = needWorkspace("deploy");
       const cfg = solanaConfig(v.config as string | undefined);
       const url = (v.url as string | undefined) ?? cfg.url;
@@ -434,7 +470,8 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   verify: {
-    usage: "typesol verify <program.ts | program> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <solana cli config>] [--sbpf v0|v1|v2]",
+    usage:
+      "typesol verify <program.ts | program> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--manifest <name.build.json>]",
     help: [
       "Rebuild and compare with what is deployed. Exit 0 on a match, 3 on a mismatch.",
       "With a .so (e.g. from `solana program dump`): compare with that file.",
@@ -443,13 +480,18 @@ const COMMANDS: Record<string, Command> = {
       "on chain (`typesol idl publish`) with the one the source builds; a published IDL that differs is a mismatch.",
       "The SBPF version is read from the deployed binary unless --sbpf is given. Reproducible builds need the same",
       "TypeSOL version and platform-tools as the original (see its <name>.build.json).",
+      "On a mismatch, the toolchain of each side that is known: the rebuild's, and the deployed binary's from a build",
+      "manifest whose binary hash is the deployed one's (--manifest, <deployed>.build.json next to a given .so, or the",
+      "local build's). A program on chain carries no record of what built it: keep the .build.json with the deployment.",
+      "--manifest <file>   the <name>.build.json of the build that was deployed",
     ].join("\n  "),
-    options: { sbpf: { type: "string" }, address: { type: "string" }, url: { type: "string" }, config: { type: "string" } },
+    options: { sbpf: { type: "string" }, address: { type: "string" }, url: { type: "string" }, config: { type: "string" }, manifest: { type: "string" } },
     async run(v, args) {
       if (args.length < 1 || args.length > 2) throw new UsageError("verify takes the program and, optionally, the deployed .so");
       const [target, deployedPath] = args;
       if (deployedPath && (v.address || v.url)) throw new UsageError("give either a deployed .so or --address/--url, not both");
       if (v.address && !decodeAddress(v.address as string)) throw new UsageError(`--address "${v.address}" is not a base58 Solana address`);
+      if (v.manifest !== undefined && !existsSync(v.manifest as string)) throw new UsageError(`${v.manifest} does not exist`);
       const ws = findWorkspace(process.cwd());
       const name = ws && (ws.programs[target] ? target : programForEntry(ws, target));
       const entry = ws && name ? programPaths(ws, name).entry : target;
@@ -492,6 +534,16 @@ const COMMANDS: Record<string, Command> = {
           ? `  match     ${res.manifest.binary} (sbpf ${sbpf})`
           : `  MISMATCH  ${what} is not what ${entry} builds to (${res.manifest.binary}, sbpf ${sbpf})`,
       );
+      if (!same) {
+        // The rebuild's own output directory was temporary; the local build's manifest sits in the usual place.
+        const local = ws && name ? programPaths(ws, name).outDir : path.join(path.dirname(entry), "target");
+        const candidates = [
+          v.manifest as string | undefined,
+          deployedPath ? deployedPath.replace(/\.so$/, "") + ".build.json" : undefined,
+          path.join(local, `${res.manifest.program}.build.json`),
+        ].filter((f): f is string => !!f);
+        for (const line of toolchainHint(res.manifest, deployed, candidates, !!v.manifest)) log(line);
+      }
       if (!onChain) return same ? 0 : 3;
 
       const { info } = onChain;
@@ -627,6 +679,58 @@ function check(v: Record<string, string | boolean | undefined>, args: string[]):
 function mustExist(file: string): string {
   if (!existsSync(file)) throw new UsageError(`${file} does not exist`);
   return file;
+}
+
+/**
+ * After a verify mismatch: the toolchain of the rebuild and, when a build manifest describes the deployed bytes (its
+ * binary hash is theirs), of the deployed build, and what differs. A manifest that describes other bytes (an older
+ * local build) is only mentioned: its toolchain says nothing about the deployed binary.
+ */
+function toolchainHint(rebuilt: BuildManifest, deployed: Buffer, candidates: string[], explicit: boolean): string[] {
+  const lines = [`  rebuilt   ${describeToolchain(rebuilt)}`];
+  const deployedHash = createHash("sha256")
+    .update(deployed.subarray(0, elfLength(deployed)))
+    .digest("hex");
+  let other: { file: string; manifest: BuildManifest } | undefined;
+  const unrelated: { file: string; manifest: BuildManifest }[] = [];
+  for (const file of [...new Set(candidates.map((c) => path.resolve(c)))]) {
+    if (!existsSync(file)) continue;
+    let manifest: BuildManifest;
+    try {
+      manifest = JSON.parse(readFileSync(file, "utf8")) as BuildManifest;
+    } catch {
+      continue;
+    }
+    if (typeof manifest?.clang !== "string" || typeof manifest.binary !== "string") continue;
+    if (manifest.binary === deployedHash) {
+      other = { file, manifest };
+      break;
+    }
+    unrelated.push({ file, manifest });
+  }
+  const rel = (f: string) => path.relative(process.cwd(), f) || f;
+  if (other) {
+    lines.push(`  deployed  ${describeToolchain(other.manifest)} (${rel(other.file)}, whose binary hash is the deployed one's)`);
+    const diff = toolchainDifferences(rebuilt, other.manifest);
+    lines.push(
+      diff.length
+        ? `  differs   ${diff.join(", ")}: ${diff.includes("clang") ? "another clang can compile the same C to other bytes; " : ""}rebuild with the deployed side's ${diff.join(" and ")} to compare like with like`
+        : "  same toolchain and compiler versions on both sides: the sources (or an import, or the runtime header) differ",
+    );
+    return lines;
+  }
+  lines.push(
+    "  deployed  toolchain unknown: a deployed program records nothing about what built it" +
+      (explicit ? "" : "; pass --manifest <name>.build.json, kept from the build that was deployed"),
+  );
+  for (const u of unrelated) {
+    const diff = toolchainDifferences(rebuilt, u.manifest);
+    lines.push(
+      `  note      ${rel(u.file)} describes another binary (${u.manifest.binary.slice(0, 12)}…, ${describeToolchain(u.manifest)})` +
+        (diff.length ? `; it differs from the rebuild in ${diff.join(", ")}` : ""),
+    );
+  }
+  return lines;
 }
 
 /** Quote a command-line word for a POSIX shell when it needs it. */

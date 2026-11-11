@@ -62,6 +62,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm lint # scripts/ typecheck against dist/
+      # The tests are only evidence for the toolchain the compiler declares as tested (TESTED_TOOLCHAIN in
+      # src/compiler/toolchain.ts): doctor fails here when the installed clang is another one.
+      - run: node dist/cli.js doctor
+        env:
+          TYPESOL_TOOLCHAIN: strict
       - name: Cache third-party program binaries
         # Every fetch-only binary (SOURCES.md's "no (fetch)" rows), keyed on SOURCES.md: a recorded hash that changes
         # fetches again instead of restoring the old file.

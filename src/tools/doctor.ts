@@ -6,11 +6,12 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Rpc, SolanaRpcApi } from "@solana/kit";
-import { findToolchain } from "../compiler/toolchain.js";
+import { findToolchain, INSTALL_TESTED_TOOLCHAIN, shortClang, TESTED_TOOLCHAIN, toolchainInfo, toolchainStrict } from "../compiler/toolchain.js";
 import { base58, readKeypair } from "../keys.js";
 import { findWorkspace } from "../workspace.js";
 
-export const INSTALL_AGAVE = 'sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"';
+/** The Agave CLI release TypeSOL is tested with (its platform-tools are the tested ones). */
+export const INSTALL_AGAVE = INSTALL_TESTED_TOOLCHAIN[0];
 const MIN_NODE = [22, 12] as const;
 
 export interface Check {
@@ -43,6 +44,34 @@ export function toolchainCheck(): Check {
       fix: [INSTALL_AGAVE, "cargo-build-sbf --version   # once: downloads the platform-tools TypeSOL compiles with"],
     };
   }
+}
+
+/**
+ * Whether the active platform-tools are the ones TypeSOL is tested with. An untested one is a warning, or an error
+ * under TYPESOL_TOOLCHAIN=strict (as it is for a build then). Undefined when there are no platform-tools at all.
+ */
+export function testedToolchainCheck(): Check | undefined {
+  let info;
+  try {
+    info = toolchainInfo();
+  } catch {
+    return undefined; // the platform-tools row says what is missing
+  }
+  const tested = `${shortClang(TESTED_TOOLCHAIN.clang)}, platform-tools ${TESTED_TOOLCHAIN.platformTools}`;
+  if (info.tested) return { ok: true, what: "toolchain", detail: `tested: ${shortClang(info.clang)}, platform-tools ${info.platformTools ?? "unknown"}` };
+  let strict = true;
+  try {
+    strict = toolchainStrict();
+  } catch {
+    /* a bad TYPESOL_TOOLCHAIN value fails the build itself; here it counts as strict */
+  }
+  return {
+    ok: false,
+    optional: !strict,
+    what: "toolchain",
+    detail: `untested: ${shortClang(info.clang)}, platform-tools ${info.platformTools ?? "unknown"}; TypeSOL is tested with ${tested} (Agave ${TESTED_TOOLCHAIN.agave}): binaries from another toolchain are not covered by its tests${strict ? " (TYPESOL_TOOLCHAIN=strict refuses it)" : ""}`,
+    fix: [`${INSTALL_TESTED_TOOLCHAIN[1]}   # the tested platform-tools`],
+  };
 }
 
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
@@ -186,6 +215,8 @@ export async function doctorChecks(opts: { cwd: string; url?: string; config?: s
     fix: nodeOk ? undefined : [`install Node.js ${MIN_NODE.join(".")} or later (https://nodejs.org)`],
   });
   checks.push(toolchainCheck());
+  const tested = testedToolchainCheck();
+  if (tested) checks.push(tested);
   let solanaVersion: string | undefined;
   try {
     solanaVersion = execFileSync("solana", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })

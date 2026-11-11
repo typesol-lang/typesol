@@ -141,8 +141,18 @@ transactions to both and compares the results.
 
 ## Quick start
 
-You need Node.js 22.12 or later and the Agave CLI (`sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"`).
-Run `cargo-build-sbf --version` once; this downloads the platform-tools that TypeSOL compiles with. Rust is not needed.
+You need Node.js 22.12 or later and the Agave CLI with its platform-tools, which hold the clang TypeSOL compiles with.
+Rust is not needed. TypeSOL is tested with **Agave 3.1.10 and platform-tools v1.52** (clang 20.1.7); to install exactly
+those:
+
+```sh
+sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+cargo-build-sbf --install-only --force-tools-install --tools-version v1.52
+```
+
+Other versions work, but their binaries are not covered by the project's tests: `typesol build` warns once when the
+clang is another one (`--toolchain-strict` or `TYPESOL_TOOLCHAIN=strict` makes that an error), and every build records
+its clang, platform-tools and host in `<name>.build.json`.
 
 ```sh
 npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
@@ -151,7 +161,7 @@ npm test                                      # builds the program and runs it i
 npx --no-install typesol build                # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
 ```
 
-`npx --no-install typesol doctor` checks all of this (Node.js, platform-tools, Solana CLI, keypair, RPC) and prints the command
+`npx --no-install typesol doctor` checks all of this (Node.js, platform-tools and whether they are the tested ones, Solana CLI, keypair, RPC) and prints the command
 that fixes anything missing. Inside a project, `npx --no-install typesol …` (or `npm run build`, `npm run deploy`) runs the
 project's own copy; outside one, use `npx @typesol/cli …`. Plain `npx typesol` is not TypeSOL: `typesol` is not the npm
 package's name, so where the project's copy is not installed npx would fetch whatever package has that name.

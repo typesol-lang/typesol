@@ -19,7 +19,7 @@ import path from "node:path";
 import ts from "typescript";
 import { writeClient } from "./tools/clientgen.js";
 import { build, COMPILER_VERSION, SBPF_VERSIONS, type BuildManifest, type BuildResult, type Sbpf } from "./compiler/index.js";
-import { RUNTIME_DIR, toolchainVersion } from "./compiler/toolchain.js";
+import { checkToolchain, RUNTIME_DIR, toolchainInfo } from "./compiler/toolchain.js";
 import { loadOrCreateKeypair } from "./keys.js";
 import { TEMPLATES, type TemplateName } from "./templates.js";
 
@@ -161,7 +161,7 @@ export interface BuiltProgram {
 
 /**
  * The program built for a test: the existing build when it is up to date (same sources, runtime header, TypeSOL,
- * TypeScript and clang versions, SBPF version and address, not a --profile build, and the .so the manifest records),
+ * TypeScript, clang and platform-tools versions, host, SBPF version and address, not a --profile build, and the .so the manifest records),
  * else a fresh one. Concurrent callers (parallel test workers) wait for each other instead of building over each other.
  */
 export function buildForTest(ws: Workspace, name: string): BuiltProgram {
@@ -203,8 +203,13 @@ function upToDateBuild(paths: ProgramPaths, address: string, sbpf: Sbpf): Omit<B
   // A new import changes the importing file, so every source of the current program is in the list; the runtime and
   // the entry must be there too (a manifest from another layout).
   if (!manifest.sources["<runtime>/typesol_rt.h"] || !manifest.sources[path.basename(paths.entry)]) return undefined;
+  // A manifest from before 0.44.0 has no host: rebuild once to record the toolchain in full.
+  if (!manifest.host || manifest.host.os !== process.platform || manifest.host.arch !== process.arch) return undefined;
   // Last, as it runs clang: updated platform-tools may compile the same C differently.
-  if (manifest.clang !== toolchainVersion()) return undefined;
+  const toolchain = toolchainInfo();
+  if (manifest.clang !== toolchain.clang || manifest.platformTools !== toolchain.platformTools) return undefined;
+  // A reused build came from this toolchain too: the same warning (or refusal) as building it.
+  checkToolchain(toolchain);
   return { address, soPath: files.so, idl };
 }
 

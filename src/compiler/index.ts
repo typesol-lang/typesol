@@ -7,13 +7,13 @@ import { analyze, LIB_PATH } from "./analyze.js";
 import { hintForTypeScript } from "./hints.js";
 import { emitProgram, type EmitOptions } from "./emit/index.js";
 import { buildIdl } from "./idl.js";
-import { buildSharedObject, toolchainVersion, type Sbpf } from "./toolchain.js";
+import { buildSharedObject, checkToolchain, shortClang, TESTED_TOOLCHAIN, type Sbpf } from "./toolchain.js";
 import { RUNTIME_DIR } from "./toolchain.js";
 import type { ProgramModel } from "./model.js";
 
 export { CompileError, formatDiagnostic, type Diagnostic } from "./diagnostics.js";
 export type { ProgramModel } from "./model.js";
-export { SBPF_VERSIONS, type Sbpf } from "./toolchain.js";
+export { SBPF_VERSIONS, TESTED_TOOLCHAIN, type Sbpf } from "./toolchain.js";
 
 /** The hint the CLI adds under a TypeScript error (what to write instead in a TypeSOL program), for the editor plugin. */
 export function typescriptHint(d: ts.Diagnostic): string | undefined {
@@ -40,7 +40,12 @@ export function generate(entry: string, opts: EmitOptions = {}): Generated {
 export interface BuildManifest {
   program: string;
   compiler: string;
+  /** The first line of `clang --version`: the compiler of the generated C. */
   clang: string;
+  /** The platform-tools version (`v1.52`), when the SDK's layout tells it for sure (from 0.44.0). */
+  platformTools?: string;
+  /** The machine that built it: `process.platform` and `process.arch` (from 0.44.0). */
+  host?: { os: string; arch: string };
   /** The TypeScript version that type-checked the sources (pinned: it decides what compiles). */
   typescript: string;
   sbpf: Sbpf;
@@ -71,6 +76,8 @@ export function build(entry: string, outDir: string, programAddress: string, opt
   const soPath = `${base}.so`;
   const idlPath = `${base}.json`;
   writeFileSync(cPath, gen.c);
+  // Before clang runs: an untested toolchain is a warning (once), or an error in strict mode.
+  const toolchain = checkToolchain();
   buildSharedObject(cPath, soPath, opts.sbpf);
   const idl = buildIdl(gen.model, programAddress);
   writeFileSync(idlPath, JSON.stringify(idl, null, 2) + "\n");
@@ -81,7 +88,9 @@ export function build(entry: string, outDir: string, programAddress: string, opt
   const manifest: BuildManifest = {
     program: gen.model.name,
     compiler: COMPILER_VERSION,
-    clang: toolchainVersion(),
+    clang: toolchain.clang,
+    ...(toolchain.platformTools ? { platformTools: toolchain.platformTools } : {}),
+    host: { os: process.platform, arch: process.arch },
     typescript: ts.version,
     sbpf: opts.sbpf ?? "v0",
     profile: !!opts.profile,
@@ -95,6 +104,36 @@ export function build(entry: string, outDir: string, programAddress: string, opt
 
 /** The package version (one source: package.json), recorded in build manifests and shown by the CLI. */
 export const COMPILER_VERSION: string = (createRequire(import.meta.url)("../../package.json") as { version: string }).version;
+
+/** A build's toolchain in one line: `clang 20.1.7-rust-dev (…), platform-tools v1.52, darwin-arm64, TypeSOL 0.44.0`. */
+export function describeToolchain(m: Pick<BuildManifest, "clang" | "platformTools" | "host" | "compiler">): string {
+  return [
+    shortClang(m.clang),
+    `platform-tools ${m.platformTools ?? "unknown"}`,
+    m.host ? `${m.host.os}-${m.host.arch}` : "host unknown",
+    `TypeSOL ${m.compiler}`,
+    ...(m.clang === TESTED_TOOLCHAIN.clang ? ["the tested toolchain"] : []),
+  ].join(", ");
+}
+
+/** What differs between two builds' toolchains and compilers (the fields both record), e.g. ["clang", "TypeSOL version"]. */
+export function toolchainDifferences(a: Partial<BuildManifest>, b: Partial<BuildManifest>): string[] {
+  const out: string[] = [];
+  if (a.compiler !== b.compiler) out.push("TypeSOL version");
+  if (a.clang !== b.clang) out.push("clang");
+  if (a.platformTools && b.platformTools && a.platformTools !== b.platformTools) out.push("platform-tools");
+  if (a.typescript !== b.typescript) out.push("TypeScript");
+  if (a.sbpf !== b.sbpf) out.push("SBPF version");
+  // The host is recorded, not compared: one clang version is meant to give the same bytes on every host.
+  return out;
+}
+
+/** The ELF's own length (it ends with the section header table): a program account keeps it zero-padded. */
+export function elfLength(elf: Buffer): number {
+  if (elf.length < 0x40 || elf.readUInt32BE(0) !== 0x7f454c46) return elf.length;
+  const end = Number(elf.readBigUInt64LE(0x28)) + elf.readUInt16LE(0x3a) * elf.readUInt16LE(0x3c);
+  return end > 0 && end <= elf.length ? end : elf.length;
+}
 
 /**
  * Whether `deployed` (a .so, e.g. from `solana program dump`) is exactly what `entry` builds to. Program accounts
