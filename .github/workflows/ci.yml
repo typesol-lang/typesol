@@ -137,7 +137,9 @@ jobs:
             sleep 20
           done
           test -f test/programs/mpl_token_metadata.so
-      - run: pnpm test:showcase
+      # Two workers: the largest files (the Phoenix cancel and upstream suites) hold 2-3 GB each, and the runner stops
+      # the job when several of them run at once.
+      - run: pnpm test:showcase --maxWorkers=2
 
   differential:
     # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on
