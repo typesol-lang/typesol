@@ -10,10 +10,22 @@
  *
  * --compiler: a @typesol/cli package (or this checkout, the default; run `pnpm build` first). --sources: the tree
  * whose examples/ and ports (showcase/program-examples/, or showcase/ after 0.38.0) are built (default: this checkout). Every program is built at one address, so
- * the IDLs compare too.
+ * the IDLs compare too. --programs a.ts,b.ts builds only those (paths relative to --sources).
+ *
+ * The cross-host check (CI, on every change): test/golden/binaries.json holds what a fixed set of programs builds to
+ * in the reference environment, the --docker container (linux/amd64, platform-tools v1.52), with this checkout's
+ * compiler. --check builds the same programs with the active toolchain and compares:
+ *
+ *   node scripts/release-manifest.ts --docker --programs <list> --out test/golden/binaries.json   regenerate it
+ *   node scripts/release-manifest.ts --check test/golden/binaries.json                             compare (exit 1)
+ *
+ * --docker runs this script inside the build image (built first if needed) with this checkout mounted read-only and
+ * no network. The C and the IDL must match on every host; the binary must match on linux-x64, the reference's host.
+ * On another host a binary can differ for programs that link compiler-builtins' 128-bit or signed division, whose
+ * build differs between platform-tools host packages (docs/stability.md), so there it is reported, not failed.
  */
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,11 +42,22 @@ const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest("he
 
 type Manifest = {
   compiler: string;
-  toolchain: { clang: string; platformTools?: string; node: string; typescript: string; runtime: string };
+  toolchain: {
+    clang: string;
+    platformTools?: string;
+    node: string;
+    typescript: string;
+    runtime: string;
+    /** `<process.platform>-<process.arch>` of the machine that built (recorded after 0.44.0). */
+    host?: string;
+    /** The sha256 of docker/Dockerfile when it was built in the build container (--docker). */
+    container?: string;
+  };
   sources: { root: string; commit?: string };
   programs: Record<string, { so: string; idl: string; c: string; bytes: number } | { error: string }>;
-  references: Record<string, string>;
-  corpus: { files: number; sha256: string };
+  /** Left out with --programs (a set, not a release). */
+  references?: Record<string, string>;
+  corpus?: { files: number; sha256: string };
 };
 
 if (args[0] === "--diff") {
@@ -57,6 +80,63 @@ if (args[0] === "--diff") {
   console.log(`  IDL differs (same binary): ${rows.idl.length}${rows.idl.length ? `\n    ${rows.idl.join("\n    ")}` : ""}`);
   console.log(`  built by only one: ${rows.only.length}${rows.only.length ? `\n    ${rows.only.join("\n    ")}` : ""}`);
   process.exit(0);
+}
+
+if (args.includes("--docker")) process.exit(await inContainer());
+
+/** This script again, in the build container: the checkout read-only at /repo, the output's directory writable. */
+async function inContainer(): Promise<number> {
+  if (opt("--compiler") || opt("--sources") || args.includes("--check"))
+    throw new Error("--docker builds this checkout with its own compiler: leave out --compiler, --sources and --check");
+  const out = path.resolve(opt("--out") ?? "manifest.json");
+  const docker = (await import(pathToFileURL(path.join(here, "dist/tools/docker.js")).href)) as typeof import("../dist/tools/docker.js");
+  // Any recorded version's image has the same toolchain (one Dockerfile); its own TypeSOL is not used here.
+  const version = docker.recordedVersions().at(-1);
+  if (!version) throw new Error("no release record in releases/: the build image needs one");
+  const image = docker.ensureImage(version);
+  let commit = "";
+  try {
+    commit = execFileSync("git", ["-C", here, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    /* not a checkout */
+  }
+  const pass = args.filter((a, i) => a !== "--docker" && a !== "--out" && args[i - 1] !== "--out");
+  const r = spawnSync(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--pull",
+      "never",
+      "--platform",
+      docker.DOCKER_PLATFORM,
+      "--network",
+      "none",
+      "--read-only",
+      "--tmpfs",
+      "/tmp",
+      "--cap-drop",
+      "ALL",
+      "--user",
+      docker.containerUser(),
+      ...docker.limits(),
+      "--mount",
+      `type=bind,src=${here},dst=/repo,readonly`,
+      "--mount",
+      `type=bind,src=${path.dirname(out)},dst=/out`,
+      image.tag,
+      "node",
+      "/repo/scripts/release-manifest.ts",
+      ...pass,
+      "--out",
+      `/out/${path.basename(out)}`,
+      "--container",
+      image.identity.dockerfile,
+      ...(commit ? ["--commit", commit] : []),
+    ],
+    { stdio: "inherit" },
+  );
+  return r.status ?? 1;
 }
 
 const compilerRoot = path.resolve(opt("--compiler") ?? here);
@@ -94,18 +174,66 @@ const files = (dir: string): string[] => {
   return found;
 };
 
+const host = `${process.platform}-${process.arch}`;
+const buildOne = (entry: string, dir: string) => {
+  const r = compiler.build(entry, dir, ADDRESS);
+  const so = readFileSync(r.soPath);
+  return { so: sha256(so), idl: sha256(readFileSync(r.idlPath)), c: sha256(readFileSync(r.cPath)), bytes: so.length };
+};
+
+if (opt("--check")) {
+  const reference = JSON.parse(readFileSync(opt("--check")!, "utf8")) as Manifest;
+  const refHost = reference.toolchain.host ?? "unknown";
+  const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-check-"));
+  let failed = 0;
+  let hostOnly = 0;
+  console.log(`reference: ${opt("--check")} (${reference.toolchain.container ? "build container, " : ""}${refHost}); this host: ${host}`);
+  try {
+    for (const [i, [rel, want]] of Object.entries(reference.programs).entries()) {
+      if ("error" in want) continue;
+      const got = buildOne(path.join(sourceRoot, rel), path.join(dir, String(i)));
+      const text = got.c === want.c && got.idl === want.idl;
+      if (text && got.so === want.so) console.log(`  same      ${rel} (${got.bytes} bytes)`);
+      else if (!text) {
+        failed++;
+        console.log(
+          `  STALE     ${rel}: ${got.c === want.c ? "" : "the C "}${got.c !== want.c && got.idl !== want.idl ? "and " : ""}${got.idl === want.idl ? "" : "the IDL "}differ from the reference. ` +
+            "If the compiler or the program changed on purpose, regenerate the reference (see the top of scripts/release-manifest.ts)",
+        );
+      } else if (host === refHost) {
+        failed++;
+        console.log(`  DIFFERS   ${rel}: the same C and IDL build to another binary here (${got.so.slice(0, 16)}…, reference ${want.so.slice(0, 16)}…)`);
+      } else {
+        hostOnly++;
+        console.log(`  host      ${rel}: another binary on ${host} with the same C and IDL (expected for programs that link compiler-builtins' division)`);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log(
+    failed
+      ? `${failed} program(s) differ from the reference`
+      : `no difference${hostOnly ? `, apart from ${hostOnly} binary(ies) on a host other than the reference's (${refHost})` : ": every program builds to the reference's bytes"}`,
+  );
+  process.exit(failed ? 1 : 0);
+}
+
 const programs: Manifest["programs"] = {};
 const scratch = mkdtempSync(path.join(os.tmpdir(), "typesol-manifest-"));
 // The programs: examples/, and the mainnet ports and program-examples ports (examples/ and test/ports/ up to 0.38.0,
 // showcase/mainnet/ and showcase/program-examples/ after).
 const roots = ["examples", "test/ports", "showcase/mainnet", "showcase/program-examples"].map((d) => path.join(sourceRoot, d)).filter((d) => existsSync(d));
-const entries = roots.flatMap((d) => files(d)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"));
+// --programs a.ts,b.ts: only those entries (paths relative to --sources), e.g. the small set the cross-host check builds.
+const only = opt("--programs")
+  ?.split(",")
+  .filter(Boolean)
+  .map((p) => path.join(sourceRoot, p));
+const entries = only ?? roots.flatMap((d) => files(d)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"));
 for (const [i, entry] of entries.entries()) {
   const rel = path.relative(sourceRoot, entry);
   try {
-    const r = compiler.build(entry, path.join(scratch, String(i)), ADDRESS);
-    const so = readFileSync(r.soPath);
-    programs[rel] = { so: sha256(so), idl: sha256(readFileSync(r.idlPath)), c: sha256(readFileSync(r.cPath)), bytes: so.length };
+    programs[rel] = buildOne(entry, path.join(scratch, String(i)));
   } catch (e) {
     // Files that are not programs on their own (modules other files import) are listed with why.
     programs[rel] = {
@@ -118,20 +246,25 @@ for (const [i, entry] of entries.entries()) {
 }
 rmSync(scratch, { recursive: true, force: true });
 
-const references: Manifest["references"] = {};
-for (const f of files(path.join(sourceRoot, "test/programs"))) if (f.endsWith(".so")) references[path.relative(sourceRoot, f)] = sha256(readFileSync(f));
-const corpus = files(path.join(sourceRoot, "test")).filter((f) => !f.endsWith(".so"));
+// A set (--programs) is not a release: no reference binaries or corpus, which change with every test.
+const references: Record<string, string> = {};
 const corpusHash = createHash("sha256");
-for (const f of corpus)
-  corpusHash
-    .update(`${path.relative(sourceRoot, f)}\0`)
-    .update(readFileSync(f))
-    .update("\0");
-let commit: string | undefined;
+let corpusFiles = 0;
+if (!only) {
+  for (const f of files(path.join(sourceRoot, "test/programs"))) if (f.endsWith(".so")) references[path.relative(sourceRoot, f)] = sha256(readFileSync(f));
+  for (const f of files(path.join(sourceRoot, "test")).filter((f) => !f.endsWith(".so"))) {
+    corpusFiles++;
+    corpusHash
+      .update(`${path.relative(sourceRoot, f)}\0`)
+      .update(readFileSync(f))
+      .update("\0");
+  }
+}
+let commit: string | undefined = opt("--commit");
 try {
-  commit = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  commit ??= execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 } catch {
-  /* not a checkout */
+  /* not a checkout (or the container, where --commit gives it) */
 }
 const clang = toolchain.findToolchain().clang;
 const manifest: Manifest = {
@@ -143,11 +276,12 @@ const manifest: Manifest = {
     node: process.version,
     typescript: ts.default?.version ?? ts.version ?? "",
     runtime: sha256(readFileSync(path.join(compilerRoot, "runtime/typesol_rt.h"))),
+    host,
+    ...(opt("--container") ? { container: opt("--container") } : {}),
   },
   sources: { root: path.basename(sourceRoot), ...(commit ? { commit } : {}) },
   programs,
-  references,
-  corpus: { files: corpus.length, sha256: corpusHash.digest("hex") },
+  ...(only ? {} : { references, corpus: { files: corpusFiles, sha256: corpusHash.digest("hex") } }),
 };
 writeFileSync(out, `${JSON.stringify(manifest, null, 1)}\n`);
 const built = Object.values(programs).filter((p) => !("error" in p)).length;

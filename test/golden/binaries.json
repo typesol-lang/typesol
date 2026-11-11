@@ -1,0 +1,48 @@
+{
+ "compiler": "0.44.0",
+ "toolchain": {
+  "clang": "clang version 20.1.7-rust-dev (https://github.com/anza-xyz/llvm-project.git 78496716176191b2dfb728e5e38501812e7467db)",
+  "platformTools": "v1.52",
+  "node": "v24.22.2",
+  "typescript": "6.0.3",
+  "runtime": "add67d001159babfbdfde422af6d57effbffbb132803453af2c0fb662cdd3d5d",
+  "host": "linux-x64",
+  "container": "3e22eb016b182bcc23249333d75b4eac8d74c99da67e20680d60e09b7faa2362"
+ },
+ "sources": {
+  "root": "repo",
+  "commit": "7214234cb3e5369298dd469cd437ea3324abd309"
+ },
+ "programs": {
+  "examples/counter.ts": {
+   "so": "58beebbdcb9012fb644159a702449ca1ba9d00feeeed96ce30ec35e522e7a452",
+   "idl": "01ff0274389c04c6fdfefec84f25ab36d000a9b0a6ff658ce7cb5b0c115f35b7",
+   "c": "215a2dd92e814423dc3f8dfebea358ba7139d60ad80ca69f24a3e16731026d28",
+   "bytes": 11408
+  },
+  "examples/vault.ts": {
+   "so": "e6c214ca07fb0e0241815028efc0d1931070318db2974ea41707bf33b2fe45c9",
+   "idl": "a52942bc78a33624f5f99790f9f397ca75f85936007fa9b4778a573894312192",
+   "c": "80bc5467933674a9924ba8c64171b6509bd6ef3c2c961dfdbc1c98a918fc32de",
+   "bytes": 14472
+  },
+  "examples/escrow.ts": {
+   "so": "09a750a6f70a102e7a1f84eea920a6f3301e5c6fff624dbd9cdad44a9dd1ae13",
+   "idl": "ac76534440e3e742451ba8af0194cf72b945f290d3fad245a1be27526d7860d2",
+   "c": "d56644215484453eba844686463ac61c00062dea2d633c2fd941b2d8e7a29ac4",
+   "bytes": 22032
+  },
+  "showcase/mainnet/multisig/multisig.ts": {
+   "so": "d9f12f8d098ad7098395bd53620710f88386b79670c106b911b9034113be3f66",
+   "idl": "3fdd42f9d202ff551e34f558d2feb8b22664760d2728064e1007c1ff2358c4e8",
+   "c": "ed0fcdc7fe54614a11b700b4588d543db065d454789d0eae3bfb71802de6ab67",
+   "bytes": 30056
+  },
+  "showcase/mainnet/phoenix/phoenix.ts": {
+   "so": "86946a1b5ef4df13457c4f477a112b892782e393bd230811c7d836d69944ad41",
+   "idl": "206f7aa4868fdbba00cb4c2733004d58f2dac2b2c487761d556afe85710193a8",
+   "c": "223bcc049105f30d9b1e536b4db82cde23c8f8042ed2336aba2c183919314ef3",
+   "bytes": 257792
+  }
+ }
+}
