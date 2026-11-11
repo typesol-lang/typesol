@@ -802,9 +802,9 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | --- | --- |
 | `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow]` | Create a project: `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`, `programs/tsconfig.json` (with the editor plugin), `.vscode/settings.json` (the workspace TypeScript, so the plugin loads), `.gitignore`, the rules for AI coding agents (`AGENTS.md`, `CLAUDE.md` importing it, `.cursor/rules/typesol.mdc`) and the MCP server configuration (`.mcp.json`, `.cursor/mcp.json`; see [ai.md](ai.md)). `<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). Refuses to overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing. |
 | `typesol new <program> [--template counter\|vault\|escrow]` | In a project: add a program, `programs/<program>.ts` and `tests/<program>.test.ts` from the template, and its entry in `typesol.json`. Refuses to overwrite files or reuse a name. |
-| `typesol doctor [--url <rpc>] [--config <cli config>]` | Check what building, testing and deploying need: Node.js, the platform-tools (and a `toolchain` row: the tested ones, or untested with both versions), the Solana CLI, its keypair, the RPC (`--url`, a cluster moniker, or the CLI config) and the keypair's balance there, and the project. Each problem is printed with the command that fixes it. Exit code 1 when building is impossible (Node.js or the platform-tools missing); deploy pieces are warnings. |
-| `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--toolchain-strict] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json` (the TypeSOL, TypeScript, clang and platform-tools versions, the host, the SBPF version, each source's sha256 and the binary's). With platform-tools other than the tested ones it warns once; `--toolchain-strict` (or `TYPESOL_TOOLCHAIN=strict`) refuses them. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. |
-| `typesol build <file.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--toolchain-strict] [--quiet]` | Outside a project (or a file that is not one of its programs): build that file. Its keypair is `--program-id`, which must exist, or `<out>/<name>-keypair.json`, created on the first build. A project program's `.ts` builds as that program. |
+| `typesol doctor [--url <rpc>] [--config <cli config>]` | Check what building, testing and deploying need: Node.js, the platform-tools (and a `toolchain` row: the tested ones, or untested with both versions), the Solana CLI, Docker (optional: only `--docker` builds need it; it says when they run emulated), its keypair, the RPC (`--url`, a cluster moniker, or the CLI config) and the keypair's balance there, and the project. Each problem is printed with the command that fixes it. Exit code 1 when building is impossible (Node.js or the platform-tools missing); deploy pieces are warnings. |
+| `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--toolchain-strict] [--docker [--typesol-version <v>] [--release-record <file>]] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json` (the TypeSOL, TypeScript, clang and platform-tools versions, the host, the SBPF version, each source's sha256 and the binary's). With platform-tools other than the tested ones it warns once; `--toolchain-strict` (or `TYPESOL_TOOLCHAIN=strict`) refuses them. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. `--docker` builds in the pinned container instead ([below](#build---docker-and-verify---docker)). |
+| `typesol build <file.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--toolchain-strict] [--docker …] [--quiet]` | Outside a project (or a file that is not one of its programs): build that file. Its keypair is `--program-id`, which must exist, or `<out>/<name>-keypair.json`, created on the first build. A project program's `.ts` builds as that program. |
 | `typesol check [<program>… \| <file.ts>] [--json] [--stdin \| --files]` | Type-check and validate without building. In a project, no argument checks every program (or those named) and exits 1 if any has errors. `--json` prints `{ ok, diagnostics: [{ file, line, column, message }] }`, always (a missing file or unreadable `--files` input is a diagnostic too, exit 1 or 2); `--stdin` checks the text given on stdin as that file (its imports come from disk); `--files` reads `{ "files": { "<absolute path>": "<text>", … } }` from stdin and checks with those texts instead of the disk (an editor's unsaved buffers). |
 | `typesol clone [<address>…] [--url <rpc>] [--config <cli config>] [--out <dir>]` | Copy cluster accounts and programs for the tests (Anchor's `[test.validator.clone]`): each account to `<address>.json` (lamports, owner, data), each program to `<address>.so` (its ELF, from the ProgramData account for upgradeable programs), in `tests/accounts` (`"accounts"` in `typesol.json`) or `--out`. Without addresses it clones the project's `"clone"` list. `testProgram` loads that directory into its LiteSVM; commit it so the tests run offline. |
 | `typesol emit-c <file.ts> [--out <file.c>] [--profile]` | Print or write the generated C. |
@@ -814,7 +814,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | `typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]` | Generate TypeSOL helpers that call another program from its IDL. Unsupported instructions are listed on stderr. |
 | `typesol port <idl.json> [--out <file.ts>]` | A TypeSOL program skeleton from an Anchor IDL (0.30+/1.x), to port an Anchor program: account structs, enums, errors, events and one function per instruction with its accounts and arguments, each body `require(false, …NotPorted)` until written. Instruction discriminators (an explicit `@discriminator` when the name derives another), account names and error codes are kept, so existing clients keep working where the layouts match; notes on stderr list where they do not (Borsh `String`/`Option` in account data, a `Vec` that is not the last field). Error codes that skip ahead are kept with `@code`, and zero-copy types keep their IDL `repr`, `serialization` and field names (`@repr`, `@serialization`, `@idlName`). |
 | `typesol client <idl.json> [--out <file.ts>] [--address <base58>]`, `typesol client --address <program id> [--url <rpc>] [--config <cli config>] [--out <file.ts>]` | Generate a typed TypeScript client on `@solana/kit` from an Anchor IDL (0.30+/1.x or TypeSOL); the IDL is validated first, and what the client leaves out is printed as notes. Without a file, the IDL is read from the chain: the canonical Program Metadata IDL, else Anchor's IDL account. See [client.md](client.md). |
-| `typesol verify <program\|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>] [--sbpf …] [--manifest <name.build.json>]` | Rebuild and compare with what is deployed. Without a `.so`, reads the program from the cluster (`--url`, cluster monikers such as `mainnet-beta` included, else the Solana CLI config) at `--address` or the address `typesol.json` records, under any loader (v2, upgradeable v3, v4); prints the upgrade authority (or that the program is immutable) and the last deploy slot, and compares the IDL published with `typesol idl publish` (a published IDL that differs is a mismatch). With a `.so` (e.g. `solana program dump`), compares with that file. Trailing zero padding is ignored; the SBPF version is read from the deployed ELF unless `--sbpf` is given. On a mismatch it prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the deployed build's when a build manifest's binary hash is the deployed bytes' (`--manifest`, `<deployed>.build.json` next to a given `.so`, or the local build's), and what differs; otherwise it says the deployed side's toolchain is unknown (a program on chain records none). |
+| `typesol verify <program\|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>] [--sbpf …] [--manifest <name.build.json>] [--docker …]` | Rebuild and compare with what is deployed. Without a `.so`, reads the program from the cluster (`--url`, cluster monikers such as `mainnet-beta` included, else the Solana CLI config) at `--address` or the address `typesol.json` records, under any loader (v2, upgradeable v3, v4); prints the upgrade authority (or that the program is immutable) and the last deploy slot, and compares the IDL published with `typesol idl publish` (a published IDL that differs is a mismatch). With a `.so` (e.g. `solana program dump`), compares with that file. Trailing zero padding is ignored; the SBPF version is read from the deployed ELF unless `--sbpf` is given. On a mismatch it prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the deployed build's when a build manifest's binary hash is the deployed bytes' (`--manifest`, `<deployed>.build.json` next to a given `.so`, or the local build's), and what differs; otherwise it says the deployed side's toolchain is unknown (a program on chain records none). A host difference alone is named as such (platform-tools host packages differ in compiler-builtins). `--docker` rebuilds in the pinned container and, on a match, prints what was verified ([below](#build---docker-and-verify---docker)). |
 | `typesol profile <logs.txt\|-> [--program <id>]` | Compute units per TypeScript line from the logs of a `--profile` build's transaction (exit 1 when the logs have no markers). |
 | `typesol help <command>` | Same as `typesol <command> --help`. |
 | `typesol --version` | Print the version. |
@@ -826,6 +826,28 @@ when one fails (an RPC URL can carry an API key). A `--config` file that does no
 Builds (`build`, `deploy`, `verify`, `typesol/testing`) compare the active clang with the one the release is tested
 with (`TESTED_TOOLCHAIN` in `typesol/compiler`: Agave 3.1.10, platform-tools v1.52): another one gets one warning per
 process on stderr. `TYPESOL_TOOLCHAIN=strict` makes it an error everywhere, `warn` is the default.
+
+## build --docker and verify --docker
+
+`--docker` builds in a container made on your machine from `docker/Dockerfile` (shipped in the package): linux/amd64
+on every machine (emulated on arm64), Node 24, the platform-tools v1.52 of Agave 3.1.10, and a TypeSOL version from
+npm whose tarball is checked against `releases/<version>.json` (sha512 integrity, sha1 shasum, every file's sha256)
+before it is installed. Every input is pinned by digest or checksum. The image is `typesol-build:<version>-<first 12
+of the Dockerfile's sha256>`, built the first time it is needed (progress on stderr; about 750 MB of downloads) and
+reused after. Builds run with `--network none`, the sources read-only (the project root, or a single file's
+directory: imports from outside it are not there), the output directory writable, no capabilities, a read-only root
+file system, as your uid (never root). The written files are the ones `build` writes; `<name>.build.json` adds
+`container` (platform, Dockerfile sha256, base images, downloads, the TypeSOL tarball's hashes and commit, the local
+image id).
+
+| Option | |
+| --- | --- |
+| `--typesol-version <v>` | The TypeSOL in the container. Default: this `typesol`'s version (in a project that installs another `typesol` than the one running, an error naming both); for `verify`, the version of the deployed build's manifest when one is known (`--manifest`, `<deployed>.build.json`, or the local build's whose binary hash is the deployed one's). |
+| `--release-record <file>` | The record to check that version's tarball against when the package does not ship it: a package ships the records of the releases before it (0.43.0 on; a record is written after its release is published). A version without a record is refused; versions before 0.43.0 have none. |
+
+Without Docker, with its daemon stopped or when the image build fails, `--docker` is an error and nothing is built;
+it never falls back to the local toolchain. `TYPESOL_DOCKER_CPUS` and `TYPESOL_DOCKER_MEMORY` (e.g. `2`, `4g`) limit
+the build container on a shared machine. Why one platform: [stability.md](stability.md#what-builds-the-same-bytes-where).
 
 ## typesol.json
 
@@ -1154,6 +1176,31 @@ version are used. Then the toolchain: verify prints the rebuild's clang and plat
 when a `<name>.build.json` describes the deployed bytes (`--manifest <file>`, one next to a given `.so`, or the local
 build's). A program on chain carries no such record, so keep the build manifest of every deployment.
 
+**`--docker needs Docker: docker is not installed` / `the Docker daemon is not running`** — `build --docker` and
+`verify --docker` run in a container: install Docker, or start Docker Desktop (or `sudo systemctl start docker`).
+`typesol doctor` has a `docker` row. Nothing is built without it; drop `--docker` to build with your own platform-tools.
+
+**`docker build of typesol-build:… failed`** — the first `--docker` build makes the image, which needs the network:
+the base images from Docker Hub, the Agave and platform-tools release files from GitHub, the TypeSOL tarball from npm.
+A `checksum` error means a downloaded file is not the one the Dockerfile pins (retry; if it persists, report it).
+`typesol tarball check: integrity …` means the tarball npm served is not the one `releases/<version>.json` records:
+do not use that version until it is explained. On arm64 machines the image is linux/amd64 and runs emulated: Docker
+Desktop provides the x86_64 emulation (QEMU or Rosetta); other Docker installs may need `binfmt` for amd64.
+
+**`no release record for TypeSOL <version>`** — the container installs only versions whose tarball record ships with
+the package. Pass the record from the repository with `--release-record releases/<version>.json`, use a later
+`@typesol/cli`, or choose a recorded version with `--typesol-version`. 0.42.0 and earlier have no record.
+
+**`this project installs typesol X …, but this is typesol Y`** — a `typesol` other than the project's ran `--docker`.
+Run the project's own (`npx --no-install typesol …`), or say which version to use with `--typesol-version`.
+
+**`the container build failed … the container sees only <dir>`** — the compiler's error is printed above it. The
+container mounts only the project root (or a single file's directory): an import from outside it is missing there.
+
+**`verify` says `differs   host`** — the same TypeSOL and toolchain built the two sides on different hosts, and the
+program links compiler-builtins code that differs between platform-tools host packages (128-bit or signed division).
+Rebuild on the deployed side's kind of host, or, for programs others should verify, deploy a `--docker` build.
+
 **Windows** — not tested; use WSL2 with the Linux Agave CLI.
 
 **Node errors such as `ERR_UNKNOWN_FILE_EXTENSION` or `ERR_REQUIRE_ESM`** — use Node.js 22.12 or newer.
@@ -1204,11 +1251,15 @@ You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the R
 
 **The toolchain you deploy with.** The binary is what the platform-tools' clang makes of the generated C, so the
 toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
-`typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). Keep
+`typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). The host matters
+as well: the platform-tools package of each host has its own compiler-builtins, so a program that uses 128-bit or
+signed division links to different bytes on macOS, Linux arm64 and Linux x86_64
+([stability.md](stability.md#what-builds-the-same-bytes-where)). For a program others should be able to verify, build
+it with `--docker` (step 2): a pinned linux/amd64 container that anyone can rebuild. Keep
 `target/my_app/my_app.build.json` with each deployment, next to the commit you deployed: it records the TypeSOL,
-TypeScript, clang and platform-tools versions and the host, and the deployed bytes' sha256. Step 6's `verify` matches
-only when it rebuilds with the same TypeSOL version and toolchain, and on a mismatch `--manifest` with that file shows
-what differs.
+TypeScript, clang and platform-tools versions, the host, the container when there was one, and the deployed bytes'
+sha256. Step 6's `verify` matches only when it rebuilds with the same TypeSOL version, toolchain and (for such
+programs) host, and on a mismatch `--manifest` with that file shows what differs.
 
 ## 1. Create and test
 
@@ -1234,6 +1285,34 @@ program's address, and records the address in `typesol.json`.
 
 **Back up `target/deploy/my_app-keypair.json` now.** It is not committed (`.gitignore`), and without it you cannot
 redeploy to that address.
+
+### A build others can verify
+
+```sh
+npx --no-install typesol build --docker
+```
+
+The same files, built inside a container instead of with your platform-tools. The container is made on your machine
+from `docker/Dockerfile`, which ships in the package; every input is pinned: the Node and busybox base images by their
+linux/amd64 digests, the Agave 3.1.10 and platform-tools v1.52 release files by sha256, and the TypeSOL package (the
+version your project uses) by its release record, `releases/<version>.json`: the npm tarball's sha512 integrity and
+sha1 shasum and every file's sha256, checked before it is installed. The first `--docker` build of a TypeSOL version
+builds the image (about 750 MB of downloads, a few minutes; Docker must be running, `typesol doctor` shows it); later
+ones take seconds. The build runs with no network, the project mounted read-only, the output directory writable, as
+your user, never root. `my_app.build.json` then records the container: the platform, the Dockerfile's sha256, the
+pinned base images and downloads, the TypeSOL tarball's hashes and the local image id.
+
+Deploy that `my_app.so` with the Solana CLI, `solana program deploy target/my_app/my_app.so --program-id
+target/deploy/my_app-keypair.json --use-rpc` (with your `--url`): `typesol deploy`, `--dry-run` included, builds again
+with your local platform-tools and overwrites the container build. Commit the source, keep
+`my_app.build.json`, and publish the commit and that file with the program id.
+
+The TypeSOL inside the container is the version this `typesol` is, the one your project installs (`npx --no-install
+typesol`); a global `typesol` of another version than the project's `node_modules/typesol` refuses rather than
+guess. `--typesol-version <v>` picks another. Only versions with a release record can be installed (0.43.0 and later):
+a package carries the records of the releases before it, because a release's record is written after it is
+published. For the newest release, pass its record from the repository with `--release-record <file>`
+(`releases/<version>.json` on main), or use a later `@typesol/cli`.
 
 ## 3. A wallet with SOL
 
@@ -1288,8 +1367,30 @@ npx --no-install typesol verify my_app
 
 `verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
 the cluster in your Solana CLI config, and compares the bytes. `match` means anyone with your source and the same
-TypeSOL version and toolchain gets exactly the program on chain. It also prints the upgrade authority and checks the IDL you
-published in step 5. Anyone can run it against your program with `--address <program id> --url mainnet-beta`.
+TypeSOL version and toolchain (and host, for a program with 128-bit or signed division) gets exactly the program on
+chain. It also prints the upgrade authority and checks the IDL you published in step 5.
+
+### Verifying someone else's program
+
+With the source at the deployed commit, the program id and, ideally, the deployer's `<name>.build.json`:
+
+```sh
+git clone <repository> && cd <repository> && git checkout <commit>
+npx --no-install typesol verify my_app --address <program id> --url mainnet-beta --docker --manifest my_app.build.json
+```
+
+`--docker` rebuilds in the same container recipe, built on your machine from the Dockerfile and checked inputs. The
+TypeSOL version is the deployed build's (from the manifest whose binary hash is the deployed bytes'), or
+`--typesol-version <v>`; months later, the current `@typesol/cli` installs the old version in the container, checked
+against its release record. On a match it prints what was verified: the program, the source directory and its git
+commit (and whether it has uncommitted changes), the TypeSOL version and tarball, the clang and platform-tools, the
+container's Dockerfile sha256, base images and downloads, and the command that repeats it. On a mismatch it shows the
+toolchain of each side that is known, as without `--docker`. Exit codes: 0 match, 3 mismatch.
+
+What this is not: the container is built locally from pinned inputs, not pulled from a published image, so the first
+verification downloads the inputs and builds it. Its local image id can differ between machines; the Dockerfile's
+sha256 and the pinned inputs are what to compare. The result is not registered with an external verified-build
+registry: the evidence is the command and its output, which anyone can rerun.
 
 ## 7. Call it
 
@@ -1319,7 +1420,7 @@ auditors, [SECURITY.md](../SECURITY.md) how to report a problem.
 | --- | --- |
 | The program's author | the program's logic: what it allows, to whom, for how much |
 | TypeSOL (this repository) | that the binary does what the source and these guarantees say, and nothing an attacker can steer beyond it |
-| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js. The guarantees are tested with one platform-tools release (v1.52, from Agave 3.1.10); a build with another warns, or fails with `--toolchain-strict`, and `<name>.build.json` records which one built a binary |
+| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js. The guarantees are tested with one platform-tools release (v1.52, from Agave 3.1.10); a build with another warns, or fails with `--toolchain-strict`, and `<name>.build.json` records which one built a binary and on which host. The platform-tools host package is part of it: their compiler-builtins differ, so programs with 128-bit or signed division link to other bytes on another host ([stability.md](stability.md#what-builds-the-same-bytes-where)). `--docker` builds pin it, with the rest of the environment, in one linux/amd64 container whose inputs are checked by digest and checksum |
 | The Solana runtime | account ownership and signer flags as passed, the loader's account serialization, CPI privilege rules, sysvars |
 
 Everything a transaction carries is attacker-controlled: the instruction data, which accounts are passed in which
@@ -1564,9 +1665,11 @@ From 1.0 on, within a major version:
 
 - **Sources keep compiling.** A program that compiles with 1.x compiles with every later 1.y, to a program with the same
   account layouts, IDL, instruction and account discriminators and error codes. New releases add; they do not take away.
-- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release and the toolchain it is
-  tested with, a source builds to the same bytes. A release that changes the binary of a program that uses none of
-  its new features says so, with the release manifest's diff (`binary-diff.txt`) as the evidence.
+- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release, in the build container
+  (`--docker`), a source builds to the same bytes on every machine; outside it, to the same C, IDL and object code on
+  every host, and to the same binary except where the platform-tools host packages differ ([below](#what-builds-the-same-bytes-where)).
+  A release that changes the binary of a program that uses none of its new features says so, with the release
+  manifest's diff (`binary-diff.txt`) as the evidence.
 - **The checks stay.** No check a program gets from its parameter types (owner, discriminator, signer, writability,
   aliasing, checked arithmetic, constraints) is removed or weakened.
 - **The tools keep their interfaces**: `typesol build`, `test` (via `typesol/testing`), `check --json`, `deploy`,
@@ -1599,9 +1702,43 @@ Meant to stay as they are; a change before 1.0 would be a breaking change listed
 - **A build says what made it.** `<name>.build.json` records the TypeSOL, TypeScript, clang and platform-tools versions,
   the host, the SBPF version and the sha256 of every source and of the binary. `typesol verify` uses it to say, on a
   mismatch, whether the toolchains differ. A program on chain records none of this: keep the file with the deployment.
+- **A deployed program anyone can rebuild.** `typesol build --docker` builds in a container made from
+  `docker/Dockerfile` (in the package), whose inputs are all pinned: base images by digest, the Agave and
+  platform-tools release files by sha256, the TypeSOL tarball by its `releases/<version>.json`. `typesol verify
+  --docker` rebuilds there and says what it verified. The image is built locally from those inputs; no image is
+  published, and the result is not registered with any external verified-build registry
+  ([docs/mainnet.md](mainnet.md#6-verify)).
 - **Fixes come as patches of the latest minor.** From 0.44.0 on, a release that only fixes soundness or security
   defects is a patch (0.44.1, …) with no new language surface, and its notes carry the binary diff against the
   previous release ([SECURITY.md](../SECURITY.md#fix-releases)). Older minors are not maintained.
+
+## What builds the same bytes where
+
+Measured with TypeSOL 0.44.0 (the npm tarball) and platform-tools v1.52 on macOS arm64 (the platform-tools
+`osx-aarch64` package), Linux arm64 and Linux x86_64 (the `linux-aarch64` and `linux-x86_64` packages, in
+containers): the 76 programs of the 0.44.0 sources (`scripts/release-manifest.ts`).
+
+| What | Same on every host? |
+| --- | --- |
+| The generated C (all 76) | yes |
+| The IDL (all 76) | yes |
+| clang's object code (`.o`, checked for counter and Phoenix) | yes |
+| `ld.lld`'s output from the same inputs | yes: each host's lld linked the same objects and libraries to the same bytes |
+| The binary, 66 of 76 programs (counter, vault, escrow, multisig among them) | yes |
+| The binary, 10 of 76 (the Phoenix, Marginfi, Raydium, Jito priority-fee and Stake Pool ports, transfer-fee, token-fundraiser, token-swap) | no: three different binaries on the three hosts (token-fundraiser: the two Linux ones agree) |
+
+The cause is one library. Each platform-tools host package ships its own build of the SBF `compiler-builtins` Rust
+library (`libcompiler_builtins-<hash>.rlib`, another file and another hash in each package); linking the same object
+against another host's copy gives the other host's binary. A program links what it calls: the 66 that agree use at
+most `__multi3` (64×64→128 multiplication), which builds the same in every package; the 10 that differ call 128-bit
+or signed 64-bit division or shifts (`__udivti3`, `__umodti3`, `__divti3`, `__divdi3`, `__lshrti3`, …), whose code
+differs between packages. Nothing in the emitted C, the paths or the build directory reaches the binary.
+
+So the reference environment is one platform: the build container is `linux/amd64` on every machine (emulated on
+arm64 hosts), and CI checks on every change that a Linux x86_64 runner with independently installed platform-tools
+builds the programs of `test/golden/binaries.json` (including Phoenix) to the container's bytes. A build outside the
+container is still reproducible on the same kind of host; `<name>.build.json` records the host, and `typesol verify`
+names a host difference when it is the only one.
 
 ## Experimental
 

@@ -11,9 +11,11 @@ From 1.0 on, within a major version:
 
 - **Sources keep compiling.** A program that compiles with 1.x compiles with every later 1.y, to a program with the same
   account layouts, IDL, instruction and account discriminators and error codes. New releases add; they do not take away.
-- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release and the toolchain it is
-  tested with, a source builds to the same bytes. A release that changes the binary of a program that uses none of
-  its new features says so, with the release manifest's diff (`binary-diff.txt`) as the evidence.
+- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release, in the build container
+  (`--docker`), a source builds to the same bytes on every machine; outside it, to the same C, IDL and object code on
+  every host, and to the same binary except where the platform-tools host packages differ ([below](#what-builds-the-same-bytes-where)).
+  A release that changes the binary of a program that uses none of its new features says so, with the release
+  manifest's diff (`binary-diff.txt`) as the evidence.
 - **The checks stay.** No check a program gets from its parameter types (owner, discriminator, signer, writability,
   aliasing, checked arithmetic, constraints) is removed or weakened.
 - **The tools keep their interfaces**: `typesol build`, `test` (via `typesol/testing`), `check --json`, `deploy`,
@@ -46,9 +48,43 @@ Meant to stay as they are; a change before 1.0 would be a breaking change listed
 - **A build says what made it.** `<name>.build.json` records the TypeSOL, TypeScript, clang and platform-tools versions,
   the host, the SBPF version and the sha256 of every source and of the binary. `typesol verify` uses it to say, on a
   mismatch, whether the toolchains differ. A program on chain records none of this: keep the file with the deployment.
+- **A deployed program anyone can rebuild.** `typesol build --docker` builds in a container made from
+  `docker/Dockerfile` (in the package), whose inputs are all pinned: base images by digest, the Agave and
+  platform-tools release files by sha256, the TypeSOL tarball by its `releases/<version>.json`. `typesol verify
+  --docker` rebuilds there and says what it verified. The image is built locally from those inputs; no image is
+  published, and the result is not registered with any external verified-build registry
+  ([docs/mainnet.md](mainnet.md#6-verify)).
 - **Fixes come as patches of the latest minor.** From 0.44.0 on, a release that only fixes soundness or security
   defects is a patch (0.44.1, …) with no new language surface, and its notes carry the binary diff against the
   previous release ([SECURITY.md](../SECURITY.md#fix-releases)). Older minors are not maintained.
+
+## What builds the same bytes where
+
+Measured with TypeSOL 0.44.0 (the npm tarball) and platform-tools v1.52 on macOS arm64 (the platform-tools
+`osx-aarch64` package), Linux arm64 and Linux x86_64 (the `linux-aarch64` and `linux-x86_64` packages, in
+containers): the 76 programs of the 0.44.0 sources (`scripts/release-manifest.ts`).
+
+| What | Same on every host? |
+| --- | --- |
+| The generated C (all 76) | yes |
+| The IDL (all 76) | yes |
+| clang's object code (`.o`, checked for counter and Phoenix) | yes |
+| `ld.lld`'s output from the same inputs | yes: each host's lld linked the same objects and libraries to the same bytes |
+| The binary, 66 of 76 programs (counter, vault, escrow, multisig among them) | yes |
+| The binary, 10 of 76 (the Phoenix, Marginfi, Raydium, Jito priority-fee and Stake Pool ports, transfer-fee, token-fundraiser, token-swap) | no: three different binaries on the three hosts (token-fundraiser: the two Linux ones agree) |
+
+The cause is one library. Each platform-tools host package ships its own build of the SBF `compiler-builtins` Rust
+library (`libcompiler_builtins-<hash>.rlib`, another file and another hash in each package); linking the same object
+against another host's copy gives the other host's binary. A program links what it calls: the 66 that agree use at
+most `__multi3` (64×64→128 multiplication), which builds the same in every package; the 10 that differ call 128-bit
+or signed 64-bit division or shifts (`__udivti3`, `__umodti3`, `__divti3`, `__divdi3`, `__lshrti3`, …), whose code
+differs between packages. Nothing in the emitted C, the paths or the build directory reaches the binary.
+
+So the reference environment is one platform: the build container is `linux/amd64` on every machine (emulated on
+arm64 hosts), and CI checks on every change that a Linux x86_64 runner with independently installed platform-tools
+builds the programs of `test/golden/binaries.json` (including Phoenix) to the container's bytes. A build outside the
+container is still reproducible on the same kind of host; `<name>.build.json` records the host, and `typesol verify`
+names a host difference when it is the only one.
 
 ## Experimental
 

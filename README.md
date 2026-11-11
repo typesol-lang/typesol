@@ -40,6 +40,9 @@ clients read TypeSOL programs unchanged.
 - **Verifiable.** `typesol verify` reads a deployed program from the cluster and checks it, and the IDL published on
   chain, against its source. Every release records the hashes of its npm tarball and of every program it builds
   ([releases/](releases), [docs/testing.md](docs/testing.md#reproducing-a-release)).
+  `typesol build --docker` builds in a pinned linux/amd64 container that anyone can rebuild from the Dockerfile, and
+  `typesol verify --docker` checks a deployed program against its source in that same environment
+  ([docs/mainnet.md](docs/mainnet.md#6-verify)).
 
 <p align="center">
   <a href="#numbers">
@@ -282,7 +285,7 @@ The full reference, with every type, check and built-in, is in [docs/language.md
 | `typesol client <idl.json>` | generate a typed TypeScript client from an Anchor IDL (`typesol build` writes one per program) |
 | `typesol port` | a TypeSOL skeleton of an Anchor program from its IDL, keeping discriminators and error codes |
 | `typesol/ts-plugin` | the compiler's errors in the editor as you type, in every file of a program ([docs/cli.md](docs/cli.md#editor)) |
-| `typesol verify` | rebuild from source and compare with the program and IDL on chain (or a dumped `.so`) |
+| `typesol verify` | rebuild from source and compare with the program and IDL on chain (or a dumped `.so`); `--docker` rebuilds in the pinned container |
 | `typesol profile` | compute units per TypeScript line, from a `--profile` build's logs |
 | `typesol emit-c` | print the generated C |
 

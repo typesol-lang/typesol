@@ -18,6 +18,31 @@ version are used. Then the toolchain: verify prints the rebuild's clang and plat
 when a `<name>.build.json` describes the deployed bytes (`--manifest <file>`, one next to a given `.so`, or the local
 build's). A program on chain carries no such record, so keep the build manifest of every deployment.
 
+**`--docker needs Docker: docker is not installed` / `the Docker daemon is not running`** — `build --docker` and
+`verify --docker` run in a container: install Docker, or start Docker Desktop (or `sudo systemctl start docker`).
+`typesol doctor` has a `docker` row. Nothing is built without it; drop `--docker` to build with your own platform-tools.
+
+**`docker build of typesol-build:… failed`** — the first `--docker` build makes the image, which needs the network:
+the base images from Docker Hub, the Agave and platform-tools release files from GitHub, the TypeSOL tarball from npm.
+A `checksum` error means a downloaded file is not the one the Dockerfile pins (retry; if it persists, report it).
+`typesol tarball check: integrity …` means the tarball npm served is not the one `releases/<version>.json` records:
+do not use that version until it is explained. On arm64 machines the image is linux/amd64 and runs emulated: Docker
+Desktop provides the x86_64 emulation (QEMU or Rosetta); other Docker installs may need `binfmt` for amd64.
+
+**`no release record for TypeSOL <version>`** — the container installs only versions whose tarball record ships with
+the package. Pass the record from the repository with `--release-record releases/<version>.json`, use a later
+`@typesol/cli`, or choose a recorded version with `--typesol-version`. 0.42.0 and earlier have no record.
+
+**`this project installs typesol X …, but this is typesol Y`** — a `typesol` other than the project's ran `--docker`.
+Run the project's own (`npx --no-install typesol …`), or say which version to use with `--typesol-version`.
+
+**`the container build failed … the container sees only <dir>`** — the compiler's error is printed above it. The
+container mounts only the project root (or a single file's directory): an import from outside it is missing there.
+
+**`verify` says `differs   host`** — the same TypeSOL and toolchain built the two sides on different hosts, and the
+program links compiler-builtins code that differs between platform-tools host packages (128-bit or signed division).
+Rebuild on the deployed side's kind of host, or, for programs others should verify, deploy a `--docker` build.
+
 **Windows** — not tested; use WSL2 with the Linux Agave CLI.
 
 **Node errors such as `ERR_UNKNOWN_FILE_EXTENSION` or `ERR_REQUIRE_ESM`** — use Node.js 22.12 or newer.

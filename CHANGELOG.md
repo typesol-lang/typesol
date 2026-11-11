@@ -6,6 +6,32 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: `typesol build --docker` and `typesol verify --docker` build in a pinned container, so that a third party can
+  rebuild a deployed program from its source in the same environment. The container is made locally from
+  `docker/Dockerfile`, which ships in the package with `releases/`: linux/amd64 on every machine, the Node 24 and
+  busybox base images by digest, the Agave 3.1.10 and platform-tools v1.52 release files by sha256, and the TypeSOL
+  version from npm with its tarball checked against `releases/<version>.json` (integrity, shasum, every file) before
+  it is installed. Builds run without network, with the sources read-only, as the caller's uid. `<name>.build.json`
+  records the container (platform, Dockerfile sha256, base images, downloads, tarball hashes, local image id). The
+  TypeSOL version is `--typesol-version`, else (verify) the deployed build's manifest's, else the CLI's; a project
+  that installs another typesol than the one running is an error, and versions without a release record (before
+  0.43.0, or a newest release whose record is not shipped yet: `--release-record <file>`) are refused. On a match,
+  `verify --docker` prints what was verified (source and git commit, TypeSOL tarball, toolchain, container inputs)
+  and the command that repeats it. Without Docker, with its daemon stopped or when the image build fails, it is an
+  error: never a local build instead. No image is published, and nothing is registered with an external
+  verified-build registry (docs/mainnet.md).
+- Measured: what builds the same bytes on another host. With 0.44.0 and platform-tools v1.52 on macOS arm64, Linux
+  arm64 and Linux x86_64, all 76 programs of the sources give the same C and IDL, clang the same object code, and 66
+  the same binary; 10 (the Phoenix, Marginfi, Raydium, Jito priority-fee and Stake Pool ports among them) give three
+  different binaries, because each platform-tools host package ships its own build of compiler-builtins and those
+  programs link its 128-bit or signed division. README, docs/stability.md, docs/security-model.md and docs/audit.md
+  now say exactly that instead of "the same sources and toolchain produce the same bytes".
+- `toolchainDifferences` (and so `verify`'s mismatch hint) counts the host as a difference, and says when it is the
+  only one.
+- CI: the programs of `test/golden/binaries.json` (counter, vault, escrow, multisig, Phoenix) must build on the Linux
+  x86_64 runner to the C, IDL and bytes the build container gave (`scripts/release-manifest.ts --check`; `--docker`
+  regenerates the file, `--programs` limits a manifest to a set).
+- `typesol doctor` has an optional `docker` row.
 - Docs: the README's first page names the eight ports checked against mainnet binaries, with instruction and
   transaction counts, before the examples; the quick start gives its commands before the toolchain notes; Status says
   what the November 2026 reviews found and how fix releases and release records work; the licence line matches NOTICE.

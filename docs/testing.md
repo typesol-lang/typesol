@@ -68,6 +68,28 @@ node scripts/release-manifest.ts --diff a.json b.json
 For 0.37.0 → 0.38.0 (run by hand before release manifests existed): all 67 programs of the 0.37.0 sources build to
 the same binary and IDL with both packages.
 
+### Across hosts
+
+The C, IDL and object code TypeSOL's builds produce are the same on every host; the linked binary is the same except
+for programs that call compiler-builtins' 128-bit or signed division, whose code differs between the platform-tools
+host packages ([stability.md](stability.md#what-builds-the-same-bytes-where) has the measurement over 76 programs on
+macOS arm64, Linux arm64 and Linux x86_64). The reference environment is the `--docker` build container (linux/amd64).
+`test/golden/binaries.json` holds what five programs (counter, vault, escrow, multisig and Phoenix, which links
+`__udivti3`) build to there with the checkout's compiler, and CI checks on every change that its Linux x86_64 runner,
+with platform-tools installed by `cargo-build-sbf`, gives the same C, IDL and bytes:
+
+```sh
+node scripts/release-manifest.ts --check test/golden/binaries.json      # what CI runs (on macOS: Phoenix's binary is reported, not failed)
+node scripts/release-manifest.ts --docker --out test/golden/binaries.json \
+  --programs examples/counter.ts,examples/vault.ts,examples/escrow.ts,showcase/mainnet/multisig/multisig.ts,showcase/mainnet/phoenix/phoenix.ts
+```
+
+The second regenerates the file in the container (Docker, the checkout built with `pnpm build`; no network once the
+image exists), after a change that alters what those programs compile to. `--check` says `STALE` when the C or IDL
+differ (regenerate) and `DIFFERS` when the same C and IDL give other bytes on the reference's host (a toolchain
+problem). The container itself is tested by `test/cli/docker.test.ts` with `TYPESOL_DOCKER_TESTS=1` (off in CI: the
+first image build downloads about 750 MB).
+
 ### The npm tarball
 
 From 0.43.0 on, `releases/<version>.json` in the repository describes the package on npm: the tag and its commit, the

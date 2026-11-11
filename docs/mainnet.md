@@ -9,11 +9,15 @@ You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the R
 
 **The toolchain you deploy with.** The binary is what the platform-tools' clang makes of the generated C, so the
 toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
-`typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). Keep
+`typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). The host matters
+as well: the platform-tools package of each host has its own compiler-builtins, so a program that uses 128-bit or
+signed division links to different bytes on macOS, Linux arm64 and Linux x86_64
+([stability.md](stability.md#what-builds-the-same-bytes-where)). For a program others should be able to verify, build
+it with `--docker` (step 2): a pinned linux/amd64 container that anyone can rebuild. Keep
 `target/my_app/my_app.build.json` with each deployment, next to the commit you deployed: it records the TypeSOL,
-TypeScript, clang and platform-tools versions and the host, and the deployed bytes' sha256. Step 6's `verify` matches
-only when it rebuilds with the same TypeSOL version and toolchain, and on a mismatch `--manifest` with that file shows
-what differs.
+TypeScript, clang and platform-tools versions, the host, the container when there was one, and the deployed bytes'
+sha256. Step 6's `verify` matches only when it rebuilds with the same TypeSOL version, toolchain and (for such
+programs) host, and on a mismatch `--manifest` with that file shows what differs.
 
 ## 1. Create and test
 
@@ -39,6 +43,34 @@ program's address, and records the address in `typesol.json`.
 
 **Back up `target/deploy/my_app-keypair.json` now.** It is not committed (`.gitignore`), and without it you cannot
 redeploy to that address.
+
+### A build others can verify
+
+```sh
+npx --no-install typesol build --docker
+```
+
+The same files, built inside a container instead of with your platform-tools. The container is made on your machine
+from `docker/Dockerfile`, which ships in the package; every input is pinned: the Node and busybox base images by their
+linux/amd64 digests, the Agave 3.1.10 and platform-tools v1.52 release files by sha256, and the TypeSOL package (the
+version your project uses) by its release record, `releases/<version>.json`: the npm tarball's sha512 integrity and
+sha1 shasum and every file's sha256, checked before it is installed. The first `--docker` build of a TypeSOL version
+builds the image (about 750 MB of downloads, a few minutes; Docker must be running, `typesol doctor` shows it); later
+ones take seconds. The build runs with no network, the project mounted read-only, the output directory writable, as
+your user, never root. `my_app.build.json` then records the container: the platform, the Dockerfile's sha256, the
+pinned base images and downloads, the TypeSOL tarball's hashes and the local image id.
+
+Deploy that `my_app.so` with the Solana CLI, `solana program deploy target/my_app/my_app.so --program-id
+target/deploy/my_app-keypair.json --use-rpc` (with your `--url`): `typesol deploy`, `--dry-run` included, builds again
+with your local platform-tools and overwrites the container build. Commit the source, keep
+`my_app.build.json`, and publish the commit and that file with the program id.
+
+The TypeSOL inside the container is the version this `typesol` is, the one your project installs (`npx --no-install
+typesol`); a global `typesol` of another version than the project's `node_modules/typesol` refuses rather than
+guess. `--typesol-version <v>` picks another. Only versions with a release record can be installed (0.43.0 and later):
+a package carries the records of the releases before it, because a release's record is written after it is
+published. For the newest release, pass its record from the repository with `--release-record <file>`
+(`releases/<version>.json` on main), or use a later `@typesol/cli`.
 
 ## 3. A wallet with SOL
 
@@ -93,8 +125,30 @@ npx --no-install typesol verify my_app
 
 `verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
 the cluster in your Solana CLI config, and compares the bytes. `match` means anyone with your source and the same
-TypeSOL version and toolchain gets exactly the program on chain. It also prints the upgrade authority and checks the IDL you
-published in step 5. Anyone can run it against your program with `--address <program id> --url mainnet-beta`.
+TypeSOL version and toolchain (and host, for a program with 128-bit or signed division) gets exactly the program on
+chain. It also prints the upgrade authority and checks the IDL you published in step 5.
+
+### Verifying someone else's program
+
+With the source at the deployed commit, the program id and, ideally, the deployer's `<name>.build.json`:
+
+```sh
+git clone <repository> && cd <repository> && git checkout <commit>
+npx --no-install typesol verify my_app --address <program id> --url mainnet-beta --docker --manifest my_app.build.json
+```
+
+`--docker` rebuilds in the same container recipe, built on your machine from the Dockerfile and checked inputs. The
+TypeSOL version is the deployed build's (from the manifest whose binary hash is the deployed bytes'), or
+`--typesol-version <v>`; months later, the current `@typesol/cli` installs the old version in the container, checked
+against its release record. On a match it prints what was verified: the program, the source directory and its git
+commit (and whether it has uncommitted changes), the TypeSOL version and tarball, the clang and platform-tools, the
+container's Dockerfile sha256, base images and downloads, and the command that repeats it. On a mismatch it shows the
+toolchain of each side that is known, as without `--docker`. Exit codes: 0 match, 3 mismatch.
+
+What this is not: the container is built locally from pinned inputs, not pulled from a published image, so the first
+verification downloads the inputs and builds it. Its local image id can differ between machines; the Dockerfile's
+sha256 and the pinned inputs are what to compare. The result is not registered with an external verified-build
+registry: the evidence is the command and its output, which anyone can rerun.
 
 ## 7. Call it
 

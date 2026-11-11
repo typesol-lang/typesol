@@ -29,7 +29,12 @@ the code, [docs/runtime.md](runtime.md) the runtime's conventions.
 Out of scope: the Solana runtime, platform-tools (clang, lld), the TypeScript compiler, and programs written with
 TypeSOL. The platform-tools are part of what a binary trusts all the same: the tests cover the toolchain the release
 declares (`TESTED_TOOLCHAIN` in `src/compiler/toolchain.ts`: Agave 3.1.10, platform-tools v1.52), builds with another
-one warn, and the review of 0.43.0 traced one defect to how that backend passes struct arguments.
+one warn, and the review of 0.43.0 traced one defect to how that backend passes struct arguments. The platform-tools
+host package matters too: its compiler-builtins library differs between the macOS, Linux arm64 and Linux x86_64
+packages, so a program that uses 128-bit or signed division links to different bytes on each
+([stability.md](stability.md#what-builds-the-same-bytes-where)). The reference environment for binaries is the
+`--docker` build container (`docker/Dockerfile`, linux/amd64, every input pinned), which `typesol verify --docker`
+rebuilds in.
 
 ## What to check
 
