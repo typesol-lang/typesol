@@ -6,7 +6,7 @@ TypeSOL generates programs that hold funds. Treat it accordingly.
 
 - The compiler, runtime and tooling have been through internal security reviews by the maintainers. The latest, of
   0.43.0 on 2026-11-11, found defects in the compiler (one of them can break an authorization check in a helper) and
-  in the tooling; they are fixed in the next release, 0.44.0. **Rebuild and redeploy programs built with 0.43.0 or
+  in the tooling; they are fixed in 0.44.0. **Rebuild and redeploy programs built with 0.43.0 or
   earlier once it is out**; [docs/security-model.md](docs/security-model.md#review-of-0430-2026-11-11) says how to tell
   whether a program was exposed, and [docs/audit.md](docs/audit.md#earlier-reviews) what that review did and did not
   cover. Every release is covered by execution tests, differential tests against Anchor, and randomized tests.

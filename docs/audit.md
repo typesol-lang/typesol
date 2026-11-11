@@ -61,7 +61,7 @@ references, closures, seeds, `close()`, Borsh decoding), read the runtime header
 programs, and exercised the tooling (the CLI commands and `typesol/testing`). It did not cover the emitters of the
 Metaplex and token CPI wrappers, the oracles, builds for SBPF v1 and v2, or Windows.
 
-Defects found, fixed in the next release (0.44.0; the CHANGELOG's "Unreleased" section until it ships, with a test
+Defects found, fixed in 0.44.0 (its CHANGELOG section, with a test
 for each):
 
 - **Helper arguments were not copies.** A Pubkey, Option, string or u256 argument reaches a helper as a pointer to the
@@ -85,7 +85,7 @@ for each):
 - **Tooling: IDL text reached generated code unvalidated.** `typesol cpi` and `typesol port` wrote names and other text
   from the IDL they were given into the TypeScript they generate without the checks `typesol client` makes.
 
-Programs built with 0.43.0 or earlier should be rebuilt with the fixed release and redeployed. The first defect is
+Programs built with 0.43.0 or earlier should be rebuilt with 0.44.0 or later and redeployed. The first defect is
 the one that can break an authorization check; [security-model.md](security-model.md#review-of-0430-2026-11-11)
 says how to tell whether a program was exposed to it.
 

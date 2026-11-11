@@ -6,6 +6,17 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.44.0 — 2026-11-11
+
+Fixes from an internal review of 0.43.0, and the means to check a release. A helper's Pubkey, Option, string or u256
+argument was not a copy when the helper was not inlined, so a check on a value the helper had just overwritten could
+pass; a named seed list read its seeds when the CPI ran; the stale-reference rule was skipped for account-group fields
+and loaded accounts; the Borsh decoder's length checks could wrap. **Programs built with 0.43.0 or earlier should be
+rebuilt and redeployed** (docs/security-model.md says how to tell whether a program was exposed). New: the npm tarball
+is packed from a clean export of the tag and recorded in `releases/`, the tested toolchain is declared and another one
+warns, and fix-only releases come as patches from here on (SECURITY.md). Of the 76 programs of the 0.43.0 sources, 35
+compile to the same binary as in 0.43.0 and 41 to a different one.
+
 - Fixed: a Pubkey, Option, string or u256 argument of a helper was not a copy. The SBF backend passes such a value as a
   pointer to the caller's object, so a helper that was not inlined and wrote that object (`rotate(v, v.admin, caller)`
   with `v.admin = v.pending` inside) then read its own write through the parameter: a check on the old value passed on

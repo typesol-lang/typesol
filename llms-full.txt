@@ -1422,7 +1422,7 @@ Each holds for every instruction of every program the compiler accepts. A break 
 ## Review of 0.43.0 (2026-11-11)
 
 An internal review of 0.43.0 found that some of the guarantees above did not hold in every case; the defects are
-listed in [audit.md](audit.md#0430-2026-11-11) and fixed in the next release (0.44.0). Programs built with 0.43.0 or
+listed in [audit.md](audit.md#0430-2026-11-11) and fixed in 0.44.0. Programs built with 0.43.0 or
 earlier should be rebuilt with it and redeployed: the fixes change the binary of programs that have a helper
 taking a Pubkey, Option, string or u256, exposed or not (35 of the 76 programs of the 0.43.0 sources build to the same
 binary, 41 to another).
@@ -1448,7 +1448,7 @@ exposed to them.
 ## Status
 
 The compiler and runtime have had internal security reviews, the latest of 0.43.0 (above); its findings are fixed in
-the next release (0.44.0). It was an internal review, not an independent audit, and it did not cover the Metaplex and
+0.44.0. It was an internal review, not an independent audit, and it did not cover the Metaplex and
 token CPI wrappers' emitters, the oracles, SBPF v1/v2 builds or Windows. There has been no external audit: see
 [audit.md](audit.md).
 
