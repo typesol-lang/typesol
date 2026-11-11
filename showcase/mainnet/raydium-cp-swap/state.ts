@@ -1,3 +1,4 @@
+// A port of Raydium CP-Swap (raydium-io/raydium-cp-swap, programs/cp-swap), Copyright Raydium, licensed under the Apache License, Version 2.0.
 // Account state of the Raydium CP-Swap port (programs/cp-swap/src/states/ of raydium-io/raydium-cp-swap). The layouts
 // are the original's byte for byte: AmmConfig is a Borsh account of fixed size, PoolState and ObservationState are
 // zero-copy (#[repr(C, packed)]), which is TypeSOL's fixed layout. Names are the original's, so its IDL is the same.

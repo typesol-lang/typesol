@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's price adapter (programs/marginfi/src/state/price.rs and lst_stake_price.rs @ c5d440f6), every oracle setup:
 // a Pyth push feed (PriceUpdateV2, Borsh), a Switchboard pull feed (PullFeedAccountData, fixed offsets), a fixed price,
 // a Scope entry; times a rate another program's account holds where the setup takes one — a Solend, Kamino, Drift or

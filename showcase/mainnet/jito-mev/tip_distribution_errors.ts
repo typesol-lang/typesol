@@ -1,3 +1,4 @@
+// Part of the TypeSOL port of Jito's MEV programs (jito-foundation/jito-programs @ ce1dfb6, Apache-2.0).
 // Errors of the tip distribution program (ErrorCode in jito-foundation/jito-programs mev-programs/programs/
 // tip-distribution/src/lib.rs), in the original's order: 6000 + the member's index.
 export enum ErrorCode {

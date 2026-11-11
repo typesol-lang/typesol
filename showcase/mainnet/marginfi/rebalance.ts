@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's rebalance execution helpers (programs/marginfi/src/instructions/marginfi_account/rebalance.rs,
 // state/rate.rs and state/rebalance.rs @ c5d440f6): the referenced banks read from the remaining accounts, their
 // supply rates (a native bank's curve, or a Kamino, Drift or JupLend venue's: venue_rates.ts), venue multipliers,

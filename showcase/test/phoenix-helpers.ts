@@ -573,11 +573,14 @@ export class Diff {
       });
   }
 
-  /** An account's data in the original. */
+  /**
+   * An account's data in the original: a view of the copy getAccount already made (not a second copy; a market is
+   * 1.7 MB). Read it once per step: calling this for every element of a list copies the whole account each time.
+   */
   data(a: Address): Buffer {
     const acct = this.original.getAccount(a);
     if (!acct.exists) throw new Error(`${a} does not exist`);
-    return Buffer.from(acct.data);
+    return Buffer.from(acct.data.buffer, acct.data.byteOffset, acct.data.byteLength);
   }
 
   /** Change an account's bytes in both VMs (its lamports and owner kept unless given). */
@@ -589,10 +592,20 @@ export class Diff {
     this.write(a, opts.owner ?? acct.programAddress, data, opts.lamports ?? BigInt(acct.lamports));
   }
 
-  /** An account's lamports, owner and data, as compared. */
+  /** An account's lamports, owner and data, as compared (as text: for failure messages, see expectSame). */
   bytes(vm: LiteSVM, a: Address): string {
     const acct = vm.getAccount(a);
     return acct.exists ? `${acct.lamports} ${acct.programAddress} ${Buffer.from(acct.data).toString("hex")}` : "missing";
+  }
+
+  /**
+   * The account is the same in both VMs: lamports, owner and data, the bytes compared as they are. Only a difference
+   * builds the hex text of bytes() (megabytes for a large account), so the failure shows both sides as before.
+   */
+  expectSame(at: Address, message: string): void {
+    const [o, p] = [this.original.getAccount(at), this.port.getAccount(at)];
+    const same = o.exists ? p.exists && o.lamports === p.lamports && o.programAddress === p.programAddress && Buffer.compare(o.data, p.data) === 0 : !p.exists;
+    if (!same) expect(this.bytes(this.port, at), message).toBe(this.bytes(this.original, at));
   }
 
   /**
@@ -615,7 +628,7 @@ export class Diff {
     for (const at of named) {
       const acct = this.original.getAccount(at);
       if (acct.exists && acct.executable) continue;
-      expect(this.bytes(this.port, at), `${label}: ${at}`).toBe(this.bytes(this.original, at));
+      this.expectSame(at, `${label}: ${at}`);
     }
     this.cu[label] = [meta(a).computeUnitsConsumed(), meta(b).computeUnitsConsumed()];
     this.rows.push({ label, original: meta(a).computeUnitsConsumed(), port: meta(b).computeUnitsConsumed(), ok: outcome(a) === "ok" });

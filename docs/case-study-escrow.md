@@ -212,7 +212,7 @@ with their Solscan links in the [performance report](https://typesol.com/report/
 
 The steps this port followed, in order:
 
-1. Generate the skeleton from the Anchor IDL: `npx typesol port target/idl/escrow.json --out programs/escrow.ts`. It
+1. Generate the skeleton from the Anchor IDL: `npx @typesol/cli port target/idl/escrow.json --out programs/escrow.ts`. It
    keeps instruction names, discriminators, account order and error codes.
 2. Turn each `#[account(...)]` into the parameter's type, using the table above and
    [Accounts and constraints](migrate-from-anchor.md#accounts-and-constraints). Keep the account order: it is the

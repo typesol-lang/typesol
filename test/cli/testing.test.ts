@@ -1,7 +1,8 @@
 // typesol/testing: accounts by name with the IDL's flags and fixed addresses, plain argument and result values.
 import { findAssociatedTokenPda } from "@solana-program/token-2022";
 import type { Address } from "@solana/kit";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,4 +132,43 @@ export function read(mint: Mint, account: TokenAccount, tokenProgram: TokenInter
     expect(t.errorName(1)).toBeUndefined();
     expect(t.tokenBalance((await t.wallet()).address)).toBeNull();
   });
+
+  it("testProgram from parallel processes: one build, the others wait and reuse it; a source change rebuilds once", async () => {
+    // vitest runs test files in parallel workers, and each calls testProgram: they used to rebuild into the same
+    // target/<name>/ at once and load each other's half-written files.
+    const ROOT = fileURLToPath(new URL("../..", import.meta.url));
+    const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "typesol-testing-race-")));
+    expect(spawnSync("node", [path.join(ROOT, "dist/cli.js"), "init", ".", "--name", "race"], { cwd: dir }).status).toBe(0);
+    const child = `
+      const { buildForTest, findWorkspace } = await import(${JSON.stringify(path.join(ROOT, "dist/workspace.js"))});
+      const { testProgram } = await import(${JSON.stringify(path.join(ROOT, "dist/testing.js"))});
+      const rebuilt = buildForTest(findWorkspace(process.argv[1]), "race").rebuilt;
+      const t = await testProgram("race", process.argv[1]);
+      const alice = await t.wallet();
+      t.ok(await t.send(alice, t.ix("initialize", {}, { authority: alice, counter: await t.pda("counter", alice) })));
+      console.log(JSON.stringify({ rebuilt, instructions: t.idl.instructions.map((i) => i.name) }));`;
+    const run = () =>
+      new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+        const p = spawn("node", ["--input-type=module", "-e", child, dir], { stdio: ["ignore", "pipe", "pipe"] });
+        let out = "";
+        let err = "";
+        p.stdout.on("data", (d) => (out += d));
+        p.stderr.on("data", (d) => (err += d));
+        p.on("close", (code) => resolve({ code, out, err }));
+      });
+    const round = async () => {
+      const res = await Promise.all([run(), run(), run()]);
+      for (const r of res) expect(r.code, r.err).toBe(0);
+      return res.map((r) => JSON.parse(r.out.trim().split("\n").at(-1)!) as { rebuilt: boolean; instructions: string[] });
+    };
+    const first = await round();
+    expect(first.filter((r) => r.rebuilt)).toHaveLength(1);
+    expect((await round()).filter((r) => r.rebuilt)).toHaveLength(0);
+    const entry = path.join(dir, "programs/race.ts");
+    writeFileSync(entry, readFileSync(entry, "utf8") + "\nexport function ping(counter: Account<Counter>): void {}\n");
+    const changed = await round();
+    expect(changed.filter((r) => r.rebuilt)).toHaveLength(1);
+    for (const r of changed) expect(r.instructions).toContain("ping");
+    rmSync(dir, { recursive: true, force: true });
+  }, 240_000);
 });

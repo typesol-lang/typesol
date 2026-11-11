@@ -10,7 +10,7 @@ import { generateCpi, type Idl } from "./tools/cpigen.js";
 import { generatePort, type PortIdl } from "./tools/portgen.js";
 import { generateClient, writeClient, type ClientIdl } from "./tools/clientgen.js";
 import { buildIdl } from "./compiler/idl.js";
-import { decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
+import { base58, decodeAddress, loadOrCreateKeypair, readKeypair } from "./keys.js";
 import { formatProfile, profileLogs } from "./tools/profile.js";
 import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
 import {
@@ -25,7 +25,17 @@ import {
   scaffold,
   type Workspace,
 } from "./workspace.js";
-import { clusterUrl, deployPreflight, doctorChecks, formatChecks, INSTALL_AGAVE, solanaConfig as readSolanaConfig, toolchainCheck } from "./tools/doctor.js";
+import {
+  cliRpc,
+  clusterUrl,
+  deployPreflight,
+  doctorChecks,
+  formatChecks,
+  INSTALL_AGAVE,
+  rpcHost,
+  solanaConfig as readSolanaConfig,
+  toolchainCheck,
+} from "./tools/doctor.js";
 
 const ASSETS = fileURLToPath(new URL("../assets/", import.meta.url));
 
@@ -120,10 +130,10 @@ const COMMANDS: Record<string, Command> = {
         );
       log(
         `\n  next:\n` +
-          (rel === "." ? "" : `    cd ${rel}\n`) +
+          (rel === "." ? "" : `    cd ${shellQuote(rel)}\n`) +
           `    npm install\n` +
           `    npm test             # builds ${name} and runs its test in LiteSVM, a Solana runtime in-process\n` +
-          `    npx typesol doctor   # checks the toolchain, keypair and RPC before a deploy` +
+          `    npx --no-install typesol doctor   # checks the toolchain, keypair and RPC before a deploy` +
           (template === "counter" ? `\n\n  other starters: typesol init <dir> --template vault (SOL at a PDA) or --template escrow (SPL token escrow)` : ""),
       );
       return 0;
@@ -167,7 +177,11 @@ const COMMANDS: Record<string, Command> = {
       if (!v.quiet && process.stdout.isTTY) log(banner());
       const outDir = (v.out as string | undefined) ?? path.join(path.dirname(file), "target");
       const { model } = generate(file);
-      const keyFile = (v["program-id"] as string | undefined) ?? path.join(outDir, `${model.name}-keypair.json`);
+      const given = v["program-id"] as string | undefined;
+      // A keypair given by name must be there: creating one in its place would give the program a new address.
+      if (given !== undefined && !existsSync(given))
+        throw new UsageError(`--program-id ${given} does not exist (leave --program-id out to create a keypair next to the output)`);
+      const keyFile = given ?? path.join(outDir, `${model.name}-keypair.json`);
       mkdirSync(path.dirname(keyFile), { recursive: true });
       const { address, created } = loadOrCreateKeypair(keyFile);
       const res = build(file, outDir, address, { sbpf: sbpf ?? "v0", profile });
@@ -178,7 +192,7 @@ const COMMANDS: Record<string, Command> = {
       log(`  idl       ${res.idlPath}`);
       log(`  client    ${client.path}`);
       log(`  manifest  ${res.manifestPath}`);
-      log(`\n  deploy:   solana program deploy ${res.soPath} --program-id ${keyFile}`);
+      log(`\n  deploy:   solana program deploy ${shellQuote(res.soPath)} --program-id ${shellQuote(keyFile)}`);
       return 0;
     },
   },
@@ -192,41 +206,15 @@ const COMMANDS: Record<string, Command> = {
     ].join("\n  "),
     options: { json: { type: "boolean" }, stdin: { type: "boolean" }, files: { type: "boolean" } },
     run(v, args) {
-      // In a project: the named programs, or all of them.
-      const ws = !v.stdin && !v.files && !args.some((a) => a.endsWith(".ts")) ? findWorkspace(process.cwd()) : undefined;
-      if (ws) {
-        const diagnostics: Diagnostic[] = [];
-        for (const name of names(ws, args)) {
-          try {
-            const { model } = generate(programPaths(ws, name).entry);
-            if (!v.json)
-              log(`ok  ${name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
-          } catch (e) {
-            if (!(e instanceof CompileError)) throw e;
-            diagnostics.push(...e.diagnostics);
-            if (!v.json) console.error(`${name}:\n${showDiagnostics(e.diagnostics)}`);
-          }
-        }
-        if (v.json) log(JSON.stringify({ ok: !diagnostics.length, diagnostics }));
-        return diagnostics.length ? 1 : 0;
-      }
-      const file = path.resolve(one(args, "<program.ts>"));
-      let files: Map<string, string> | undefined;
-      if (v.stdin) files = new Map([[file, readFileSync(0, "utf8")]]);
-      else if (v.files) {
-        const given = (JSON.parse(readFileSync(0, "utf8")) as { files?: Record<string, string> }).files ?? {};
-        files = new Map(Object.entries(given).map(([p, t]) => [path.resolve(p), t]));
-      }
+      if (!v.json) return check(v, args);
+      // --json is read by programs (the editor plugin, agents): every outcome is one JSON object, never a usage text.
       try {
-        if (!files?.has(file)) mustExist(file);
-        const { model } = generate(file, { files });
-        if (v.json) log(JSON.stringify({ ok: true, diagnostics: [] }));
-        else log(`ok  ${model.name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
-        return 0;
+        return check(v, args);
       } catch (e) {
-        if (!v.json || !(e instanceof CompileError)) throw e;
-        log(JSON.stringify({ ok: false, diagnostics: e.diagnostics }));
-        return 1;
+        const message = e instanceof Error ? e.message : String(e);
+        if (e instanceof CompileError) log(JSON.stringify({ ok: false, diagnostics: e.diagnostics }));
+        else log(JSON.stringify({ ok: false, diagnostics: [], error: message }));
+        return e instanceof UsageError ? 2 : 1;
       }
     },
   },
@@ -246,7 +234,7 @@ const COMMANDS: Record<string, Command> = {
     help: [
       "Serve the Model Context Protocol on stdio for AI coding agents: tools to check a program (errors with hints), read",
       "its IDL, search the docs, and read the rules a TypeSOL program follows. `typesol init` writes .mcp.json (Claude",
-      "Code) and .cursor/mcp.json (Cursor) that start it as `npx typesol mcp`.",
+      "Code) and .cursor/mcp.json (Cursor) that start it as `npx --no-install typesol mcp`.",
     ].join("\n  "),
     options: {},
     async run() {
@@ -264,6 +252,7 @@ const COMMANDS: Record<string, Command> = {
     ].join("\n  "),
     options: { url: { type: "string" }, config: { type: "string" } },
     async run(v) {
+      if (v.config !== undefined) solanaConfig(v.config as string); // a --config that does not exist is a usage error, as elsewhere
       const checks = await doctorChecks({ cwd: process.cwd(), url: v.url as string | undefined, config: v.config as string | undefined });
       log(formatChecks(checks));
       return checks.some((c) => !c.ok && !c.optional) ? 1 : 0;
@@ -279,17 +268,23 @@ const COMMANDS: Record<string, Command> = {
     options: { url: { type: "string" }, keypair: { type: "string" }, config: { type: "string" }, "dry-run": { type: "boolean" }, sbpf: { type: "string" } },
     async run(v, args) {
       const ws = needWorkspace("deploy");
+      const cfg = solanaConfig(v.config as string | undefined);
+      const url = (v.url as string | undefined) ?? cfg.url;
+      // Without either, `solana program deploy` would pick its own default cluster (mainnet-beta): never silently.
+      if (!url && !v["dry-run"])
+        throw new Error(
+          "no cluster: pass --url (devnet, mainnet-beta, localhost or an RPC URL), or set json_rpc_url in the Solana CLI config (`solana config set --url devnet`)",
+        );
       const built = buildWorkspace(ws, names(ws, args), { sbpf: sbpfOf(v), needKeypair: true });
-      if (!v["dry-run"]) {
+      if (url && !v["dry-run"]) {
         // Before any transaction: the RPC answers and the payer can afford it, with what to do if not.
-        const cfg = solanaConfig(v.config as string | undefined);
-        const url = (v.url as string | undefined) ?? cfg.url;
-        if (url)
-          await deployPreflight({
-            url: clusterUrl(url),
-            payer: (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json"),
-            programs: built.map((b) => ({ soPath: b.result.soPath, address: b.address, name: b.paths.name })),
-          });
+        const payer = (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json");
+        await deployPreflight({
+          url: clusterUrl(url),
+          payer,
+          programs: built.map((b) => ({ soPath: b.result.soPath, address: b.address, name: b.paths.name })),
+        });
+        log(`  cluster ${rpcHost(clusterUrl(url))}, payer ${payerAddress(payer)}`);
       }
       for (const b of built) {
         const cliArgs = deployArgs(b.result.soPath, b.paths.keypair, { url: v.url as string, payer: v.keypair as string, config: v.config as string });
@@ -329,7 +324,8 @@ const COMMANDS: Record<string, Command> = {
       const kit = await import("@solana/kit");
       const { publishIdl, rpcChain } = await import("./tools/idlpublish.js");
       const signer = await kit.createKeyPairSignerFromBytes(readKeypair(keyFile));
-      const chain = rpcChain(kit.createSolanaRpc(clusterUrl(rpcUrl)));
+      const chain = rpcChain(await cliRpc(clusterUrl(rpcUrl)));
+      log(`  cluster ${rpcHost(clusterUrl(rpcUrl))}, payer ${signer.address}`);
       for (const name of names(ws, args)) {
         // The IDL only needs the compiled model and the program address: the deployed binary is left alone.
         const { address } = programAddress(ws, name);
@@ -357,9 +353,8 @@ const COMMANDS: Record<string, Command> = {
       const dir = path.resolve((v.out as string | undefined) ?? ws?.accounts ?? "accounts");
       const rpcUrl = (v.url as string | undefined) ?? solanaConfig(v.config as string | undefined).url;
       if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
-      const kit = await import("@solana/kit");
       const { cloneAccounts } = await import("./tools/clone.js");
-      const lines = await cloneAccounts(kit.createSolanaRpc(clusterUrl(rpcUrl)) as never, [...new Set(addresses)], dir);
+      const lines = await cloneAccounts((await cliRpc(clusterUrl(rpcUrl))) as never, [...new Set(addresses)], dir);
       for (const l of lines) log(`  ${l}`);
       log(`  ${lines.length} written to ${path.relative(process.cwd(), dir) || "."}`);
       return 0;
@@ -422,7 +417,7 @@ const COMMANDS: Record<string, Command> = {
         // Loaded only here: the other commands do not need an RPC client.
         const kit = await import("@solana/kit");
         const { fetchProgramIdl } = await import("./tools/idlpublish.js");
-        const found = await fetchProgramIdl(kit.createSolanaRpc(clusterUrl(rpcUrl)), kit.address(v.address as string));
+        const found = await fetchProgramIdl(await cliRpc(clusterUrl(rpcUrl)), kit.address(v.address as string));
         console.error(`  IDL from ${found.source === "anchor" ? "Anchor's IDL account" : "the Program Metadata program"}`);
         idl = found.idl;
       } else {
@@ -472,9 +467,8 @@ const COMMANDS: Record<string, Command> = {
         const rpcUrl = (v.url as string | undefined) ?? solanaConfig(v.config as string | undefined).url;
         if (!rpcUrl) throw new Error("no RPC: pass --url, or set json_rpc_url in the Solana CLI config");
         // Loaded only here: the other commands do not need an RPC client.
-        const kit = await import("@solana/kit");
         const { fetchDeployed } = await import("./tools/onchain.js");
-        const rpc = kit.createSolanaRpc(clusterUrl(rpcUrl));
+        const rpc = await cliRpc(clusterUrl(rpcUrl));
         const info = await fetchDeployed(rpc, address);
         onChain = { address, info, rpc };
         deployed = info.elf;
@@ -589,6 +583,47 @@ function showDiagnostics(diagnostics: Diagnostic[], sources?: Map<string, string
     .join("\n\n");
 }
 
+/** `typesol check`: diagnostics as text, or (--json) as JSON; CompileErrors from a single file are thrown. */
+function check(v: Record<string, string | boolean | undefined>, args: string[]): number {
+  // In a project: the named programs, or all of them.
+  const ws = !v.stdin && !v.files && !args.some((a) => a.endsWith(".ts")) ? findWorkspace(process.cwd()) : undefined;
+  if (ws) {
+    const diagnostics: Diagnostic[] = [];
+    for (const name of names(ws, args)) {
+      try {
+        const { model } = generate(programPaths(ws, name).entry);
+        if (!v.json)
+          log(`ok  ${name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
+      } catch (e) {
+        if (!(e instanceof CompileError)) throw e;
+        diagnostics.push(...e.diagnostics);
+        if (!v.json) console.error(`${name}:\n${showDiagnostics(e.diagnostics)}`);
+      }
+    }
+    if (v.json) log(JSON.stringify({ ok: !diagnostics.length, diagnostics }));
+    return diagnostics.length ? 1 : 0;
+  }
+  const file = path.resolve(one(args, "<program.ts>"));
+  let files: Map<string, string> | undefined;
+  if (v.stdin) files = new Map([[file, readFileSync(0, "utf8")]]);
+  else if (v.files) {
+    let given: unknown;
+    try {
+      given = (JSON.parse(readFileSync(0, "utf8")) as { files?: unknown } | null)?.files ?? {};
+    } catch (e) {
+      throw new UsageError(`--files: stdin is not JSON (${(e as Error).message})`);
+    }
+    if (typeof given !== "object" || given === null || Object.values(given).some((t) => typeof t !== "string"))
+      throw new UsageError('--files: expected { "files": { "<absolute path>": "<text>", … } } on stdin');
+    files = new Map(Object.entries(given as Record<string, string>).map(([p, t]) => [path.resolve(p), t]));
+  }
+  if (!files?.has(file)) mustExist(file);
+  const { model } = generate(file, { files });
+  if (v.json) log(JSON.stringify({ ok: true, diagnostics: [] }));
+  else log(`ok  ${model.name}: ${model.instructions.length} instruction(s), ${model.accountStructs.size} account type(s), ${model.events.size} event(s)`);
+  return 0;
+}
+
 function mustExist(file: string): string {
   if (!existsSync(file)) throw new UsageError(`${file} does not exist`);
   return file;
@@ -630,7 +665,16 @@ function readJson(file: string): unknown {
   }
 }
 
-/** Make the compiler read `text` for `file` (instead of the disk) until the returned function is called. */
+/** The address of a payer keypair file, for the line printed before a deploy (or why there is none). */
+function payerAddress(file: string): string {
+  if (!existsSync(file)) return `none at ${file} (the Solana CLI will refuse)`;
+  try {
+    return base58(readKeypair(file).subarray(32));
+  } catch (e) {
+    return `unreadable ${file} (${(e as Error).message})`;
+  }
+}
+
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
 function solanaConfig(file?: string): { url?: string; keypair?: string } {
   const cfg = readSolanaConfig(file);

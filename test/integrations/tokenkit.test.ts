@@ -1,7 +1,6 @@
 import { FailedTransactionMetadata } from "litesvm";
 import { getAddressDecoder } from "@solana/kit";
 import { pk } from "../ports-helpers.js";
-import { existsSync } from "node:fs";
 import { getCreateAccountInstruction, getTransferSolInstruction } from "@solana-program/system";
 import * as spl from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
@@ -23,12 +22,13 @@ import {
   TOKEN_2022,
   ATA_PROGRAM,
 } from "../harness.js";
+import { present } from "../binaries.js";
 
 const MPL = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
 
 // Metaplex programs are not redistributed with TypeSOL (Metaplex NFT license): `pnpm fetch:programs` downloads them.
 const MPL_SO = fileURLToPath(new URL("../programs/mpl_token_metadata.so", import.meta.url));
-const HAVE_MPL = existsSync(MPL_SO);
+const HAVE_MPL = present(MPL_SO);
 
 describe("ATA, token metadata (test/fixtures/tokenkit.ts)", () => {
   let d: Deployed;

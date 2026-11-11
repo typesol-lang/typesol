@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's risk engine (programs/marginfi/src/state/marginfi_account.rs and state/premium.rs, type-crate emode.rs
 // and premium.rs @ c5d440f6): an account's balances priced and weighted into assets and liabilities, the e-mode
 // weights its liabilities allow, the premium its liabilities project, and the rates their snapshots move to.

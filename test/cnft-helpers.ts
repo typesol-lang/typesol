@@ -13,7 +13,7 @@ import {
   getProgramDerivedAddress,
 } from "@solana/kit";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { present } from "./binaries.js";
 import { fileURLToPath } from "node:url";
 import { type LiteSVM } from "litesvm";
 import { SYSTEM_PROGRAM, expectOk, send } from "./harness.js";
@@ -22,7 +22,7 @@ export const BUBBLEGUM = address("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY")
 export const COMPRESSION = address("cmtDvXumGCrqC1Age74AVPhSRVXJMd8PJS91L8KbNCK");
 export const NOOP = address("noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV");
 const programs = (f: string) => fileURLToPath(new URL(`./programs/${f}`, import.meta.url));
-export const HAVE_BUBBLEGUM = ["mpl_bubblegum.so", "spl_account_compression.so", "spl_noop.so"].every((f) => existsSync(programs(f)));
+export const HAVE_BUBBLEGUM = present(...["mpl_bubblegum.so", "spl_account_compression.so", "spl_noop.so"].map(programs));
 
 const DEPTH = 3;
 const enc = getAddressEncoder();

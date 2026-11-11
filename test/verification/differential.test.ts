@@ -1,10 +1,11 @@
 import { AccountState, getMintEncoder, getMintSize, getTokenDecoder, getTokenEncoder, getTokenSize } from "@solana-program/token";
 import { type Address, type KeyPairSigner, address, generateKeyPairSigner, getAddressEncoder, getU64Encoder, lamports, none } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
-import { existsSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import { BN, SYSTEM_PROGRAM, TOKEN_PROGRAM, deployExample, ix, pda, send, type Deployed } from "../harness.js";
+import { present } from "../binaries.js";
 
 /**
  * Differential testing against hand-written Anchor twins (test/anchor-twins). Both implementations get the
@@ -21,7 +22,7 @@ const ANCHOR_IDS = {
   vault: address("HVWmZ4JYMsvmLQoZMXDcjoat1GHHfC1GsgQjSjbGFGX"),
   escrow: address("aHbra6ogev5FhFznpsWa1obufi5NkUkHtkGw5hJNuPW"),
 };
-const haveTwins = Object.keys(ANCHOR_IDS).every((n) => existsSync(`${ANCHOR_DIR}anchor_${n}.so`));
+const haveTwins = present(...Object.keys(ANCHOR_IDS).map((n) => `${ANCHOR_DIR}anchor_${n}.so`));
 
 class Rng {
   private s: bigint;

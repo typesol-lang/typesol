@@ -19,13 +19,14 @@ import {
 } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { web3 } from "@anchor-lang/core";
 import { BN, acct, deployFile, pda, send, type Deployed } from "../../test/harness.js";
+import { present } from "../../test/binaries.js";
 
 const PROGRAM = address("CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK");
 const ORIGINAL = fileURLToPath(new URL("../../test/programs/raydium_clmm.so", import.meta.url));
@@ -55,7 +56,7 @@ const events = (r: Result) =>
     .filter((l) => l.startsWith("Program data:"));
 const custom = (code: number) => `error: TransactionErrorInstructionError { index: 0, error: InstructionErrorCustom { code: ${code} } }`;
 
-describe.skipIf(!existsSync(ORIGINAL))("showcase/mainnet/raydium-clmm against Raydium CLMM on mainnet", () => {
+describe.skipIf(!present(ORIGINAL))("showcase/mainnet/raydium-clmm against Raydium CLMM on mainnet", () => {
   let d: Deployed;
   let original: LiteSVM;
   let admin: KeyPairSigner;

@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // I80F48, the fixed-point number Marginfi keeps its amounts, prices and rates in (the `fixed` crate, 1.28.0): an i128
 // holding the value times 2^48. Each operation here gives the bits `fixed` gives, measured against it
 // (test/verification/fuzz-i80f48.test.ts):

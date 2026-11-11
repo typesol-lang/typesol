@@ -1,7 +1,6 @@
 // Bubblegum V2 through a program-owned PDA: tree, mints (plain and into a Core collection), transfer and burn with the
 // leaf hashes and proofs mpl-bubblegum checks (LeafSchema::V2), on the real Bubblegum, mpl-account-compression,
 // mpl-noop and Core programs.
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { getCreateAccountInstruction } from "@solana-program/system";
@@ -18,13 +17,14 @@ import {
   rootAndProof,
 } from "../cnft-helpers.js";
 import { BN, SYSTEM_PROGRAM, acct, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
+import { present } from "../binaries.js";
 
 const BUBBLEGUM = address("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY");
 const COMPRESSION = address("mcmt6YrQEMKw8Mw43FmpRLmf7BqRnFMKmAcbxE3xkAW");
 const NOOP = address("mnoopTCrg4p8ry25e4bcWA9XZjbNjMTfgYVGGEdRsf3");
 const CORE = address("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 const programs = (f: string) => fileURLToPath(new URL(`../programs/${f}`, import.meta.url));
-const HAVE = ["mpl_bubblegum.so", "mpl_account_compression.so", "mpl_noop.so", "mpl_core.so"].every((f) => existsSync(programs(f)));
+const HAVE = present(...["mpl_bubblegum.so", "mpl_account_compression.so", "mpl_noop.so", "mpl_core.so"].map(programs));
 
 const enc = getAddressEncoder();
 const keccak = (...parts: ArrayLike<number>[]) => keccak_256(Buffer.concat(parts.map((p) => Buffer.from(Uint8Array.from(p)))));

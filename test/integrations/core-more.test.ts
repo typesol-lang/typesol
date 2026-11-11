@@ -1,14 +1,14 @@
 // Core plugin values added after #48, against the real Core program.
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { address, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SYSTEM_PROGRAM, acct, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
+import { present } from "../binaries.js";
 
 const CORE = address("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 const CORE_SO = fileURLToPath(new URL("../programs/mpl_core.so", import.meta.url));
 
-describe.skipIf(!existsSync(CORE_SO))("Metaplex Core: rule sets, MasterEdition, VerifiedCreators, Autograph, execute freezes", () => {
+describe.skipIf(!present(CORE_SO))("Metaplex Core: rule sets, MasterEdition, VerifiedCreators, Autograph, execute freezes", () => {
   let d: Deployed;
   beforeAll(async () => {
     d = await deployFile(fileURLToPath(new URL("../fixtures/core-more.ts", import.meta.url)));

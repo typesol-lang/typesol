@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's JupLend integration (programs/marginfi/src/instructions/juplend and programs/juplend-mocks of
 // mrgnlabs/marginfi-v2 @ c5d440f6): JupLend's Lending account as juplend-mocks declares it (zero-copy, packed), whose
 // discriminator is Anchor's for an account named Lending.

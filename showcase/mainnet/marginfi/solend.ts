@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's Solend integration (programs/marginfi/src/instructions/solend and programs/solend-mocks of
 // mrgnlabs/marginfi-v2 @ c5d440f6): what the four Solend instructions read from Solend's accounts. Solend writes its
 // accounts packed, a version byte (1) first; the reserve's fields sit at the offsets solend-mocks' SolendMinimalReserve

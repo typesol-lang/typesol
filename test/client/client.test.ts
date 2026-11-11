@@ -368,6 +368,29 @@ describe("generated client: untrusted and unusual IDLs", () => {
     expect(() => generateClient(idl({}), { address: 'x"); boom(' })).toThrow(ClientIdlError);
   });
 
+  it("names a pre-0.30 Anchor IDL and refuses what is not an IDL, with a message instead of a TypeError", () => {
+    const legacy = {
+      version: "0.1.0",
+      name: "vault",
+      instructions: [{ name: "deposit", accounts: [{ name: "owner", isMut: true, isSigner: true }], args: [{ name: "amount", type: "u64" }] }],
+      metadata: { address: "11111111111111111111111111111112" },
+    };
+    expect(() => generateClient(legacy as never)).toThrow(/pre-0\.30 Anchor IDL[\s\S]*anchor idl convert/);
+    // No isMut / isSigner (an instruction without accounts), but a top-level name and version and no discriminators.
+    expect(() => generateClient({ ...legacy, instructions: [{ name: "ping", accounts: [], args: [] }] } as never)).toThrow(/anchor idl convert/);
+    for (const [bad, message] of [
+      [null, /expected a JSON object/],
+      [[], /expected a JSON object/],
+      ["idl", /expected a JSON object/],
+      [{ address: "11111111111111111111111111111112" }, /no `instructions` list/],
+      [idl({ instructions: [null as never] }), /not an object/],
+      [idl({ types: [null as never] }), /not an object/],
+    ] as const) {
+      expect(() => generateClient(bad as never)).toThrow(ClientIdlError);
+      expect(() => generateClient(bad as never)).toThrow(message);
+    }
+  });
+
   it("keeps colliding and reserved names apart, and still typechecks", async () => {
     const c = await importClient(
       "collide",

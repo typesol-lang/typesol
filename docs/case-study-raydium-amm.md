@@ -11,9 +11,9 @@ its own errors. The port keeps all of that.
 
 | File | Holds |
 | --- | --- |
-| [`raydium_amm.ts`](../showcase/mainnet/raydium-amm/raydium_amm.ts) | the entrypoint (one `@fallback` over `instructionData()` and `remainingAccounts()`), every instruction, the token and system CPIs, the P&L calculation |
-| [`state.ts`](../showcase/mainnet/raydium-amm/state.ts) | AmmInfo (752 bytes), TargetOrders, AmmConfig, Fees, the ray_log records, the 61 errors (codes 0–60) |
-| [`math.ts`](../showcase/mainnet/raydium-amm/math.ts) | decimal normalization, the constant-product amounts, the exchange rates, with the original's panics at their places |
+| [`raydium_amm.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/raydium-amm/raydium_amm.ts) | the entrypoint (one `@fallback` over `instructionData()` and `remainingAccounts()`), every instruction, the token and system CPIs, the P&L calculation |
+| [`state.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/raydium-amm/state.ts) | AmmInfo (752 bytes), TargetOrders, AmmConfig, Fees, the ray_log records, the 61 errors (codes 0–60) |
+| [`math.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/raydium-amm/math.ts) | decimal normalization, the constant-product amounts, the exchange rates, with the original's panics at their places |
 
 ## What is ported
 

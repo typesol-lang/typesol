@@ -5,6 +5,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Rpc, SolanaRpcApi } from "@solana/kit";
 import { findToolchain } from "../compiler/toolchain.js";
 import { base58, readKeypair } from "../keys.js";
 import { findWorkspace } from "../workspace.js";
@@ -100,10 +101,37 @@ export async function rpc<T>(url: string, method: string, params: unknown[] = []
 }
 
 /** fetch's "fetch failed" says little: the cause's code (ECONNREFUSED, ENOTFOUND, a timeout) says more. */
-export const errText = (e: unknown) => {
+export const errText = (e: unknown, timeoutSeconds = 10) => {
   const err = e as Error & { cause?: { code?: string; message?: string } };
-  return err.cause?.code ?? err.cause?.message ?? (err.name === "TimeoutError" ? "no answer in 10 s" : err.message);
+  return err.cause?.code ?? err.cause?.message ?? (err.name === "TimeoutError" ? `no answer in ${timeoutSeconds} s` : err.message);
 };
+
+/** How long one RPC request of the kit-based commands may take: TYPESOL_RPC_TIMEOUT seconds, default 30. */
+export function rpcTimeoutSeconds(): number {
+  const s = Number(process.env.TYPESOL_RPC_TIMEOUT);
+  return Number.isFinite(s) && s > 0 ? s : 30;
+}
+
+/**
+ * A kit RPC client for `clone`, `client --address`, `verify` and `idl publish`: each request gives up after
+ * rpcTimeoutSeconds(), and a request that fails on the way names only the host and the cause, as `doctor` and
+ * `deploy` do (the URL can carry an API key).
+ */
+export async function cliRpc(url: string): Promise<Rpc<SolanaRpcApi>> {
+  const kit = await import("@solana/kit");
+  const host = rpcHost(url);
+  const seconds = rpcTimeoutSeconds();
+  const base = kit.createDefaultRpcTransport({ url });
+  const transport = (async (config: Parameters<typeof base>[0]) => {
+    const timeout = AbortSignal.timeout(seconds * 1000);
+    try {
+      return await base({ ...config, signal: config.signal ? AbortSignal.any([config.signal, timeout]) : timeout });
+    } catch (e) {
+      throw new Error(`cannot reach ${host} (${errText(e, seconds)}): check --url, or json_rpc_url in the Solana CLI config`, { cause: e });
+    }
+  }) as typeof base;
+  return kit.createSolanaRpcFromTransport(transport);
+}
 
 const sol = (lamports: number) =>
   lamports === 0 ? "0 SOL" : lamports < 100_000 ? `${lamports} lamports` : `${(lamports / 1e9).toFixed(lamports < 1e7 ? 4 : 2)} SOL`;

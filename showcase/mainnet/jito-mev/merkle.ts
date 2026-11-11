@@ -1,3 +1,4 @@
+// Part of the TypeSOL port of Jito's MEV programs (jito-foundation/jito-programs @ ce1dfb6, Apache-2.0).
 // The Merkle proofs of Jito's distribution programs (merkle_proof.rs of jito-foundation/jito-programs): sha256, sorted
 // pairs, a 0x00 prefix on leaves and 0x01 on inner nodes (so a leaf can never pass for an inner node).
 import { type Hash, type Pubkey, type Vec, type u64, sha256, u8 } from "typesol";

@@ -7,21 +7,22 @@ with TypeSOL are out of scope; their authors audit them.
 
 ## Scope
 
-In order of priority. Line counts at 0.40.0 (November 2026).
+In order of priority. Line counts at 0.43.0 (November 2026).
 
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |
-| 1 | C runtime | `runtime/typesol_rt.h` | 2,510 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
+| 1 | C runtime | `runtime/typesol_rt.h` | 2,990 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
 | 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 870 | Which checks each account parameter gets, and their order |
-| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 2,802 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
-| 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 4,084 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
+| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 3,698 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
+| 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,518 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
+| 1 | Raw views and the red-black tree | `src/compiler/emit/views.ts`, `rbtree.ts` | 655 | Accounts read without a discriminator at run-time offsets (`loadRaw`, `loadRawAt`, `rawArrayAt`, `BigVec`), their bounds, and the red-black tree's node indexes (`rbTreeAt`) |
 | 1 | Metaplex CPIs | `src/compiler/emit/metaplex.ts` | 1,454 | Token Metadata, Core and Bubblegum instruction layouts and their account lists |
-| 1 | Expressions | `src/compiler/emit/expressions.ts`, `shared.ts`, `borsh.ts` | 1,820 | Checked arithmetic and casts, Borsh encoding of arguments and `@layout borsh` accounts |
-| 2 | Front end | `src/compiler/analyze.ts`, `model.ts` | 2,930 | What the language accepts; constraints and account types as parsed from the source |
-| 2 | Interface | `src/compiler/idl.ts`, `src/tools/clientgen.ts` | 2,316 | The IDL and the generated client must describe the program exactly (a mismatch can make clients sign the wrong thing) |
+| 1 | Expressions | `src/compiler/emit/expressions.ts`, `shared.ts`, `borsh.ts` | 2,043 | Checked arithmetic and casts, Borsh encoding of arguments and `@layout borsh` accounts |
+| 2 | Front end | `src/compiler/analyze.ts`, `model.ts` | 3,483 | What the language accepts; constraints and account types as parsed from the source |
+| 2 | Interface | `src/compiler/idl.ts`, `src/tools/clientgen.ts` | 2,460 | The IDL and the generated client must describe the program exactly (a mismatch can make clients sign the wrong thing) |
 | 3 | Build and tooling | `src/compiler/toolchain.ts`, `src/cli.ts`, `src/workspace.ts`, `src/tools/` | | Build flags, deploy and verification commands |
 
-The language surface is `lib/typesol.d.ts` (2,163 lines): every type and built-in a program can use, with its
+The language surface is `lib/typesol.d.ts` (2,581 lines): every type and built-in a program can use, with its
 documented behavior. [docs/language.md](language.md) is the reference; [docs/architecture.md](architecture.md) maps
 the code, [docs/runtime.md](runtime.md) the runtime's conventions.
 
@@ -49,13 +50,16 @@ accepts. Areas where a bug would be most damaging, and where earlier internal re
 ## Earlier reviews
 
 Internal reviews, by the maintainers, in October 2026. Their findings and fixes are in the CHANGELOG. The releases
-after 0.25.0 (0.26.0 to 0.40.0) have had no review of this kind yet; they add, among others, `u256`, big-endian seeds
+after 0.25.0 (0.26.0 to 0.43.0) have had no review of this kind yet; they add, among others, `u256`, big-endian seeds
 and accounts loaded in the body (0.37.0), stored bumps in nested fields and error members without messages (0.38.0),
 `@code`, `@repr` / `@serialization`, `@bytes` / `@idlName`, `f64`, Options inside Options in arguments and events,
 loop-scoped `loadAccountMut` with `Dup<T>`, account resizing and raw writes, `systemProgram.createPda` (0.39.0), and
 the native-program surface: `loadRaw` / `loadRawMut` (accounts without a discriminator), instruction data readers,
-error code 0, built-in ProgramErrors, `panic`, `PANIC_ON_OVERFLOW` (0.40.0). An external review should include them;
-the native-program surface first, since it skips the account checks Anchor-style parameters get.
+error code 0, built-in ProgramErrors, `panic`, `PANIC_ON_OVERFLOW` (0.40.0), the agent tooling (`typesol mcp`, 0.41.0),
+Borsh accounts without a discriminator, `BigVec<T>`, typed CPIs on remaining accounts and the Stake program's CPIs
+(0.42.0), views at run-time offsets (`loadRawAt`, `rawArrayAt`), the built-in red-black tree (`rbTreeAt`), `Inout<T>`
+helper parameters and `closeRaw` (0.43.0). An external review should include them; the native-program surface first,
+since it skips the account checks Anchor-style parameters get.
 
 - **0.25.0** (runtime and emitted checks): two Medium issues fixed, a remaining account loaded mutably twice through
   the same slot, and a Vec element written after its right side resized the Vec; plus a token program ambiguity,
@@ -67,8 +71,8 @@ the native-program surface first, since it skips the account checks Anchor-style
 
 ## Evidence
 
-- **Tests**: by subject under `test/` (`docs/architecture.md`); the count of each run is in CI's log (727 on main on
-  2026-11-01). `test/security/` holds the attacks.
+- **Tests**: by subject under `test/` (`docs/architecture.md`); the count of each run is in CI's log.
+  `test/security/` holds the attacks.
 - **Differential tests**: the same transactions to TypeSOL and to Anchor twins (`test/anchor-twins`), comparing
   outcomes, account contents and balances after every step.
 - **Model-based fuzzing** (`test/verification/`): arithmetic against BigInt at every width, `u256` against BigInt,
@@ -93,7 +97,7 @@ git clone https://github.com/typesol-lang/typesol && cd typesol
 pnpm install && pnpm build
 pnpm fetch:programs        # Metaplex binaries for the token-metadata, Core and Bubblegum tests
 pnpm build:twins           # the Anchor twins (Rust + Anchor 1.0.2)
-pnpm test                  # everything; CI runs it on Ubuntu (Node 22, 24) per change, macOS daily
+pnpm test                  # everything; CI runs it on Ubuntu (Node 22, 24) per change, macOS on demand (macos.yml)
 pnpm fuzz                  # the randomized checks, wide
 ```
 

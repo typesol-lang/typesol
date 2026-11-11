@@ -10,7 +10,7 @@ deployed code carries a fee-cap message main only gained later. The tag `program
 branch) rebuilt with `solana-verify build --library-name spl_stake_pool --base-image
 solanafoundation/solana-verifiable-build:3.1.14` gives the deployed executable's hash
 (`8df58bc9f9428c02bf34fa845ae2961274156e7ff07a8dc1be0018dd765baeff`). The port follows that tag
-([`test/programs/SOURCES.md`](../test/programs/SOURCES.md)).
+([`test/programs/SOURCES.md`](https://github.com/typesol-lang/typesol/blob/main/test/programs/SOURCES.md)).
 
 Stake Pool is a native program: one entrypoint decodes a Borsh instruction (a tag byte, then the variant's fields,
 every byte consumed), the processor takes its accounts by position, the pool account is plain Borsh with Options and
@@ -19,9 +19,9 @@ data enums, the validator list is a header and a `BigVec` of 73-byte entries ove
 
 | File | Holds |
 | --- | --- |
-| [`stake_pool.ts`](../showcase/mainnet/spl-stake-pool/stake_pool.ts) | the entrypoint: the instruction decoded as `try_from_slice` does, dispatch to the 27 instructions |
-| [`state.ts`](../showcase/mainnet/spl-stake-pool/state.ts), [`errors.ts`](../showcase/mainnet/spl-stake-pool/errors.ts) | StakePool (Borsh, 611 bytes at most), ValidatorList with its `BigVec<ValidatorStakeInfo>`, the stake account layout, StakePoolError from code 0 |
-| [`util.ts`](../showcase/mainnet/spl-stake-pool/util.ts) | PDAs, fee arithmetic, the pool-token and lamport conversions, token account and mint checks (Token-2022 extensions included), the stake CPIs as solana_program's builders make them |
+| [`stake_pool.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/spl-stake-pool/stake_pool.ts) | the entrypoint: the instruction decoded as `try_from_slice` does, dispatch to the 27 instructions |
+| [`state.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/spl-stake-pool/state.ts), [`errors.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/spl-stake-pool/errors.ts) | StakePool (Borsh, 611 bytes at most), ValidatorList with its `BigVec<ValidatorStakeInfo>`, the stake account layout, StakePoolError from code 0 |
+| [`util.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/spl-stake-pool/util.ts) | PDAs, fee arithmetic, the pool-token and lamport conversions, token account and mint checks (Token-2022 extensions included), the stake CPIs as solana_program's builders make them |
 | `admin.ts`, `validators.ts`, `update.ts`, `sol.ts`, `stake_deposit.ts`, `stake_withdraw.ts`, `rebalance.ts`, `metadata.ts` | the instructions by subject |
 
 ## What is ported
@@ -66,7 +66,7 @@ bytes in every account it names. There are 2,107 such transactions in six files:
   authorities, read-only and repeated accounts (the original's RefCell panics included), pools of 50 to 60 validators,
   warmup and cooldown over several epochs.
 - **The original's own tests** (`spl-stake-pool-upstream.test.ts`; 701): each of the 221 test functions in
-  `program/tests` at the tag is mapped to a case ([the mapping](../showcase/test/spl-stake-pool-upstream.md)): 143
+  `program/tests` at the tag is mapped to a case ([the mapping](https://github.com/typesol-lang/typesol/blob/main/showcase/test/spl-stake-pool-upstream.md)): 143
   were covered already, 78 are added there, none is left out. huge_pool.rs runs at 3,000 and 20,000 validators.
 - **A random walk over epochs** (`spl-stake-pool-fuzz.test.ts`): validators added and removed, users depositing and
   withdrawing SOL and stake, rebalancing, updates in random chunks, fee and authority changes, rewards, slow warmup,

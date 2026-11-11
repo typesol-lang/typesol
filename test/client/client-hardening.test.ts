@@ -23,8 +23,13 @@ type Any = any;
 const PROGRAM = "11111111111111111111111111111112" as Address;
 const idl = (parts: Partial<ClientIdl>): ClientIdl => ({ address: PROGRAM, metadata: { name: "probe", spec: "0.1.0" }, instructions: [], ...parts });
 
-/** Write a generated client, check it under strict TypeScript, and import it. */
+/** Write a generated client, check it under strict TypeScript, and import it (the program object). */
 async function importClient(name: string, source: string): Promise<Any> {
+  return (await importModule(name, source)).probe;
+}
+
+/** The same, the whole module (its exported codecs too). */
+async function importModule(name: string, source: string): Promise<Record<string, Any>> {
   const file = path.join(OUT, `${name}.client.ts`);
   writeFileSync(file, source);
   const program = ts.createProgram([file], {
@@ -41,7 +46,7 @@ async function importClient(name: string, source: string): Promise<Any> {
     types: [],
   });
   expect(ts.getPreEmitDiagnostics(program).map((x) => ts.flattenDiagnosticMessageText(x.messageText, "\n"))).toEqual([]);
-  return ((await import(pathToFileURL(file).href)) as Record<string, Any>).probe;
+  return (await import(pathToFileURL(file).href)) as Record<string, Any>;
 }
 
 const refused = (i: ClientIdl) => {
@@ -142,13 +147,21 @@ describe("client generator: IDLs it must refuse cleanly", () => {
     expect(refused(many)).toMatch(/more than 256 times/);
     // Anything else that throws is still a ClientIdlError, with the original as its cause.
     let caught: unknown;
+    const throwing = idl({});
+    Object.defineProperty(throwing, "events", {
+      get() {
+        throw new TypeError("boom");
+      },
+    });
     try {
-      generateClient(idl({ instructions: [null as never] }));
+      generateClient(throwing);
     } catch (e) {
       caught = e;
     }
     expect(caught).toBeInstanceOf(ClientIdlError);
     expect((caught as Error).cause).toBeInstanceOf(TypeError);
+    // A null instruction is refused by the IDL check itself, by name.
+    expect(refused(idl({ instructions: [null as never] }))).toMatch(/an instruction is not an object/);
   });
 
   it("refuses array lengths that are not whole numbers and alignments that are not powers of two", () => {
@@ -310,6 +323,133 @@ describe("client generator: generated code", () => {
     expect(await c.resolve.sweep(rpc, {}, { id: 7 }, { signer: user })).toEqual({ user, pool: poolPda, treasury });
     // A source that is neither given nor derived: a clear error naming it.
     await expect(c.resolve.poke(rpc, {})).rejects.toThrow(/cannot fill in vault: pass holder, the account it is read from/);
+  });
+
+  it("encodes a type that holds itself (lazily: building its codec used to recurse until the stack overflowed)", async () => {
+    const shape = { defined: { name: "Shape" } };
+    const { res, m } = await (async () => {
+      const res = generateClient(
+        idl({
+          instructions: [{ name: "draw", discriminator: [9], accounts: [], args: [{ name: "shape", type: shape }] }],
+          accounts: [{ name: "Canvas", discriminator: [7, 7, 7, 7, 7, 7, 7, 7] }],
+          types: [
+            { name: "Shape", type: { kind: "enum", variants: [{ name: "Dot" }, { name: "Rec", fields: [{ name: "kids", type: { vec: shape } }] }] } },
+            { name: "Canvas", type: { kind: "struct", fields: [{ name: "root", type: { option: shape } }] } },
+          ],
+        }),
+      );
+      return { res, m: await importModule("recursive", res.source) };
+    })();
+    expect(res.notes).toEqual([]);
+    const tree = { __kind: "Rec", kids: [{ __kind: "Dot" }, { __kind: "Rec", kids: [{ __kind: "Dot" }] }] };
+    // Borsh: variant index, then the Vec's u32 length and its elements.
+    const bytes = [1, 2, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0];
+    expect([...m.getShapeCodec().encode(tree)]).toEqual(bytes);
+    expect(m.getShapeCodec().decode(new Uint8Array(bytes))).toEqual(tree);
+    expect([...(await m.probe.draw({}, { shape: tree })).data]).toEqual([9, ...bytes]);
+    expect(m.getCanvasCodec().decode(new Uint8Array([1, ...bytes]))).toEqual({ root: tree });
+  });
+
+  it("encodes u256 / i256 arguments (32 bytes, little-endian) instead of leaving the instruction out", async () => {
+    const res = generateClient(
+      idl({
+        instructions: [
+          {
+            name: "wide",
+            discriminator: [3],
+            accounts: [],
+            args: [
+              { name: "u", type: "u256" },
+              { name: "i", type: "i256" },
+            ],
+          },
+        ],
+        types: [
+          {
+            name: "Pair",
+            type: {
+              kind: "struct",
+              fields: [
+                { name: "u", type: "u256" },
+                { name: "i", type: "i256" },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    expect(res.notes).toEqual([]);
+    const m = await importModule("wide", res.source);
+    const max = (1n << 256n) - 1n;
+    const data = (await m.probe.wide({}, { u: max, i: -2n })).data as Uint8Array;
+    expect([...data]).toEqual([3, ...new Array(32).fill(255), 254, ...new Array(31).fill(255)]);
+    const one = [...(await m.probe.wide({}, { u: 0x0102n, i: (1n << 255n) - 1n })).data];
+    expect(one.slice(1, 4)).toEqual([2, 1, 0]);
+    expect(one.slice(33)).toEqual([...new Array(31).fill(255), 127]);
+    expect(m.getPairCodec().decode(Uint8Array.from(data.slice(1)))).toEqual({ u: max, i: -2n });
+    expect(m.getPairCodec().decode(new Uint8Array(64).fill(0x80, 63))).toEqual({ u: 0n, i: -(1n << 255n) });
+    await expect(m.probe.wide({}, { u: max + 1n, i: 0n })).rejects.toThrow(/does not fit in u256/);
+    await expect(m.probe.wide({}, { u: 0n, i: -(1n << 255n) - 1n })).rejects.toThrow(/does not fit in i256/);
+    await expect(m.probe.wide({}, { u: -1n, i: 0n })).rejects.toThrow(/does not fit in u256/);
+  });
+
+  it("keeps Some(None) apart from None in an Option<Option<T>>, and refuses one level more with a note", async () => {
+    const deep = { option: { option: "u8" } };
+    const res = generateClient(
+      idl({
+        instructions: [
+          { name: "set", discriminator: [4], accounts: [], args: [{ name: "v", type: deep }] },
+          { name: "deeper", discriminator: [5], accounts: [], args: [{ name: "v", type: { option: deep } }] },
+        ],
+        types: [{ name: "Holder", type: { kind: "struct", fields: [{ name: "v", type: deep }] } }],
+      }),
+    );
+    expect(res.notes).toEqual(["instruction deeper: Option<Option<Option<…>>> is not supported; it is left out"]);
+    const m = await importModule("nested-option", res.source);
+    const { none, some } = await import("@solana/kit");
+    const data = async (v: unknown) => [...(await m.probe.set({}, { v })).data].slice(1);
+    expect(await data(null)).toEqual([0]);
+    expect(await data(none())).toEqual([1, 0]);
+    expect(await data(some(5))).toEqual([1, 1, 5]);
+    expect(await data(5)).toEqual([1, 1, 5]);
+    expect(m.getHolderCodec().decode(new Uint8Array([0]))).toEqual({ v: null });
+    expect(m.getHolderCodec().decode(new Uint8Array([1, 0]))).toEqual({ v: none() });
+    expect(m.getHolderCodec().decode(new Uint8Array([1, 1, 5]))).toEqual({ v: some(5) });
+  });
+
+  it("fills in a PDA seeded from a field of a field of a struct argument (no note)", async () => {
+    const res = generateClient(
+      idl({
+        instructions: [
+          {
+            name: "go",
+            discriminator: [6],
+            accounts: [
+              {
+                name: "spot",
+                pda: {
+                  seeds: [
+                    { kind: "const", value: [115] },
+                    { kind: "arg", path: "params.inner.deep_value" },
+                  ],
+                },
+              },
+            ],
+            args: [{ name: "params", type: { defined: { name: "Params" } } }],
+          },
+        ],
+        types: [
+          { name: "Params", type: { kind: "struct", fields: [{ name: "inner", type: { defined: { name: "Inner" } } }] } },
+          { name: "Inner", type: { kind: "struct", fields: [{ name: "deep_value", type: "u32" }] } },
+        ],
+      }),
+    );
+    expect(res.notes).toEqual([]);
+    const m = await importModule("nested-seed", res.source);
+    const params = { inner: { deepValue: 0x01020304 } };
+    const [expected] = await getProgramDerivedAddress({ programAddress: PROGRAM, seeds: [new Uint8Array([115]), new Uint8Array([4, 3, 2, 1])] });
+    expect((await m.probe.go({}, { params })).accounts[0].address).toBe(expected);
+    expect((await m.probe.pdas.spot({ params }))[0]).toBe(expected);
   });
 
   it("reads custom codes from the JSON errors RPC nodes return", async () => {

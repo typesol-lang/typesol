@@ -144,7 +144,7 @@ export const TYPESOL_ERRORS: Record<number, string> = {
   5115: "AccountMissing",
 };
 
-const INTS: Record<string, number> = { u8: 8, u16: 16, u32: 32, u64: 64, u128: 128, i8: 8, i16: 16, i32: 32, i64: 64, i128: 128 };
+const INTS: Record<string, number> = { u8: 8, u16: 16, u32: 32, u64: 64, u128: 128, u256: 256, i8: 8, i16: 16, i32: 32, i64: 64, i128: 128, i256: 256 };
 const FLOATS: Record<string, number> = { f32: 32, f64: 64 };
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /** A seed path: `arg`, `arg.field…`, or `opt.unwrap_or(N)` (Anchor's text for an Option argument with a default). */
@@ -175,6 +175,8 @@ const TAKEN = [
   "fixedString",
   "fixedOption",
   "unitEnum",
+  "lazyCodec",
+  "wideInt",
   // exports
   "PROGRAM_ADDRESS",
   "ERRORS",
@@ -187,6 +189,9 @@ const TAKEN = [
   "AccountRole",
   "Address",
   "Codec",
+  "Option",
+  "OptionOrNullable",
+  "getOptionCodec",
   "FetchAccountConfig",
   "GetAccountInfoApi",
   "Instruction",
@@ -198,6 +203,7 @@ const TAKEN = [
   "addCodecSizePrefix",
   "address",
   "createCodec",
+  "isFixedSize",
   "fetchEncodedAccount",
   "fixCodecSize",
   "getAddressCodec",
@@ -275,6 +281,8 @@ const KIT_TYPES = [
   "ReadonlyUint8Array",
   "Rpc",
   "TransactionSigner",
+  "Option",
+  "OptionOrNullable",
 ];
 const KIT_VALUES = [
   "AccountRole",
@@ -297,6 +305,7 @@ const KIT_VALUES = [
   "addCodecSizePrefix",
   "address",
   "createCodec",
+  "isFixedSize",
   "fetchEncodedAccount",
   "fixCodecSize",
   "getAddressCodec",
@@ -315,6 +324,7 @@ const KIT_VALUES = [
   "getI64Codec",
   "getI8Codec",
   "getNullableCodec",
+  "getOptionCodec",
   "getProgramDerivedAddress",
   "getStructCodec",
   "getTupleCodec",
@@ -361,10 +371,10 @@ const pascal = (s: string) => {
 };
 const prop = (s: string) => (NAME.test(s) && !JS_RESERVED.has(s) ? s : JSON.stringify(s));
 /** Text safe to print on a terminal (notes, errors): C0 and C1 control characters and bidi overrides escaped. */
-const printable = (s: string) =>
+export const printable = (s: string) =>
   s.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-/** Text that can sit inside a block comment: printable ASCII, no comment terminator. */
-const commentText = (s: string) => s.replace(/[^\x20-\x7e]/g, " ").replace(/\*\//g, "* /");
+/** Text that can sit inside a block or line comment: printable ASCII (no line breaks), no comment terminator. */
+export const commentText = (s: string) => s.replace(/[^\x20-\x7e]/g, " ").replace(/\*\//g, "* /");
 const doc = (lines: unknown, indent = "") =>
   Array.isArray(lines) && lines.length && lines.every((l) => typeof l === "string")
     ? `${indent}/** ${(lines as string[]).map(commentText).join(`\n${indent} * `)} */\n`
@@ -372,8 +382,39 @@ const doc = (lines: unknown, indent = "") =>
 const bytes = (b: number[]) => `new Uint8Array([${b.join(", ")}])`;
 const definedName = (t: IdlType) =>
   typeof t === "object" && t !== null && t.defined ? (typeof t.defined === "string" ? t.defined : t.defined.name) : undefined;
+/** An `option` type (Anchor's Option; not a COption, whose fixed layout differs). */
+const nestedOption = (t: IdlType): boolean => typeof t === "object" && t !== null && t.option !== undefined;
 const isField = (f: IdlField | IdlType): f is IdlField => typeof f === "object" && f !== null && "name" in f && "type" in f;
 const sortCodeUnits = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** What to do with an IDL written before Anchor 0.30's format (the generators read only 0.30+ / 1.x and TypeSOL IDLs). */
+const LEGACY_IDL =
+  "this is a pre-0.30 Anchor IDL (accounts marked isMut / isSigner, no discriminators): convert it first with `anchor idl convert <idl.json>` (Anchor 0.30+), then pass the converted file";
+
+/** Whether `idl` is in the format Anchor wrote before 0.30: `isMut` / `isSigner` accounts, or a name and version at the top and no discriminators. */
+export function isLegacyAnchorIdl(idl: unknown): boolean {
+  if (typeof idl !== "object" || idl === null) return false;
+  const o = idl as Record<string, unknown>;
+  const ixs = Array.isArray(o.instructions) ? (o.instructions as unknown[]) : [];
+  const obj = (x: unknown): x is Record<string, unknown> => typeof x === "object" && x !== null;
+  const flagged = (items: unknown): boolean => Array.isArray(items) && items.some((a) => obj(a) && ("isMut" in a || "isSigner" in a || flagged(a.accounts)));
+  if (ixs.some((ix) => obj(ix) && flagged(ix.accounts))) return true;
+  return typeof o.name === "string" && typeof o.version === "string" && ixs.length > 0 && ixs.every((ix) => obj(ix) && ix.discriminator === undefined);
+}
+
+/**
+ * Throws ClientIdlError unless `idl` is an Anchor 0.30+ / 1.x or TypeSOL IDL whose values are safe to paste into generated
+ * source: identifiers that are identifiers, base58 addresses, byte lists. `typesol client`, `typesol cpi` and `typesol port`
+ * all check an IDL this way first. `instructions: "required"` also refuses an IDL without any (nothing to generate).
+ */
+export function checkIdl(idl: unknown, opts: { address?: string; instructions?: "required" } = {}): asserts idl is ClientIdl {
+  if (typeof idl !== "object" || idl === null || Array.isArray(idl)) throw new ClientIdlError("not an Anchor IDL: expected a JSON object");
+  if (isLegacyAnchorIdl(idl)) throw new ClientIdlError(LEGACY_IDL);
+  const ixs = (idl as { instructions?: unknown }).instructions;
+  if (!Array.isArray(ixs)) throw new ClientIdlError("not an Anchor IDL: it has no `instructions` list");
+  if (opts.instructions === "required" && !ixs.length) throw new ClientIdlError("the IDL has no instructions: nothing to generate");
+  validate(idl as ClientIdl, opts.address ?? (idl as ClientIdl).address);
+}
 
 /** Throws ClientIdlError unless every value that reaches the generated source is well-formed. */
 function validate(idl: ClientIdl, programAddress: string | undefined) {
@@ -429,6 +470,7 @@ function validate(idl: ClientIdl, programAddress: string | undefined) {
   if (programAddress !== undefined && !BASE58.test(programAddress)) fail(`program address ${JSON.stringify(programAddress)} is not base58`);
   if (!Array.isArray(idl.instructions)) fail("no instructions list");
   for (const ix of idl.instructions) {
+    if (typeof ix !== "object" || ix === null) fail("an instruction is not an object");
     name(ix.name, "instruction");
     if (ix.discriminator === undefined)
       fail(`instruction ${ix.name} has no discriminator: this looks like a pre-0.30 Anchor IDL (convert it with \`anchor idl convert\`)`);
@@ -436,6 +478,7 @@ function validate(idl: ClientIdl, programAddress: string | undefined) {
     const walk = (items: unknown, where: string) => {
       if (!Array.isArray(items)) fail(`${where}: accounts must be a list`);
       for (const a of items as IdlAccountItem[]) {
+        if (typeof a !== "object" || a === null) fail(`${where}: an account is not an object`);
         name(a.name, where);
         if (a.accounts) {
           walk(a.accounts, `${where}.${a.name}`);
@@ -460,7 +503,9 @@ function validate(idl: ClientIdl, programAddress: string | undefined) {
     }
     if (ix.returns !== undefined) type(ix.returns, `instruction ${ix.name} return`);
   }
+  if (idl.types !== undefined && !Array.isArray(idl.types)) fail("types must be a list");
   for (const t of idl.types ?? []) {
+    if (typeof t !== "object" || t === null) fail("a type definition is not an object");
     name(t.name, "type");
     if (typeof t.type !== "object" || t.type === null) fail(`type ${t.name} has no definition`);
     if (t.generics !== undefined) {
@@ -474,7 +519,9 @@ function validate(idl: ClientIdl, programAddress: string | undefined) {
         fail(`type ${t.name}: repr align ${JSON.stringify(align)} is not a power of two`);
     }
     fields(t.type.fields, `type ${t.name}`);
+    if (t.type.variants !== undefined && !Array.isArray(t.type.variants)) fail(`type ${t.name}: variants must be a list`);
     for (const v of t.type.variants ?? []) {
+      if (typeof v !== "object" || v === null) fail(`type ${t.name}: a variant is not an object`);
       name(v.name, `type ${t.name} variant`);
       fields(v.fields, `type ${t.name}.${v.name}`);
     }
@@ -483,12 +530,17 @@ function validate(idl: ClientIdl, programAddress: string | undefined) {
   for (const [list, what] of [
     [idl.accounts, "account"],
     [idl.events, "event"],
-  ] as const)
+  ] as const) {
+    if (list !== undefined && !Array.isArray(list)) fail(`${what}s must be a list`);
     for (const a of list ?? []) {
+      if (typeof a !== "object" || a === null) fail(`an ${what} entry is not an object`);
       name(a.name, what);
       byteList(a.discriminator, `${what} ${a.name}`);
     }
+  }
+  if (idl.errors !== undefined && !Array.isArray(idl.errors)) fail("errors must be a list");
   for (const e of idl.errors ?? []) {
+    if (typeof e !== "object" || e === null) fail("an error entry is not an object");
     if (!Number.isInteger(e.code) || e.code < 0 || e.code > 0xffffffff) fail(`error code ${JSON.stringify(e.code)} is not a u32`);
     name(e.name, "error");
     if (e.msg !== undefined && typeof e.msg !== "string") fail(`error ${e.name}: msg must be text`);
@@ -636,8 +688,8 @@ export function generateClient(idl: ClientIdl, opts: { address?: string } = {}):
 }
 
 function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
+  checkIdl(idl, { address: opts.address });
   const programAddress = opts.address ?? idl.address;
-  validate(idl, programAddress);
   idl = monomorphize(idl);
   if (!programAddress) throw new ClientIdlError("the IDL has no program address; pass one");
   const typesol = idl.metadata?.description === "Built with TypeSOL";
@@ -735,7 +787,11 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
     if (t.generic !== undefined) return "generic parameters are not supported";
     if (t.array) return Number.isInteger(Number(t.array[1])) ? issue(t.array[0]) : "array lengths must be numbers (generic lengths are not supported)";
     if (t.vec !== undefined) return issue(t.vec);
-    if (t.option !== undefined) return issue(t.option);
+    if (t.option !== undefined) {
+      // Option<Option<T>> is held as `Option<T> | null` (kit's Option inside), so Some(None) is expressible; one level more is not.
+      if (nestedOption(t.option) && nestedOption((t.option as { option: IdlType }).option)) return "Option<Option<Option<…>>> is not supported";
+      return issue(t.option);
+    }
     if (t.coption !== undefined) return issue(t.coption);
     const n = definedName(t);
     if (n === undefined) return "unknown type";
@@ -775,6 +831,9 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
   const tsName = (n: string) => tsNames.get(n)!;
   const isU8 = (t: IdlType) => t === "u8";
   function tsType(t: IdlType, dir: "in" | "out"): string {
+    // Option<Option<T>>: null is None, kit's none() is Some(None), some(x) (or x) is Some(Some(x)).
+    if (typeof t === "object" && t.option !== undefined && nestedOption(t.option))
+      return `${dir === "in" ? "OptionOrNullable" : "Option"}<${tsType((t.option as { option: IdlType }).option, dir)}> | null`;
     if (typeof t === "string") {
       if (t in INTS) return INTS[t]! >= 64 ? (dir === "in" ? "number | bigint" : "bigint") : "number";
       if (t in FLOATS) return "number";
@@ -800,8 +859,46 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
   let needsFixedVec = false;
   let needsUnitEnum = false;
   let needsCStruct = false;
+  let needsLazy = false;
+  let needsWideInt = false;
+  // Types that hold themselves (`Shape { Rec { kids: Vec<Shape> } }`): their codecs refer to each other lazily, or
+  // building one would build itself again without end.
+  const recursive = new Set<string>();
+  {
+    const refs = (t: IdlType | undefined, out: string[]): void => {
+      if (t === undefined || t === null || typeof t === "string") return;
+      if (t.array) return refs(t.array[0], out);
+      for (const inner of [t.vec, t.option, t.coption]) if (inner !== undefined) return refs(inner, out);
+      const n = definedName(t);
+      if (n !== undefined) out.push(n);
+    };
+    const edges = new Map<string, string[]>();
+    for (const d of defs.values()) {
+      const out: string[] = [];
+      for (const f of d.type.fields ?? []) refs(isField(f) ? f.type : f, out);
+      for (const v of d.type.variants ?? []) for (const f of v.fields ?? []) refs(isField(f) ? f.type : f, out);
+      refs(d.type.alias, out);
+      edges.set(d.name, out);
+    }
+    for (const start of edges.keys()) {
+      const seen = new Set<string>();
+      const stack = [...edges.get(start)!];
+      while (stack.length) {
+        const n = stack.pop()!;
+        if (n === start) {
+          recursive.add(start);
+          break;
+        }
+        if (seen.has(n)) continue;
+        seen.add(n);
+        stack.push(...(edges.get(n) ?? []));
+      }
+    }
+  }
   function codec(t: IdlType): string {
     if (typeof t === "string") {
+      // kit has no 256-bit codecs: 32 bytes, little-endian, as Borsh (and Anchor) write them.
+      if (INTS[t] === 256) return ((needsWideInt = true), `wideInt(${t === "i256"})`);
       if (t in INTS || t in FLOATS) {
         const fn = `get${t.toUpperCase()}Codec`;
         use(fn);
@@ -821,6 +918,8 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
       if (isU8(t.vec)) return (use("addCodecSizePrefix", "getBytesCodec", "getU32Codec"), "addCodecSizePrefix(getBytesCodec(), getU32Codec())");
       return (use("getArrayCodec"), `getArrayCodec(${codec(t.vec)})`);
     }
+    if (t.option !== undefined && nestedOption(t.option))
+      return (use("getNullableCodec", "getOptionCodec"), `getNullableCodec(getOptionCodec(${codec((t.option as { option: IdlType }).option)}))`);
     if (t.option !== undefined) return (use("getNullableCodec"), `getNullableCodec(${codec(t.option)})`);
     if (t.coption !== undefined) {
       const size = idlSize(t.coption);
@@ -844,6 +943,7 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
       return `fixedOption(${codec(s.inner)}, ${size}, getU8Codec(), 1)`;
     }
     if (s?.kind === "fenum") return (use("fixCodecSize"), `fixCodecSize(get${tsName(s.base)}Codec(), ${s.size})`);
+    if (recursive.has(n)) return ((needsLazy = true), `lazyCodec(() => get${tsName(n)}Codec())`);
     return `get${tsName(n)}Codec()`;
   }
   /** Byte size of a fixed-size IDL type (undefined when it varies). Memoized by type name, so shared types are sized once. */
@@ -1642,6 +1742,49 @@ function generate(idl: ClientIdl, opts: { address?: string }): ClientGenResult {
         `    },`,
         `    read: (bytes, offset) => [Object.fromEntries(fields.map(([k, c, at]) => [k, c.read(bytes, offset + at)[0]])), offset + size],`,
         `  });`,
+      ],
+    });
+  if (needsWideInt)
+    helperDefs.push({
+      name: "wideInt",
+      lines: [
+        `/** A u256 (or, signed, an i256): 32 bytes, little-endian, two's complement. */`,
+        `const wideInt = (signed: boolean): Codec<number | bigint, bigint> =>`,
+        `  createCodec<number | bigint, bigint>({`,
+        `    fixedSize: 32,`,
+        `    write: (value, bytes, offset) => {`,
+        `      let v = BigInt(value);`,
+        `      const [min, max] = signed ? [-(1n << 255n), (1n << 255n) - 1n] : [0n, (1n << 256n) - 1n];`,
+        `      if (v < min || v > max) throw new RangeError(String(value) + " does not fit in " + (signed ? "i256" : "u256"));`,
+        `      if (v < 0n) v += 1n << 256n;`,
+        `      for (let i = 0; i < 32; i++, v >>= 8n) bytes[offset + i] = Number(v & 0xffn);`,
+        `      return offset + 32;`,
+        `    },`,
+        `    read: (bytes, offset) => {`,
+        `      let v = 0n;`,
+        `      for (let i = 31; i >= 0; i--) v = (v << 8n) | BigInt(bytes[offset + i] ?? 0);`,
+        `      return [signed && v >> 255n ? v - (1n << 256n) : v, offset + 32];`,
+        `    },`,
+        `  });`,
+      ],
+    });
+  if (needsLazy)
+    helperDefs.push({
+      name: "lazyCodec",
+      lines: [
+        `/** A codec made on first use: a type that holds itself (through a Vec or an Option) refers to its own codec. */`,
+        `const lazyCodec = <From, To extends From>(make: () => Codec<From, To>): Codec<From, To> => {`,
+        `  let inner: Codec<From, To> | undefined;`,
+        `  const get = () => (inner ??= make());`,
+        `  return createCodec<From, To>({`,
+        `    getSizeFromValue: (value) => {`,
+        `      const c = get();`,
+        `      return isFixedSize(c) ? c.fixedSize : c.getSizeFromValue(value);`,
+        `    },`,
+        `    write: (value, bytes, offset) => get().write(value, bytes, offset),`,
+        `    read: (bytes, offset) => get().read(bytes, offset),`,
+        `  });`,
+        `};`,
       ],
     });
   if (needsUnitEnum)
