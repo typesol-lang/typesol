@@ -20,13 +20,13 @@ in `programs/`, tests in `tests/`; `typesol.json` lists the programs.
 
 ## Checking your work
 
-- `npx typesol check` (or `--json`) type-checks every program and lists what TypeSOL refuses, each error with a
+- `npx --no-install typesol check` (or `--json`) type-checks every program and lists what TypeSOL refuses, each error with a
   `hint` that says what to write instead. Fix those first; they are faster than a build.
-- `npm test` builds the programs and runs `tests/` in LiteSVM (an in-process Solana runtime). `npx typesol build`
+- `npm test` builds the programs and runs `tests/` in LiteSVM (an in-process Solana runtime). `npx --no-install typesol build`
   writes `target/<name>/`: the `.so`, the IDL and a typed client.
-- The MCP server (`npx typesol mcp`, configured in `.mcp.json` and `.cursor/mcp.json`) gives the same check,
+- The MCP server (`npx --no-install typesol mcp`, configured in `.mcp.json` and `.cursor/mcp.json`) gives the same check,
   the IDL and the docs as tools.
-- The language reference: `node_modules/typesol/docs/language.md`, or https://typesol.com/llms-full.txt.
+- The language reference: `node_modules/typesol/docs/language.md` (after `npm install`), or https://typesol.com/llms-full.txt.
 
 ## Quick start
 
@@ -37,20 +37,24 @@ Run `cargo-build-sbf --version` once; this downloads the platform-tools that Typ
 npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
 cd my-app && npm install
 npm test                                      # builds the program and runs it in LiteSVM, an in-process Solana runtime
-npx typesol build                             # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
+npx --no-install typesol build                # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
 ```
 
-`npx typesol doctor` checks all of this (Node.js, platform-tools, Solana CLI, keypair, RPC) and prints the command
-that fixes anything missing. To deploy, on devnet:
+`npx --no-install typesol doctor` checks all of this (Node.js, platform-tools, Solana CLI, keypair, RPC) and prints the command
+that fixes anything missing. Inside a project, `npx --no-install typesol …` (or `npm run build`, `npm run deploy`) runs the
+project's own copy; outside one, use `npx @typesol/cli …`. Plain `npx typesol` is not TypeSOL: `typesol` is not the npm
+package's name, so where the project's copy is not installed npx would fetch whatever package has that name.
+
+To deploy, on devnet:
 
 ```sh
 solana-keygen new                             # once, if you have no keypair (~/.config/solana/id.json)
 solana airdrop 2 --url devnet                 # test SOL for the rent (rate-limited: https://faucet.solana.com also works)
-npx typesol deploy --url devnet
+npx --no-install typesol deploy --url devnet
 ```
 
 or on a local validator: `solana-test-validator` in another terminal, `solana airdrop 5 --url localhost`, then
-`npx typesol deploy --url localhost`. `deploy` checks the RPC and the payer's balance before sending anything.
+`npx --no-install typesol deploy --url localhost`. `deploy` checks the RPC and the payer's balance before sending anything.
 
 `--template vault` or `--template escrow` starts from a SOL vault or an SPL token escrow instead of the counter, each
 with a passing LiteSVM test.
@@ -784,16 +788,17 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 
 | Command | What it does |
 | --- | --- |
-| `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow]` | Create a project: `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`, `programs/tsconfig.json` (with the editor plugin), `.vscode/settings.json` (the workspace TypeScript, so the plugin loads) and `.gitignore`. `<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). Refuses to overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing. |
+| `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow]` | Create a project: `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`, `programs/tsconfig.json` (with the editor plugin), `.vscode/settings.json` (the workspace TypeScript, so the plugin loads), `.gitignore`, the rules for AI coding agents (`AGENTS.md`, `CLAUDE.md` importing it, `.cursor/rules/typesol.mdc`) and the MCP server configuration (`.mcp.json`, `.cursor/mcp.json`; see [ai.md](ai.md)). `<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). Refuses to overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing. |
 | `typesol new <program> [--template counter\|vault\|escrow]` | In a project: add a program, `programs/<program>.ts` and `tests/<program>.test.ts` from the template, and its entry in `typesol.json`. Refuses to overwrite files or reuse a name. |
 | `typesol doctor [--url <rpc>] [--config <cli config>]` | Check what building, testing and deploying need: Node.js, the platform-tools, the Solana CLI, its keypair, the RPC (`--url`, a cluster moniker, or the CLI config) and the keypair's balance there, and the project. Each problem is printed with the command that fixes it. Exit code 1 when building is impossible (Node.js or the platform-tools missing); deploy pieces are warnings. |
 | `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json`. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. |
-| `typesol build <file.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--quiet]` | Outside a project (or a file that is not one of its programs): build that file. A project program's `.ts` builds as that program. |
-| `typesol check [<program>… \| <file.ts>] [--json] [--stdin \| --files]` | Type-check and validate without building. In a project, no argument checks every program (or those named) and exits 1 if any has errors. `--json` prints `{ ok, diagnostics: [{ file, line, column, message }] }`; `--stdin` checks the text given on stdin as that file (its imports come from disk); `--files` reads `{ "files": { "<absolute path>": "<text>", … } }` from stdin and checks with those texts instead of the disk (an editor's unsaved buffers). |
+| `typesol build <file.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--quiet]` | Outside a project (or a file that is not one of its programs): build that file. Its keypair is `--program-id`, which must exist, or `<out>/<name>-keypair.json`, created on the first build. A project program's `.ts` builds as that program. |
+| `typesol check [<program>… \| <file.ts>] [--json] [--stdin \| --files]` | Type-check and validate without building. In a project, no argument checks every program (or those named) and exits 1 if any has errors. `--json` prints `{ ok, diagnostics: [{ file, line, column, message }] }`, always (a missing file or unreadable `--files` input is a diagnostic too, exit 1 or 2); `--stdin` checks the text given on stdin as that file (its imports come from disk); `--files` reads `{ "files": { "<absolute path>": "<text>", … } }` from stdin and checks with those texts instead of the disk (an editor's unsaved buffers). |
 | `typesol clone [<address>…] [--url <rpc>] [--config <cli config>] [--out <dir>]` | Copy cluster accounts and programs for the tests (Anchor's `[test.validator.clone]`): each account to `<address>.json` (lamports, owner, data), each program to `<address>.so` (its ELF, from the ProgramData account for upgradeable programs), in `tests/accounts` (`"accounts"` in `typesol.json`) or `--out`. Without addresses it clones the project's `"clone"` list. `testProgram` loads that directory into its LiteSVM; commit it so the tests run offline. |
 | `typesol emit-c <file.ts> [--out <file.c>] [--profile]` | Print or write the generated C. |
-| `typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <cli config>] [--dry-run] [--sbpf …]` | Build, then `solana program deploy --use-rpc` at the program keypair's address. Deploying again upgrades (the payer must be the upgrade authority). `--dry-run` builds and prints the commands. Before sending anything it checks that the RPC answers and that the payer holds enough for the rent (about twice the binary's on a first deploy, while the buffer exists), and says what to do if not (start `solana-test-validator`, `solana airdrop` on devnet or a local validator). Needs `solana` on PATH. |
-| `typesol idl publish [<program>…] [--url <rpc>] [--keypair <authority.json>] [--config <cli config>] [--non-canonical]` | Compile (the binary is not rebuilt), then write each IDL to the Program Metadata program (seed `idl`). Canonical IDLs must be signed by the upgrade authority. Defaults come from the Solana CLI config (`~/.config/solana/cli/config.yml`). |
+| `typesol mcp` | Serve the Model Context Protocol on stdio for AI coding agents: tools to check a program (errors with hints), read its IDL, search the docs and read the rules a TypeSOL program follows. The `.mcp.json` / `.cursor/mcp.json` that `init` writes start it as `npx --no-install typesol mcp` (the project's own copy); see [ai.md](ai.md). |
+| `typesol deploy [<program>…] [--url <rpc>] [--keypair <payer.json>] [--config <cli config>] [--dry-run] [--sbpf …]` | Build, then `solana program deploy --use-rpc` at the program keypair's address. Deploying again upgrades (the payer must be the upgrade authority). `--dry-run` builds and prints the commands. It needs a cluster, `--url` or `json_rpc_url` in the Solana CLI config: it never falls back to the CLI's default. Before sending anything it prints the cluster's host and the payer, checks that the RPC answers and that the payer holds enough for the rent (about twice the binary's on a first deploy, while the buffer exists), and says what to do if not (start `solana-test-validator`, `solana airdrop` on devnet or a local validator). Needs `solana` on PATH. |
+| `typesol idl publish [<program>…] [--url <rpc>] [--keypair <authority.json>] [--config <cli config>] [--non-canonical]` | Compile (the binary is not rebuilt), then write each IDL to the Program Metadata program (seed `idl`). Canonical IDLs must be signed by the upgrade authority. Defaults come from the Solana CLI config (`~/.config/solana/cli/config.yml`); it prints the cluster's host and the payer before sending. |
 | `typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]` | Generate TypeSOL helpers that call another program from its IDL. Unsupported instructions are listed on stderr. |
 | `typesol port <idl.json> [--out <file.ts>]` | A TypeSOL program skeleton from an Anchor IDL (0.30+/1.x), to port an Anchor program: account structs, enums, errors, events and one function per instruction with its accounts and arguments, each body `require(false, …NotPorted)` until written. Instruction discriminators (an explicit `@discriminator` when the name derives another), account names and error codes are kept, so existing clients keep working where the layouts match; notes on stderr list where they do not (Borsh `String`/`Option` in account data, a `Vec` that is not the last field). Error codes that skip ahead are kept with `@code`, and zero-copy types keep their IDL `repr`, `serialization` and field names (`@repr`, `@serialization`, `@idlName`). |
 | `typesol client <idl.json> [--out <file.ts>] [--address <base58>]`, `typesol client --address <program id> [--url <rpc>] [--config <cli config>] [--out <file.ts>]` | Generate a typed TypeScript client on `@solana/kit` from an Anchor IDL (0.30+/1.x or TypeSOL); the IDL is validated first, and what the client leaves out is printed as notes. Without a file, the IDL is read from the chain: the canonical Program Metadata IDL, else Anchor's IDL account. See [client.md](client.md). |
@@ -801,6 +806,10 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | `typesol profile <logs.txt\|-> [--program <id>]` | Compute units per TypeScript line from the logs of a `--profile` build's transaction (exit 1 when the logs have no markers). |
 | `typesol help <command>` | Same as `typesol <command> --help`. |
 | `typesol --version` | Print the version. |
+
+`clone`, `client --address`, `verify` and `idl publish` give up on an RPC request after 30 seconds
+(`TYPESOL_RPC_TIMEOUT=<seconds>` changes it) and, like `doctor` and `deploy`, name only the RPC's host and the cause
+when one fails (an RPC URL can carry an API key). A `--config` file that does not exist is a usage error everywhere.
 
 ## typesol.json
 
@@ -915,6 +924,11 @@ integers and floats are `number`, `Pubkey` is kit's `Address`, `string` and `Fix
 as in the program. Names are camelCase. For Anchor IDLs, data enums use `__kind`, as Codama-generated clients do. The
 file uses no TypeScript-only syntax (no `enum`), so it also runs under Node's type stripping.
 
+Anchor IDLs can also hold types a TypeSOL program does not: `u256`/`i256` are `bigint` (32 bytes, little-endian), and
+`Option<Option<T>>` is `Option<T> | null` with kit's `Option` inside, so the three values stay apart: `null` is None,
+`none()` is Some(None) and `some(x)` (or `x`) is Some(Some(x)). A type that holds itself through a Vec or an Option
+(`enum Shape { Dot, Rec { kids: Vec<Shape> } }`) is encoded and decoded to any depth.
+
 ## Safety
 
 An IDL can come from anywhere, so `typesol client` refuses one whose names are not identifiers, whose discriminators or
@@ -928,9 +942,12 @@ Anchor IDLs are refused with a hint to convert them (`anchor idl convert`).
   `Program data:` line only while this program is the innermost one running, and `eventsOf` reads only the `emitCpi`
   inner instructions that call this program (it needs `tx.transaction`'s account keys for that). `parseCpiEvents(data)`
   on its own does not check the program: give it this program's inner instructions only.
-- **Not filled in automatically** (pass them): PDAs seeded from struct fields (Anchor cannot seed with them either),
-  PDAs whose program is another account's field, and a PDA seeded from its own fields (derive it with its `pdas`
-  helper from the values). `typesol client` prints a note for each.
+- **Not filled in by the builder** (pass them): PDAs seeded from a field of another account's data (`state.owner`;
+  `resolve` reads the account and derives them), PDAs whose program is another account's field, and a PDA seeded from
+  its own fields (derive it with its `pdas` helper from the values). `typesol client` prints a note for each. PDAs
+  seeded from a field of a struct argument, at any depth (`params.inner.id`), are filled in.
+- **Left out, with a note**: instructions, accounts and types using `Option<Option<Option<T>>>` or deeper, and types
+  the client cannot express (listed by `typesol client`).
 - **Anchor IDLs**: zero-copy (`bytemuck`) accounts decode and encode at their `#[repr(C)]` offsets as the program sees
   them on SBF (padding included; `packed` and `align` honored; 128-bit integers align to 8). Generic types become one
   type per use with concrete arguments (`Pair<u64, 2>` is `PairU64N2`). Left out, with a note: zero-copy types with
@@ -954,8 +971,9 @@ original side by side, the checks run against it and its cost, see [Case study: 
 ```sh
 anchor build                                   # in the Anchor project: target/idl/my_program.json
 npx @typesol/cli init my-program && cd my-program
+npm install                                    # the project's own TypeSOL, run below as npx --no-install typesol
 rm programs/my_program.ts tests/my_program.test.ts   # the counter template's program and test
-npx typesol port ../anchor/target/idl/my_program.json --out programs/my_program.ts
+npx --no-install typesol port ../anchor/target/idl/my_program.json --out programs/my_program.ts
 ```
 
 `typesol port` writes the account structs, enums, errors and one function per instruction with its accounts and
@@ -1151,7 +1169,8 @@ often inlined into their instruction, so their locals count toward its frame: ma
 
 From an empty directory to a program on Solana mainnet-beta: create, test, deploy, publish the IDL, then check that
 the deployed binary is the one your source builds. The program here is the counter that `typesol init` creates
-(13.2 KiB); any TypeSOL project works the same way.
+(11,400 bytes, 11.1 KiB, built with TypeSOL 0.43.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
+slightly); any TypeSOL project works the same way.
 
 You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Requirements).
 
@@ -1170,7 +1189,7 @@ Write your program in `programs/my_app.ts` and keep the tests passing before you
 ## 2. Build
 
 ```sh
-npx typesol build
+npx --no-install typesol build
 ```
 
 This writes `target/my_app/`: the program (`my_app.so`), its Anchor IDL (`my_app.json`), a TypeScript client
@@ -1195,8 +1214,10 @@ ever close the program:
 solana rent $(wc -c < target/my_app/my_app.so)
 ```
 
-The counter needs 0.069 SOL of rent. During the deploy the program is first written to a buffer account that holds
-the same amount again; it is returned when the deploy finishes. Fund about twice the rent plus 0.01 SOL for fees.
+For the counter that is about 0.080 SOL (rent is (128 + size) × 6,960 lamports at the current rate: 80,234,880
+lamports for 11,400 bytes; the program data account holds 45 bytes more). During the deploy the program is first
+written to a buffer account that holds the same amount again; it is returned when the deploy finishes. Fund about
+twice the rent plus 0.01 SOL for fees: 0.17 SOL for the counter.
 
 The public mainnet RPC is rate-limited; for deploys, set `--url` (or `solana config set --url`) to your RPC
 provider's endpoint.
@@ -1204,8 +1225,8 @@ provider's endpoint.
 ## 4. Deploy
 
 ```sh
-npx typesol deploy --dry-run   # builds and prints the solana command it will run
-npx typesol deploy
+npx --no-install typesol deploy --dry-run   # builds and prints the solana command it will run
+npx --no-install typesol deploy
 ```
 
 It runs `solana program deploy` at the address in `target/deploy/my_app-keypair.json`, with your wallet as payer and
@@ -1217,7 +1238,7 @@ with `solana program close <buffer address>`, or list yours with `solana program
 ## 5. Publish the IDL
 
 ```sh
-npx typesol idl publish
+npx --no-install typesol idl publish
 ```
 
 It writes the IDL to the Program Metadata program, signed by the upgrade authority, where Anchor clients and
@@ -1226,7 +1247,7 @@ explorers look for it. It costs a few thousandths of a SOL of rent.
 ## 6. Verify
 
 ```sh
-npx typesol verify my_app
+npx --no-install typesol verify my_app
 ```
 
 `verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
@@ -1397,7 +1418,8 @@ own project notes below them in AGENTS.md.
 ([llmstxt.org](https://llmstxt.org)); [llms-full.txt](https://typesol.com/llms-full.txt) is the rules, the quick start
 and the reference (language, errors, tests, CLI, client, porting from Anchor, troubleshooting, mainnet, security model)
 in one file, to paste into a chat or give to a model as context. Both also ship in the npm package
-(`node_modules/typesol/llms-full.txt`).
+(`node_modules/typesol/llms-full.txt` in a project `typesol init` created, which installs `@typesol/cli` under the
+name `typesol`; `node_modules/@typesol/cli/llms-full.txt` where it is installed under its own name).
 
 ## Errors an agent can fix by itself
 
@@ -1408,12 +1430,16 @@ in TypeSOL: write 1n, not 1, and take u64, not number"). An agent can loop on ch
 ## The MCP server
 
 `typesol mcp` serves the [Model Context Protocol](https://modelcontextprotocol.io) on stdio. `typesol init` writes
-`.mcp.json` (Claude Code) and `.cursor/mcp.json` (Cursor) that start it with `npx typesol mcp`. Other clients take the
-same command:
+`.mcp.json` (Claude Code) and `.cursor/mcp.json` (Cursor) that start it with `npx --no-install typesol mcp`: the
+project's own copy, after `npm install`. `--no-install` matters: `typesol` is not the npm package's name, and without
+it npx would fetch whatever package is published as `typesol` when the project's copy is missing. Other clients take
+the same command, run in the project directory:
 
 ```json
-{ "mcpServers": { "typesol": { "command": "npx", "args": ["typesol", "mcp"] } } }
+{ "mcpServers": { "typesol": { "command": "npx", "args": ["--no-install", "typesol", "mcp"] } } }
 ```
+
+Outside a project, start it from the published package by its full name: `npx -y @typesol/cli mcp`.
 
 | Tool | What it does |
 | --- | --- |
@@ -1422,7 +1448,7 @@ same command:
 | `docs` | searches the docs and returns the best-matching sections |
 | `rules` | the rules above |
 
-Building and testing stay in the shell (`npm test`, `npx typesol build`): they need the platform-tools and write
+Building and testing stay in the shell (`npm test`, `npx --no-install typesol build`): they need the platform-tools and write
 files, which an agent should do in the open.
 
 <!-- docs/stability.md -->

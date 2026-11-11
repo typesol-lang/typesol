@@ -6,6 +6,76 @@ codes, and says so here.
 
 ## Unreleased
 
+- Fixed: a Pubkey, Option, string or u256 argument of a helper was not a copy. The SBF backend passes such a value as a
+  pointer to the caller's object, so a helper that was not inlined and wrote that object (`rotate(v, v.admin, caller)`
+  with `v.admin = v.pending` inside) then read its own write through the parameter: a check on the old value passed on
+  the new one. Whether it happened depended on inlining. The value now arrives by pointer, to a copy taken at the call
+  whenever the helper can write (it takes accounts, remaining accounts or `Inout` places) and the value is not out of
+  its reach (a local, an instruction argument, an account's key, the program id)
+  (test/language/helper-copies.test.ts, inlined and `@noinline`).
+- Fixed: a seed list bound to a name (`const s = signer(["vault", st.count, bump])`), given to a helper, or written
+  beside an argument with side effects read its seeds when the CPI ran, so after `st.count += 1n` the program signed
+  for another PDA than the one the source names. The seeds are copied where the list is written
+  (test/language/pda-signers.test.ts).
+- Fixed: the rule that a reference into an account is not used after a helper that may move its data was skipped when
+  the account reached the helper as an account-group field (`grow(g.pool, g.payer)`) or as one loaded with
+  `loadAccountMut`; such a program compiled and wrote through the stale reference. Both are refused like a plain
+  parameter (test/security/aliasing.test.ts).
+- Fixed: the Borsh decoder's length checks subtracted before comparing, so for an `Option` of a struct that itself
+  holds an Option (or a Vec of such structs) a short buffer wrapped the subtraction and the read went past the end
+  (up to the struct's size, read only). The checks no longer subtract, and a nested struct's smallest size is checked
+  after its tag and for each element; `ts_alloc`, string appends and the stake history reader are written the same
+  way (test/language/borsh-nested.test.ts).
+- Fixed: a local read before a closure or list callback that changes it kept the new value (`x += bump()`,
+  `two(x, bump())`); it keeps the value it had when read, as the left-to-right order promises
+  (test/language/closures.test.ts). A string that views text inside an `Inout` place is copied for the helper that
+  takes the place (test/language/inout.test.ts).
+- Fixed: `close()`. Closing an account into itself is a compile error (`CloseTo<…, "self">`, `close(a, a)`), and 2040
+  at run time in a helper whose two accounts may be one; `Dup<…>` is refused on an account the body closes; using an
+  account after `close()` in the same instruction (its writes were dropped) is a compile error, its `.key` aside
+  (test/security/dup.test.ts, test/language/diagnostics.test.ts).
+- Language: `min` / `max`, `switch` and list indexes take a `u256`; a `u256` shift amount or exponent is a compile
+  error (it was a C build failure); `x <<= n` and `x >>= n` take an amount of its own integer type, as `<<` does;
+  `Ata<Init<TokenAccount>, "@acct.field", …>.create` is a compile error naming the form instead of C that does not
+  build (test/language/pow.test.ts, test/language/diagnostics.test.ts).
+- Docs: docs/security-model.md says what creation over an existing account returns (the System Program's custom 0;
+  3000 is `initAccount<T>`), and docs/runtime.md names the cases that abort (`PANIC_ON_OVERFLOW`, `PANIC_STYLE`, a
+  RedBlackTree whose bytes are inconsistent).
+- CLI: generated `.mcp.json` / `.cursor/mcp.json`, the agent rules, hints and docs run the project's own copy with
+  `npx --no-install typesol …` (or `npx @typesol/cli …` outside a project): plain `npx typesol` outside an installed
+  project asks the registry for a package of that name, which does not exist. docs/migrate-from-anchor.md installs
+  before running `port`.
+- typesol/testing: `testProgram` reuses an up-to-date build (same sources, runtime, TypeSOL, TypeScript and clang
+  versions), and builds of one program from parallel test workers wait for each other
+  (`<out>/<name>/.typesol-build.lock`, taken over when its process is gone or after 15 minutes) instead of writing
+  over each other's files.
+- CLI: `typesol cpi` and `typesol port` check the IDL as `typesol client` does (identifiers, base58 addresses, byte
+  lists) and keep IDL text inside escaped comments. A pre-0.30 Anchor IDL gets "run `anchor idl convert`" in all
+  three, and a null or non-object IDL or a missing `instructions` list is refused with a message.
+- Client: a type that holds itself through a Vec or an Option (`enum Shape { Rec { kids: Vec<Shape> } }`) gets a lazy
+  codec; building it overflowed the stack. `u256` / `i256` are supported (bigint, 32 bytes LE), and
+  `Option<Option<T>>` is `Option<T> | null` so Some(None) round-trips; one level more is left out with a note.
+- CLI: `clone`, `client --address`, `verify` and `idl publish` time out RPC requests (30 s, `TYPESOL_RPC_TIMEOUT`) and
+  report the host and cause as `doctor` / `deploy` do. `deploy` refuses to run without `--url` or a configured
+  `json_rpc_url`, and `deploy` / `idl publish` print the cluster and payer before sending. A `--config` that does not
+  exist is a usage error in `deploy --dry-run` and `doctor` too.
+- CLI: `check --json` prints JSON for every outcome (a missing file, bad `--files` input). Printed `cd` and deploy
+  hints quote paths. `build file.ts --program-id <missing>` explains instead of failing with ENOENT.
+- Docs: docs/cli.md lists `typesol mcp` and every file `init` writes. docs/mainnet.md's counter size and rent are
+  measured (11,400 bytes, about 0.080 SOL at 0.43.0). Case studies link to showcase sources on GitHub. docs/client.md
+  describes which PDA seeds are filled in. docs/audit.md's figures come from `scripts/audit-stats.ts` (checked by the
+  tests), its unreviewed range runs to 0.43.0, and macOS CI is on demand.
+- Tests: the Phoenix and Stake Pool diff helpers compare account bytes without copying them twice or building hex
+  strings unless they differ (phoenix-upstream peak RSS 1.53 GB → 0.77 GB), and the per-order market copies left in
+  phoenix-cancel and phoenix-upstream are hoisted.
+- Licences: NOTICE records the third-party code the package ships (lib-sokoban's red-black tree in the runtime
+  header, MIT; SPL's big_vec layout and the Stake interface's activation function, Apache-2.0) and the Phoenix and
+  SPL Stake Pool ports, and ships in the package with the Apache-2.0 text. Every showcase/mainnet file names its
+  source and licence.
+- CI: a program binary whose sha256 differs from test/programs/SOURCES.md fails the fetch step (Token Metadata is
+  fetched from mainnet, the build the record names; Bubblegum's record is the build devnet runs now). All fetch-only
+  binaries are cached, keyed on SOURCES.md. `CI_REQUIRE_ALL` turns a suite skipped for a missing binary into a
+  failure (test/binaries.ts).
 - Docs: docs/testing.md lists the SPL Stake Pool and Phoenix random walks and the red-black tree's trace replay
   against lib-sokoban among the checks against an independent oracle.
 
