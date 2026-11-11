@@ -39,9 +39,7 @@ The package ships this NOTICE and the Apache License 2.0 text (test/programs/LIC
 
 - dist/testing-stake.js (src/testing-stake.ts), stakeActivation: a port of Delegation::stake_activating_and_deactivating_v2
   of solana-stake-interface 4.3.0 (https://github.com/solana-program/stake, interface crate), Copyright Anza
-  Maintainers. Licence: [TO CONFIRM for 4.3.0: its licence text was not available when this notice was written; the
-  crate's releases 2.0.2 and 3.1.0 declare license = "Apache-2.0" in their Cargo.toml, as does the repository's
-  Cargo metadata.] Changes: rewritten in TypeScript (BigInt arithmetic with the original's u128 saturation).
+  Maintainers. Licence: Apache-2.0 (the crate's Cargo metadata for 4.3.0; text in test/programs/LICENSE-Apache-2.0.txt). Changes: rewritten in TypeScript (BigInt arithmetic with the original's u128 saturation).
 
 Third-party material in this repository only (not in the published package)
 ------------------------------------------------------------------------------
