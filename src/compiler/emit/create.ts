@@ -292,18 +292,21 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     }
     // Each initializer: its bytes, then a CPI with the mint as the only (writable) account.
     const lines: string[] = [];
-    const cpi = (bytes: [string, number][]) => {
-      const total = bytes.reduce((n, [, k]) => n + k, 0);
+    // A piece of the instruction data: bytes of a fixed length, or a COption key (`{ option }`).
+    type Piece = [string, number] | { option: string };
+    const cpi = (bytes: Piece[]) => {
+      const total = bytes.reduce((n, b) => n + (Array.isArray(b) ? b[1] : 33), 0);
       const buf = this.tmp("xd");
       lines.push(`{ uint8_t ${buf}[${total}]; uint64_t at = 0;`);
-      for (const [src, n] of bytes) lines.push(`  ts_memcpy(${buf} + at, ${src}, ${n}); at += ${n};`);
+      for (const b of bytes)
+        if (Array.isArray(b)) lines.push(`  ts_memcpy(${buf} + at, ${b[0]}, ${b[1]}); at += ${b[1]};`);
+        else lines.push(`  ${buf}[at++] = ${b.option}.some ? 1 : 0;`, `  if (${b.option}.some) { ts_memcpy(${buf} + at, &${b.option}.v, 32); at += 32; }`);
       lines.push(`  SolAccountMeta m[1] = {{&${acct}->key, true, false}};`, `  TS_TRY(ts_cpi(params, ${tp}, ${buf}, at, m, 1, NULL, 0)); }`);
     };
     const tag = (n: number) => `(const uint8_t[]){${n}}`;
-    const coption = (t: string): [string, number][] => [
-      [`(const uint8_t[]){${t}.some ? 1 : 0}`, 1],
-      [`&${t}.v`, 32],
-    ];
+    // Token-2022's COption<Pubkey> in instruction data (pack_pubkey_option): a tag byte, then the key only when Some.
+    // A None is one byte, and Token-2022 reads the next field right after it.
+    const coption = (t: string): Piece[] => [{ option: t }];
     let space = 0;
     for (const name of Object.keys(KINDS)) {
       const v = held.get(name);
@@ -412,8 +415,11 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
           );
         });
       }
-    // Base account (165, the mint padded to an account's size), the account type byte, then each TLV entry.
-    return { space: 165 + 1 + space, lines, checks };
+    // Base account (165, the mint padded to an account's size), the account type byte, then each TLV entry. A total of
+    // 355 is a Multisig's length, which Token-2022 never gives a mint: its own size calculation adds 2 bytes then
+    // (try_calculate_account_len), and InitializeMint2 refuses an account of any other size.
+    const total = 165 + 1 + space;
+    return { space: total === 355 ? total + 2 : total, lines, checks };
   }
 
   /**
@@ -503,9 +509,12 @@ export abstract class CreateEmitter extends CpiCoreEmitter {
     const amt = this.expect(this.expr(amtN, U64), U64, amtN);
     if (a.length === 3) this.line(`TS_TRY(ts_system_transfer(params, ${from.c}, ${to.c}, ${amt.c}));`);
     else {
-      // A system-owned PDA of this program (a SOL vault) pays.
+      // A system-owned PDA of this program (a SOL vault) pays. JS reads the amount before the seed list: copied first
+      // when the list runs code that may change it.
+      const mark = this.lines.length;
       const s = this.signingSeeds(a[3]);
-      this.line(`TS_TRY(ts_system_transfer_signed(params, ${from.c}, ${to.c}, ${amt.c}, ${s.name}, ${s.count}));`);
+      const lamports = this.runsCode(a[3], true) ? this.settle(amt, mark) : amt;
+      this.line(`TS_TRY(ts_system_transfer_signed(params, ${from.c}, ${to.c}, ${lamports.c}, ${s.name}, ${s.count}));`);
     }
     return undefined;
   }

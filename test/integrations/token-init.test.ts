@@ -3,6 +3,9 @@
 import * as spl from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
 import { type Address, generateKeyPairSigner } from "@solana/kit";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
@@ -20,7 +23,7 @@ import {
   send,
   type Deployed,
 } from "../harness.js";
-import { createMint, fundAta } from "../ports-helpers.js";
+import { createMint, fundAta, pk } from "../ports-helpers.js";
 
 describe("mint.create / vault.create (Anchor init + mint:: / token::)", () => {
   let d: Deployed;
@@ -228,5 +231,90 @@ describe("mint.create / vault.create (Anchor init + mint:: / token::)", () => {
       ]);
     expectOk(await tip((await generateKeyPairSigner()).address));
     expect(customError(await tip(mint))).toBe(3011);
+  });
+});
+
+// mint.create's extension initializers, decoded by the official Token-2022 decoder: a COption authority that is None
+// is one byte (Token-2022 reads the next field right after it), and a size of 355 bytes (a Multisig's) is not one
+// Token-2022 gives a mint.
+describe("mint.create with extensions: optional authorities and sizes", () => {
+  let d: Deployed;
+  const ZERO = "11111111111111111111111111111111";
+  beforeAll(async () => {
+    const file = path.join(mkdtempSync(path.join(os.tmpdir(), "typesol-mint-ext-")), "mintext.ts");
+    writeFileSync(
+      file,
+      `import { type Mut, type Signer, type Mint, type Init, type Token2022Program, type SystemProgram, type Pubkey } from "typesol";
+export function noConfig(payer: Mut<Signer>, mint: Init<Mint>, systemProgram: SystemProgram, tokenProgram: Token2022Program): void {
+  mint.create(payer, null, 6n, payer.key, null, { transferFee: { configAuthority: null, withdrawAuthority: payer.key, basisPoints: 100n, maximumFee: 1000n } });
+}
+export function noWithdraw(payer: Mut<Signer>, mint: Init<Mint>, systemProgram: SystemProgram, tokenProgram: Token2022Program): void {
+  mint.create(payer, null, 6n, payer.key, null, { transferFee: { configAuthority: payer.key, withdrawAuthority: null, basisPoints: 100n, maximumFee: 1000n } });
+}
+export function noneClose(payer: Mut<Signer>, mint: Init<Mint>, systemProgram: SystemProgram, tokenProgram: Token2022Program): void {
+  mint.create(payer, null, 6n, payer.key, null, { closeAuthority: null, permanentDelegate: payer.key });
+}
+export function given(payer: Mut<Signer>, mint: Init<Mint>, systemProgram: SystemProgram, tokenProgram: Token2022Program, cfg: Pubkey | null, wd: Pubkey | null): void {
+  mint.create(payer, null, 6n, payer.key, null, { transferFee: { configAuthority: cfg, withdrawAuthority: wd, basisPoints: 250n, maximumFee: 77n }, closeAuthority: cfg });
+}
+/** Extensions of 112 + 68 + 5 + 4 bytes: with the 166-byte base, 355. */
+export function multisigSized(payer: Mut<Signer>, mint: Init<Mint>, systemProgram: SystemProgram, tokenProgram: Token2022Program): void {
+  mint.create(payer, null, 6n, payer.key, null, { transferFee: { configAuthority: payer.key, withdrawAuthority: payer.key, basisPoints: 100n, maximumFee: 1000n }, transferHook: { authority: payer.key, programId: null }, defaultAccountState: false, nonTransferable: true });
+}
+`,
+    );
+    d = await deployFile(file);
+  });
+
+  const create = async (name: string, args: Record<string, unknown> = {}) => {
+    const payer = await fundedSigner(d.svm);
+    const mint = await generateKeyPairSigner();
+    expectOk(
+      await send(d.svm, payer, [
+        ix(d, name, args, [
+          { address: payer.address, signer: payer, writable: true },
+          { address: mint.address, signer: mint, writable: true },
+          { address: SYSTEM_PROGRAM },
+          { address: TOKEN_2022 },
+        ]),
+      ]),
+    );
+    const m = t22.getMintDecoder().decode(acct(d.svm, mint.address).data);
+    const ext = new Map((m.extensions as { value: ({ __kind: string } & Record<string, unknown>)[] }).value.map((e) => [e.__kind, e]));
+    return { payer: payer.address, ext, len: acct(d.svm, mint.address).data.length };
+  };
+  const fee = (e: Record<string, unknown>) => {
+    const newer = e.newerTransferFee as { transferFeeBasisPoints: number; maximumFee: bigint };
+    return [e.transferFeeConfigAuthority, e.withdrawWithheldAuthority, newer.transferFeeBasisPoints, newer.maximumFee];
+  };
+  const pkArg = (a: Address | null) => (a === null ? null : pk(a));
+
+  it("a null transfer fee authority leaves the other authority and the fee as given", async () => {
+    let r = await create("no_config");
+    expect(fee(r.ext.get("TransferFeeConfig")!)).toEqual([ZERO, r.payer, 100, 1000n]);
+    r = await create("no_withdraw");
+    expect(fee(r.ext.get("TransferFeeConfig")!)).toEqual([r.payer, ZERO, 100, 1000n]);
+    r = await create("none_close");
+    expect([(r.ext.get("MintCloseAuthority")!.closeAuthority as string) ?? ZERO, r.ext.get("PermanentDelegate")!.delegate]).toEqual([ZERO, r.payer]);
+  });
+
+  it("run-time Option authorities: each combination of None and Some", async () => {
+    const who = (await generateKeyPairSigner()).address;
+    for (const [cfg, wd] of [
+      [null, who],
+      [who, null],
+      [null, null],
+      [who, who],
+    ] as const) {
+      const r = await create("given", { cfg: pkArg(cfg), wd: pkArg(wd) });
+      expect(fee(r.ext.get("TransferFeeConfig")!)).toEqual([cfg ?? ZERO, wd ?? ZERO, 250, 77n]);
+      expect((r.ext.get("MintCloseAuthority")!.closeAuthority as string) ?? ZERO).toBe(cfg ?? ZERO);
+    }
+  });
+
+  it("extensions adding up to a Multisig's 355 bytes: the mint is 357, as Token-2022 sizes it", async () => {
+    const r = await create("multisig_sized");
+    expect(r.len).toBe(357);
+    expect([...r.ext.keys()].sort()).toEqual(["DefaultAccountState", "NonTransferable", "TransferFeeConfig", "TransferHook"]);
   });
 });

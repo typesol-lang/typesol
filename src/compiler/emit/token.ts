@@ -23,15 +23,24 @@ export abstract class TokenEmitter extends CreateEmitter {
     const arity = (fixed: number) => {
       if (a.length !== fixed && a.length !== fixed + 1) this.fail(node, `${method} takes ${fixed} arguments plus optional signerSeeds`);
     };
-    const amount = (n: ts.Expression) => this.expect(this.expr(n, U64), U64, n).c;
+    type Seeds = { name: string; count: number | string };
+    /**
+     * The amount, then the signer seeds: JS reads the amount first, so it is copied before a seed list that runs code
+     * (`["vault", next(st), bump]`) when it reads storage that code may change.
+     */
+    const amountThenSeeds = (n: ts.Expression, seedsNode: ts.Expression | undefined, auth: CpiAcct, at: ts.Expression): [string, Seeds] => {
+      const v = this.expect(this.expr(n, U64), U64, n);
+      const mark = this.lines.length;
+      const s = this.signerSeeds(seedsNode, auth, at);
+      return [seedsNode && this.runsCode(seedsNode, true) ? this.settle(v, mark).c : v.c, s];
+    };
     switch (method) {
       case "transfer": {
         arity(4);
         const from = want(a[0], "token", true, "the source");
         const to = want(a[1], "token", true, "the destination");
         const auth = this.cpiAccount(a[2], "the authority");
-        const amt = amount(a[3]);
-        const s = this.signerSeeds(a[4], auth, a[2]);
+        const [amt, s] = amountThenSeeds(a[3], a[4], auth, a[2]);
         this.line(`TS_TRY(ts_token_transfer(params, ${p}, ${from.c}, ${to.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
@@ -41,8 +50,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const mint = want(a[1], "mint", false, "the mint");
         const to = want(a[2], "token", true, "the destination");
         const auth = this.cpiAccount(a[3], "the authority");
-        const amt = amount(a[4]);
-        const s = this.signerSeeds(a[5], auth, a[3]);
+        const [amt, s] = amountThenSeeds(a[4], a[5], auth, a[3]);
         this.line(`TS_TRY(ts_token_transfer_checked(params, ${p}, ${from.c}, ${mint.c}, ${to.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
@@ -55,8 +63,7 @@ export abstract class TokenEmitter extends CreateEmitter {
           this.fail(a[0], "the mint must be a Mut<Mint>, or a Mut<Signer> / Mut<AccountInfo> mint this instruction created");
         const to = want(a[1], "token", true, "the destination");
         const auth = this.cpiAccount(a[2], "the mint authority");
-        const amt = amount(a[3]);
-        const s = this.signerSeeds(a[4], auth, a[2]);
+        const [amt, s] = amountThenSeeds(a[3], a[4], auth, a[2]);
         this.line(`TS_TRY(ts_token_mint_to(params, ${p}, ${mint.c}, ${to.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
@@ -65,8 +72,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const from = want(a[0], "token", true, "the burned account");
         const mint = want(a[1], "mint", true, "the mint");
         const auth = this.cpiAccount(a[2], "the authority");
-        const amt = amount(a[3]);
-        const s = this.signerSeeds(a[4], auth, a[2]);
+        const [amt, s] = amountThenSeeds(a[3], a[4], auth, a[2]);
         this.line(`TS_TRY(ts_token_burn(params, ${p}, ${from.c}, ${mint.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
@@ -79,7 +85,11 @@ export abstract class TokenEmitter extends CreateEmitter {
         if (mint.param && !isWritable(mint.param.kind)) this.fail(a[0], "the mint must be writable (Mut<...>)");
         const ua = this.cpiAccount(a[1], "the update authority");
         const ma = this.cpiAccount(a[2], "the mint authority");
-        const [nm, sym, uri] = [a[3], a[4], a[5]].map((n) => this.expect(this.expr(n, STRING), STRING, n).c);
+        // Read at the call: a view of account text is copied first when a later argument runs code that may rewrite it.
+        const [nm, sym, uri] = [3, 4, 5].map((i) => {
+          const v = this.expect(this.expr(a[i], STRING), STRING, a[i]);
+          return (a.slice(i + 1).some((n) => this.runsCode(n, true)) ? this.ownedString(v) : v).c;
+        });
         const s = this.signerSeeds(a[6], ma, a[2]);
         this.line(`TS_TRY(ts_t22_init_metadata(params, ${p}, ${mint.c}, ${ua.c}, ${ma.c}, ${nm}, ${sym}, ${uri}, ${s.name}, ${s.count}));`);
         return undefined;
@@ -106,7 +116,16 @@ export abstract class TokenEmitter extends CreateEmitter {
       return acct;
     };
     type Put = (src: string, n: string, bytes?: number) => void;
-    const simple = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
+    /**
+     * Signer seeds given as a function are lowered after the fields when an argument runs code (JS evaluates the
+     * fields first: `approve(src, d, owner, next(st), ["vault", st.count, bump])` signs for the count next() left), and
+     * before them otherwise, which keeps those programs' code as it was.
+     */
+    const seedsFirst = (seeds: Seeds | (() => Seeds), fields: unknown[]): Seeds | (() => Seeds) =>
+      typeof seeds === "function" && !(fields.length && a.some((n) => this.runsCode(n, true))) ? seeds() : seeds;
+    const seedsNow = (seeds: Seeds | (() => Seeds)): Seeds => (typeof seeds === "function" ? seeds() : seeds);
+    const simple = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds0: Seeds | (() => Seeds)) => {
+      const seeds = seedsFirst(seeds0, fields);
       const { buf, len, put, finish } = this.byteBuffer("tok", 128, "TS_ERR_INSTRUCTION_DATA", "token instruction");
       const t = this.tmp("tag");
       this.line(`uint8_t ${t} = ${tag};`);
@@ -118,7 +137,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         metas.map(([acc, w, sg]) => [acc.c, w, sg]),
         buf,
         len,
-        seeds,
+        seedsNow(seeds),
       );
     };
     const value = (n: ts.Expression, t: ValueType) => (put: Put) => this.serialize(this.expect(this.expr(n, t), t, n), n, put);
@@ -151,7 +170,8 @@ export abstract class TokenEmitter extends CreateEmitter {
     };
     const none = { name: "NULL", count: 0 };
     // The Token Group interface (spl-token-group-interface), which Token-2022 implements: 8-byte discriminators.
-    const grouped = (disc: number[], fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
+    const grouped = (disc: number[], fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds0: Seeds | (() => Seeds)) => {
+      const seeds = seedsFirst(seeds0, fields);
       const { buf, len, put, finish } = this.byteBuffer("grp", 96, "TS_ERR_INSTRUCTION_DATA", "token group instruction");
       const d = this.tmp("disc");
       this.line(`static const uint8_t ${d}[8] = {${disc.join(", ")}};`);
@@ -163,7 +183,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         metas.map(([acc, w, sg]) => [acc.c, w, sg]),
         buf,
         len,
-        seeds,
+        seedsNow(seeds),
       );
     };
     switch (method) {
@@ -182,7 +202,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [mint, false, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[5], auth, a[2]),
+          () => this.signerSeeds(a[5], auth, a[2]),
         );
         return undefined;
       }
@@ -221,7 +241,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [group, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[3], auth, a[1]),
+          () => this.signerSeeds(a[3], auth, a[1]),
         );
         return undefined;
       }
@@ -237,7 +257,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [group, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[3], auth, a[1]),
+          () => this.signerSeeds(a[3], auth, a[1]),
         );
         return undefined;
       }
@@ -319,7 +339,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [mint, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[3], auth, a[1]),
+          () => this.signerSeeds(a[3], auth, a[1]),
         );
         return undefined;
       }
@@ -336,7 +356,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [acct, true, false],
             [owner, false, true],
           ],
-          this.signerSeeds(a[2], owner, a[1]),
+          () => this.signerSeeds(a[2], owner, a[1]),
         );
         return undefined;
       }
@@ -352,7 +372,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [mint, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[3], auth, a[1]),
+          () => this.signerSeeds(a[3], auth, a[1]),
         );
         return undefined;
       }
@@ -368,7 +388,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [mint, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[3], auth, a[1]),
+          () => this.signerSeeds(a[3], auth, a[1]),
         );
         return undefined;
       }
@@ -394,7 +414,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [to, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[6], auth, a[3]),
+          () => this.signerSeeds(a[6], auth, a[3]),
         );
         return undefined;
       }
@@ -426,7 +446,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [dest, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[3], auth, a[2]),
+          () => this.signerSeeds(a[3], auth, a[2]),
         );
         return undefined;
       }
@@ -447,7 +467,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [mint, true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[4], auth, a[1]),
+          () => this.signerSeeds(a[4], auth, a[1]),
         );
         return undefined;
       }
@@ -493,7 +513,9 @@ export abstract class TokenEmitter extends CreateEmitter {
           put(`${ft}.ptr`, `(${tag} == 3 ? ${ft}.len : 0)`);
           this.serialize(this.expect(this.expr(a[3], STRING), STRING, a[3]), a[3], put);
         } else if (method === "removeMetadataKey") {
-          const key = this.expect(this.expr(a[2], STRING), STRING, a[2]);
+          // Written after `idempotent` is read: a view of account text is copied first when that runs code.
+          const key0 = this.expect(this.expr(a[2], STRING), STRING, a[2]);
+          const key = this.runsCode(a[3], true) ? this.ownedString(key0) : key0;
           const idem = this.expect(this.expr(a[3], BOOL), BOOL, a[3]);
           const t = this.tmp("idem");
           this.line(`uint8_t ${t} = (${idem.c}) ? 1 : 0;`);
@@ -527,7 +549,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const src = want(a[0], "token", true, "the source");
         const delegate = this.cpiAccount(a[1], "the delegate");
         const owner = this.cpiAccount(a[2], "the owner");
-        const s = this.signerSeeds(a[4], owner, a[2]);
+        const s = () => this.signerSeeds(a[4], owner, a[2]);
         const amt = value(a[3], U64);
         simple(
           4,
@@ -548,7 +570,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const mint = want(a[1], "mint", false, "the mint");
         const delegate = this.cpiAccount(a[2], "the delegate");
         const owner = this.cpiAccount(a[3], "the owner");
-        const s = this.signerSeeds(a[5], owner, a[3]);
+        const s = () => this.signerSeeds(a[5], owner, a[3]);
         simple(
           13,
           [value(a[4], U64), decimals(mint)],
@@ -567,7 +589,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const mint = want(a[0], "mint", true, "the mint");
         const to = want(a[1], "token", true, "the destination");
         const auth = this.cpiAccount(a[2], "the mint authority");
-        const s = this.signerSeeds(a[4], auth, a[2]);
+        const s = () => this.signerSeeds(a[4], auth, a[2]);
         simple(
           14,
           [value(a[3], U64), decimals(mint)],
@@ -585,7 +607,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const from = want(a[0], "token", true, "the burned account");
         const mint = want(a[1], "mint", true, "the mint");
         const auth = this.cpiAccount(a[2], "the authority");
-        const s = this.signerSeeds(a[4], auth, a[2]);
+        const s = () => this.signerSeeds(a[4], auth, a[2]);
         simple(
           15,
           [value(a[3], U64), decimals(mint)],
@@ -609,7 +631,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [src, true, false],
             [owner, false, true],
           ],
-          this.signerSeeds(a[2], owner, a[1]),
+          () => this.signerSeeds(a[2], owner, a[1]),
         );
         return undefined;
       }
@@ -618,7 +640,7 @@ export abstract class TokenEmitter extends CreateEmitter {
         const target = anyAcct(a[0], "the mint or token account", true);
         const current = this.cpiAccount(a[1], "the current authority");
         this.model.options.set("pubkey", PUBKEY);
-        const s = this.signerSeeds(a[4], current, a[1]);
+        const s = () => this.signerSeeds(a[4], current, a[1]);
         simple(
           6,
           [value(a[2], U8), value(a[3], optKey)],
@@ -644,7 +666,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [mint, false, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[3], auth, a[2]),
+          () => this.signerSeeds(a[3], auth, a[2]),
         );
         return undefined;
       }
@@ -759,13 +781,18 @@ export abstract class TokenEmitter extends CreateEmitter {
         this.fail(n, `pass ${what} as an account, or named(account, address) to name its address with the slot's account`);
       return acct(i, what);
     };
-    const send = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds: { name: string; count: number | string }) => {
+    type Seeds = { name: string; count: number | string };
+    // Seeds given as a function: lowered after the fields when an argument runs code, as JS evaluates them (see tokenOp).
+    const runs = (n: ts.Expression) => this.runsCode(n, true);
+    const send = (tag: number, fields: ((put: Put) => void)[], metas: [CpiAcct, boolean, boolean][], seeds0: Seeds | (() => Seeds)) => {
+      let seeds = typeof seeds0 === "function" && !(fields.length && a.some(runs)) ? seeds0() : seeds0;
       const { buf, len, put, finish } = this.byteBuffer("stk", 116, "TS_ERR_INSTRUCTION_DATA", "stake instruction");
       const t = this.tmp("tag");
       this.line(`uint32_t ${t} = ${tag};`);
       put(`&${t}`, "4", 4);
       for (const f of fields) f(put);
       finish(node);
+      if (typeof seeds === "function") seeds = seeds();
       if (metas.some(([x]) => x.named)) {
         // Addresses named with the slot's account: the account infos are the CPI's accounts, as passed (ts_cpi_named).
         const m = this.tmp("metas");
@@ -846,7 +873,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [auth, false, true],
             ...(opt.custodian ? [custodian(opt.custodian, opt.seeds)] : []),
           ],
-          this.signerSeeds(opt.seeds, auth, a[2]!),
+          () => this.signerSeeds(opt.seeds, auth, a[2]!),
         );
         return undefined;
       }
@@ -864,7 +891,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [sysvar(4, "the stake config account"), false, false],
             [staker, false, true],
           ],
-          this.signerSeeds(a[6], staker, a[5]!),
+          () => this.signerSeeds(a[6], staker, a[5]!),
         );
         return undefined;
       }
@@ -879,7 +906,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [acct(1, "the split stake account", true), true, false],
             [auth, false, true],
           ],
-          this.signerSeeds(a[4], auth, a[2]!),
+          () => this.signerSeeds(a[4], auth, a[2]!),
         );
         return undefined;
       }
@@ -894,7 +921,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [sysvar(1, "the Clock sysvar"), false, false],
             [staker, false, true],
           ],
-          this.signerSeeds(a[3], staker, a[2]!),
+          () => this.signerSeeds(a[3], staker, a[2]!),
         );
         return undefined;
       }
@@ -915,7 +942,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [withdrawer, false, true],
             ...(opt.custodian ? [custodian(opt.custodian, opt.seeds)] : []),
           ],
-          this.signerSeeds(opt.seeds, withdrawer, a[4]!),
+          () => this.signerSeeds(opt.seeds, withdrawer, a[4]!),
         );
         return undefined;
       }
@@ -932,7 +959,7 @@ export abstract class TokenEmitter extends CreateEmitter {
             [sysvar(3, "the StakeHistory sysvar"), false, false],
             [staker, false, true],
           ],
-          this.signerSeeds(a[5], staker, a[4]!),
+          () => this.signerSeeds(a[5], staker, a[4]!),
         );
         return undefined;
       }

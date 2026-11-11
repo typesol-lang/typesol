@@ -40,12 +40,7 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
     // the list is written, as JS reads them then, unless nothing can run between the list and the CPI that reads it:
     // no calls or writes among the seeds, nor in the other arguments of the call consuming the list (evaluated before
     // or after it). A list bound to a name or passed to a helper (`bound`) outlives its expression: always copied.
-    const mutates = (n: ts.Node): boolean =>
-      (ts.isCallExpression(n) && !this.pureCall(n)) ||
-      (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
-      (ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) ||
-      ts.isPostfixUnaryExpression(n) ||
-      ts.forEachChild(n, mutates) === true;
+    const mutates = (n: ts.Node) => this.runsCode(n);
     // The argument holding the list (`signer([…])`, a list of signer lists, an object of CPI options) and the call it
     // is an argument of.
     let consumer: ts.Node | undefined = node.parent;
@@ -133,6 +128,28 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
     this.line(`SolSignerSeed ${name}[${Math.max(slots, 1)}] = {${parts.join(", ")}};`);
     if (reusable) this.seedArrays.set(key, { name, scope: this.scopes[this.scopes.length - 1]!, at: this.lines.length - 1, text: this.lines.at(-1)!.trim() });
     return { name, count: parts.length, idl };
+  }
+
+  /**
+   * Whether evaluating `n` may run code or write (a call other than a pure one, an assignment, ++ / --). `readers`:
+   * also count as pure the byte readers (`data.readU64(i)`) and a stake sysvar slot's `named(account, address)`
+   * marker, which only read (their arguments still count).
+   */
+  protected runsCode(n: ts.Node, readers = false): boolean {
+    if (
+      readers &&
+      ts.isCallExpression(n) &&
+      ((ts.isPropertyAccessExpression(n.expression) && /^read(?:U8|U16|U32|U64|U128|Pubkey)$/.test(n.expression.name.text)) ||
+        this.exportName(n.expression) === "named")
+    )
+      return ts.forEachChild(n, (c) => this.runsCode(c, true)) === true;
+    return (
+      (ts.isCallExpression(n) && !this.pureCall(n)) ||
+      (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+      (ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) ||
+      ts.isPostfixUnaryExpression(n) ||
+      ts.forEachChild(n, (c) => this.runsCode(c, readers)) === true
+    );
   }
 
   /** A call that runs none of the program's code and writes nothing: an integer cast, min / max, a list's get(i). */
