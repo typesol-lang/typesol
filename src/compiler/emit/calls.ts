@@ -47,6 +47,8 @@ import {
   vecCount,
   emptySizeC,
   vecLenCheck,
+  passedByPointer,
+  unreachableArg,
   type Closure,
   type Local,
 } from "./shared.js";
@@ -256,6 +258,11 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (a.kind.kind !== "account" || !a.kind.mut) this.fail(args[0], "close() needs a Mut<Struct> account owned by this program");
         const d = this.accountParam(args[1], "close's destination");
         if (!isWritable(d.kind)) this.fail(args[1], "the destination must be writable (Mut<...>)");
+        // In a helper both may be one account the caller passed twice (Dup<…>): closing into itself is refused.
+        if (a.index === -1 || d.index === -1)
+          this.line(`if (a_${a.name} == a_${d.name}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: close's destination is the account itself");`);
+        else if (a === d) this.fail(args[1], "the destination is the account being closed; name another writable account");
+        this.assertNotUsedAfterClose(a, node);
         this.line(`TS_TRY(ts_close(a_${a.name}, a_${d.name}));`);
         this.forgetOwners();
         return undefined;
@@ -388,7 +395,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
         else b = this.expect(b, a.type, args[1]);
         if (a.type.kind !== "int" || !sameType(a.type, b.type)) this.fail(node, `${builtin}(a, b) takes two integers of the same type`);
         const t = this.tmp("mm");
-        this.line(`${INT_INFO[a.type.name].c} ${t} = (${a.c} ${builtin === "min" ? "<" : ">"} ${b.c}) ? ${a.c} : ${b.c};`);
+        // A u256 is four limbs, compared by the runtime.
+        const less =
+          a.type.name === "u256" ? `ts_u256_cmp(${a.c}, ${b.c}) ${builtin === "min" ? "<" : ">"} 0` : `${a.c} ${builtin === "min" ? "<" : ">"} ${b.c}`;
+        this.line(`${INT_INFO[a.type.name].c} ${t} = (${less}) ? ${a.c} : ${b.c};`);
         return { c: t, type: a.type };
       }
       case "realloc": {
@@ -2235,6 +2245,45 @@ export abstract class CallEmitter extends ExpressionEmitter {
     return found;
   }
 
+  /**
+   * After close(acct, dest) the account holds no data and belongs to the System Program: reading or writing it later in
+   * the function (or on a later turn of a loop around the close) would read zeros or write bytes that are dropped. The
+   * same holds for a reference into it read later. Refused, like a view used after closeRaw (assertNoViewAfter).
+   */
+  protected assertNotUsedAfterClose(a: AccountParam, at: ts.CallExpression): void {
+    let fn: ts.Node | undefined = at.parent;
+    while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
+    const body = fn && (fn as { body?: ts.Node }).body;
+    if (!body) return;
+    const loops: ts.Node[] = [];
+    for (let n: ts.Node | undefined = at.parent; n && n !== fn; n = n.parent)
+      if (ts.isForStatement(n) || ts.isForOfStatement(n) || ts.isWhileStatement(n) || ts.isDoStatement(n)) loops.push(n);
+    const later = (n: ts.Node) => n.pos >= at.end || loops.some((l) => n.pos >= l.pos && n.end <= l.end && !(n.pos >= at.pos && n.end <= at.end));
+    let hit: ts.Node | undefined;
+    const visit = (n: ts.Node) => {
+      if (hit) return;
+      // Its address stays what it was: `acct.key` after the close is fine.
+      if (ts.isPropertyAccessExpression(n) && n.name.text === "key" && this.probe(() => this.accountAt(n.expression)) === a) return;
+      // A name or group field naming the account (not a property name: `x.vault`'s `vault` is not `vault`).
+      const named =
+        ts.isPropertyAccessExpression(n) ||
+        (ts.isIdentifier(n) && !(ts.isPropertyAccessExpression(n.parent) && n.parent.name === n) && !ts.isPropertyAssignment(n.parent));
+      if (named && later(n) && this.probe(() => this.accountAt(n as ts.Expression)) === a) hit = n;
+      if (!hit) ts.forEachChild(n, visit);
+    };
+    visit(body);
+    if (!hit)
+      for (const scope of this.scopes)
+        for (const l of scope.values())
+          if (l.decl && l.paths?.some((p) => p === a.name || p.startsWith(`${a.name}.`) || p.startsWith(`${a.name}[]`)) && this.usedAfter(l.decl, at))
+            hit = l.decl;
+    if (hit)
+      this.fail(
+        hit,
+        `${a.name} is closed by close(${a.name}, …) and used after it: a closed account has no data (writes to it are dropped, reads see zeros). Do everything with ${a.name} before closing it (its key stays readable)`,
+      );
+  }
+
   /** Whether a helper's body (or a helper it calls) closes or resizes an account: closeRaw / resizeAccount. */
   private helperResizes(body: ts.Node): boolean {
     return this.helperCalls(body, ["closeRaw", "resizeAccount"]);
@@ -2376,6 +2425,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     // A helper that takes accounts may change account data, so account text it gets is copied first.
     // A RemainingAccount(s) parameter counts: the helper may load and write a struct through it.
     const takesAccounts = h.params.some((p) => p.account || p.type.kind === "account" || p.type.kind === "remaining");
+    // What a helper can write: account data (through its accounts) and the caller's places it takes as Inout<T>.
+    const mayWrite = takesAccounts || h.params.some((p) => p.inout);
     // A helper that closes or resizes an account it is given ends the caller's views of it (any account it may be).
     if (takesAccounts && this.helperResizes(h.node)) this.assertNoViewAfter("?", node, `${h.display}() (it may close or resize an account it is given)`);
     // Nor may a helper change a tree of an account a for … of is walking.
@@ -2394,7 +2445,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (typeof raw === "string") pieces.push(raw);
       else {
         pieces.push(values.length);
-        values.push(takesAccounts ? this.ownedString(raw) : raw);
+        // Text viewing account data or an Inout place may change under the helper: it gets the bytes as they are now.
+        values.push(mayWrite ? this.ownedString(raw) : raw);
       }
     });
     if (h.params.some((p) => p.inout))
@@ -2404,11 +2456,14 @@ export abstract class CallEmitter extends ExpressionEmitter {
         argNodes,
         pieces.map((x) => (typeof x === "string" ? x : undefined)),
       );
-    // A helper that takes a writable struct account may replace anything stored in it (see assertNotAliased).
+    // A helper that takes a writable struct account may replace anything stored in it (see assertNotAliased): the
+    // account however it is named here (a parameter, an account group's field, a struct loaded with loadAccountMut).
     for (const [i, p] of h.params.entries())
-      if (p.account && p.account.kind === "account" && p.account.mut && ts.isIdentifier(argNodes[i]))
-        this.assertNotAliased([argNodes[i].text], node, h.display);
-    const args = ["params", ...pieces.map((x) => (typeof x === "number" ? (values[x].type.kind === "pubkey" ? `*(${values[x].c})` : values[x].c) : x))];
+      if (p.account && p.account.kind === "account" && p.account.mut) this.assertNotAliased(this.pathsOf(argNodes[i]!), node, h.display, true);
+    const args = [
+      "params",
+      ...pieces.map((x) => (typeof x === "number" ? (passedByPointer(values[x].type) ? this.pointerArg(values[x], mayWrite) : values[x].c) : x)),
+    ];
     if (!h.returns) {
       this.line(`TS_TRY(fn_${h.name}(${args.join(", ")}));`);
       return undefined;
@@ -2429,6 +2484,29 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.line(`${scalarC(h.returns)} ${t};`);
     this.line(`TS_TRY(fn_${h.name}(${[...args, `&${t}`].join(", ")}));`);
     return h.returns.kind === "pubkey" ? { c: `(&${t})`, type: h.returns } : { c: t, type: h.returns };
+  }
+
+  /**
+   * A Pubkey, Option, string or u256 helper argument, passed as a pointer (see passedByPointer). When the helper can
+   * write (it takes accounts or Inout places) and the argument is not a named C object nothing passed can reach (see
+   * unreachableArg), the pointer is to a copy taken here: JS gives the helper the value as it is at the call. A
+   * helper that writes nothing reads the caller's value in place.
+   */
+  protected pointerArg(v: Value, mayWrite: boolean): string {
+    if (v.type.kind === "pubkey") {
+      if (!mayWrite || unreachableArg(v.c, true)) return v.c;
+      const t = this.tmp("argk");
+      this.line(`SolPubkey ${t} = *(${v.c});`);
+      return `(&${t})`;
+    }
+    const own = /^\(\*(p_\w+)\)$/.exec(v.c);
+    if (own) return own[1]!;
+    if (/^\w+$/.test(v.c)) return `(&${v.c})`;
+    // A field read in place (`d_x->opt`): an Option's C struct is packed, so its address is fine to take.
+    if (!mayWrite && v.type.kind === "option" && /^\w+(?:(?:->|\.)\w+)+$/.test(v.c)) return `(&${v.c})`;
+    const t = this.tmp("argv");
+    this.line(`${valueC(v.type)} ${t} = ${v.c};`);
+    return `(&${t})`;
   }
 
   /** One helper argument: a C argument list fragment (accounts, seeds, references) or a value to settle. */
@@ -2787,7 +2865,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
     }
     if (ts.isCallExpression(n) && this.exportName(n.expression) === "signer") {
       if (n.arguments.length !== 1) this.fail(n, "signer([...seeds]) takes the seeds (with the bump) as an array; signer([]) signs for nothing");
-      return this.seeds(n.arguments[0], 0);
+      // Bound to a name or given to a helper: the list outlives this expression, so its seeds are copied now.
+      return this.seeds(n.arguments[0], 0, true);
     }
     this.fail(n, "pass signer([...seeds with the bump]) or a SignerSeeds parameter");
   }

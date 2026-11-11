@@ -71,12 +71,14 @@ export abstract class AliasEmitter extends EmitterBase {
    * to the old object unchanged. Here a reference is a pointer into account data, so it would see the new
    * value. Refuse when a live reference into the replaced place is still used afterwards.
    */
-  protected assertNotAliased(replaced: string[] | undefined, at: ts.Node, helper?: string) {
+  protected assertNotAliased(replaced: string[] | undefined, at: ts.Node, helper?: string, inPlace = false) {
     if (!replaced) return;
     for (const scope of this.scopes)
       for (const [name, l] of scope) {
         if (!l.paths || !l.decl) continue;
-        const hit = replaced.find((r) => l.paths!.some((p) => p === r || p.startsWith(`${r}.`) || p.startsWith(`${r}[]`)));
+        // A helper given an account changes it in place (`inPlace`): a local naming the whole account (a struct loaded
+        // with loadAccountMut) then reads what JS's object would. Only references into it are stale.
+        const hit = replaced.find((r) => l.paths!.some((p) => (p === r && !inPlace) || p.startsWith(`${r}.`) || p.startsWith(`${r}[]`)));
         if (!hit || !this.usedAfter(l.decl, at)) continue;
         this.fail(
           at,
@@ -195,7 +197,12 @@ export abstract class AliasEmitter extends EmitterBase {
 
   /** A storage path as the source names it: `@<C local>.x` becomes `<its name>.x` (`@p_rec.items[]` → `rec.items[]`). */
   protected showPath(path: string): string {
-    if (!path.startsWith("@")) return path;
+    if (!path.startsWith("@")) {
+      // A field of an account group, as the source names it: `g__pool.b[]` → `g.pool.b[]`.
+      const root = path.split(/[.[]/)[0]!;
+      const g = this.accounts.get(root)?.group;
+      return g ? [...g.path, g.field].join(".") + path.slice(root.length) : path;
+    }
     // A @heap local is named through its pointer: `@(*l_x)`.
     const c = /^@(\(\*\w+\)|\w+)/.exec(path)?.[1];
     for (const s of [...this.scopes].reverse().concat(this.args))

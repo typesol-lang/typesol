@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, SYSTEM_PROGRAM, acct, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "../harness.js";
+import { BN, SYSTEM_PROGRAM, acct, customError, deployFile, expectOk, fundedSigner, ix, pda, send, type Deployed } from "../harness.js";
 
 const SOURCE = `import { type FixedArray, type Option, type Signer, type f64, type u16, type u32, type u64, emit, f64FromBits } from "typesol";
 
@@ -145,5 +145,43 @@ describe("Borsh Options inside Options", () => {
     const good = ix(d, "configure", { config: cases[2]![1] }, [{ address: payer.address, signer: payer }]);
     const cut = { ...good, data: good.data!.subarray(0, good.data!.length - 3) };
     expect(await send(d.svm, payer, [cut])).toHaveProperty("err");
+  });
+});
+
+// An Option of a struct that holds an Option: the Some tag reserved one byte, not the struct. With the bytes cut right
+// after the inner None, `len - at - rest` wrapped and the reads went past the end; the struct's smallest form is now
+// checked after the tag, and every bound is compared without a subtraction.
+const SHORT = `import { type Option, type u64 } from "typesol";
+export interface Inner { a: u64; b: Option<u64>; c: u64; d: u64; e: u64; f: u64 }
+/** @layout borsh */
+export interface Wrap { x: u64; inner: Option<Inner> }
+export function peek(w: Wrap): u64 { if (w.inner !== null) return w.inner.f; return 0n; }
+`;
+
+describe("a short Borsh argument with an Option of a struct holding Options", () => {
+  let d: Deployed;
+  beforeAll(async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-borsh-short-"));
+    writeFileSync(path.join(dir, "short.ts"), SHORT);
+    d = await deployFile(path.join(dir, "short.ts"));
+  });
+  const call = (name: string, body: Buffer) => {
+    const disc = Buffer.from(d.idl.instructions.find((i) => i.name === name)!.discriminator);
+    return { programAddress: d.programId, accounts: [], data: new Uint8Array(Buffer.concat([disc, body])) };
+  };
+  const u64 = (n: number) => Buffer.from(new BigUint64Array([BigInt(n)]).buffer);
+
+  it("refuses the bytes cut after the inner None (102), and reads them whole", async () => {
+    const payer = await fundedSigner(d.svm);
+    const head = Buffer.concat([u64(1), Buffer.from([1]), u64(2), Buffer.from([0])]);
+    expect(customError(await send(d.svm, payer, [call("peek", head) as never]))).toBe(102);
+    const whole = Buffer.concat([head, u64(3), u64(4), u64(5), u64(6)]);
+    expect(
+      Buffer.from(
+        expectOk(await send(d.svm, payer, [call("peek", whole) as never]))
+          .returnData()
+          .data(),
+      ).readBigUInt64LE(0),
+    ).toBe(6n);
   });
 });

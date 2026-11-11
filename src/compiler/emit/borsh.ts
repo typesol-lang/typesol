@@ -190,8 +190,11 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
             ? borshMinSize(variableStruct(t, model)!, model)
             : fixedBytes(t, model);
     const minAfter = s.fields.map((_, i) => s.fields.slice(i + 1).reduce((n, f) => n + minOf(f.type), 0));
-    const need = (n: string, rest: number, pad: string) => `${pad}if (${n} > len - at - ${rest}) ${DESER};`;
-    const room = (n: string, rest: number, pad: string) => `${pad}if (${n} > cap - at - ${rest}) ${SER};`;
+    // Compared without a subtraction that could wrap: `at` may already be within `rest` of the end (a Some tag or a
+    // list element reserves only its own smallest form), and `len - at - rest` would then pass anything. `n` is at
+    // most 2^32 elements of at most a few KiB, `at` and `rest` stay near `len`: the sum cannot overflow 64 bits.
+    const need = (n: string, rest: number, pad: string) => `${pad}if ((uint64_t)(${n}) + at + ${rest} > len) ${DESER};`;
+    const room = (n: string, rest: number, pad: string) => `${pad}if ((uint64_t)(${n}) + at + ${rest} > cap) ${SER};`;
 
     // A String / Vec / Option field, `rest` bytes of later fields still to come.
     const unpackVar = (t: FieldType, lv: string, rest: number, pad: string): string[] => {
@@ -234,12 +237,13 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
               ...(check.length ? [`${pad}for (uint64_t ${i} = 0; ${i} < ${l}; ${i}++) {`, ...check, `${pad}}`] : []),
             ];
           }
-          // Strings: each element's length prefix is checked as it is reached.
+          // Strings and structs holding Options: each element's smallest form is checked as it is reached (its length
+          // prefix, or its fixed fields and tags), before anything of it is read.
           const i = tmp("i");
           return [
             ...head,
             `${pad}for (uint64_t ${i} = 0; ${i} < ${l}; ${i}++) {`,
-            need("4", rest, `${pad}  `),
+            need(String(minOf(t.elem)), rest, `${pad}  `),
             ...unpackVar(t.elem, `${lv}.items[${i}]`, rest, `${pad}  `),
             `${pad}}`,
           ];
@@ -270,6 +274,8 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
               `${pad}if (${tag} > 1) ${DESER};`,
               `${pad}${lv}.some = ${tag};`,
               `${pad}if (${tag}) {`,
+              // The tag reserved one byte: the struct's smallest form must be there before its fields are read.
+              need(String(minOf(t.inner as FieldType)), rest, `${pad}  `),
               ...unpackVar(t.inner as FieldType, `${lv}.v`, rest, `${pad}  `),
               `${pad}}`,
             ];
@@ -312,7 +318,7 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
             for (const f of v.fields) {
               const flv = `${lv}.v.${v.name}.${f.name}`;
               if (f.type.kind === "string") {
-                lines.push(`${pad}  if (4 > len - at - ${rest}) ${DESER};`, ...unpackVar(f.type, flv, rest, `${pad}  `));
+                lines.push(need("4", rest, `${pad}  `), ...unpackVar(f.type, flv, rest, `${pad}  `));
                 continue;
               }
               const n = fixedBytes(f.type, model);

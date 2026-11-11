@@ -31,20 +31,43 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
    * Lower a seeds array literal into a `SolSignerSeed[]` with `extra` spare slots. Also describes
    * the seeds in Anchor IDL terms when every element is a constant, an argument or an account path.
    */
-  protected seeds(node: ts.Expression, extra: number): { name: string; count: number; idl: IdlSeed[] | undefined } {
+  protected seeds(node: ts.Expression, extra: number, bound = false): { name: string; count: number; idl: IdlSeed[] | undefined } {
     if (!ts.isArrayLiteralExpression(node)) this.fail(node, "seeds must be an array literal");
     if (node.elements.length > MAX_SEEDS) this.fail(node, `at most ${MAX_SEEDS} seeds`);
     const parts: string[] = [];
     let idl: IdlSeed[] | undefined = [];
-    // Without calls or writes among the seeds, nothing can change a seed before the CPI reads it: account fields are
-    // then passed in place instead of copied.
+    // The array points at its seeds, which are read when the CPI runs. Seeds that are not constants are copied when
+    // the list is written, as JS reads them then, unless nothing can run between the list and the CPI that reads it:
+    // no calls or writes among the seeds, nor in the other arguments of the call consuming the list (evaluated before
+    // or after it). A list bound to a name or passed to a helper (`bound`) outlives its expression: always copied.
     const mutates = (n: ts.Node): boolean =>
-      ts.isCallExpression(n) ||
+      (ts.isCallExpression(n) && !this.pureCall(n)) ||
       (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
-      ts.isPrefixUnaryExpression(n) ||
+      (ts.isPrefixUnaryExpression(n) && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) ||
       ts.isPostfixUnaryExpression(n) ||
       ts.forEachChild(n, mutates) === true;
-    const inPlace = !node.elements.some(mutates);
+    // The argument holding the list (`signer([…])`, a list of signer lists, an object of CPI options) and the call it
+    // is an argument of.
+    let consumer: ts.Node | undefined = node.parent;
+    let list: ts.Node = node;
+    const wraps = (n: ts.Node) =>
+      ts.isParenthesizedExpression(n) ||
+      ts.isArrayLiteralExpression(n) ||
+      ts.isObjectLiteralExpression(n) ||
+      ts.isPropertyAssignment(n) ||
+      (ts.isCallExpression(n) && this.exportName(n.expression) === "signer");
+    while (consumer && wraps(consumer)) {
+      list = consumer;
+      consumer = consumer.parent;
+    }
+    const others = consumer && ts.isCallExpression(consumer) ? consumer.arguments.filter((a) => a !== list) : [];
+    const inPlace = !bound && !mutates(list) && !others.some(mutates);
+    // Seeds no write can change: account keys, constants, instruction arguments, a helper's by-pointer parameters.
+    const constant = (el: ts.Expression, c: string) =>
+      /^\(?&\w+->key\)?$/.test(c) ||
+      /^\(&(?:TSK_|arg_)\w+\)$/.test(c) ||
+      /^\(&\(\*p_\w+\)\)$/.test(c) ||
+      (ts.isIdentifier(el) && /^\(&\w+\)$/.test(c) && this.lookup(el.text)?.mutable === false);
     const mark = this.lines.length;
     for (const el of node.elements) {
       const desc = this.describeSeed(el);
@@ -73,7 +96,7 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
       }
       // Each seed is copied when it is evaluated, so later seeds (helper calls) cannot change earlier ones.
       const v = this.expr(el);
-      if (v.type.kind === "pubkey" && (isStable(v.c) || (inPlace && /^\(&d_\w+(->\w+)+\)$/.test(v.c))))
+      if (v.type.kind === "pubkey" && (constant(el, v.c) || (inPlace && (isStable(v.c) || /^\(&d_\w+(->\w+)+\)$/.test(v.c)))))
         parts.push(`{(const uint8_t *)${v.c.startsWith("(") ? v.c : `(${v.c})`}, 32}`);
       else if (v.type.kind === "int" && inPlace && v.literal === undefined && /^d_\w+(->\w+)+$/.test(v.c))
         parts.push(`{(const uint8_t *)&${v.c}, ${INT_INFO[(v.type as { name: IntName }).name].bytes}}`);
@@ -110,6 +133,13 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
     this.line(`SolSignerSeed ${name}[${Math.max(slots, 1)}] = {${parts.join(", ")}};`);
     if (reusable) this.seedArrays.set(key, { name, scope: this.scopes[this.scopes.length - 1]!, at: this.lines.length - 1, text: this.lines.at(-1)!.trim() });
     return { name, count: parts.length, idl };
+  }
+
+  /** A call that runs none of the program's code and writes nothing: an integer cast, min / max, a list's get(i). */
+  protected pureCall(n: ts.CallExpression): boolean {
+    const fn = this.exportName(n.expression);
+    if (fn && (Object.hasOwn(INT_INFO, fn) || fn === "min" || fn === "max" || fn === "bigEndian")) return true;
+    return ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === "get" && n.arguments.length === 1;
   }
 
   protected describeSeed(el: ts.Expression): IdlSeed | undefined {

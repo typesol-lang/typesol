@@ -177,8 +177,9 @@ export abstract class StatementEmitter extends CpiEmitter {
     const subject = this.expr(stmt.expression);
     const typed = subject.literal !== undefined ? this.literal(subject.literal, U64, stmt.expression) : subject;
     if (typed.type.kind !== "int" && typed.type.kind !== "enum") this.fail(stmt.expression, "switch works on integers and enums");
-    // C cannot switch on 128-bit values: pick the case's index with comparisons, then switch on that.
-    const wide = typed.type.kind === "int" && INT_INFO[typed.type.name].bytes === 16;
+    // C cannot switch on 128-bit values or u256 limbs: pick the case's index with comparisons, then switch on that.
+    const limbs = typed.type.kind === "int" && typed.type.name === "u256";
+    const wide = limbs || (typed.type.kind === "int" && INT_INFO[typed.type.name].bytes === 16);
     const t = this.tmp("sw");
     this.line(`${scalarC(typed.type as ScalarType)} ${t} = ${typed.c};`);
     const pick = wide ? this.tmp("swi") : undefined;
@@ -213,7 +214,8 @@ export abstract class StatementEmitter extends CpiEmitter {
     this.line(`}`);
     if (pick && cases.length) {
       const pad = "  ".repeat(this.indent);
-      this.lines.splice(pickAt + 1, 0, ...cases.map((c, i) => `${pad}${i ? "else " : ""}if (${t} == ${c}) ${pick} = ${i};`));
+      const eq = (c: string) => (limbs ? `ts_u256_cmp(${t}, ${c}) == 0` : `${t} == ${c}`);
+      this.lines.splice(pickAt + 1, 0, ...cases.map((c, i) => `${pad}${i ? "else " : ""}if (${eq(c)}) ${pick} = ${i};`));
     }
   }
 
@@ -1866,7 +1868,14 @@ export abstract class StatementEmitter extends CpiEmitter {
         return;
       }
       const mark = this.lines.length;
-      const rhs = this.expect(this.expr(valueNode, place.type), place.type, valueNode);
+      // `x <<= n` / `x >>= n`: the amount has a type of its own, as in `x << n` (a literal is a u64).
+      const shift = op === ts.SyntaxKind.LessThanLessThanToken || op === ts.SyntaxKind.GreaterThanGreaterThanToken;
+      let rhs: Value;
+      if (shift) {
+        rhs = this.expr(valueNode);
+        if (rhs.literal !== undefined) rhs = this.literal(rhs.literal, U64, valueNode);
+        if (rhs.type.kind !== "int") this.fail(valueNode, "shift amounts must be integers");
+      } else rhs = this.expect(this.expr(valueNode, place.type), place.type, valueNode);
       current = this.settle(current, mark);
       this.line(place.write(this.arith(op, current, rhs, target).c) + ";");
       return;

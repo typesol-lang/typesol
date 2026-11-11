@@ -18,6 +18,7 @@ describe("Dup<…>", () => {
     ["a @layout borsh account", "export function f(a: Dup<Mut<Note>>, b: Mut<Note>): void {}"],
     ["an account it closes", 'export function f(a: Dup<CloseTo<Mut<Wallet>, "b">>, b: Mut<Signer>): void {}'],
     ["an account created here", "export function f(p: Mut<Signer>, a: Dup<Init<Wallet>>, s: SystemProgram): void { a.create(p, null); }"],
+    ["an account closed with close()", "import { close } from 'typesol';\nexport function f(a: Dup<Mut<Wallet>>, b: Mut<Wallet>): void { close(a, b); }"],
   ])("is refused on %s", (_, fn) => {
     expect(compileErrors(HEAD + fn)).toMatch(/Dup<…> is for accounts read and written in place/);
   });
@@ -94,5 +95,50 @@ export function sweep(to: Mut<Signer>, w: CloseTo<Mut<Wallet>, "to">, payer: Dup
       ]);
     expectOk(await sweep({ address: payer.address, signer: payer }, b));
     expect(d.svm.getBalance(payer.address)! - before).toBe(rent - 5000n);
+  });
+
+  it("a helper closing an account into the same account (two Dup slots) fails at run time with 2040", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-dup-close-"));
+    writeFileSync(
+      path.join(dir, "close.ts"),
+      HEAD +
+        `import { close } from "typesol";
+function shut(a: Mut<Wallet>, b: Mut<Wallet>): void { close(a, b); }
+export function make(p: Mut<Signer>, w: Init<Wallet>, s: SystemProgram, id: u64): void { w.create(p, ["w", id]); w.id = id; }
+export function both(a: Dup<Mut<Wallet>>, b: Dup<Mut<Wallet>>): void { shut(a, b); }
+`,
+    );
+    const d = await deployFile(path.join(dir, "close.ts"));
+    const p = await fundedSigner(d.svm);
+    const mk = async (id: number) => {
+      const [w] = await pda(d.programId, ["w", new Uint8Array(getU64Encoder().encode(BigInt(id)))]);
+      expectOk(
+        await send(d.svm, p, [
+          ix(d, "make", { id: new BN(id) }, [{ address: p.address, signer: p, writable: true }, { address: w, writable: true }, { address: SYSTEM_PROGRAM }]),
+        ]),
+      );
+      return w;
+    };
+    const w1 = await mk(1);
+    expect(
+      customError(
+        await send(d.svm, p, [
+          ix(d, "both", {}, [
+            { address: w1, writable: true },
+            { address: w1, writable: true },
+          ]),
+        ]),
+      ),
+    ).toBe(2040);
+    const w2 = await mk(2);
+    expectOk(
+      await send(d.svm, p, [
+        ix(d, "both", {}, [
+          { address: w1, writable: true },
+          { address: w2, writable: true },
+        ]),
+      ]),
+    );
+    expect(d.svm.getAccount(w1).exists).toBe(false);
   });
 });

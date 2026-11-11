@@ -22,6 +22,7 @@ import {
   cString,
   valueC,
   fixedVecC,
+  passedByPointer,
   type EmitOptions,
   type CpiProgram,
 } from "./shared.js";
@@ -156,6 +157,8 @@ export abstract class EmitterBase {
         } else if (p.type.kind === "arrayArg") this.args.set(p.name, { c: `(*p_${p.name})`, type: p.type.array, mutable: false, readonly: true, ...owned });
         else if (p.type.kind === "dataEnumArg")
           this.args.set(p.name, { c: `p_${p.name}`, type: { kind: "enumRef", name: p.type.name, writable: false }, mutable: false, ...owned });
+        // A Pubkey, Option, string or u256 comes as a const pointer (see passedByPointer): read through it.
+        else if (passedByPointer(p.type)) this.args.set(p.name, { c: `(*p_${p.name})`, type: p.type, mutable: false });
         else this.args.set(p.name, { c: `p_${p.name}`, type: p.type, mutable: false, ...(p.type.kind === "structRef" ? owned : {}) });
       }
     }
@@ -296,7 +299,12 @@ export abstract class EmitterBase {
    */
   protected settle(v: Value, mark: number): Value {
     if (this.lines.length === mark || v.isNull || v.literal !== undefined || v.stringLiteral !== undefined) return v;
-    if (isStable(v.c)) return v;
+    // A local (or a temporary) is stable unless what was emitted since writes it: a closure or list callback expanded
+    // in the later operand (`x + bump()` with `bump` doing `x += 1n`), or an outlined loop given its address.
+    if (isStable(v.c)) {
+      const name = /^(?:\w+|\(&(\w+)\))$/.exec(v.c) ? (/^\w+$/.test(v.c) ? v.c : v.c.slice(2, -1)) : undefined;
+      if (!name || !this.writtenSince(name, mark)) return v;
+    }
     const t = this.tmp("snap");
     const pad = "  ".repeat(this.indent);
     const decl: string[] = [];
@@ -324,6 +332,16 @@ export abstract class EmitterBase {
     }
     this.lines.splice(mark, 0, ...decl.map((l) => pad + l));
     return out;
+  }
+
+  /** Whether a C line emitted from `mark` on assigns, increments or takes the address of the C variable `name`. */
+  protected writtenSince(name: string, mark: number): boolean {
+    const n = name.replace(/\W/g, "");
+    const w = new RegExp(
+      `(?:\\b${n}(?:\\.\\w+|\\[[^\\]]*\\])*\\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|&\\s*\\(?\\s*${n}\\b|\\b${n}\\s*(?:\\+\\+|--)|(?:\\+\\+|--)\\s*${n}\\b)`,
+    );
+    for (let i = mark; i < this.lines.length; i++) if (this.lines[i]!.includes(n) && w.test(this.lines[i]!)) return true;
+    return false;
   }
 
   /** A string that stays valid when account data changes: views of account text are copied to the heap. */
@@ -555,7 +573,7 @@ export abstract class EmitterBase {
   protected abstract accountChoice(node: ts.ConditionalExpression): Value;
   protected abstract instructionsParam(node: ts.Expression): AccountParam | undefined;
   protected abstract isTxIx(node: ts.Expression): boolean;
-  protected abstract seeds(node: ts.Expression, extra: number): { name: string; count: number; idl: IdlSeed[] | undefined };
+  protected abstract seeds(node: ts.Expression, extra: number, bound?: boolean): { name: string; count: number; idl: IdlSeed[] | undefined };
   protected abstract recordPda(account: AccountParam, idl: IdlSeed[] | undefined): void;
   protected abstract create(node: ts.CallExpression, target: AccountParam, topLevel: boolean, ifNeeded?: boolean): Value;
   protected abstract createAta(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value | undefined;

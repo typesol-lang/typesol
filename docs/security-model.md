@@ -48,7 +48,8 @@ Each holds for every instruction of every program the compiler accepts. A break 
 7. **Bounds.** Every index into an array, Vec, FixedVec or remaining-account list is checked (5104); a
    growable Vec's stored length is checked against the account's size before it is used (3003).
 8. **Account creation.** `create` / `createIfNeeded` is a top-level statement, and the account cannot be read or
-   written before it (compile error). Creation refuses an account that already exists (3000), and an address someone
+   written before it (compile error). Creation refuses an account that already exists (the System Program's
+   own error, custom 0; `initAccount<T>` over an account already holding a T is 3000), and an address someone
    pre-funded still gets created. `createIfNeeded` on an existing account re-derives the canonical PDA and checks
    owner, discriminator and size (token accounts: mint and owner; mints: decimals, authorities and the extensions it
    names). A `Migrate<From, To>` account is checked as an existing `From`; `migrate(…)` is a top-level statement every
@@ -56,14 +57,18 @@ Each holds for every instruction of every program the compiler accepts. A break 
    errors).
 9. **Writes through references.** A place is never written after the code that computes its value may have moved it:
    replacing or resizing what a live reference points into is a compile error, as is writing a Vec element with a
-   right side that may resize the Vec.
+   right side that may resize the Vec. A helper given a writable struct account may replace anything in it, however
+   the account is named at the call (a parameter, an account group's field, a struct loaded with `loadAccountMut`): a
+   reference into it read after the call is a compile error. A helper that can write gets its Pubkey, Option and
+   string arguments as they were at the call (a copy unless nothing it is given reaches them), and a closed account
+   is not used after `close()` (compile error).
 10. **Remaining accounts.** Writing one (`.lamports`, `loadAccountMut`) checks it is writable (3006) and not another
     account of the instruction (2040); `loadAccountMut` loads a given account once per instruction (2040);
     `loadAccount<T>` checks owner, discriminator and size, and validates the data as instruction arguments are.
 11. **Growth.** An account grows by at most 10 KiB per instruction (3016), the payer is a `Mut<Signer>`, new bytes are
     zero and the new rent is paid; shrinking keeps the lamports in the account.
 12. **CPIs.** A program signs only for its own PDAs (the runtime enforces it; the seeds are those written in the
-    source). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
+    source, with the values they had where the list was written, also for a named list or one given to a helper). `invoke` marks an account writable or signer only when the parameter is `Mut` / `Signer` or the program
     signs for it; remaining accounts keep the flags they were passed with, or are checked for the role requested.
     `invokeInstruction` is the exception by design: its program, account flags and data come from values (stored in
     account data or passed in), so the compiler cannot check them; the runtime does, refusing any account the
