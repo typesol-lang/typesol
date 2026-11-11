@@ -6,6 +6,9 @@ codes, and says so here.
 
 ## Unreleased
 
+- Docs: docs/testing.md lists the SPL Stake Pool and Phoenix random walks and the red-black tree's trace replay
+  against lib-sokoban among the checks against an independent oracle.
+
 ## 0.43.0 — 2026-11-11
 
 Phoenix v1 ported in full, Ellipsis Labs' on-chain limit order book and a native program, from the commit a
