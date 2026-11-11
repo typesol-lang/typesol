@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's accounts (type-crate/src/types of mrgnlabs/marginfi-v2 @ c5d440f6), generated from the on-chain IDL
 // (test/fixtures/marginfi/marginfi.idl.json) by `typesol port`: zero-copy #[repr(C)] structs with no implicit padding,
 // so TypeSOL's fixed layout stores them byte for byte. WrappedI80F48 holds an i128 (showcase/mainnet/marginfi/i80f48.ts).

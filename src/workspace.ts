@@ -12,10 +12,14 @@
  * The address is recorded in typesol.json on first build, so a lost or swapped keypair is caught before deploying.
  */
 import { agentsMd, CLAUDE_MD, cursorRule, MCP_JSON } from "./ai.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import ts from "typescript";
 import { writeClient } from "./tools/clientgen.js";
-import { build, COMPILER_VERSION, SBPF_VERSIONS, type BuildResult, type Sbpf } from "./compiler/index.js";
+import { build, COMPILER_VERSION, SBPF_VERSIONS, type BuildManifest, type BuildResult, type Sbpf } from "./compiler/index.js";
+import { RUNTIME_DIR, toolchainVersion } from "./compiler/toolchain.js";
 import { loadOrCreateKeypair } from "./keys.js";
 import { TEMPLATES, type TemplateName } from "./templates.js";
 
@@ -134,12 +138,163 @@ export function buildWorkspace(
 ): { paths: ProgramPaths; address: string; created: boolean; keyless?: boolean; result: BuildResult; clientPath: string }[] {
   return names.map((name) => {
     const paths = programPaths(ws, name);
-    const { address, created, keyless } = programAddress(ws, name, { needKeypair: opts.needKeypair });
-    const result = build(paths.entry, paths.outDir, address, { sbpf: opts.sbpf ?? ws.sbpf, profile: opts.profile });
-    // The TypeScript client (docs/client.md) is written with the build, from the same IDL.
-    const clientPath = writeClient(result.idl, path.join(paths.outDir, `${result.model.name}.client.ts`)).path;
-    return { paths, address, created, keyless, result, clientPath };
+    // Every build of a program writes the same files (<name>.c, .o, .so, …), and the first one creates its keypair:
+    // another process building it at the same time (vitest runs test files in parallel workers) would overwrite them.
+    return withBuildLock(paths.outDir, () => {
+      const { address, created, keyless } = programAddress(ws, name, { needKeypair: opts.needKeypair });
+      const result = build(paths.entry, paths.outDir, address, { sbpf: opts.sbpf ?? ws.sbpf, profile: opts.profile });
+      // The TypeScript client (docs/client.md) is written with the build, from the same IDL.
+      const clientPath = writeClient(result.idl, path.join(paths.outDir, `${result.model.name}.client.ts`)).path;
+      return { paths, address, created, keyless, result, clientPath };
+    });
   });
+}
+
+/** What a test needs of a built program. */
+export interface BuiltProgram {
+  address: string;
+  soPath: string;
+  idl: BuildResult["idl"];
+  /** False when the existing build was up to date and was loaded instead of rebuilt. */
+  rebuilt: boolean;
+}
+
+/**
+ * The program built for a test: the existing build when it is up to date (same sources, runtime header, TypeSOL,
+ * TypeScript and clang versions, SBPF version and address, not a --profile build, and the .so the manifest records),
+ * else a fresh one. Concurrent callers (parallel test workers) wait for each other instead of building over each other.
+ */
+export function buildForTest(ws: Workspace, name: string): BuiltProgram {
+  const paths = programPaths(ws, name);
+  return withBuildLock(paths.outDir, () => {
+    const { address } = programAddress(ws, name);
+    const current = upToDateBuild(paths, address, ws.sbpf);
+    if (current) return { ...current, rebuilt: false };
+    const result = build(paths.entry, paths.outDir, address, { sbpf: ws.sbpf });
+    writeClient(result.idl, path.join(paths.outDir, `${result.model.name}.client.ts`));
+    return { address, soPath: result.soPath, idl: result.idl, rebuilt: true };
+  });
+}
+
+const sha256 = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+
+/** The existing build of a program if building it again would give the same files, else undefined. */
+function upToDateBuild(paths: ProgramPaths, address: string, sbpf: Sbpf): Omit<BuiltProgram, "rebuilt"> | undefined {
+  // The compiler names a program's files after its entry file (programs/counter.ts → counter.so).
+  const base = path.join(paths.outDir, path.basename(paths.entry).replace(/\.ts$/, ""));
+  const files = { manifest: `${base}.build.json`, so: `${base}.so`, idl: `${base}.json`, client: `${base}.client.ts` };
+  if (!Object.values(files).every((f) => existsSync(f))) return undefined;
+  let manifest: BuildManifest;
+  let idl: BuildResult["idl"];
+  try {
+    manifest = JSON.parse(readFileSync(files.manifest, "utf8")) as BuildManifest;
+    idl = JSON.parse(readFileSync(files.idl, "utf8")) as BuildResult["idl"];
+  } catch {
+    return undefined;
+  }
+  if (manifest.compiler !== COMPILER_VERSION || manifest.typescript !== ts.version || manifest.sbpf !== sbpf || manifest.profile) return undefined;
+  if ((idl as { address?: string }).address !== address || !manifest.sources || typeof manifest.sources !== "object") return undefined;
+  if (sha256(readFileSync(files.so)) !== manifest.binary) return undefined;
+  const root = path.dirname(paths.entry);
+  for (const [rel, hash] of Object.entries(manifest.sources)) {
+    const file = rel === "<runtime>/typesol_rt.h" ? path.join(RUNTIME_DIR, "typesol_rt.h") : path.resolve(root, rel);
+    if (!existsSync(file) || sha256(readFileSync(file)) !== hash) return undefined;
+  }
+  // A new import changes the importing file, so every source of the current program is in the list; the runtime and
+  // the entry must be there too (a manifest from another layout).
+  if (!manifest.sources["<runtime>/typesol_rt.h"] || !manifest.sources[path.basename(paths.entry)]) return undefined;
+  // Last, as it runs clang: updated platform-tools may compile the same C differently.
+  if (manifest.clang !== toolchainVersion()) return undefined;
+  return { address, soPath: files.so, idl };
+}
+
+/** How long a build lock may be held before a waiter treats it as abandoned (a build takes seconds to a few minutes). */
+const LOCK_STALE_MS = 15 * 60 * 1000;
+const LOCK_POLL_MS = 100;
+
+/**
+ * Run `fn` holding `<dir>/.typesol-build.lock`, created exclusively: one build of a program at a time across processes.
+ * The lock records its holder's host and pid; a lock whose process is gone (on this host) or that is older than
+ * LOCK_STALE_MS is taken over, so a crashed or killed build does not block the next one.
+ */
+export function withBuildLock<T>(dir: string, fn: () => T): T {
+  mkdirSync(dir, { recursive: true });
+  const lock = path.join(dir, ".typesol-build.lock");
+  const me = `${os.hostname()} ${process.pid} ${Date.now()}`;
+  const deadline = Date.now() + LOCK_STALE_MS + 60_000;
+  for (;;) {
+    let fd: number | undefined;
+    try {
+      fd = openSync(lock, "wx");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    if (fd !== undefined) {
+      try {
+        writeSync(fd, me);
+      } finally {
+        closeSync(fd);
+      }
+      try {
+        return fn();
+      } finally {
+        // Only our own lock: a waiter may have taken it over after LOCK_STALE_MS.
+        try {
+          if (readFileSync(lock, "utf8") === me) unlinkSync(lock);
+        } catch {
+          // Already gone.
+        }
+      }
+    }
+    const holder = readLock(lock);
+    if (holder !== undefined && isStale(holder, lock)) {
+      // Read again just before removing it: another waiter may have replaced the stale lock with its own meanwhile.
+      if (readLock(lock) === holder)
+        try {
+          unlinkSync(lock);
+        } catch {
+          // Removed by another waiter.
+        }
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${lock} (held by ${holder ?? "?"}); delete it if no build is running`);
+    sleepSync(LOCK_POLL_MS);
+  }
+}
+
+function readLock(lock: string): string | undefined {
+  try {
+    return readFileSync(lock, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function isStale(holder: string, lock: string): boolean {
+  const [host, pid] = holder.split(" ");
+  let age: number;
+  try {
+    age = Date.now() - statSync(lock).mtimeMs;
+  } catch {
+    return false;
+  }
+  if (age > LOCK_STALE_MS) return true;
+  // An empty or partly written lock: its writer is between open and write, unless it died there.
+  if (!host || !pid || !/^\d+$/.test(pid)) return age > 10_000;
+  if (host !== os.hostname()) return false;
+  try {
+    process.kill(Number(pid), 0);
+    return false;
+  } catch (e) {
+    // EPERM: the process exists but belongs to another user.
+    return (e as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+const sleeper = new Int32Array(new SharedArrayBuffer(4));
+/** Block this thread (builds are synchronous, so waiting for one is too). */
+function sleepSync(ms: number): void {
+  Atomics.wait(sleeper, 0, 0, ms);
 }
 
 /** The `solana program deploy` arguments for one built program (deploying again upgrades it). */

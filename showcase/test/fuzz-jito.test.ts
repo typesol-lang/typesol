@@ -6,11 +6,11 @@
 // One fault is injected per transaction at most (a wrong signer, account, amount or proof). Faults the state brings on
 // its own (premature, expired, already claimed, over a cap) combine freely with it.
 import { type Address, type KeyPairSigner, address, createKeyPairSignerFromPrivateKeyBytes, lamports } from "@solana/kit";
-import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { BN, pda } from "../../test/harness.js";
 import { DISTRIBUTIONS, SYSTEM, VOTE, dec, key, merkle, pairOf, pk, program, u64 } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
+import { present } from "../../test/binaries.js";
 
 const SEED = BigInt(process.env.FUZZ_SEED ?? Date.now());
 const STEPS = Number(process.env.FUZZ_STEPS ?? 150);
@@ -33,7 +33,7 @@ function tally(s: ReturnType<typeof pairOf>) {
 /** A keypair from the seed (the same keys on every run with that seed). */
 const signerOf = (rng: Rng) => createKeyPairSignerFromPrivateKeyBytes(rng.bytes(32));
 
-describe.skipIf(!existsSync(program("jito_tip_payment.so")))(`fuzz: Jito tip payment against mainnet (seed ${SEED}, ${STEPS} steps)`, () => {
+describe.skipIf(!present(program("jito_tip_payment.so")))(`fuzz: Jito tip payment against mainnet (seed ${SEED}, ${STEPS} steps)`, () => {
   it("pays tips out the same through random receiver and block builder changes", async () => {
     const rng = new Rng(SEED);
     const ID = address("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt");
@@ -136,7 +136,7 @@ describe.skipIf(!existsSync(program("jito_tip_payment.so")))(`fuzz: Jito tip pay
 });
 
 for (const P of DISTRIBUTIONS)
-  describe.skipIf(!existsSync(program(P.so)))(`fuzz: Jito ${P.name} against mainnet (seed ${SEED}, ${STEPS} steps)`, () => {
+  describe.skipIf(!present(program(P.so)))(`fuzz: Jito ${P.name} against mainnet (seed ${SEED}, ${STEPS} steps)`, () => {
     it("opens, uploads, claims and closes the same over random epochs", async () => {
       const rng = new Rng(SEED + (P.priority ? 2n : 1n));
       const s = tally(pairOf(P.so, P.source, P.id));

@@ -1,6 +1,6 @@
 // For AI coding agents: the files `typesol init` writes, llms.txt, `check --json` hints, and the MCP server.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,11 +30,52 @@ describe("for AI coding agents", () => {
   it("init writes the agent rules and the MCP server configuration", () => {
     const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "typesol-ai-")));
     expect(spawnSync("node", [CLI, "init", ".", "--name", "app"], { cwd: dir }).status).toBe(0);
-    expect(readFileSync(path.join(dir, "AGENTS.md"), "utf8")).toMatch(/Integers are bigint[\s\S]*npx typesol check/);
+    expect(readFileSync(path.join(dir, "AGENTS.md"), "utf8")).toMatch(/Integers are bigint[\s\S]*npx --no-install typesol check/);
     expect(readFileSync(path.join(dir, "CLAUDE.md"), "utf8")).toBe("@AGENTS.md\n");
     expect(readFileSync(path.join(dir, ".cursor/rules/typesol.mdc"), "utf8")).toMatch(/^---\ndescription: TypeSOL[\s\S]*alwaysApply: true/);
     for (const f of [".mcp.json", ".cursor/mcp.json"])
-      expect(JSON.parse(readFileSync(path.join(dir, f), "utf8"))).toEqual({ mcpServers: { typesol: { command: "npx", args: ["typesol", "mcp"] } } });
+      expect(JSON.parse(readFileSync(path.join(dir, f), "utf8"))).toEqual({
+        mcpServers: { typesol: { command: "npx", args: ["--no-install", "typesol", "mcp"] } },
+      });
+  });
+
+  it("never tells anyone to run `npx typesol <command>`", () => {
+    // "typesol" is not the npm package's name (@typesol/cli): where a project's own copy is missing, `npx typesol`
+    // would fetch and run whatever package is published under that name.
+    const files = [
+      "README.md",
+      "llms.txt",
+      "scripts/llms.ts",
+      "src/ai.ts",
+      "src/cli.ts",
+      "src/templates.ts",
+      "src/workspace.ts",
+      ".github/workflows/ci.yml",
+      ...readdirSync(path.join(ROOT, "docs")).map((f) => `docs/${f}`),
+    ];
+    for (const f of files) expect(readFileSync(path.join(ROOT, f), "utf8"), f).not.toMatch(/npx typesol (?:[a-z]|--)/);
+  });
+
+  it("the shipped docs link only to files that ship; GitHub URLs for the rest", () => {
+    // docs/ is read from node_modules and on typesol.com, where showcase/, test/ and examples/ do not exist.
+    const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { files: string[] };
+    const shipped = pkg.files.filter((f) => !f.startsWith("!"));
+    const bad: string[] = [];
+    for (const f of readdirSync(path.join(ROOT, "docs")).filter((x) => x.endsWith(".md")))
+      for (const [, target] of readFileSync(path.join(ROOT, "docs", f), "utf8").matchAll(/\]\(([^)\s]+)\)/g)) {
+        if (/^[a-z]+:/.test(target!) || target!.startsWith("#")) continue;
+        const rel = path.posix.normalize(path.posix.join("docs", target!.split("#")[0]!));
+        if (!shipped.includes(rel.split("/")[0]!) || !existsSync(path.join(ROOT, rel))) bad.push(`docs/${f}: ${target}`);
+      }
+    expect(bad).toEqual([]);
+  });
+
+  it("docs/cli.md describes every command", () => {
+    const usage = spawnSync("node", [CLI, "--help"], { encoding: "utf8" }).stdout;
+    const commands = [...usage.matchAll(/^ {2}typesol (\w[\w-]*)/gm)].map((m) => m[1]!);
+    expect(commands).toContain("mcp");
+    const doc = readFileSync(path.join(ROOT, "docs/cli.md"), "utf8");
+    for (const c of commands) expect(doc, c).toContain(`| \`typesol ${c}`);
   });
 
   it("ships llms.txt and llms-full.txt, up to date with the docs", () => {

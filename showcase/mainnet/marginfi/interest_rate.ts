@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's interest rates (programs/marginfi/src/state/interest_rate.rs and the u32 encoders of
 // type-crate/src/types/interest_rate.rs @ c5d440f6): the seven-point curve, the rates and fees it gives at a
 // utilization, and what an accrual over `delta` seconds does to the share values and fee counters. All I80F48

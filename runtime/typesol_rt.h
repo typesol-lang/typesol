@@ -1835,6 +1835,8 @@ extern __attribute__((noreturn)) void abort(void);
 
 /*
  * ---- BigVec (SPL's big_vec) ------------------------------------------------
+ * Follows SPL Stake Pool's big_vec.rs (solana-program/stake-pool, program/src/big_vec.rs), licensed under the Apache
+ * License, Version 2.0; see NOTICE.
  * The memmove syscall, for BigVec::retain's block moves as the Rust does: it costs max(10, n / 250) CU, where the
  * word loop of ts_memmove costs about n / 2 (a 1.4 MB validator list moves in a few thousand CU, not hundreds of
  * thousands). Overlapping ranges are allowed. The "no SDK byte loops" rule is about the SDK's C loops, not this.
@@ -1917,6 +1919,8 @@ static __attribute__((noinline, noreturn, unused)) void ts_rust_panic_u64(const 
 
 /*
  * ---- RedBlackTree (lib-sokoban 0.3's RedBlackTree<K, V, N>, byte for byte) ------------------------------------
+ * Ported from lib-sokoban 0.3.0 (https://github.com/jarry-xiao/sokoban), Copyright (c) 2022 Jarry Xiao, used under
+ * the MIT License (the crate is "MIT OR Apache-2.0"); the licence text is in NOTICE.
  * At `base`: root u32 (0 = SENTINEL), padding [u32; 3], then the NodeAllocator: size u64, bump_index u32,
  * free_list_head u32, then N nodes. Node i (1-based) is at base + 32 + (i - 1) * stride: registers [u32; 4] =
  * [left, right, parent, color (0 black, 1 red)], then the key, then the value. These functions are sokoban's own,

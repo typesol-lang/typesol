@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's instruction argument types (type-crate/src/types of mrgnlabs/marginfi-v2 @ c5d440f6), as the on-chain IDL
 // (test/fixtures/marginfi/marginfi.idl.json) describes them: Borsh on the wire, as Anchor decodes them.
 import { type FixedArray, type Option, type Pubkey, type u16, type u32, type u64, type u8 } from "typesol";

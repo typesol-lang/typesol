@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's Kamino integration (programs/marginfi/src/instructions/kamino and programs/kamino-mocks of
 // mrgnlabs/marginfi-v2 @ c5d440f6): what the Kamino instructions read from klend's accounts, at the offsets
 // kamino-mocks' MinimalReserve, MinimalObligation and MinimalLendingMarket give (discriminator included), and klend's

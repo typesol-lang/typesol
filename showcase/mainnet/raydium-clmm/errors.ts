@@ -1,3 +1,4 @@
+// Part of the TypeSOL port of Raydium CLMM (raydium-io/raydium-clmm @ 6d7a0f8, Apache-2.0).
 // Errors of the Raydium CLMM port (programs/amm/src/error.rs of raydium-io/raydium-clmm), in the original's order:
 // 6000 + the member's index, as Anchor numbers them.
 export enum ErrorCode {

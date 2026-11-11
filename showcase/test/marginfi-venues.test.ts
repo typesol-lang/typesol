@@ -4,12 +4,12 @@
 // rate in the risk engine, the price cache's multiplier.
 import { type Address, type Instruction, type KeyPairSigner, address, lamports } from "@solana/kit";
 import { web3 } from "@anchor-lang/core";
-import { existsSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
 import { INSTRUCTIONS, PROGRAM, bankConfig, fx, le, marginfiPair, offsetOf, ratio } from "./marginfi-helpers.js";
+import { present } from "../../test/binaries.js";
 
 const SOLEND = address("So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo");
 const RENT = address("SysvarRent111111111111111111111111111111111");
@@ -21,7 +21,7 @@ const ATA = address("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const u64 = (n: bigint) => le(n, 8);
 const pk = (a: Address) => new web3.PublicKey(a);
 
-describe.skipIf(!existsSync(program("solend.so")))("Marginfi v2 port against the mainnet binary: Solend banks", () => {
+describe.skipIf(!present(program("solend.so")))("Marginfi v2 port against the mainnet binary: Solend banks", () => {
   const h = marginfiPair();
   const { s, setPyth, setSwb, editGroup } = h;
   /**

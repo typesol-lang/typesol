@@ -1,12 +1,14 @@
 import { type Address, address, getAddressEncoder } from "@solana/kit";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { build, generate } from "../../src/compiler/index.js";
 import { generateCpi, type Idl } from "../../src/tools/cpigen.js";
+import { ClientIdlError } from "../../src/tools/clientgen.js";
 import { BN, SYSTEM_PROGRAM, deployFile, expectOk, fundedSigner, ix, pda, send } from "../harness.js";
+import { present } from "../binaries.js";
 
 const VAULT_IDL = JSON.parse(readFileSync(fileURLToPath(new URL("../fixtures/anchor_vault.idl.json", import.meta.url)), "utf8")) as Idl;
 const VAULT_SO = fileURLToPath(new URL("../../test/anchor-twins/target/deploy/anchor_vault.so", import.meta.url));
@@ -43,7 +45,7 @@ describe("typesol cpi: helpers generated from an IDL", () => {
     );
   });
 
-  it.skipIf(!existsSync(VAULT_SO))("calls the real Anchor vault through generated helpers, as a wallet and as a signing PDA", async () => {
+  it.skipIf(!present(VAULT_SO))("calls the real Anchor vault through generated helpers, as a wallet and as a signing PDA", async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-cpigen-"));
     writeFileSync(path.join(dir, "vault_cpi.ts"), generateCpi(VAULT_IDL).source);
     writeFileSync(path.join(dir, "caller.ts"), CALLER);
@@ -103,5 +105,57 @@ describe("typesol cpi: helpers generated from an IDL", () => {
       types: [{ name: "Person", type: { kind: "struct", fields: [{ name: "name", type: "string" }] } }],
     });
     expect(odd.skipped).toEqual([{ instruction: "named", reason: "a string inside a struct, Vec or array" }]);
+  });
+
+  it("checks the IDL first: hostile names and addresses are refused, IDL text stays inside escaped comments", () => {
+    const base = {
+      address: "11111111111111111111111111111112",
+      metadata: { name: "safe" },
+      instructions: [{ name: "go", discriminator: [1, 2, 3, 4, 5, 6, 7, 8], accounts: [{ name: "who", signer: true }], args: [] }],
+    };
+    const evil: unknown[] = [
+      { ...base, address: 'x">, evil: u8): void {} export function pwn(' },
+      { ...base, instructions: [{ ...base.instructions[0], name: "go(); pwn" }] },
+      { ...base, instructions: [{ ...base.instructions[0], accounts: [{ name: "a: u8): void {} //" }] }] },
+      { ...base, instructions: [{ ...base.instructions[0], discriminator: [1, '2"); pwn("'] }] },
+      {
+        ...base,
+        instructions: [{ ...base.instructions[0], args: [{ name: "c", type: { defined: { name: "Color" } } }] }],
+        types: [{ name: "Color", type: { kind: "enum", variants: [{ name: "Red }; pwn(); enum X {" }] } }],
+      },
+    ];
+    for (const e of evil) expect(() => generateCpi(e as Idl)).toThrow(ClientIdlError);
+    expect(() => generateCpi(base as Idl, { address: "not base58!" })).toThrow(ClientIdlError);
+
+    const res = generateCpi({
+      ...base,
+      metadata: { name: "safe\nexport function pwn(): void {}" },
+      instructions: [{ ...base.instructions[0], docs: ["ends the comment */ export function pwn2(): void {} /*", "line\u2028break"] }],
+    } as Idl);
+    expect(res.source).not.toMatch(/^export function pwn/m);
+    expect(res.source).not.toContain("*/ export function pwn2");
+    expect(res.generated).toEqual(["programGo"]); // the name is not an identifier: the helpers fall back to "program"
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-cpi-hostile-"));
+    writeFileSync(path.join(dir, "safe_cpi.ts"), res.source);
+    writeFileSync(
+      path.join(dir, "main.ts"),
+      `import { type Program, type Signer, signer } from "typesol";\nimport { programGo } from "./safe_cpi";\nexport function f(p: Program<"11111111111111111111111111111112">, who: Signer): void { programGo(p, who, signer([])); }\n`,
+    );
+    expect(() => generate(path.join(dir, "main.ts"))).not.toThrow();
+  });
+
+  it("names a pre-0.30 Anchor IDL, and refuses null, non-objects and IDLs without instructions", () => {
+    const legacy = {
+      version: "0.1.0",
+      name: "vault",
+      instructions: [{ name: "deposit", accounts: [{ name: "owner", isMut: true, isSigner: true }], args: [] }],
+      metadata: { address: "11111111111111111111111111111112" },
+    };
+    // Before: "the IDL has no program address" (pre-0.30 IDLs keep it in metadata.address).
+    expect(() => generateCpi(legacy as never)).toThrow(/pre-0\.30 Anchor IDL[\s\S]*anchor idl convert/);
+    expect(() => generateCpi(null as never)).toThrow(/expected a JSON object/);
+    expect(() => generateCpi(7 as never)).toThrow(/expected a JSON object/);
+    expect(() => generateCpi({ address: "11111111111111111111111111111112" } as never)).toThrow(/no `instructions` list/);
+    expect(() => generateCpi({ address: "11111111111111111111111111111112", instructions: [] } as never)).toThrow(/no instructions/);
   });
 });

@@ -118,8 +118,8 @@ function traderIndex(d: Diff, m: Market, t: Trader): bigint {
 }
 
 /**
- * Whether an order is the trader's. The trader's index is read once: `traderIndex` copies the market, 1.7 MB for the
- * largest one, so a call for each of 8000 orders asks for 14 GB.
+ * Whether an order is the trader's. The trader's index is read once: `traderIndex` reads the whole market, 1.7 MB for
+ * the largest one, so a call for each of 8000 orders asks for 14 GB. Never call traderIndex inside .find / .filter.
  */
 function ownedBy(d: Diff, m: Market, t: Trader): (o: Order) => boolean {
   const index = traderIndex(d, m, t);
@@ -210,10 +210,11 @@ for (const [bids, seats] of [
 
     it("reduces part of an order, then the rest, sending the funds", async () => {
       const { d, payer, m } = S;
-      const bid = book(d, m, "bid").find((o) => o.trader === traderIndex(d, m, a) && o.lots > 1n)!;
+      const mine = ownedBy(d, m, a);
+      const bid = book(d, m, "bid").find((o) => mine(o) && o.lots > 1n)!;
       await d.ok(`ReduceOrder ${tag}: part of a bid`, payer, [ix.reduceOrder(m, a, params(bid), 1n)]);
       await d.ok(`ReduceOrder ${tag}: the rest of the bid (size above it)`, payer, [ix.reduceOrder(m, a, params(bid), 100n)]);
-      const ask = book(d, m, "ask").find((o) => o.trader === traderIndex(d, m, a) && o.lots > 1n)!;
+      const ask = book(d, m, "ask").find((o) => mine(o) && o.lots > 1n)!;
       await d.ok(`ReduceOrder ${tag}: part of an ask`, payer, [ix.reduceOrder(m, a, params(ask), ask.lots - 1n)]);
       await d.ok(`ReduceOrder ${tag}: the rest of the ask (exactly)`, payer, [ix.reduceOrder(m, a, params(ask), 1n)]);
       const other = book(d, m, "ask").find(ownedBy(d, m, a))!;

@@ -6,13 +6,14 @@
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, lamports } from "@solana/kit";
 import { BorshCoder, web3 } from "@anchor-lang/core";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BN, TOKEN_PROGRAM, pda } from "../../test/harness.js";
 import { SYSTEM, key, program, report, sha } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
 import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
+import { present } from "../../test/binaries.js";
 
 const DRIFT = address("dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH");
 const RENT = address("SysvarRent111111111111111111111111111111111");
@@ -34,7 +35,7 @@ const dix = (name: string, args: Record<string, unknown>, accounts: Meta[]): Ins
 const CUMULATIVE_DEPOSIT_INTEREST = 464;
 const LAST_INTEREST_TS = 568;
 
-describe.skipIf(!existsSync(program("drift.so")))("Marginfi v2 port against the mainnet binary: Drift banks", () => {
+describe.skipIf(!present(program("drift.so")))("Marginfi v2 port against the mainnet binary: Drift banks", () => {
   const h = marginfiPair();
   const { s, setPyth, setSwb } = h;
   /**

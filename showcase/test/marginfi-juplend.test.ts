@@ -5,7 +5,7 @@
 // Lending's token exchange price in the risk engine.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, address, lamports } from "@solana/kit";
 import { BN, type Idl, type Program, web3 } from "@anchor-lang/core";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TOKEN_2022, TOKEN_PROGRAM, pda } from "../../test/harness.js";
@@ -13,6 +13,7 @@ import { SYSTEM, program, report } from "./jito-helpers.js";
 import { Rng } from "./fuzz-rng.js";
 import { INSTRUCTIONS, ONE, PROGRAM, bankConfig, fx, le, marginfiPair, ratio } from "./marginfi-helpers.js";
 import { kitIx, programOn } from "./anchor-svm.js";
+import { present } from "../../test/binaries.js";
 
 const LENDING = address("jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9");
 const LIQUIDITY = address("jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC");
@@ -24,7 +25,7 @@ const pk = (a: Address) => new web3.PublicKey(a);
 /** TokenReserve's supply exchange price (liquidity program; after its discriminator). */
 const RESERVE_SUPPLY_PRICE = 78;
 
-describe.skipIf(!existsSync(program("juplend_earn.so")))("Marginfi v2 port against the mainnet binary: JupLend banks", () => {
+describe.skipIf(!present(program("juplend_earn.so")))("Marginfi v2 port against the mainnet binary: JupLend banks", () => {
   const h = marginfiPair();
   const { s, setPyth, setSwb } = h;
   /**

@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // A marginfi account's lending balances (programs/marginfi/src/state/marginfi_account.rs, premium.rs and the type
 // crate's user_account.rs @ c5d440f6): finding or opening a balance in a bank, moving shares in and out of it,
 // closing it, the order balances are kept in and the flags indexers read. Amounts and shares are I80F48.

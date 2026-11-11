@@ -1,10 +1,10 @@
 // Token Metadata BurnV1 through the real program (test/fixtures/mpl-burn.ts): an NFT a PDA holds, burned by the program.
 import { type Address, generateKeyPairSigner, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
 import { FailedTransactionMetadata } from "litesvm";
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { SYSTEM_PROGRAM, TOKEN_PROGRAM, deployFile, expectOk, fundedSigner, ix, pda, send } from "../harness.js";
+import { present } from "../binaries.js";
 
 const MPL = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s" as Address;
 const ATA = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL" as Address;
@@ -12,7 +12,7 @@ const IXS = "Sysvar1nstructions1111111111111111111111111" as Address;
 const MPL_SO = fileURLToPath(new URL("../programs/mpl_token_metadata.so", import.meta.url));
 const enc = getAddressEncoder();
 
-describe.skipIf(!existsSync(MPL_SO))("Token Metadata burnV1", () => {
+describe.skipIf(!present(MPL_SO))("Token Metadata burnV1", () => {
   it("burns an NFT its PDA holds: token account and edition closed, metadata cleared, rent to the PDA", async () => {
     const d = await deployFile(fileURLToPath(new URL("../fixtures/mpl-burn.ts", import.meta.url)));
     d.svm.addProgramFromFile(MPL, MPL_SO);

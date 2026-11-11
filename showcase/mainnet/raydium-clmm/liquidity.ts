@@ -1,3 +1,4 @@
+// Part of the TypeSOL port of Raydium CLMM (raydium-io/raydium-clmm @ 6d7a0f8, Apache-2.0).
 // Positions and liquidity of the Raydium CLMM port (raydium-io/raydium-clmm @ 6d7a0f8): the tick array and bitmap
 // functions of states/tick_array.rs, states/pool.rs and states/tickarray_bitmap_extension.rs, PoolState::
 // update_reward_infos, modify_position / add_liquidity / burn_liquidity (instructions/open_position.rs,

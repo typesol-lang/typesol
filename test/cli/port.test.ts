@@ -1,5 +1,6 @@
 // typesol port: a skeleton from an IDL compiles, and keeps instruction discriminators, arguments, account flags,
 // account layouts and error codes. Round trip: example → IDL → port → compile → IDL.
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -9,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { buildIdl } from "../../src/compiler/idl.js";
 import { build, generate } from "../../src/compiler/index.js";
 import { generatePort, type PortIdl } from "../../src/tools/portgen.js";
+import { ClientIdlError } from "../../src/tools/clientgen.js";
 
 const ADDRESS = "11111111111111111111111111111112";
 const sighash = (preimage: string) => [...createHash("sha256").update(preimage).digest().subarray(0, 8)];
@@ -260,5 +262,69 @@ describe("typesol port", () => {
     expect(ported.instructions.map((i) => i.discriminator)).toEqual(idl.instructions.map((i) => i.discriminator));
     expect(notes).toEqual([]);
     expect(ported.errors?.slice(0, 4)).toEqual(idl.errors);
+  });
+
+  it("checks the IDL first: hostile names are refused, IDL text stays inside escaped comments, constants stay values", () => {
+    const base = {
+      address: ADDRESS,
+      metadata: { name: "safe" },
+      instructions: [{ name: "go", discriminator: sighash("global:go"), accounts: [{ name: "who", signer: true }], args: [] }],
+    };
+    const evil: unknown[] = [
+      { ...base, instructions: [{ ...base.instructions[0], accounts: [{ name: "who", address: 'x">): void {} export function pwn(' }] }] },
+      { ...base, instructions: [{ ...base.instructions[0], name: "go(): void {} function pwn" }] },
+      { ...base, types: [{ name: "T { x: u8 } export function pwn() {} interface U", type: { kind: "struct", fields: [] } }] },
+      { ...base, accounts: [{ name: "Thing", discriminator: [1, "2"] }] },
+      { ...base, errors: [{ code: "6000 + 1", name: "E" }] },
+    ];
+    for (const e of evil) expect(() => generatePort(e as PortIdl)).toThrow(ClientIdlError);
+
+    const { source, notes } = generatePort({
+      ...base,
+      metadata: { name: "safe\nexport function pwn(): void {}" },
+      instructions: [{ ...base.instructions[0], docs: ["*/ export function pwn2(): void {} /*"] }],
+      constants: [
+        { name: "SEED", type: "string", value: '"vault"' },
+        { name: "BAD", type: "string", value: '"a"; export function pwn3(): void {} "b"' },
+        { name: "X = 1; export function pwn4(): void {} const Y", type: "u8", value: "1" },
+      ],
+    } as PortIdl);
+    expect(source).not.toMatch(/^export function pwn/m);
+    expect(source).not.toContain("*/ export function pwn2");
+    expect(source).toContain('export const SEED = "vault";');
+    expect(source).not.toContain("pwn3");
+    expect(source).not.toContain("pwn4");
+    expect(notes.join("\n")).toMatch(/constant BAD[\s\S]*not a literal[\s\S]*not an identifier/);
+    const file = path.join(tmp(), "safe.ts");
+    writeFileSync(file, source);
+    expect(() => generate(file)).not.toThrow();
+  });
+
+  it("names a pre-0.30 Anchor IDL, and refuses null, non-objects and IDLs without an instructions list (library and CLI)", () => {
+    const legacy = {
+      version: "0.1.0",
+      name: "vault",
+      instructions: [{ name: "deposit", accounts: [{ name: "owner", isMut: true, isSigner: true }], args: [{ name: "amount", type: "u64" }] }],
+    };
+    // Before: a TypeError (Buffer.from(undefined)) from the missing discriminator.
+    expect(() => generatePort(legacy as never)).toThrow(/pre-0\.30 Anchor IDL[\s\S]*anchor idl convert/);
+    expect(() => generatePort(null as never)).toThrow(/expected a JSON object/);
+    expect(() => generatePort({ address: ADDRESS } as never)).toThrow(/no `instructions` list/);
+    const dir = tmp();
+    const cli = path.join(fileURLToPath(new URL("../..", import.meta.url)), "dist/cli.js");
+    const files = { "legacy.json": legacy, "null.json": null, "empty.json": { instructions: [] } };
+    for (const [f, v] of Object.entries(files)) writeFileSync(path.join(dir, f), JSON.stringify(v));
+    for (const cmd of ["port", "cpi", "client"]) {
+      const r = spawnSync("node", [cli, cmd, "legacy.json"], { cwd: dir, encoding: "utf8" });
+      expect(r.status, cmd).toBe(1);
+      expect(r.stderr, cmd).toMatch(/pre-0\.30 Anchor IDL[\s\S]*anchor idl convert/);
+      expect(r.stderr, cmd).not.toMatch(/TypeError|no program address/);
+      const n = spawnSync("node", [cli, cmd, "null.json"], { cwd: dir, encoding: "utf8" });
+      expect(n.status, cmd).toBe(1);
+      expect(n.stderr, cmd).toMatch(/not an Anchor IDL: expected a JSON object/);
+    }
+    expect(spawnSync("node", [cli, "cpi", "empty.json", "--address", ADDRESS], { cwd: dir, encoding: "utf8" }).stderr).toMatch(
+      /no instructions: nothing to generate/,
+    );
   });
 });

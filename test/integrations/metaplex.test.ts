@@ -1,9 +1,9 @@
-import { existsSync } from "node:fs";
 import { getCreateAccountInstruction } from "@solana-program/system";
 import { type Address, address, generateKeyPairSigner, getAddressDecoder, getAddressEncoder, getProgramDerivedAddress } from "@solana/kit";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SYSTEM_PROGRAM, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed, acct } from "../harness.js";
+import { present } from "../binaries.js";
 
 const CORE = address("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 const BUBBLEGUM = address("BGUMAp9Gq7iTEuizy4pqaxsTyUCBK68MDfK752saRPUY");
@@ -12,7 +12,7 @@ const NOOP = address("noopb9bkMVfRPU8AsbpTUg8AQkHtKwMYZiFUjNRtMmV");
 const programs = (f: string) => fileURLToPath(new URL(`../programs/${f}`, import.meta.url));
 
 // Metaplex programs are not redistributed with TypeSOL (Metaplex NFT license): `pnpm fetch:programs` downloads them.
-const HAVE_MPL = ["mpl_core.so", "mpl_bubblegum.so"].every((f) => existsSync(programs(f)));
+const HAVE_MPL = present(...["mpl_core.so", "mpl_bubblegum.so"].map(programs));
 
 describe.skipIf(!HAVE_MPL)("Metaplex Core and Bubblegum (test/fixtures/metaplex.ts)", () => {
   let d: Deployed;

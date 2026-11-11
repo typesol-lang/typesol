@@ -22,13 +22,13 @@ in \`programs/\`, tests in \`tests/\`; \`typesol.json\` lists the programs.
 
 ## Checking your work
 
-- \`npx typesol check\` (or \`--json\`) type-checks every program and lists what TypeSOL refuses, each error with a
+- \`npx --no-install typesol check\` (or \`--json\`) type-checks every program and lists what TypeSOL refuses, each error with a
   \`hint\` that says what to write instead. Fix those first; they are faster than a build.
-- \`npm test\` builds the programs and runs \`tests/\` in LiteSVM (an in-process Solana runtime). \`npx typesol build\`
+- \`npm test\` builds the programs and runs \`tests/\` in LiteSVM (an in-process Solana runtime). \`npx --no-install typesol build\`
   writes \`target/<name>/\`: the \`.so\`, the IDL and a typed client.
-- The MCP server (\`npx typesol mcp\`, configured in \`.mcp.json\` and \`.cursor/mcp.json\`) gives the same check,
+- The MCP server (\`npx --no-install typesol mcp\`, configured in \`.mcp.json\` and \`.cursor/mcp.json\`) gives the same check,
   the IDL and the docs as tools.
-- The language reference: \`node_modules/typesol/docs/language.md\`, or https://typesol.com/llms-full.txt.
+- The language reference: \`node_modules/typesol/docs/language.md\` (after \`npm install\`), or https://typesol.com/llms-full.txt.
 `;
 
 /** AGENTS.md for a new project (Codex, Cursor, Zed, and other agents that read it). */
@@ -45,4 +45,4 @@ export function cursorRule(): string {
 }
 
 /** The MCP server configuration Claude Code (.mcp.json) and Cursor (.cursor/mcp.json) read. */
-export const MCP_JSON = JSON.stringify({ mcpServers: { typesol: { command: "npx", args: ["typesol", "mcp"] } } }, null, 2) + "\n";
+export const MCP_JSON = JSON.stringify({ mcpServers: { typesol: { command: "npx", args: ["--no-install", "typesol", "mcp"] } } }, null, 2) + "\n";

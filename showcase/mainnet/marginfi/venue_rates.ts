@@ -1,3 +1,4 @@
+// A port of marginfi v2 (mrgnlabs/marginfi-v2 @ c5d440f6), Copyright mrgnlabs, licensed under the Apache License, Version 2.0.
 // Marginfi's venue supply rates and room (programs/marginfi/src/state/rate.rs and the mocks' rate math:
 // kamino-mocks MinimalReserve::supply_apr_at / rewards_apr_at, drift-mocks MinimalSpotMarket::deposit_rate_at,
 // juplend-mocks TokenReserve::supply_rate_at, RateModel::borrow_rate_at, LendingRewardsRateModel::rewards_apr @

@@ -50,7 +50,7 @@ export function llms(): { index: string; full: string } {
     "## Tools",
     "",
     "- `npx @typesol/cli init my-app`: a project with a program, a LiteSVM test, AGENTS.md / CLAUDE.md and the MCP server configured",
-    "- `npx typesol check --json`: errors with hints; `npx typesol mcp`: check, IDL and docs as MCP tools",
+    "- `npx --no-install typesol check --json`: errors with hints; `npx --no-install typesol mcp`: check, IDL and docs as MCP tools",
     "",
     "## Optional",
     "",

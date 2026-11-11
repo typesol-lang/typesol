@@ -10,7 +10,7 @@ rebuild.
 deployed executable's hash (`6877a5b732b3494b828a324ec846d526d962223959534dbaf4209e0da3b2d6a9`); OtterSec's
 verification registry lists the program as verified from that commit. The repository was under BUSL 1.1 at c16694d;
 on 2026-05-11 Ellipsis Labs relicensed it under the MIT License (5a34f7f) with the program's sources unchanged since
-c16694d, so the port follows c16694d under MIT ([`test/programs/SOURCES.md`](../test/programs/SOURCES.md)).
+c16694d, so the port follows c16694d under MIT ([`test/programs/SOURCES.md`](https://github.com/typesol-lang/typesol/blob/main/test/programs/SOURCES.md)).
 
 Phoenix is a native program built with solana-program 1.14: a u8 tag, the instruction's Borsh arguments after it,
 accounts by position. A market is one account: a 576-byte header, then a `FIFOMarket` whose bids, asks and traders are
@@ -22,11 +22,11 @@ Rust panics in solana-program 1.14's format, at the original's source locations.
 
 | File | Holds |
 | --- | --- |
-| [`phoenix.ts`](../showcase/mainnet/phoenix/phoenix.ts) | the entrypoint (one `@fallback` over `instructionData()` and `remainingAccounts()`): the four accounts every instruction starts with, the event recorder, dispatch to the 28 tags |
-| [`state.ts`](../showcase/mainnet/phoenix/state.ts), [`errors.ts`](../showcase/mainnet/phoenix/errors.ts) | MarketHeader, the FIFOMarket prefix, the tree keys and values, Seat, PhoenixMarketEvent, the instruction arguments, PhoenixError from code 0 |
-| [`checkers.ts`](../showcase/mainnet/phoenix/checkers.ts), [`util.ts`](../showcase/mainnet/phoenix/util.ts) | the account checks in the original's order, the market loader with its twelve sizes; PDAs, the quantity operators with their panics, the token CPIs |
-| [`recorder.ts`](../showcase/mainnet/phoenix/recorder.ts) | the event recorder: batches of events sent in Log self-CPIs whenever the next event would not fit |
-| [`matching.ts`](../showcase/mainnet/phoenix/matching.ts), [`book.ts`](../showcase/mainnet/phoenix/book.ts) | the FIFOMarket: place_order_inner, match_order, check_for_cross, eviction; reduce_order_inner and the cancels built on it |
+| [`phoenix.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/phoenix.ts) | the entrypoint (one `@fallback` over `instructionData()` and `remainingAccounts()`): the four accounts every instruction starts with, the event recorder, dispatch to the 28 tags |
+| [`state.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/state.ts), [`errors.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/errors.ts) | MarketHeader, the FIFOMarket prefix, the tree keys and values, Seat, PhoenixMarketEvent, the instruction arguments, PhoenixError from code 0 |
+| [`checkers.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/checkers.ts), [`util.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/util.ts) | the account checks in the original's order, the market loader with its twelve sizes; PDAs, the quantity operators with their panics, the token CPIs |
+| [`recorder.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/recorder.ts) | the event recorder: batches of events sent in Log self-CPIs whenever the next event would not fit |
+| [`matching.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/matching.ts), [`book.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/book.ts) | the FIFOMarket: place_order_inner, match_order, check_for_cross, eviction; reduce_order_inner and the cancels built on it |
 | `orders.ts`, `cancel.ts`, `initialize.ts`, `governance.ts`, `seats.ts`, `funds.ts`, `fees.ts` | the instructions by subject |
 
 ## What is ported
@@ -82,7 +82,7 @@ compile to the same C as before:
 ## How it is checked
 
 The mainnet binary and the port run in two LiteSVMs under the same program id and the same Clock
-([`phoenix-helpers.ts`](../showcase/test/phoenix-helpers.ts)). Every account is made the same way in both, and every
+([`phoenix-helpers.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/phoenix-helpers.ts)). Every account is made the same way in both, and every
 transaction must give:
 
 - the same outcome;
@@ -110,7 +110,7 @@ file fails unless it compares exactly its own count):
   one instruction, the out-of-memory abort at the 513th, books of up to 8,000 orders, the overflow and division panics.
 - **The original's own tests** (`phoenix-upstream.test.ts`; 1,082): each of the 50 test functions at c16694d (the
   integration tests, the matching engine's unit tests, the packet decoder's) is mapped to a case
-  ([the mapping](../showcase/test/phoenix-upstream.md)): 11 were covered already, 37 are added there and run whole,
+  ([the mapping](https://github.com/typesol-lang/typesol/blob/main/showcase/test/phoenix-upstream.md)): 11 were covered already, 37 are added there and run whole,
   2 are not applicable (compile-time type checks of the quantity macros). Each refusal the upstream test expects is
   pinned to the original's error and message, and the upstream test's own assertions (balances, the book, free lots,
   the sequence number, fees) are made on chain.
@@ -180,7 +180,7 @@ What the port does not reproduce, and how a transaction would reach it:
   original out of its compute budget can complete in the port; the tests give both enough.
 - **Memory, counted.** Phoenix allocates on solana-program 1.14.9's bump heap: 32 KiB from the top down, never freed,
   and an allocation past it aborts with "Error: memory allocation failed, out of memory". The port keeps its own lists
-  fixed and counts Phoenix's heap instead ([`heap.ts`](../showcase/mainnet/phoenix/heap.ts)), charge by charge as the
+  fixed and counts Phoenix's heap instead ([`heap.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/phoenix/heap.ts)), charge by charge as the
   Rust allocates: the entrypoint's 48 bytes per account entry and 72 per distinct account, the discriminant lines, the
   event recorder, the status checks' messages (built even when they pass), each batch line, each SPL Token transfer's
   instruction, the cancels' boxed tree iterators with their stacks and the ids they collect, CancelMultipleOrdersById's
@@ -188,7 +188,7 @@ What the port does not reproduce, and how a transaction would reach it:
   runs) and the "Insufficient funds" lines of the orders it skips, the placed order ids and their Borsh bytes. So a
   transaction that fills the heap (with up to 255 account entries, which Phoenix ignores past the ones it reads, or with
   a CPI's larger instruction data) aborts in the port at the same allocation, after the same log lines and batches.
-  [`phoenix-limits.test.ts`](../showcase/test/phoenix-limits.test.ts) finds the original's boundary and compares both
+  [`phoenix-limits.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/phoenix-limits.test.ts) finds the original's boundary and compares both
   sides of it (one account entry fewer succeeds, the next aborts) for CancelAllOrders and its free-funds form (257 to
   512 orders, bids and asks, 4 to 20 accounts of their own, top-level and through a CPI), CancelUpTo with a count and
   with a search limit, ForceCancelOrders, CancelMultipleOrdersById through a CPI (230 and 340 entries; 341 always runs

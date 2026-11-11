@@ -1,14 +1,14 @@
 // Metaplex Core external plugin adapters through the real Core program: added, written, removed.
-import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { address, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
 import { SYSTEM_PROGRAM, acct, customError, deployFile, expectOk, fundedSigner, ix, send, type Deployed } from "../harness.js";
+import { present } from "../binaries.js";
 
 const CORE = address("CoREENxT6tW1HoK8ypY1SxRMZTcVPm7R94rH4PZNhX7d");
 const CORE_SO = fileURLToPath(new URL("../programs/mpl_core.so", import.meta.url));
 
-describe.skipIf(!existsSync(CORE_SO))("Metaplex Core external plugin adapters", () => {
+describe.skipIf(!present(CORE_SO))("Metaplex Core external plugin adapters", () => {
   let d: Deployed;
   beforeAll(async () => {
     d = await deployFile(fileURLToPath(new URL("../fixtures/core-external.ts", import.meta.url)));

@@ -148,20 +148,24 @@ Run `cargo-build-sbf --version` once; this downloads the platform-tools that Typ
 npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
 cd my-app && npm install
 npm test                                      # builds the program and runs it in LiteSVM, an in-process Solana runtime
-npx typesol build                             # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
+npx --no-install typesol build                # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
 ```
 
-`npx typesol doctor` checks all of this (Node.js, platform-tools, Solana CLI, keypair, RPC) and prints the command
-that fixes anything missing. To deploy, on devnet:
+`npx --no-install typesol doctor` checks all of this (Node.js, platform-tools, Solana CLI, keypair, RPC) and prints the command
+that fixes anything missing. Inside a project, `npx --no-install typesol …` (or `npm run build`, `npm run deploy`) runs the
+project's own copy; outside one, use `npx @typesol/cli …`. Plain `npx typesol` is not TypeSOL: `typesol` is not the npm
+package's name, so where the project's copy is not installed npx would fetch whatever package has that name.
+
+To deploy, on devnet:
 
 ```sh
 solana-keygen new                             # once, if you have no keypair (~/.config/solana/id.json)
 solana airdrop 2 --url devnet                 # test SOL for the rent (rate-limited: https://faucet.solana.com also works)
-npx typesol deploy --url devnet
+npx --no-install typesol deploy --url devnet
 ```
 
 or on a local validator: `solana-test-validator` in another terminal, `solana airdrop 5 --url localhost`, then
-`npx typesol deploy --url localhost`. `deploy` checks the RPC and the payer's balance before sending anything.
+`npx --no-install typesol deploy --url localhost`. `deploy` checks the RPC and the payer's balance before sending anything.
 
 `--template vault` or `--template escrow` starts from a SOL vault or an SPL token escrow instead of the counter, each
 with a passing LiteSVM test.
