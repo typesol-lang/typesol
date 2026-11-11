@@ -272,16 +272,16 @@ toolchain and records them with every result:
 <!-- bench:table -->
 | Instruction | TypeSOL | Pinocchio 0.10 | Native Rust | Anchor 1.0.2 |
 | --- | ---: | ---: | ---: | ---: |
-| counter.initialize | **1,857** | 3,186 | 4,601 | 6,573 |
+| counter.initialize | **1,856** | 3,186 | 4,601 | 6,573 |
 | counter.increment | **110** | 113 | 857 | 2,323 |
-| vault.open | **1,874** | 3,185 | 4,613 | 6,627 |
+| vault.open | **1,875** | 3,185 | 4,613 | 6,627 |
 | vault.deposit | **1,314** | 1,377 | 2,832 | 4,355 |
 | vault.withdraw | **315** | 370 | 1,176 | 3,628 |
 | vault.shut | **161** | 167 | 950 | 2,024 |
-| escrow.make | **3,596** | 6,179 | 9,240 | 13,304 |
+| escrow.make | **3,595** | 6,179 | 9,240 | 13,304 |
 | escrow.take | **4,019** | 4,051 | 8,500 | 14,365 |
 | escrow.refund | **2,696** | 2,769 | 5,695 | 8,449 |
-| binary, counter / vault / escrow | 11.1 / 14.1 / 21.4 KB | 19.6 / 22.9 / 29.4 KB | 27.9 / 35.0 / 46.5 KB | 145.2 / 158.9 / 190.7 KB |
+| binary, counter / vault / escrow | 11.1 / 14.1 / 21.5 KB | 19.6 / 22.9 / 29.4 KB | 27.9 / 35.0 / 46.5 KB | 145.2 / 158.9 / 190.7 KB |
 <!-- /bench:table -->
 
 `initialize`, `open` and `make` include the PDA bump search. TypeSOL hashes PDA candidates with the sha256 and

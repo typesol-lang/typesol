@@ -38,6 +38,10 @@ codes, and says so here.
   error (it was a C build failure); `x <<= n` and `x >>= n` take an amount of its own integer type, as `<<` does;
   `Ata<Init<TokenAccount>, "@acct.field", …>.create` is a compile error naming the form instead of C that does not
   build (test/language/pow.test.ts, test/language/diagnostics.test.ts).
+- Of the 76 programs of the 0.43.0 sources, 35 compile to the same binary as in 0.43.0 and 41 to a different one:
+  those with a helper that takes a Pubkey, Option, string or u256 (the parameter is a pointer now). counter, vault and
+  escrow are among the 35. Measured against 0.43.0, the changed example programs move by at most 22 compute units
+  either way, and no compared transaction of a port costs more than the original's.
 - Docs: docs/security-model.md says what creation over an existing account returns (the System Program's custom 0;
   3000 is `initAccount<T>`), and docs/runtime.md names the cases that abort (`PANIC_ON_OVERFLOW`, `PANIC_STYLE`, a
   RedBlackTree whose bytes are inconsistent).
