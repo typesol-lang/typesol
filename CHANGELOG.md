@@ -6,6 +6,10 @@ codes, and says so here.
 
 ## Unreleased
 
+- Docs: the README's first page names the eight ports checked against mainnet binaries, with instruction and
+  transaction counts, before the examples; the quick start gives its commands before the toolchain notes; Status says
+  what the November 2026 reviews found and how fix releases and release records work; the licence line matches NOTICE.
+
 ## 0.44.1 — 2026-11-11
 
 Fixes from a second internal review, of 0.44.0 (docs/audit.md). Of the 76 programs of the 0.44.0 sources, 74 compile
