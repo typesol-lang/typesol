@@ -176,6 +176,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     const subject = this.expr(stmt.expression);
     const typed = subject.literal !== undefined ? this.literal(subject.literal, U64, stmt.expression) : subject;
+    this.refuseF64(stmt.expression, "switch", typed);
     if (typed.type.kind !== "int" && typed.type.kind !== "enum") this.fail(stmt.expression, "switch works on integers and enums");
     // C cannot switch on 128-bit values or u256 limbs: pick the case's index with comparisons, then switch on that.
     const limbs = typed.type.kind === "int" && typed.type.name === "u256";
@@ -1812,6 +1813,7 @@ export abstract class StatementEmitter extends CpiEmitter {
       (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
       const place = this.place(e.operand);
+      this.refuseF64(e, e.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--", { c: place.read, type: place.type });
       if (place.type.kind !== "int") this.fail(e, "++ and -- need an integer");
       const one = this.literal(1n, place.type, e);
       const op = e.operator === ts.SyntaxKind.PlusPlusToken ? ts.SyntaxKind.PlusToken : ts.SyntaxKind.MinusToken;
@@ -1877,6 +1879,7 @@ export abstract class StatementEmitter extends CpiEmitter {
         if (rhs.type.kind !== "int") this.fail(valueNode, "shift amounts must be integers");
       } else rhs = this.expect(this.expr(valueNode, place.type), place.type, valueNode);
       current = this.settle(current, mark);
+      this.refuseF64(target, `${ts.tokenToString(op)}=`, current, rhs);
       this.line(place.write(this.arith(op, current, rhs, target).c) + ";");
       return;
     }

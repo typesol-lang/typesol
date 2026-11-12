@@ -10,6 +10,26 @@ import { unsupportedSyntax } from "../hints.js";
  * Expressions: literals, operators with checked arithmetic, property reads, conditionals, text and casts.
  */
 export abstract class ExpressionEmitter extends StorageEmitter {
+  /**
+   * An f64 is held as its IEEE 754 bits in a u64 and TypeSOL has no float arithmetic: an integer operator on one
+   * would work on the bits (1.0 + 1.0 would add 0x3FF0… twice), so every operator with an f64 operand is refused.
+   * Equality too: the bits are not the number (NaN would equal itself, 0 would not equal -0), so comparing them is
+   * written out as f64Bits(a) === f64Bits(b).
+   */
+  protected refuseF64(node: ts.Node, what: string, ...values: Value[]): void {
+    const isF64 = (t: ValueType): boolean => (t.kind === "int" && t.f64 === true) || (t.kind === "option" && isF64(t.inner));
+    if (!values.some((v) => isF64(v.type))) return;
+    if (what === "===" || what === "!==" || what === "==" || what === "!=" || what === "switch")
+      this.fail(
+        node,
+        `${what} on an f64 is not supported: an f64 is held as its IEEE 754 bits, and equal bits are not equal numbers (NaN would equal itself, 0 would not equal -0); to compare the bits, write f64Bits(a) === f64Bits(b)`,
+      );
+    this.fail(
+      node,
+      `${what} on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float arithmetic (this would compute on the bits); compute in integers and make the result with f64FromBits(bits), or take an f64's bits with f64Bits(x)`,
+    );
+  }
+
   protected expect(v: Value, want: ValueType | undefined, node: ts.Node): Value {
     if (v.isNull) {
       if (want?.kind !== "option") this.fail(node, "null is only valid where an Option<T> is expected");
@@ -286,12 +306,14 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           return this.literal(value, hint?.kind === "int" ? hint : I64, node);
         }
         const v = this.expr(node.operand, hint);
+        this.refuseF64(node, "unary -", v);
         if (v.type.kind !== "int" || !INT_INFO[v.type.name].signed) this.fail(node, "unary minus needs a signed integer (i8 … i128)");
         return this.arith(ts.SyntaxKind.MinusToken, { c: intLiteral(0n, v.type.name), type: v.type }, v, node);
       }
       if (node.operator === ts.SyntaxKind.TildeToken) {
         // Bitwise not within the type's width (for signed types this equals JS's -(x + 1)).
         const v = this.expr(node.operand, hint);
+        this.refuseF64(node, "~", v);
         const typed = v.literal !== undefined ? this.literal(v.literal, hint?.kind === "int" ? hint : U64, node) : v;
         if (typed.type.kind !== "int") this.fail(node, "~ needs an integer");
         if (typed.type.name === "u256") return { c: `ts_u256_bit(${typed.c}, ts_u256_lit(~0ULL, ~0ULL, ~0ULL, ~0ULL), 2)`, type: typed.type };
@@ -754,6 +776,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const exp = this.expr(node.right);
     // JS reads the base first: if the exponent ran statements (a helper that changes it), use the value read before.
     base = this.settle(base, mark);
+    this.refuseF64(node, "**", base, exp);
     if (base.literal !== undefined) base = this.literal(base.literal, hint?.kind === "int" ? hint : U64, node.left);
     if (base.type.kind !== "int") this.fail(node.left, "** needs an integer base");
     const type = base.type;
@@ -871,6 +894,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       let right = this.expr(node.right);
       if (right.literal !== undefined) right = this.literal(right.literal, U64, node.right);
       left = this.settle(left, mark);
+      this.refuseF64(node, ts.tokenToString(op) ?? "this operator", left, right);
       if (left.type.kind !== "int" || right.type.kind !== "int") this.fail(node, "shifts need integer operands");
       return this.arith(op as ts.BinaryOperator, left, right, node);
     }
@@ -894,6 +918,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       );
       left = this.settle(left, mark);
     }
+    this.refuseF64(node, ts.tokenToString(op) ?? "this operator", left, right);
     // Option equality follows JS: null equals null, and an empty option equals no value.
     if (isEq && (left.type.kind === "option" || right.type.kind === "option")) {
       const neg = op === K.ExclamationEqualsEqualsToken || op === K.ExclamationEqualsToken;
@@ -952,6 +977,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
 
   /** Checked integer arithmetic into a fresh temporary. */
   protected arith(op: ts.BinaryOperator, left: Value, right: Value, node: ts.Node): Value {
+    this.refuseF64(node, ts.tokenToString(op) ?? "arithmetic", left, right);
     if (left.type.kind !== "int") this.fail(node, "arithmetic needs integer operands");
     const type = left.type;
     const ct = INT_INFO[type.name].c;

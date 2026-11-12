@@ -343,6 +343,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           for (let j = 0; j < vals.length; j++) vals[j] = this.settle(vals[j], mark);
           vals.push(v);
         }
+        this.refuseF64(node, `${builtin}()`, ...vals);
         const typed = vals.find((v) => v.literal === undefined);
         if (typed?.type.kind === "int" && typed.type.name === "u256") {
           // u256: a 512-bit product in the runtime.
@@ -375,6 +376,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       case "isqrt": {
         if (args.length !== 1) this.fail(node, "isqrt(x) takes one unsigned integer");
         const v = this.expr(args[0]);
+        this.refuseF64(node, "isqrt()", v);
         const x = v.literal !== undefined ? this.literal(v.literal, U64, args[0]) : v;
         if (x.type.kind !== "int" || INT_INFO[x.type.name].signed) this.fail(args[0], "isqrt needs an unsigned integer (u8 … u256)");
         if (x.type.name === "u256") return { c: `ts_isqrt_u256(${x.c})`, type: x.type };
@@ -388,6 +390,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const mark = this.lines.length;
         let b = this.expr(args[1], a.type.kind === "int" && a.literal === undefined ? a.type : undefined);
         a = this.settle(a, mark);
+        this.refuseF64(node, `${builtin}()`, a, b);
         if (a.literal !== undefined && b.literal !== undefined) {
           a = this.literal(a.literal, U64, args[0]);
           b = this.literal(b.literal, U64, args[1]);

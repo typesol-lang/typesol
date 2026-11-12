@@ -62,6 +62,15 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
     covers its types and interfaces too (`import { type Signer } from "typesol"`, `Mut`, `SystemProgram`, …);
   - a `number` field in account data got the list of allowed field types alone; it now has a hint naming the integer
     types (and a `Date` field, one about Unix seconds and `now()`).
+- Fixed: operators on an `f64` compiled to integer operators on its IEEE 754 bits, a silently wrong result:
+  `a.x + a.x` was a checked u64 add of the bits, `a.x < a.y` compared them as integers. Every operator with an `f64`
+  operand is now refused (arithmetic, bitwise, shifts, unary `-` and `~`, ordering, compound assignments, `++` / `--`,
+  and `min`, `max`, `isqrt`, `mulDiv`): "+ on an f64 is not supported: an f64 is held as its IEEE 754 bits and there
+  is no float arithmetic (this would compute on the bits); compute in integers and make the result with
+  f64FromBits(bits), or take an f64's bits with f64Bits(x)". Equality (`===`, `!==`, `==`, `!=`, `switch`) is
+  refused too, since equal bits are not equal numbers (NaN, 0 and -0): "… to compare the bits, write f64Bits(a) ===
+  f64Bits(b)". No program of the repository used one (test/language/f64-operators.test.ts; docs/language-types.md
+  and the refused-constructs table of docs/language-statements.md).
 - Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
   playground, opens Quick start with the playground, says that `npm install`'s advisories come from
   `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;

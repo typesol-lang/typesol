@@ -192,6 +192,19 @@ const REFUSED: [example: string, program: string, stable: string][] = [
   ["b.value = x as u64;", body("b.value = x as u64;"), "does not convert"],
   ["b.value = b.value + x;", body("b.value = b.value + x;"), "operands have different types: u64 and u8"],
   ["b.value = -n;", body("b.value = -n;"), "unary minus needs a signed integer"],
+  [
+    "b.value = r.x + r.x;",
+    `${H}export interface R { x: f64; y: f64; }\nexport function f(b: Mut<Box>, r: Mut<R>): void { b.value = r.x + r.x; }`.replace(
+      "type u64,",
+      "type u64, type f64,",
+    ),
+    "+ on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float arithmetic",
+  ],
+  [
+    "if (r.x === r.y) {}",
+    `${H}export interface R { x: f64; y: f64; }\nexport function f(r: Mut<R>): void { if (r.x === r.y) {} }`.replace("type u64,", "type u64, type f64,"),
+    "to compare the bits, write f64Bits(a) === f64Bits(b)",
+  ],
   ["const v = b?.value;", body("const v = b?.value;"), "?. works on optional accounts and Option<struct> values"],
   ["let q = b.home;", body("let q = b.home;"), "bind struct references with const"],
   ["const { home: { x } } = b;", body("const { home: { x: hx } } = b;"), "nested destructuring is not supported"],

@@ -527,9 +527,15 @@ export function summarize(o: Mut<Orders>): void {
 
 `f64` holds a 64-bit float as its IEEE bits, for events and accounts that carry one (Borsh writes those 8 bytes; the
 IDL says `f64`). There is no float arithmetic: `f64FromBits(bits)` makes one from bits the program computed with
-integers (Marginfi's events report I80F48 amounts this way), and `f64Bits(x)` reads them back. Do not use arithmetic
-operators on an `f64`: the compiler does not refuse them yet, and they would compute on the bits as integers. Float
-literals (`1.5`) are refused.
+integers (Marginfi's events report I80F48 amounts this way), and `f64Bits(x)` reads them back. Float literals (`1.5`)
+are refused.
+
+Every operator with an `f64` operand is refused, since the integer operator would compute on the bits: arithmetic,
+bitwise, shifts, unary `-` and `~`, the ordering comparisons, compound assignments, `++` / `--`, and `min`, `max`,
+`isqrt` and `mulDiv` (`+ on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float
+arithmetic …`). Compute in integers and convert at the end. Equality is refused too (`===`, `!==`, `==`, `!=` and
+`switch`): equal bits are not equal numbers, as NaN is not equal to itself and `0` equals `-0`. To compare the bits,
+say so: `f64Bits(a) === f64Bits(b)`. Copying an `f64` (to a local, a field, an event) keeps its bits.
 
 ## Heap values
 
