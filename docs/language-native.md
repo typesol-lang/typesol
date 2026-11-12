@@ -6,8 +6,8 @@
 
 A program written without Anchor (Raydium AMM v4, SPL programs, Phoenix) reads a tag byte and its arguments itself,
 takes its accounts by position, stores accounts without discriminators and reports failures its own way. TypeSOL
-ports one as it is: the showcase ports (`showcase/mainnet/raydium-amm`, `spl-stake-pool`, `phoenix`) run beside the
-original binaries, and `test/fixtures/native.ts` is a small one. Part of the [language guide](language.md).
+ports one as it is: the showcase ports ([`showcase/mainnet/raydium-amm`](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet/raydium-amm), `spl-stake-pool`, `phoenix`) run beside the
+original binaries, and [`test/fixtures/native.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/native.ts) is a small one. Part of the [language guide](language.md).
 
 ## The fallback entry
 
@@ -242,13 +242,13 @@ export function cancel(market: Mut<AccountInfo>, capacity: u64, price: u64, seq:
 `rbTreeMutAt<K, V>(acct, offset, capacity, compare?)` (or `rbTreeAt` to read) is lib-sokoban 0.3's
 `RedBlackTree<K, V, N>` over account bytes, byte for byte (root, allocator, 1-based nodes of registers + key + value;
 freed nodes keep their key and value; a LIFO free list ending at the bump index), checked against the crate after every
-operation of recorded traces (`test/verification/rbtree-trace.test.ts`). Every write is the crate's own, so the account
+operation of recorded traces ([`test/verification/rbtree-trace.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/verification/rbtree-trace.test.ts)). Every write is the crate's own, so the account
 matches the original after every instruction (Phoenix's order books and trader seats).
 
 - `length`, `capacity`, `initialize()`, `get(k)` (the value in place, or null), `insert(k, v)` (the node index, or null
   when a new key finds it full; an equal key takes the value), `remove(k)` (the value, read in the freed node, or null),
   `removeAt(i)` (the node at index `i` from `addrOf` or a node's `.index`, removed with `remove`'s writes without
-  searching again: 144 CU less per cancel in `test/language/phx-costs.test.ts`; null for 0 or a node in no tree),
+  searching again: 144 CU less per cancel in [`test/language/phx-costs.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/phx-costs.test.ts); null for 0 or a node in no tree),
   `min()` / `max()` (a node: `.key`, `.value`, `.index`, or null), `addrOf(k)` (0 when absent), `nodeAt(i)` (Phoenix
   keeps a trader's node index), `for (const e of tree)` / `tree.reversed()` with `break` / `continue`.
 - **The comparator** is a function of the program, `(a: K, b: K) => i8` (any signed integer result; an unsigned one is
@@ -339,7 +339,7 @@ On remaining accounts and `AccountInfo` parameters:
   account.lamports` (checked), `account.lamports = 0`, `assign(&system_program::id())`, `realloc(0, false)`. Unlike
   `close` the data is not zeroed first (a realloc to 0 drops it, and the runtime then accepts the new owner), so it
   costs a few compute units whatever the account's size, and the account ends as the original's does (gone, its
-  lamports in the receiver; `test/language/native-close.test.ts` compares it with Phoenix's own Tombstone).
+  lamports in the receiver; [`test/language/native-close.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/native-close.test.ts) compares it with Phoenix's own Tombstone).
 - `assignOwner(account, owner)` is `AccountInfo::assign` (the runtime accepts it for a writable account of this program
   whose data is empty or zeroed).
 - `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, at most
@@ -408,7 +408,7 @@ export function entry(): void {
     u64 { return panicsAt(QUOTE_LOTS_ADD, a + b); }`.
   - The bits `<<` loses, `**`, `mulDiv` / `mulDivCeil`, casts and u256 arithmetic keep TypeSOL's failures (Rust checks
     them differently, or with other messages).
-  - `test/language/rust-panics.test.ts` checks the lines against the Phoenix binary's own panics.
+  - [`test/language/rust-panics.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/rust-panics.test.ts) checks the lines against the Phoenix binary's own panics.
 
 ## Log lines as the original writes them
 

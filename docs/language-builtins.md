@@ -81,7 +81,7 @@ Explained in [Types: Lists](language-types.md#lists).
 | `fixedArray` | `function fixedArray<T, N>(fill: T): FixedArray<T, N>` | Create a local fixed-length array filled with `fill`: `const xs = fixedArray<u64, 4>(0n)`. |
 | `FixedVec` | `interface FixedVec<T, N>` | A list stored inline with room for N elements: a u32 length, then N slots (Anchor `Vec<T>` with `#[max_len(N)]`, but always 4 + N × size(T) bytes). |
 | `fixedVec` | `function fixedVec<T>(items: T[]): FixedVec<T, never>` | A FixedVec value holding these elements (`acct.owners = fixedVec([a, b])`, `{ owners: fixedVec([]) }`). |
-| `Vec` | `interface Vec<T>` | A growable list. |
+| `Vec` | `interface Vec<T>` | A list whose length varies: as account data the account grows with it; as an argument it is a read-only view. |
 | `IndexedList` | `interface IndexedList<T>` | A list read by index: a Vec or FixedVec in account data, a Vec argument, or a stored local list. |
 
 ## Helpers
@@ -102,9 +102,9 @@ Explained in [Accounts: Account parameters and the checks they emit](language-ac
 | `Signer` | `interface Signer` | The account must have signed the transaction. |
 | `SystemAccount` | `interface SystemAccount` | An account owned by the System Program, e.g. a wallet (Anchor `SystemAccount`; 3011 otherwise). |
 | `AccountInfo` | `interface AccountInfo` | Any account, no ownership or data checks. |
-| `Account` | `type Account<T> = Readonly<T> & AccountMeta` | A program-owned account holding struct `T`. |
-| `Mut` | `type Mut<T, E> = T & AccountMeta` | Like `Account<T>` but writable. |
-| `Init` | `type Init<T>` | A program-owned account that this instruction creates as a PDA. |
+| `Account` | `type Account<T> = Readonly<T> & AccountMeta` | An account owned by this program holding struct `T`. |
+| `Mut` | `type Mut<T, E> = T & AccountMeta` | A writable account: `Mut<T>` is `Account<T>` whose fields may be written. |
+| `Init` | `type Init<T>` | An account this instruction creates: at a PDA of this program, or, with `null` seeds, a new keypair account that signs. |
 | `InitIfNeeded` | `type InitIfNeeded<T>` | Created on first use (like Anchor `init_if_needed`): `createIfNeeded(payer, seeds)` returns true when it created the account now. |
 | `Zeroed` | `type Zeroed<T> = T & AccountMeta` | An account the client already allocated with System CreateAccount (any size up to 10 MiB; over 10 KiB a program cannot create it itself), owned by this program and still zeroed: Anchor's `zero`. |
 | `Migrate` | `interface Migrate<From, To>` | Anchor 1.0's `Migration<From, To>`: an existing `From` account (owner, discriminator and size checked) that this instruction rewrites as `To` with `acct.migrate(payer, value)`, a top-level statement every path must reach. |
@@ -123,7 +123,7 @@ Explained in [Accounts: Constraints](language-accounts.md#constraints).
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `HasOne` | `type HasOne<A, Field, E> = A & { readonly __hasOne?: [Field, E] }` | Declarative constraints, checked before your code runs (like Anchor's account attributes). |
+| `HasOne` | `type HasOne<A, Field, E> = A & { readonly __hasOne?: [Field, E] }` | `HasOne<A, "field">`: the struct's `field` must be the key of the parameter with that name (Anchor's `has_one`; 2001). |
 | `Seeds` | `type Seeds<A, Names, Bump, ProgramId>` | The account is this program's PDA for the seeds (Anchor's `seeds = […], bump`; 2006): `"@name"` is an account's key or an argument's bytes, `"@acct.field"` a field, other strings literals. |
 | `CloseTo` | `type CloseTo<A, Destination> = A & { readonly __closeTo?: Destination }` | Close the account into the parameter `Destination` when the instruction succeeds (Anchor's `close = destination`). |
 | `Address` | `type Address<A, Base58, E> = A & { readonly __address?: [Base58, E] }` | The account must be this exact address (Anchor `address = …`, error 2012): `Address<Mut<AccountInfo>, "4Nd1…">`. |
@@ -199,7 +199,7 @@ Explained in [Errors, logs, events and return values: Events](language-errors-ev
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `log` | `function log(value: string \| bigint \| Pubkey \| Hash): void` | Write a string, integer or pubkey to the program log. |
+| `log` | `function log(value: string \| bigint \| Pubkey \| Hash): void` | Write a string, integer, Pubkey or Hash to the program log (a Pubkey or Hash as base58). |
 | `emit` | `function emit<T>(event: T): void` | Emit an Anchor-compatible event ("Program data: <base64>") built from an exported interface: `emit<Deposited>({ owner: owner.key, amount })`. |
 | `emitCpi` | `function emitCpi<T>(event: T, eventAuthority: EventAuthority, self: SelfProgram): void` | Like emit, but the event travels in the data of a CPI to this program (Anchor `emit_cpi!`): indexers read it from inner instructions, and it cannot be cut off by log truncation. |
 
@@ -209,9 +209,9 @@ Explained in [Calling other programs: invoke](language-cpi.md#invoke).
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `invoke` | `function invoke(program: Program<string> \| UncheckedProgram \| SystemProgram \| TokenProgram \| Token2022Program \| TokenInterface \| RemainingAccount, accounts: CpiAccount[], data: CpiData[], signerSeeds?: Seed[] \| SignerSeeds \| (Seed[] \| SignerSeeds)[]): void` | Cross-program invocation. |
+| `invoke` | `function invoke(program: Program<string> \| UncheckedProgram \| SystemProgram \| TokenProgram \| Token2022Program \| TokenInterface \| RemainingAccount, accounts: CpiAccount[], data: CpiData[], signerSeeds?: Seed[] \| SignerSeeds \| (Seed[] \| SignerSeeds)[]): void` | Call any program (a cross-program invocation) with an account list and instruction data. |
 | `CpiAccount` | `interface CpiAccount` | An account entry for `invoke`, built with readonly()/writable()/readonlySigner()/writableSigner(). |
-| `readonly` | `function readonly(account: AccountMeta \| RemainingAccount \| null): CpiAccount`<br>`function readonly(accounts: RemainingAccounts \| RemainingSlice): Iterable<CpiAccount>` | An optional account (`A \| null`) passed as it is, without `!`: left out of the CPI's list when it was not passed (Rust's `if let Some(a) = &self.a { accounts.push(a) }`, as for `with_remaining_accounts`). |
+| `readonly` | `function readonly(account: AccountMeta \| RemainingAccount \| null): CpiAccount`<br>`function readonly(accounts: RemainingAccounts \| RemainingSlice): Iterable<CpiAccount>` | A read-only entry of `invoke`'s account list: an account, or remaining accounts spread (`...readonly(rest)`). |
 | `writable` | `function writable(account: AccountMeta \| RemainingAccount \| null): CpiAccount`<br>`function writable(accounts: RemainingAccounts \| RemainingSlice): Iterable<CpiAccount>` | A writable account entry for `invoke` (the parameter must be `Mut<…>`); an optional account as for `readonly`. |
 | `readonlySigner` | `function readonlySigner(account: AccountMeta \| RemainingAccount): CpiAccount` | A read-only signer entry for `invoke`: the account signed, or signerSeeds sign for it. |
 | `writableSigner` | `function writableSigner(account: AccountMeta \| RemainingAccount): CpiAccount` | A writable signer entry for `invoke`: the account signed, or signerSeeds sign for it. |
@@ -240,13 +240,13 @@ Explained in [Calling other programs: Tokens](language-cpi.md#tokens).
 | `TokenInterface` | `interface TokenInterface` | Either token program. |
 | `TokenOf` | `type TokenOf<A, MintParam, AuthorityParam, TokenProgramParam>` | Anchor's `token::mint = mintParam, token::authority = authorityParam, token::token_program = tokenProgramParam` on an existing token account, naming the parameters (2014 / 2015 / 2021: owned by that token program); `never` leaves one out. |
 | `MintOf` | `type MintOf<A, AuthorityParam, FreezeAuthorityParam, TokenProgramParam>` | Anchor's `mint::authority = a, mint::freeze_authority = f, mint::token_program = tp` on an existing mint, naming the parameters (2016 / 2017 / 2022: owned by that token program); `never` leaves one out. |
-| `Ata` | `type Ata<A, Owner, MintParam> = A & { readonly __ata?: [Owner, MintParam] }` | Token constraints, checked before your code runs. |
+| `Ata` | `type Ata<A, Owner, MintParam> = A & { readonly __ata?: [Owner, MintParam] }` | `Ata<A, "owner", "mint">`: the account must be the associated token account of those parameters (2009). |
 | `MintExtensions` | `interface MintExtensions` | Token-2022 extensions for `mint.create(…, extensions)`: Anchor's `extensions::…` constraints. |
 | `AuthorityType` | `const AuthorityType` | Token authority kinds for setAuthority (SPL Token AuthorityType). |
 | `AssociatedTokenProgram` | `interface AssociatedTokenProgram` | The Associated Token Account program (ATokenGP…). |
 | `associatedTokenAddress` | `function associatedTokenAddress(owner: Pubkey, mint: Pubkey, tokenProgram: Pubkey): Pubkey` | The associated token account address of `owner` for `mint` under `tokenProgram`. |
 | `rentExempt` | `function rentExempt(space: u64): u64` | Rent-exempt minimum balance for an account of `space` bytes. |
-| `TOKEN_ACCOUNT_SIZE` | `const TOKEN_ACCOUNT_SIZE: u64` | SPL Token account and mint sizes, for systemProgram.createAccount. |
+| `TOKEN_ACCOUNT_SIZE` | `const TOKEN_ACCOUNT_SIZE: u64` | SPL Token's token account size, 165 bytes, for systemProgram.createAccount. |
 | `MINT_SIZE` | `const MINT_SIZE: u64` | SPL Token's mint size, 82 bytes. |
 
 ## Token-2022 extension reads
@@ -255,7 +255,7 @@ Explained in [Calling other programs: Token-2022 extension reads](language-cpi.m
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `transferFee` | `function transferFee(mint: AccountMeta \| RemainingAccount, amount: u64): u64` | Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none). transferFee: the fee withheld when `amount` is sent now (TransferFeeConfig for the current epoch; 0 without it). |
+| `transferFee` | `function transferFee(mint: AccountMeta \| RemainingAccount, amount: u64): u64` | The fee withheld when `amount` is sent now: the mint's Token-2022 TransferFeeConfig for the current epoch, 0 without it. |
 | `transferFeeInverse` | `function transferFeeInverse(mint: AccountMeta \| RemainingAccount, amountReceived: u64): u64` | The fee withheld when the recipient is to get `amountReceived` (spl-token-2022's `calculate_inverse_epoch_fee`): send `amountReceived + transferFeeInverse(mint, amountReceived)`. 0 without TransferFeeConfig; fails (5100) where spl-token-2022 has no answer. |
 | `transferFeeBasisPoints` | `function transferFeeBasisPoints(mint: AccountMeta \| RemainingAccount): u16` | The TransferFeeConfig in force this epoch: its basis points (0 without the extension). |
 | `transferFeeMaximum` | `function transferFeeMaximum(mint: AccountMeta \| RemainingAccount): u64` | The TransferFeeConfig in force this epoch: its maximum fee (0 without the extension). |
@@ -332,10 +332,10 @@ Explained in [Sysvars, hashes, signatures and oracles: Sysvars](language-chain.m
 | Name | Declaration | What it is |
 | --- | --- | --- |
 | `now` | `function now(): i64` | Current cluster unix timestamp (Clock sysvar). |
-| `currentSlot` | `function currentSlot(): u64` | The current slot and epoch (Clock sysvar). |
+| `currentSlot` | `function currentSlot(): u64` | The current slot (Clock sysvar). |
 | `currentEpoch` | `function currentEpoch(): u64` | The current epoch (Clock sysvar). |
 | `epochStartTimestamp` | `function epochStartTimestamp(): i64` | The Unix time the current epoch started at (Clock.epoch_start_timestamp). |
-| `slotsPerEpoch` | `function slotsPerEpoch(): u64` | The EpochSchedule sysvar: slots per epoch (after warmup), whether epochs warm up, and where normal epochs start. |
+| `slotsPerEpoch` | `function slotsPerEpoch(): u64` | The number of slots in an epoch after warmup (EpochSchedule sysvar). |
 | `epochWarmup` | `function epochWarmup(): boolean` | Whether epochs warm up (EpochSchedule sysvar). |
 | `firstNormalEpoch` | `function firstNormalEpoch(): u64` | The first epoch after warmup (EpochSchedule sysvar). |
 | `firstNormalSlot` | `function firstNormalSlot(): u64` | The first slot after warmup (EpochSchedule sysvar). |
@@ -390,7 +390,7 @@ Explained in [Porting a native program (advanced)](language-native.md).
 | `BigVecSlice` | `interface BigVecSlice<T>` | Some elements of a BigVec, in place: `bigVec.slice(start, end)`. |
 | `loadRawAt` | `function loadRawAt<T>(account: RemainingAccount \| AccountInfo, offset: u64): Account<T>` | `loadRaw` / `loadRawMut` at a byte offset known only at run time (a native account whose parts start where its header says: Phoenix's market at byte 576). |
 | `loadRawMutAt` | `function loadRawMutAt<T>(account: RemainingAccount \| AccountInfo, offset: u64): Mut<T>` | `loadRawAt` for writing: writable and claimed as `loadRawMut` is. |
-| `rawArrayAt` | `function rawArrayAt<T>(account: RemainingAccount \| AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>` | `const slab = rawArrayMutAt<Order>(acct, offset, capacity)`: see RawArray. |
+| `rawArrayAt` | `function rawArrayAt<T>(account: RemainingAccount \| AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>` | A read-only view of `capacity` elements of `T` at `offset` in an account (see RawArray); `rawArrayMutAt` writes. |
 | `rawArrayMutAt` | `function rawArrayMutAt<T>(account: RemainingAccount \| AccountInfo, offset: u64, capacity: u64): RawArray<T>` | `rawArrayAt` for writing: elements set in place (see RawArray). |
 | `RawArray` | `interface RawArray<T>` | `capacity` elements of a fixed-size type packed in place from a run-time byte offset, the count known only at run time (a slab sized by its header). |
 | `ReadonlyRawArray` | `interface ReadonlyRawArray<T>` | A RawArray of a read-only view (`rawArrayAt`): elements are read, not written. |

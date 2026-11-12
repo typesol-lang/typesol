@@ -113,7 +113,8 @@ export declare function byteLength(value: string): u64;
 export type Option<T> = T | null;
 
 /**
- * A growable list. As an account struct field it is stored Borsh-style (u32 length + elements) and the account is
+ * A list whose length varies: as account data the account grows with it; as an argument it is a read-only view.
+ * As an account struct field it is stored Borsh-style (u32 length + elements) and the account is
  * resized as it grows. An account may have any number of them, declared anywhere: they are stored after the
  * fixed-size fields, in the order declared. In a `@layout borsh` struct it is Anchor's `Vec<T>`: anywhere among the
  * fields, held on the heap while the instruction runs, and bounded only by the account when it is written back
@@ -326,7 +327,7 @@ export interface ReadonlyRawArray<T> extends ListMethods<T> {
   get(index: bigint): Readonly<T>;
   [Symbol.iterator](): Iterator<Readonly<T>>;
 }
-/** `const slab = rawArrayMutAt<Order>(acct, offset, capacity)`: see RawArray. */
+/** A read-only view of `capacity` elements of `T` at `offset` in an account (see RawArray); `rawArrayMutAt` writes. */
 export declare function rawArrayAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>;
 /** `rawArrayAt` for writing: elements set in place (see RawArray). */
 export declare function rawArrayMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): RawArray<T>;
@@ -969,7 +970,8 @@ export declare function pubkey(base58: string): Pubkey;
 export type Address<A, Base58 extends string, E = never> = A & { readonly __address?: [Base58, E] };
 
 /**
- * Token constraints, checked before your code runs:
+ * `Ata<A, "owner", "mint">`: the account must be the associated token account of those parameters (2009).
+ * It is one of the token constraints, checked before your code runs:
  *  - `HasOne<TokenAccount, "mint" | "owner">`: the token account's mint / owner is the key of the parameter with that name (2014 / 2015).
  *  - `HasOne<Mint, "mintAuthority" | "freezeAuthority">`: the mint's authority is that parameter's key (2016 / 2017).
  *  - `Ata<TokenAccount, "owner", "mint">`: the account is the associated token account of those parameters (2009).
@@ -1020,8 +1022,8 @@ export declare function closeRaw(account: RemainingAccount | Mut<AccountInfo>, r
 export declare function assignOwner(account: RemainingAccount | Mut<AccountInfo>, owner: Pubkey): void;
 
 /**
- * Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none).
- * transferFee: the fee withheld when `amount` is sent now (TransferFeeConfig for the current epoch; 0 without it).
+ * The fee withheld when `amount` is sent now: the mint's Token-2022 TransferFeeConfig for the current epoch, 0 without
+ * it. Like the other extension readers it takes any account (legacy SPL Token mints have no extensions).
  */
 export declare function transferFee(mint: AccountMeta | RemainingAccount, amount: u64): u64;
 /**
@@ -1057,7 +1059,7 @@ export declare function hasExtension(account: AccountMeta | RemainingAccount, ex
 
 /** Rent-exempt minimum balance for an account of `space` bytes. */
 export declare function rentExempt(space: u64): u64;
-/** SPL Token account and mint sizes, for systemProgram.createAccount. */
+/** SPL Token's token account size, 165 bytes, for systemProgram.createAccount. */
 export declare const TOKEN_ACCOUNT_SIZE: u64;
 /** SPL Token's mint size, 82 bytes. */
 export declare const MINT_SIZE: u64;
@@ -1080,11 +1082,11 @@ export interface AccountInfo extends AccountMeta {
   readonly executable: boolean;
 }
 
-/** A program-owned account holding struct `T`. Owner and discriminator are checked. */
+/** An account owned by this program holding struct `T`. Owner, size and discriminator are checked. */
 export type Account<T> = Readonly<T> & AccountMeta;
 
 /**
- * Like `Account<T>` but writable. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. A second
+ * A writable account: `Mut<T>` is `Account<T>` whose fields may be written. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. A second
  * argument fails with one of your errors when the account is not writable (Anchor's `mut @ ErrorCode.X`; else 2000).
  */
 export type Mut<T, E = never> = T & AccountMeta;
@@ -1178,7 +1180,8 @@ export type InitIfNeeded<T> = T extends TokenAccount
         };
 
 /**
- * Declarative constraints, checked before your code runs (like Anchor's account attributes):
+ * `HasOne<A, "field">`: the struct's `field` must be the key of the parameter with that name (Anchor's `has_one`; 2001).
+ * It is one of the declarative constraints, checked before your code runs (like Anchor's account attributes):
  *  - `HasOne<Mut<Vault>, "owner">`: vault.owner must be the key of the parameter named `owner` (union for several).
  *  - `Seeds<Mut<Vault>, ["vault", "@owner"], "bump">`: the account must be the PDA of these seeds; "@name" is an
  *    account parameter (its key) or an argument (its bytes), "@acct.field" a Pubkey, integer or unit enum field of a struct
@@ -1898,13 +1901,13 @@ export interface CompressedLeaf {
   index: u32;
 }
 
-/** The current slot and epoch (Clock sysvar). */
+/** The current slot (Clock sysvar). */
 export declare function currentSlot(): u64;
 /** The current epoch (Clock sysvar). */
 export declare function currentEpoch(): u64;
 /** The Unix time the current epoch started at (Clock.epoch_start_timestamp). */
 export declare function epochStartTimestamp(): i64;
-/** The EpochSchedule sysvar: slots per epoch (after warmup), whether epochs warm up, and where normal epochs start. */
+/** The number of slots in an epoch after warmup (EpochSchedule sysvar). */
 export declare function slotsPerEpoch(): u64;
 /** Whether epochs warm up (EpochSchedule sysvar). */
 export declare function epochWarmup(): boolean;
@@ -1939,7 +1942,7 @@ export declare function epochRewards(): EpochRewards;
 /** Close the account into the parameter `Destination` when the instruction succeeds (Anchor's `close = destination`). */
 export type CloseTo<A, Destination extends string> = A & { readonly __closeTo?: Destination };
 
-/** A program-owned account that this instruction creates as a PDA. */
+/** An account this instruction creates: at a PDA of this program, or, with `null` seeds, a new keypair account that signs. */
 export type Init<T> = T extends TokenAccount
   ? T & {
       /**
@@ -2256,7 +2259,8 @@ export interface CpiAccount {
   readonly __cpi_account: void;
 }
 /**
- * An optional account (`A | null`) passed as it is, without `!`: left out of the CPI's list when it was not passed
+ * A read-only entry of `invoke`'s account list: an account, or remaining accounts spread (`...readonly(rest)`). An
+ * optional account (`A | null`) passed as it is, without `!`, is left out of the CPI's list when it was not passed
  * (Rust's `if let Some(a) = &self.a { accounts.push(a) }`, as for `with_remaining_accounts`).
  */
 export declare function readonly(account: AccountMeta | RemainingAccount | null): CpiAccount;
@@ -2287,7 +2291,7 @@ export declare function hex(literal: string): Bytes;
 export type CpiData = bigint | boolean | Pubkey | Hash | string | null | Bytes | object | number;
 
 /**
- * Cross-program invocation. Pass `signerSeeds` (with the bump) to sign for a PDA of this program;
+ * Call any program (a cross-program invocation) with an account list and instruction data. Pass `signerSeeds` (with the bump) to sign for a PDA of this program;
  * that PDA can then be marked readonlySigner()/writableSigner().
  */
 export declare function invoke(
@@ -2518,7 +2522,7 @@ export interface InstructionBytes extends IndexedList<u8>, ListMethods<u8> {
   readPubkey(offset: u64): Pubkey;
 }
 
-/** Write a string, integer or pubkey to the program log. */
+/** Write a string, integer, Pubkey or Hash to the program log (a Pubkey or Hash as base58). */
 export declare function log(value: string | bigint | Pubkey | Hash): void;
 
 /**

@@ -179,9 +179,7 @@ describe("zero-copy shapes", () => {
     );
     expect(compileErrors(`export enum E {\n  A = "a", /** @code 6100 */\n  B = "b",\n}\nexport function f(): void {}\n`)).toMatch(/on its own line above B/);
     expect(compileErrors(`export enum E { /** @code 100 */ A = "a" }\nexport function f(): void {}\n`)).toMatch(/on its own line above A/);
-    expect(compileErrors(`export enum E {\n  A = "a",\n  B = "b", /** @code 6100 */\n}\nexport function f(): void {}\n`)).toMatch(
-      /it follows the last member/,
-    );
+    expect(compileErrors(`export enum E {\n  A = "a",\n  B = "b", /** @code 6100 */\n}\nexport function f(): void {}\n`)).toMatch(/it follows the last member/);
     // On its own line, or starting the line of its member, it is read.
     expect(compileErrors(`export enum E {\n  A = "a",\n  /** @code 6100 */ B = "b",\n}\nexport function f(): void {}\n`)).toBe("");
     expect(

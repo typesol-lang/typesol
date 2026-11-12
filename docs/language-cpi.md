@@ -29,7 +29,7 @@ export function tip(from: Mut<Signer>, to: Mut<SystemAccount>, systemProgram: Sy
 
 A mint defines a token: its supply, its decimals and the mint authority that may create more. A token account holds an
 amount of one mint for its owner, the authority that may move it; a wallet's usual one is its associated token
-account. For a complete program, see [`examples/escrow.ts`](../examples/escrow.ts), which `typesol init my-app
+account. For a complete program, see [`examples/escrow.ts`](https://github.com/typesol-lang/typesol/blob/main/examples/escrow.ts), which `typesol init my-app
 --template escrow` scaffolds with its tests.
 
 ```ts
@@ -102,8 +102,8 @@ Each takes optional signer seeds.
 
 | Parameter | Checked before the body |
 | --- | --- |
-| `TokenAccount` / `Mut<TokenAccount>` | owned by SPL Token or Token-2022 (extensions allowed, multisig accounts refused), initialized (3012 for an account never created). Fields: `mint`, `owner`, `amount`, `delegate`, `delegatedAmount`, `isFrozen`, `isNative`, `closeAuthority`, `tokenProgram` |
-| `Mint` / `Mut<Mint>` | owned by SPL Token or Token-2022, initialized (3012). Fields: `decimals`, `supply`, `mintAuthority`, `freezeAuthority`, `tokenProgram` |
+| `TokenAccount` / `Mut<TokenAccount>` | an initialized token account of SPL Token or Token-2022 (extensions allowed, multisig accounts refused): 3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length. Fields: `mint`, `owner`, `amount`, `delegate`, `delegatedAmount`, `isFrozen`, `isNative`, `closeAuthority`, `tokenProgram` |
+| `Mint` / `Mut<Mint>` | an initialized mint of SPL Token or Token-2022: the same codes as a token account. Fields: `decimals`, `supply`, `mintAuthority`, `freezeAuthority`, `tokenProgram` |
 | `HasOne<TokenAccount, "mint" \| "owner">`, `HasOne<Mint, "mintAuthority" \| "freezeAuthority">` | against the parameter with that name (2014 / 2015 / 2016 / 2017) |
 | `TokenOf<TokenAccount, "mintParam", "authorityParam", "tokenProgramParam">` | Anchor's `token::mint = …`, `token::authority = …`, `token::token_program = …`: the token account's mint (2014), owner (2015), and owner program (2021). `never` leaves one out |
 | `MintOf<Mint, "authorityParam", "freezeParam", "tokenProgramParam">` | Anchor's `mint::authority = …` etc.: mint authority (2016), freeze authority (2017), owner program (2022) |
@@ -379,7 +379,7 @@ export function execute(multisig: Account<Multisig>, transaction: Account<Transa
 
 - The runtime checks the privileges: a meta may be a signer or writable only as the transaction passed that account,
   or as a PDA of this program the seeds (fifth argument) sign for. The multisig port in the showcase
-  (`showcase/mainnet/multisig/multisig.ts`) uses it.
+  ([`showcase/mainnet/multisig/multisig.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/multisig/multisig.ts)) uses it.
 - `execute` above shows the call only: as written, anyone can make the multisig's PDA sign any stored instruction. The
   showcase's `executeTransaction` first requires that the transaction belongs to the multisig (`HasOne`), has not run
   yet and has enough owners' approvals, and then marks it executed.
@@ -406,7 +406,7 @@ export function entry(): void {
 ```
 
 - The example shows the calls only: a real instruction checks its accounts before it signs as the pool's `withdraw`
-  PDA, as the SPL Stake Pool port in `showcase/mainnet/spl-stake-pool` checks the pool's owner, its manager or staker
+  PDA, as the SPL Stake Pool port in [`showcase/mainnet/spl-stake-pool`](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet/spl-stake-pool) checks the pool's owner, its manager or staker
   and the withdraw authority's address first.
 - P is `StakeProgram`, `SystemProgram`, `TokenProgram`, `Token2022Program`, `TokenInterface` (either token program),
   `AssociatedTokenProgram` or `MemoProgram`. Bind it with `const`, or call a method on it directly; pass it to a helper
@@ -422,7 +422,7 @@ export function entry(): void {
   a CPI that makes an account writable or a signer when the transaction did not (and no seeds sign for it), and the
   called program checks the rest (a token account's mint and owner, a stake account's authorities).
 - The cost is the key check (four 8-byte compares) and the call itself: within a few compute units of the same call
-  written with `invoke`, which checks only the executable flag (`test/integrations/native-cpi.test.ts` measures it).
+  written with `invoke`, which checks only the executable flag ([`test/integrations/native-cpi.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/integrations/native-cpi.test.ts) measures it).
 
 ## Order of evaluation
 
@@ -460,6 +460,6 @@ ExtraAccountMetaList).
   has index 5.
 - `updateExtraAccountMetas(...)` rewrites and resizes an existing list.
 - Inside the hook, `isTransferring(source)` says whether Token-2022 is transferring from it.
-- See `test/fixtures/hook.ts` and the transfer-hook ports.
+- See [`test/fixtures/hook.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/hook.ts) and the transfer-hook ports.
 
 **Next:** [Sysvars, hashes, signatures and oracles](language-chain.md).

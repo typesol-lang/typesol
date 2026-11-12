@@ -382,5 +382,5 @@ The cluster sets these; the numbers are those at the time of writing.
 - [Types](language-types.md): integers, strings, enums, structs, options and lists.
 - [Statements and functions](language-statements.md): which TypeScript is TypeSOL.
 - [Accounts](language-accounts.md): account parameters and the checks they emit.
-- A complete program that moves tokens: [`examples/escrow.ts`](../examples/escrow.ts), which `typesol init my-app
+- A complete program that moves tokens: [`examples/escrow.ts`](https://github.com/typesol-lang/typesol/blob/main/examples/escrow.ts), which `typesol init my-app
   --template escrow` scaffolds with its tests ([tokens](language-cpi.md#tokens)).

@@ -52,6 +52,8 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 5115 | an optional account that was left out was used |
 | 6000+ | your error enums' members, in declaration order (imported files first), then one `RequireFailed<N>` error (code 6000 + N, after the highest code) per distinct `require(cond, "message")` string |
 
+A token account or mint parameter fails with 3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length.
+
 A member's string is its message (the IDL's `msg`); `X = ""` leaves the message out, as an Anchor variant without
 `#[msg]`. `/** @code 6200 */` before a member gives it that code, and the members after it continue from there (Anchor's
 `Variant = 200`); codes only go up. The tag goes on its own line above the member. `require(cond, "message")` errors come after the highest code.

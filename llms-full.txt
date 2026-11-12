@@ -124,13 +124,16 @@ What differs from TypeScript, in short:
 - Integers are bigints of a declared width (`u8` … `u128`, `i8` … `i128`, `1n` literals), and every arithmetic
   operation is checked. There is no `number` and no floating point.
 - Everything comes from `"typesol"`: no Node.js, no npm packages, no `console`, no `Math`.
-- No `class`, `async`, `throw` or `try`: a failed `require` (or check, or overflow) ends the instruction and the
-  runtime discards its changes.
-- Every value has a fixed size, known when the program compiles: strings in accounts are `FixedString<N>`, lists are
-  `FixedArray`, `FixedVec` or `Vec`, and there are no dynamic objects.
+- No `class`, `async`, `throw` or `try`: a failed `require` (or check, or overflow) ends the instruction and fails the
+  whole transaction, whose changes the runtime discards.
+- Every type's layout is known when the program compiles. Locals and struct fields have a fixed size: strings in
+  accounts are `FixedString<N>`, lists are `FixedArray` or `FixedVec`. What varies in length is a `string` or `Vec`
+  argument (read in place from the instruction data), a `Vec` field (the account grows) and a string built at run time
+  (on the heap). There are no dynamic objects.
 
 For a tour, start with the [README](../README.md); to port an Anchor program, [migrate from
-Anchor](migrate-from-anchor.md).
+Anchor](migrate-from-anchor.md). New to Solana? [Language basics](language-basics.md#solana-in-a-dozen-lines) starts
+with the terms the guide uses.
 
 ## The guide
 
@@ -149,14 +152,29 @@ is marked as a fragment.
 | [Sysvars, hashes, signatures and oracles](language-chain.md) | the clock and other sysvars, hashing, signature checks, instruction introspection, Pyth, Switchboard, randomness |
 | [Porting a native program](language-native.md) | advanced: the `@fallback` entry, raw account views, Borsh accounts, `BigVec`, the red-black tree, byte builders, Rust's panics and log lines |
 | [Built-ins](language-builtins.md) | every name `"typesol"` exports, one line each, generated from `lib/typesol.d.ts` |
+| [Glossary](glossary.md) | the Solana and TypeSOL terms the guide uses: account, owner, rent, PDA, CPI, IDL, compute units, … |
+
+Then: [test your program](test-your-program.md) in LiteSVM, call it from [the generated client](client.md),
+[deploy it](mainnet.md), and when something fails, [troubleshooting](troubleshooting.md).
 
 The error codes are in [errors.md](errors.md); what a compiled program checks for you and what is left to you, in the
 [security model](security-model.md).
 
-## Reference index
+## Not supported yet
 
-Where each part of the language is described. The headings below are the sections this page held before the guide was
-split into pages, so links to them still land here.
+- A struct holding a FixedVec that is both an argument and account data (its bytes differ there, and the IDL describes
+  a type one way): declare one for each.
+- Growing an account by more than 10 KiB in one instruction (Solana's limit): realloc again in the next instruction.
+- `?.` and `!` on anything but optional accounts, Options and a `find` on struct elements.
+- Functions stored in a struct, chosen from a list by index, or returned from an instruction.
+- A fused `map` to strings: store it, annotated.
+- Floating point (by design).
+
+They are rejected at compile time rather than half-supported.
+
+## Index of the former sections
+
+Where each part of the language is described, under the headings this page used to have.
 
 ### Types and statements
 
@@ -287,18 +305,7 @@ See [Porting a native program](language-native.md): the [fallback entry](languag
 [byte strings](language-native.md#byte-strings-built-by-hand) and
 [return data](language-native.md#return-data-as-the-original-sets-it).
 
-## Not supported yet
-
-- A struct holding a FixedVec that is both an argument and account data (its bytes differ there, and the IDL describes
-  a type one way): declare one for each.
-- Growing an account by more than 10 KiB in one instruction (Solana's limit): realloc again in the next instruction.
-- `?.` and `!` on anything but optional accounts, Options and a `find` on struct elements.
-- Functions stored in a struct, chosen from a list by index, or returned from an instruction.
-- A fused `map` to strings: store it, annotated.
-- Floating point (by design).
-
-They are rejected at compile time rather than half-supported (floating-point arithmetic on an `f64` excepted: see
-[f64](language-types.md#f64)).
+**Next:** [Language basics](language-basics.md).
 
 <!-- docs/language-basics.md -->
 
@@ -306,7 +313,8 @@ They are rejected at compile time rather than half-supported (floating-point ari
 
 This page explains what a TypeSOL program is: the file, its imports, its instructions and account data, and what the
 compiler derives from them. It is the first page of the [language guide](language.md). It assumes you know
-TypeScript; it does not assume you know Anchor or Rust.
+TypeScript; it does not assume you know Anchor or Rust, and [Solana in a dozen lines](#solana-in-a-dozen-lines)
+introduces the chain's terms.
 
 ## A program is a TypeScript file
 
@@ -332,10 +340,33 @@ The file is made of:
 Every other top-level statement is refused: `class`, `namespace`, `let` and `var`, and expressions with effects (see
 [what is refused](language-statements.md#what-is-refused)).
 
+## Solana in a dozen lines
+
+What the rest of the guide assumes about the chain. Each term is in the [glossary](glossary.md); Solana's own
+documentation is at [solana.com/docs/core](https://solana.com/docs/core).
+
+- An [account](glossary.md#account) holds [lamports](glossary.md#lamports) (1 SOL is 10^9 of them) and bytes of
+  data, and has an [owner](glossary.md#owner) program. Only the owner changes the data or takes lamports out; any
+  program can add lamports to a writable account.
+- A program is an account holding code. It keeps no state of its own: what it remembers is in accounts it owns, and
+  the [checks on its parameters](language-accounts.md) make sure an account is one of them.
+- Every account holds the [rent](glossary.md#rent)-exempt minimum for its size; closing it returns that
+  ([limits and costs](#limits-and-costs)).
+- A [transaction](glossary.md#transaction) holds [instructions](glossary.md#instruction). It lists every account they
+  use, which are [writable](glossary.md#writable) and which [sign](glossary.md#signer); a program can reach no other
+  account. If one instruction fails, the whole transaction fails.
+- A [PDA](language-pdas.md) is an address derived from [seeds](glossary.md#seeds) and a program id, with a
+  [bump](glossary.md#bump) byte; no key can sign for it but that program's own calls.
+- One program calls another with a [CPI](language-cpi.md); the [System Program](glossary.md#system-program) creates
+  accounts and moves SOL, and [sysvars](language-chain.md#sysvars) hold the clock and other cluster state.
+- Work is metered in [compute units](glossary.md#compute-units), with a budget per transaction.
+- A build writes an [IDL](glossary.md#idl), the JSON that clients encode calls from; arguments are
+  [Borsh](glossary.md#borsh)-encoded, the program itself is [SBF](glossary.md#sbf) bytecode.
+
 ## A first program
 
-A poll: anyone opens one at an address derived from their key and a number, anyone votes, the creator closes it and
-gets the total back.
+A poll: anyone opens one at an address derived from their key and a number, anyone votes, and the creator ends it and
+gets the number of votes back as the instruction's result.
 
 ```ts
 import { type Account, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type u64, type u8, emit, require } from "typesol";
@@ -357,7 +388,7 @@ export interface Voted {
 
 export enum PollError {
   Closed = "The poll is closed",
-  NotCreator = "Only the creator can close the poll",
+  NotCreator = "Only the creator can end the poll",
 }
 
 const SEED = "poll";
@@ -375,7 +406,7 @@ export function vote(voter: Signer, poll: Mut<Poll>, yes: boolean): void {
   emit<Voted>({ poll: poll.key, yes });
 }
 
-export function close(creator: Signer, poll: Mut<Poll>): u64 {
+export function end(creator: Signer, poll: Mut<Poll>): u64 {
   require(poll.creator === creator.key, PollError.NotCreator);
   poll.closed = true;
   return total(poll);
@@ -392,7 +423,8 @@ Line by line:
   with `type`; functions (`require`, `emit`) without it. There is no other module to import from: no Node.js, no npm
   packages, no `console`.
 - **`export interface Poll`.** An exported interface is a struct. Used as an account's type (`Init<Poll>`,
-  `Mut<Poll>`), it is account data: an 8-byte discriminator, then the fields in order, 32 + 8 + 8 + 1 + 1 = 50 bytes.
+  `Mut<Poll>`), it is account data: an 8-byte discriminator, then the fields in order, 8 + 32 + 8 + 8 + 1 + 1 = 58
+  bytes.
   The JSDoc comments become `docs` in the IDL.
 - **`export interface Voted`.** Another struct; this one is only used by `emit<Voted>(…)`, so the IDL lists it under
   `events`.
@@ -406,11 +438,13 @@ Line by line:
   from the seeds, checks that `poll` is that address, creates the account with `creator` paying the rent, writes the
   discriminator and returns the bump. The new account's fields start at zero.
 - **`vote`.** `Mut<Poll>` is an existing account of this program holding a `Poll` (owner, discriminator and size
-  checked), writable. `require(condition, error)` fails the whole instruction when the condition is false; nothing
-  it wrote is kept. `poll.yes += 1n` is checked: an overflow fails the instruction too. Integer literals are bigints,
+  checked), writable. `require(condition, error)` fails the instruction when the condition is false, and with it
+  the whole transaction: nothing it wrote is kept. `poll.yes += 1n` is checked: an overflow fails the instruction too. Integer literals are bigints,
   written `1n`.
-- **`close`.** An instruction may return a value: the client reads it as return data, and the IDL lists it under
-  `returns`.
+- **`end`.** Only the creator may end the poll: `require` compares the stored `creator` with the signer. It sets
+  `closed`, so later votes fail with 6000, and returns the total. An instruction may return a value: the client reads
+  it as return data, and the IDL lists it under `returns`. (The account stays open; `close(account, destination)`
+  would delete it and return its rent: [closing and resizing](language-accounts.md#closing-and-resizing).)
 - **`function total`.** A function that is not exported is a helper. It takes the account as `Account<Poll>`
   (read-only) and returns a `u64`. Helpers are not entry points and are not in the IDL.
 
@@ -460,7 +494,8 @@ entry point.
 - **Result.** `void`, or one integer, `boolean`, `Pubkey`, `string` (a Borsh String) or fixed-size struct, sent as
   return data (at most 1024 bytes), listed as `returns` in the IDL and decoded by the generated client.
 - **Failure.** There are no exceptions. A failed `require`, a failed account check, an overflow or a failed call to
-  another program ends the instruction with an error code, and the runtime discards every change it made.
+  another program ends the instruction with an error code. The whole transaction fails: the runtime discards every
+  change it made, in every one of its instructions.
 
 Unlike TypeScript, an instruction cannot be `async` or a generator, and its parameters cannot be optional (`x?: u64`),
 have defaults or be a rest parameter. An argument that may be absent is an `Option<T>` the client passes as `null`.
@@ -635,17 +670,38 @@ during an instruction.
 `const HEAP_SIZE_KIB = 64n` (32 to 256) lets the program use a bigger heap; the client must then add a ComputeBudget
 `requestHeapFrame` instruction with that size to the transaction.
 
+## Limits and costs
+
+The cluster sets these; the numbers are those at the time of writing.
+
+- **Rent.** An account holds the rent-exempt minimum for its size, (128 + data bytes) × 6,960 lamports: 1,294,560
+  lamports (about 0.0013 SOL) for the 58-byte poll above. `create` takes it from the payer, `rentExempt(space)` computes
+  it in the program, and `close(account, destination)` moves every lamport, the rent included, to `destination`.
+- **Compute.** A transaction gets 200,000 compute units per instruction by default and at most 1,400,000, which the
+  client asks for with a ComputeBudget `SetComputeUnitLimit` instruction; past its budget the transaction fails. To
+  see where a program spends them, build with `typesol build --profile` and pass the transaction's logs to `typesol
+  profile` ([cli.md](cli.md)), which gives compute units per TypeScript line.
+- **Transaction size.** At most 1,232 bytes: signatures, every account's 32-byte address and the instruction data.
+  It bounds how many accounts and how many bytes of arguments one transaction can carry.
+- **Account size.** At most 10 MiB. `create` allocates at most 10 KiB, and an account grows by at most 10 KiB per
+  instruction (3016): grow a larger one over several instructions.
+- **Accounts.** At most 32 per instruction, unless the program raises it with
+  [`MAX_ACCOUNTS`](language-accounts.md#how-many-accounts) (5113).
+
 ## Next
 
 - [Types](language-types.md): integers, strings, enums, structs, options and lists.
 - [Statements and functions](language-statements.md): which TypeScript is TypeSOL.
 - [Accounts](language-accounts.md): account parameters and the checks they emit.
+- A complete program that moves tokens: [`examples/escrow.ts`](https://github.com/typesol-lang/typesol/blob/main/examples/escrow.ts), which `typesol init my-app
+  --template escrow` scaffolds with its tests ([tokens](language-cpi.md#tokens)).
 
 <!-- docs/language-types.md -->
 
 # Types
 
-Every value in a TypeSOL program has a type whose size and bytes are known when the program compiles. This page goes
+Every value in a TypeSOL program has a type whose layout is known when the program compiles: a fixed size for most,
+a length followed by its elements or bytes for `string` and `Vec` (see the table). This page goes
 through them: what each one is, how to write it, its bytes in account data and in instruction arguments, its limits,
 and the error code when a limit is hit at run time. Part of the [language guide](language.md).
 
@@ -688,15 +744,18 @@ export function record(stats: Mut<Stats>, by: u64, change: i64): void {
 - **Literals are bigints**: `1n`, `0n`, `-5n`. Unlike JavaScript, there are no `number`s: `1` is refused
   (`Type 'number' is not assignable to type 'bigint'`, with a hint to write `1n`), and so are `number` parameters and
   fields. A literal takes the type of the place it is used in and must fit there (`300 does not fit in u8`). A local
-  declared from a bare literal, `const x = 5n`, is a `u64`.
+  declared from a bare literal, `const x = 5n`, is a `u64`; an untyped top-level constant takes the type of each place
+  it is used in, as a literal does ([constants](language-basics.md#constants)).
 - **Both operands have one type.** `a + b` with a `u64` and a `u8` is refused: `operands have different types: u64 and
   u8; convert with u64(...) etc.` Comparisons (`<`, `<=`, `===`, …) need equal types too.
 - **Every operation is checked.** `+ - * / % **` and their assignments (`+=` … `**=`) fail the instruction on
   overflow (5100) or division by zero (5101); `**` with a negative exponent fails as well (JavaScript throws there).
   Unlike JavaScript there are no silent wraps and no `Infinity`.
 - **Bitwise operators.** `& | ^` work on equal types; `~` flips the bits within the type's width (`~1n` as a `u8` is
-  254). `<<` fails (5100) when bits would be lost or the amount is not below the width; `>>` is arithmetic on signed
-  types. The shift amount, also in `<<=` and `>>=`, may be any integer type.
+  254). Both shifts fail (5100) when the amount is negative or not below the width (`x >> 64n` on a `u64`), and `<<`
+  also when bits would be lost; `>>` is arithmetic on signed types. Unlike JavaScript, where a bigint shift never
+  fails, `1n << 64n` is not a bigger number and `x >> 200n` is not 0. The shift amount, also in `<<=` and `>>=`, may be
+  any integer type up to `u128`.
 - `++` and `--` are checked like `+= 1n`. Unary `-` needs a signed type (`unary minus needs a signed integer (i8 …
   i128)`).
 
@@ -948,22 +1007,6 @@ export function step(player: Mut<Player>, dx: u64): void {
 instruction arguments and results, events, an exported struct's field, a data enum's variant) cannot hold one: each
 such use is an error saying to export it.
 
-### Struct arguments
-
-`order: Order`, `ids: FixedArray<u8, 4>`, `orders: Vec<Order>` as instruction arguments are fixed layouts,
-Borsh-identical, validated on entry (booleans, enum tags, option tags, string lengths: 102) and read-only.
-
-- A struct holding a `FixedVec` that is only ever an argument is read as Anchor sends it (its FixedVec a Borsh Vec, as
-  under [`@layout borsh`](language-accounts.md#anchors-account-bytes-layout-borsh)).
-- A struct holding `Option`s (at any depth, as Anchor's `BankConfigOpt`) that is not account data is Borsh on the wire,
-  an empty Option one byte. Read its values after narrowing (`if (c.rate !== null && c.rate.zero_util !== null) …`),
-  an `Option<FixedArray<T, N>>` too (`.get(i)`, or copied whole into a `FixedArray` field).
-- An argument may be an `Option<S>` of such a struct (Anchor's `Option<WrappedI80F48>`): a tag byte, then the struct
-  when present; read its fields after `x !== null`. Helpers take the struct, not the Option.
-- Likewise `Option<Vec<T>>` (or `Vec<T> | null`, or of a FixedVec; Anchor's `Option<Vec<u8>>`): a tag byte, then the
-  Vec. Check `x !== null` before reading it as a list or passing it to a helper that takes the list.
-- A `Vec<u8>` is `bytes` in the IDL, as Anchor writes it (clients pass a Buffer).
-
 ## Option
 
 ```ts
@@ -1007,6 +1050,17 @@ with [ ] is not supported: use .get(i) and .set(i, value), with i a bigint (0n)`
 | `FixedArray<T, N>` | N elements, always | no | account data, arguments, locals |
 | `FixedVec<T, N>` | u32 length + room for N | up to N | account data, arguments, locals, events, return data |
 | `Vec<T>` | u32 length + its elements | the account is resized | account data, arguments (read-only), events |
+
+Which one to use in account data:
+
+- **`FixedArray<T, N>`** when there are always N elements (a board, a fixed set of slots). The account's rent covers
+  all N from creation.
+- **`FixedVec<T, N>`** when the count varies up to a known maximum (owners of a multisig, at most N). The account is
+  created at its full size, so its creator pays the rent for N elements up front and nothing grows later; a `push`
+  past N fails with 5104. It also works in locals, nested structs and return data.
+- **`Vec<T>`** when the count has no useful maximum. The account starts small and each `push(v, payer)` resizes it,
+  `payer` paying the extra rent, so the instruction needs a `SystemProgram`; it grows at most 10 KiB per instruction
+  (3016) and 10 MiB in all. A struct with a `Vec` is account data only, not a local or a nested struct.
 
 ### FixedArray
 
@@ -1073,12 +1127,13 @@ export function reset(ms: Mut<Multisig>, first: Pubkey): void {
 - As an argument, `ids: FixedVec<u64, 8>` is a Borsh Vec of at most N elements, read like a `Vec` argument (more fail
   with 102).
 - In account data, returned structs and events it has its fixed layout.
-- **Local lists.** `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey: k, isSigner: false, isWritable: false }])`,
-  `const buf: FixedVec<u8, 600> = fixedVec([])`, `const pair: FixedArray<Meta, 2> = fixedArray(meta)`: a FixedVec or
-  FixedArray of integers, booleans, Pubkeys, enums, `FixedString<N>` or fixed-size structs on the stack. Given another
-  list (`const y: FixedVec<Pubkey, 4> = xs`) it is a copy, as a struct local is. Setting one up costs about the same
-  at any size (`fixedVec([])` of 1280 bytes is about 10 CU: the free slots are zeroed by the memset syscall, the
-  elements written in place, also as a struct literal's field).
+- **Local lists.** A FixedVec or FixedArray of integers, booleans, Pubkeys, enums, `FixedString<N>` or fixed-size
+  structs can be a local, on the stack: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey: k, isSigner: false,
+  isWritable: false }])`, `const buf: FixedVec<u8, 600> = fixedVec([])`, `const pair: FixedArray<Meta, 2> =
+  fixedArray(meta)`.
+  - Given another list (`const y: FixedVec<Pubkey, 4> = xs`) it is a copy, as a struct local is.
+  - Setting one up costs about the same at any size: `fixedVec([])` of 1280 bytes is about 10 CU (the free slots are
+    zeroed by the memset syscall, the elements written in place, also as a struct literal's field).
 - **Size limit.** One list holds at most 2 KiB of elements (the FixedVec's u32 length aside: `FixedVec<u32, 512>`
   fits). The 4 KiB stack frame is shared with the rest of the function, and a frame that overflows is reported with
   its biggest locals; a bigger list is a compile error naming its size. [`@heap`](#heap-values) moves one to the heap.
@@ -1168,9 +1223,27 @@ export function summarize(o: Mut<Orders>): void {
   callback names its struct: `xs.map((o): Scored => ({ … })).filter(…).reduce(…)` (one struct per element, nothing
   stored). A fused `map` to strings is not supported: store it, annotated.
 
+## Struct arguments
+
+Advanced: what an Anchor port meets when its instructions take structs, lists and Options as arguments.
+
+`order: Order`, `ids: FixedArray<u8, 4>`, `orders: Vec<Order>` as instruction arguments are fixed layouts,
+Borsh-identical, validated on entry (booleans, enum tags, option tags, string lengths: 102) and read-only.
+
+- A struct holding a `FixedVec` that is only ever an argument is read as Anchor sends it (its FixedVec a Borsh Vec, as
+  under [`@layout borsh`](language-accounts.md#anchors-account-bytes-layout-borsh)).
+- A struct holding `Option`s (at any depth, as Anchor's `BankConfigOpt`) that is not account data is Borsh on the wire,
+  an empty Option one byte. Read its values after narrowing (`if (c.rate !== null && c.rate.zero_util !== null) …`),
+  an `Option<FixedArray<T, N>>` too (`.get(i)`, or copied whole into a `FixedArray` field).
+- An argument may be an `Option<S>` of such a struct (Anchor's `Option<WrappedI80F48>`): a tag byte, then the struct
+  when present; read its fields after `x !== null`. Helpers take the struct, not the Option.
+- Likewise `Option<Vec<T>>` (or `Vec<T> | null`, or of a FixedVec; Anchor's `Option<Vec<u8>>`): a tag byte, then the
+  Vec. Check `x !== null` before reading it as a list or passing it to a helper that takes the list.
+- A `Vec<u8>` is `bytes` in the IDL, as Anchor writes it (clients pass a Buffer).
+
 ## f64
 
-`f64` holds a 64-bit float as its IEEE bits, for events and accounts that carry one (Borsh writes those 8 bytes; the
+Advanced: for ports whose events or accounts carry a float. `f64` holds a 64-bit float as its IEEE bits, for events and accounts that carry one (Borsh writes those 8 bytes; the
 IDL says `f64`). There is no float arithmetic: `f64FromBits(bits)` makes one from bits the program computed with
 integers (Marginfi's events report I80F48 amounts this way), and `f64Bits(x)` reads them back. Float literals (`1.5`)
 are refused.
@@ -1184,7 +1257,7 @@ say so: `f64Bits(a) === f64Bits(b)`. Copying an `f64` (to a local, a field, an e
 
 ## Heap values
 
-Locals live on the stack. These live on the heap (32 KiB by default;
+Advanced: where memory comes from when the stack is not enough. Locals live on the stack. These live on the heap (32 KiB by default;
 [`HEAP_SIZE_KIB`](language-basics.md#memory-stack-and-heap) raises it), which is never freed during an instruction:
 
 - strings built at run time (5110 when the heap is full);
@@ -1206,6 +1279,8 @@ export function collect(n: u8): void {
 `/** @heap */` on an instruction's list or struct local keeps it on the heap instead of the stack: one allocation per
 declaration, reused when a loop declares it again, up to the heap's size, for about 18 CU. Not in helpers, which may
 run many times while the heap is never freed.
+
+**Next:** [Statements and functions](language-statements.md): which TypeScript is TypeSOL.
 
 <!-- docs/language-statements.md -->
 
@@ -1539,11 +1614,12 @@ while passing large values by pointer:
   an instruction argument, return data, or a struct parameter of a helper that itself takes accounts) is still passed
   in place.
 - `Pubkey`, `Option`, `string` and `u256` parameters are passed by pointer too (the SBF target passes a C struct as a
-  pointer to the caller's object). A helper that can write (it takes accounts, remaining accounts or `Inout<T>`
-  places) gets a copy taken at the call, unless the argument is a local, a temporary, an instruction argument, a
-  constant, an account's key, the program id or a parameter of the calling helper, which nothing it is given reaches;
-  a helper that writes nothing reads the caller's value in place. Text a string argument views in account data or in
-  an `Inout<T>` place is copied for such a helper too.
+  pointer to the caller's object):
+  - a helper that writes nothing reads the caller's value in place;
+  - a helper that can write (it takes accounts, remaining accounts or `Inout<T>` places) gets a copy taken at the
+    call, and so does text a string argument views in account data or in an `Inout<T>` place;
+  - except when the argument is one nothing the helper is given reaches: a local, a temporary, an instruction
+    argument, a constant, an account's key, the program id or a parameter of the calling helper, passed in place.
 - **List parameters.** A `FixedVec<T, N>` or `Vec<T>` parameter takes a Vec argument, a slice of one, or the caller's
   FixedVec of the same elements (a local, a field of a local struct or of account data) with at most N elements of
   room. It is read-only and passed as a view of its elements, by pointer; a list in account data is copied first when
@@ -1624,14 +1700,9 @@ shares an object passed to a function.
   `BigVec` is refused when the call may resize or filter that list (the helper takes writable or remaining accounts),
   since its elements would move. A reference into the place (`const e = p.items.get(0n)`) that is read after the call
   is refused, since the helper may replace what it points at (copy the fields first, or read them through the place).
-- **Places that may be one account at run time** (two `Dup<…>` accounts, a writable and a read-only account, two
-  native views under `NATIVE_ACCOUNT_WRITES`: `loadRawMut`, `loadRawMutAt`, `rawArrayMutAt` elements, `rbTreeMutAt`
-  nodes, a helper's own account parameters) are compared before the call: 2040 when they overlap. The comparison
-  covers an Inout argument against every other argument passed in place (another Inout one, a read-only struct, array
-  or list, an account), so a read-only argument cannot change under the helper while it writes; one copied for the
-  call shares nothing and is not compared. One pair is left to run time: a place in a `loadRawMut` view passed with
-  the `RemainingAccount` it was loaded from (without `NATIVE_ACCOUNT_WRITES` a second `loadRawMut` of it in the helper
-  fails with 2040; with the flag the helper can load and write the same bytes, the flag's trade-off).
+- **Places that may be one account at run time** (two `Dup<…>` accounts, a writable and a read-only account, native
+  views) are compared before the call: 2040 when they overlap ([which places, and the one pair left to run
+  time](language-native.md#inout-places-that-may-be-one-account)).
 - **Values are not places.** Integers, Pubkeys, strings and Options are values, which JavaScript copies into a function
   too: return the new value (`x = f(x)`) or keep it in a struct and take `Inout<ThatStruct>` (`Inout<u64>: a u64 is a
   value, which JS copies into a function too, …`). `Vec<T>`, `BigVec<T>`, accounts and data enums are refused with
@@ -1822,6 +1893,10 @@ may gain a hint line.
 | non-constant `case` labels | `case b.value:` | case labels must be literals, constants or enum members |
 | writing a helper's parameter | `function h(p: Point): void { p.x = 1n; }` | helper parameters are read-only: declare p as Inout<T> to change the caller's value in place, or copy it into a local first |
 | `Vec` locals | `const v: Vec<u64> = fixedVec([]);` | local type must be an integer, boolean, Pubkey, enum, option or string |
+| an unused proof or signature check | `merkleVerify(leaf, proof, root);` | the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
+| a `@code` tag after other code on its line | `export enum E { A = "a", /** @code 6100 */ B = "b" }` | this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above B |
+
+**Next:** [Accounts](language-accounts.md): account parameters and the checks they emit.
 
 <!-- docs/language-accounts.md -->
 
@@ -1856,12 +1931,12 @@ export function like(fan: Signer, note: Mut<Note>, original: Account<Note>): voi
 | Parameter type | Checked before your code runs |
 | --- | --- |
 | `Signer` / `Mut<Signer>` | signed (3010) and, for `Mut`, writable (2000) |
-| `Account<T>` / `Mut<T>` | owned by this program (3007), initialized (3012), 8-byte discriminator matches (3002), data large enough (3003) and, for `Mut`, writable (2000). A zero-copy type is checked as Anchor's `AccountLoader` checks it ([below](#zero-copy-types-as-anchors-idl-describes-them)) |
+| `Account<T>` / `Mut<T>` | in this order: initialized (3012 for an empty system account), owned by this program (3007), data large enough (3003, discriminator included), 8-byte discriminator matches (3002); for `Mut`, writable (2000), checked before them. A zero-copy type is checked as Anchor's `AccountLoader` checks it ([below](#zero-copy-types-as-anchors-idl-describes-them)) |
 | `Init<T>` | writable; the body creates it ([below](#creating-accounts)) |
 | `InitIfNeeded<T>` | writable; the body creates it when it does not exist, else checks it |
 | `Zeroed<T>` | allocated by the client, not yet initialized, writable ([below](#zeroed-accounts)) |
-| `TokenAccount` / `Mut<TokenAccount>` | owned by SPL Token or Token-2022 (extensions allowed, multisig accounts refused), initialized (3012 for an account never created, as Anchor) |
-| `Mint` / `Mut<Mint>` | owned by SPL Token or Token-2022, initialized (3012) |
+| `TokenAccount` / `Mut<TokenAccount>` | an initialized token account of SPL Token or Token-2022 (extensions allowed, multisig accounts refused): 3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length |
+| `Mint` / `Mut<Mint>` | an initialized mint of SPL Token or Token-2022: the same codes as a token account |
 | `SystemAccount` / `Mut<SystemAccount>` | owned by the System Program, e.g. a wallet (Anchor's `SystemAccount`, 3011) |
 | `AccountInfo` / `Mut<AccountInfo>` | nothing (writable for `Mut`): check what you rely on yourself |
 | `SystemProgram`, `TokenProgram`, `Token2022Program` | the exact program address (3008) |
@@ -1883,28 +1958,6 @@ account member (`key`, `lamports`, …) is refused: name it `key_` (it is `key` 
 
 Unlike Anchor, there is no `Context` and no `#[derive(Accounts)]` struct: the parameters are the accounts, in the order
 the client passes them. Writing to an account that is not `Mut<…>` is a TypeScript error (the field is read-only).
-
-### Two parameters, one account
-
-Two writable parameters can never be the same account: aliasing is refused with error 2040 (also when a remaining
-account written through `.lamports` or `loadAccountMut` is another account of the instruction).
-
-`Dup<Mut<T>>` (Anchor's `dup`) lifts that for one parameter when both accounts are read and written in place (not
-created, closed or `@layout borsh`; a close destination may be one, the rent reaching it through either). A write
-through either is seen through the other, so read what you need before writing. A reference into one of them
-(`const e = a.entries.get(i)`) cannot be used after a push, pop or clear through the other moved that data, as with one
-name (a compile error): copy the fields first.
-
-A remaining account can be loaded with `loadAccountMut` once per instruction: loading the same one again
-(`rest.get(i)` and `rest.get(j)` with `i == j`) is refused with 2040 too, since the two views would alias. So is a
-second `loadAccountMut` of one `AccountInfo` parameter. Two `Dup<…>` parameters that are one account may each be
-loaded (one array holding both ticks of a position, as Raydium CLMM's tick arrays).
-
-### How many accounts
-
-At most 32 accounts per instruction; more is refused with 5113. `export const MAX_ACCOUNTS = 128n` (up to 255; Anchor
-takes what the runtime allows) raises it for programs that take many remaining accounts. The CPI scratch lists are
-then kept on the heap instead of the stack; programs that do not declare it compile exactly as before.
 
 ## Creating accounts
 
@@ -1950,7 +2003,8 @@ export function scratch(payer: Mut<Signer>, extra: Init<Settings>, systemProgram
   `Init<T>` the body never creates is an error.
 - **`InitIfNeeded<T>`**: `const created = acct.createIfNeeded(payer, seeds)` creates the account once; afterwards it
   re-derives the PDA and checks the owner, discriminator and size (Anchor's `init_if_needed`). `acct.pdaBump` is the
-  bump after it. An existing account is used as it is: check the fields you rely on.
+  bump after it. An existing account is used as it is: check the fields you rely on. In `configure` above the first
+  caller becomes the admin; gate such a setup on the upgrade authority ([ProgramData](#programdata)).
 - Seeds, bumps and `create` under another program are on the [PDAs](language-pdas.md) page; mints, token accounts
   and associated token accounts are created the same way ([tokens](language-cpi.md#creating-mints-and-token-accounts)).
 
@@ -1972,6 +2026,17 @@ the instruction returns. `Signed<Zeroed<Multisig>>` also requires it to sign, fo
 fresh keypair.
 
 ### Migrating an account
+
+Upgrading a program leaves its accounts as they are: each keeps its bytes, and the new code reads them with the new
+struct. The discriminator comes from the struct's name, so it still matches; only the size is checked:
+
+- A field added, anywhere, makes the struct longer than the existing accounts, which then fail with 3003.
+- A field removed from the end leaves bytes the new struct ignores. A field removed from the middle, or fields
+  reordered, make the fields after it read other fields' bytes, with no error.
+- A renamed struct has another discriminator: existing accounts fail with 3002.
+
+So keep the old struct as it is, under a new name with its old discriminator, and rewrite each account as the new one
+with `Migrate<From, To>`, which resizes it and tops up its rent:
 
 ```ts
 import { type Migrate, type Mut, type Pubkey, type Signer, type SystemProgram, type u64 } from "typesol";
@@ -2003,13 +2068,19 @@ Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size
   give the new one a name of its own (two structs with one discriminator are refused).
 - Limits: fixed-layout structs without growable Vecs, no constraints yet, and the account cannot be passed to a helper
   (use `acct.to` fields in the instruction).
+- `resizeAccount` on a `Mut<AccountInfo>` ([closing and resizing](#closing-and-resizing)) is the manual way: grow the
+  account with the new field appended at the end, which reads as zero.
+- As written, anyone can migrate a counter and become its `owner`. With no constraints on `Migrate`, check the caller
+  in the body before `migrate`, for example against the upgrade authority of a [`ProgramData`](#programdata)
+  parameter.
 
 ## Closing and resizing
 
 ```ts
-import { type Mut, type Signer, type SystemProgram, type u64, close, realloc } from "typesol";
+import { type HasOne, type Mut, type Pubkey, type Signer, type SystemProgram, type u64, close, realloc } from "typesol";
 
 export interface Log {
+  owner: Pubkey;
   entries: u64;
 }
 
@@ -2017,13 +2088,14 @@ export function grow(payer: Mut<Signer>, log: Mut<Log>, systemProgram: SystemPro
   realloc(log, size, payer);
 }
 
-export function remove(owner: Mut<Signer>, log: Mut<Log>): void {
+export function remove(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">): void {
   close(log, owner);
 }
 ```
 
 - `close(account, destination)` closes a program account: its lamports go to `destination` (another writable
-  account) and its data is zeroed. The account is not used after it in the function, except its `key` (compile
+  account) and its data is zeroed. The lamports are value: `HasOne` above lets only the log's owner close it.
+  `grow` needs no such check, since only the payer pays. The account is not used after it in the function, except its `key` (compile
   errors, or 2040 at run time in a helper given one account twice). `CloseTo<A, "dest">` does the same when the
   instruction succeeds ([constraints](#constraints)).
 - `realloc(account, newSize, payer)` on a `Mut<Struct>`: growing charges the payer the extra rent (at most 10 KiB per
@@ -2097,6 +2169,28 @@ the body, in Anchor's order, and recorded in the IDL (`relations`, `pda`, `addre
   keep 8.
 - `Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">` checks the address as Anchor's
   `address = sysvar::instructions::ID` on an `UncheckedAccount` does (2012, with the constraints).
+
+## Two parameters, one account
+
+Two writable parameters can never be the same account: aliasing is refused with error 2040 (also when a remaining
+account written through `.lamports` or `loadAccountMut` is another account of the instruction).
+
+`Dup<Mut<T>>` (Anchor's `dup`) lifts that for one parameter when both accounts are read and written in place (not
+created, closed or `@layout borsh`; a close destination may be one, the rent reaching it through either). A write
+through either is seen through the other, so read what you need before writing. A reference into one of them
+(`const e = a.entries.get(i)`) cannot be used after a push, pop or clear through the other moved that data, as with one
+name (a compile error): copy the fields first.
+
+A remaining account can be loaded with `loadAccountMut` once per instruction: loading the same one again
+(`rest.get(i)` and `rest.get(j)` with `i == j`) is refused with 2040 too, since the two views would alias. So is a
+second `loadAccountMut` of one `AccountInfo` parameter. Two `Dup<…>` parameters that are one account may each be
+loaded (one array holding both ticks of a position, as Raydium CLMM's tick arrays).
+
+## How many accounts
+
+At most 32 accounts per instruction; more is refused with 5113. `export const MAX_ACCOUNTS = 128n` (up to 255; Anchor
+takes what the runtime allows) raises it for programs that take many remaining accounts. The CPI scratch lists are
+then kept on the heap instead of the stack; programs that do not declare it compile exactly as before.
 
 ## Optional accounts
 
@@ -2192,10 +2286,12 @@ export function count(tally: Mut<Tally>): void {
   `isWritable`, the data length and data.
 - `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)` give checked struct views (owner, discriminator and size, as
   `Account<T>` / `Mut<T>`), also of an `AccountInfo` parameter (Anchor's `AccountLoader::try_from` on an
-  `UncheckedAccount`). The view is also its account: `.key`, `.lamports`, and it passes to a helper taking `Account<T>`
-  / `Mut<T>`. A second `loadAccountMut` of one account is refused (2040), but a view declared in a loop body ends with
-  its iteration, and `loadAccountMut<Dup<T>>` in a loop also accepts an account passed more than once, one view at a
-  time, as a route back through one pool needs.
+  `UncheckedAccount`).
+  - The view is also its account: `.key`, `.lamports`, and it passes to a helper taking `Account<T>` / `Mut<T>`.
+  - A second `loadAccountMut` of one account is refused (2040), but a view declared in a loop body ends with its
+    iteration.
+  - `loadAccountMut<Dup<T>>` in a loop also accepts an account passed more than once, one view at a time, as a route
+    back through one pool needs.
 - Pass one to a helper that takes a `RemainingAccount` parameter (it reads the key, owner, lamports, data length and
   data, and loads structs from it; a `loadAccountMut` there claims the account for the rest of the instruction, so a
   second one fails with 2040), or all of them to one that takes `RemainingAccounts` (`.length`, `.get(i)`, passed on to
@@ -2252,7 +2348,7 @@ export function rename(profile: Mut<Profile>, name: string): void {
   back (3004). Its elements move when it grows, so a reference into one cannot outlive a `push` or an assignment.
 - `Init` of such a struct takes its space: `create(payer, seeds, space)`.
 - Programs invoked from the body (CPIs) see the account's bytes as they were when the instruction started.
-- It costs more compute than the fixed layout: the whole account is read and written each time (see the benchmarks).
+- It costs more compute than the fixed layout: the whole account is read and written each time.
 - Nested structs and list elements must be fixed-size (FixedString elements allowed).
 - The same struct is Borsh as a whole instruction argument (checked like Borsh deserialization, UTF-8 included), as
   return data and as an event. As those (not as account data) it may also hold `string` fields and data enums carrying
@@ -2285,6 +2381,8 @@ types have them.
 - `/** @discriminator account:Old */` (or `0x` and 8 bytes) replaces an account struct's discriminator.
 - JSDoc on structs and fields becomes `docs` in the IDL.
 
+**Next:** [PDAs](language-pdas.md): seeds, bumps and signing as a PDA.
+
 <!-- docs/language-pdas.md -->
 
 # PDAs
@@ -2294,7 +2392,7 @@ program can sign for it. This page covers seeds, bumps, creating accounts at PDA
 calls to other programs, and how the IDL records them. Part of the [language guide](language.md).
 
 ```ts
-import { type Init, type Mut, type Pubkey, type Seeds, type Signer, type SystemAccount, type SystemProgram, type u16, type u64, type u8, requirePda, signer } from "typesol";
+import { type Init, type Mut, type Pubkey, type Seeds, type Signer, type SystemAccount, type SystemProgram, type u16, type u64, type u8, findProgramAddressBump, programId, requirePda, signer } from "typesol";
 
 export interface Vault {
   owner: Pubkey;
@@ -2302,10 +2400,10 @@ export interface Vault {
   solBump: u8;
 }
 
-export function open(owner: Mut<Signer>, vault: Init<Vault>, systemProgram: SystemProgram, index: u16, solBump: u8): void {
+export function open(owner: Mut<Signer>, vault: Init<Vault>, systemProgram: SystemProgram, index: u16): void {
   vault.bump = vault.create(owner, ["vault", owner.key, index]);
   vault.owner = owner.key;
-  vault.solBump = solBump;
+  vault.solBump = findProgramAddressBump(["sol", vault.key], programId());
 }
 
 export function pay(
@@ -2323,6 +2421,10 @@ export function pay(
 }
 ```
 
+`open` creates the vault at `["vault", owner, index]` and stores both bumps, the second derived, not taken from the
+arguments. `pay` moves lamports only for the vault's owner: the `Seeds` constraint derives the vault's address from
+the signing `owner`, so another signer names another address and fails with 2006.
+
 ## Seeds
 
 A seed list is an array literal written where the seeds go. Each seed contributes its bytes:
@@ -2334,10 +2436,14 @@ A seed list is an array literal written where the seeds go. Each seed contribute
 | a `Pubkey` (`owner.key`, a field, `pubkey("…")`) | its 32 bytes |
 | a `Hash` (`sha256(…)`) | its 32 bytes, as Marginfi seeds an order with the hash of its bank keys |
 | an integer (an argument, a field, a local, a typed literal) | little-endian at its declared width: a `u16` gives 2 bytes; a bare `5n` is a u64, 8 bytes |
+| a unit enum value (`Side.Ask`, an argument or a field) | 1 byte, its variant index |
 | `bigEndian(x)` | an integer's bytes most significant first (`["tick_array", pool.key, bigEndian(start)]`), Rust's `to_be_bytes()` |
 | the bump (a `u8`) | 1 byte, last |
 
-A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). Solana takes at
+A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). A `string`
+argument longer than that is only known at run time: `create`, `createIfNeeded`, `requirePda` and `Seeds<…>` then fail
+with 2006, as for any other address that is not the PDA; check `byteLength(s) <= 32n` first to fail with an error of
+your own. Solana takes at
 most 16 seeds per address, the bump included. A list the derivation adds the bump to (`create`, `requirePda`,
 `findProgramAddress`) holds at most 15 entries (`at most 15 seeds: the bump the derivation adds makes 16, Solana's
 limit`); a list that ends with its bump (signer seeds, `createProgramAddress`) holds 16: 15 seeds and the bump (`at
@@ -2426,14 +2532,25 @@ export function locate(book: Mut<Book>, owner: Pubkey, start: u64): void {
 A PDA of this program signs a call to another program when the call is given its seeds, with the bump:
 
 ```ts
-import { type Mut, type Signer, type SystemAccount, type SystemProgram, type u64, type u8, signer } from "typesol";
+import { type Account, type HasOne, type Mut, type Pubkey, type Signer, type SystemAccount, type SystemProgram, type u64, type u8, signer } from "typesol";
 
-export function payOut(admin: Signer, treasury: Mut<SystemAccount>, fees: Mut<SystemAccount>, to: Mut<SystemAccount>, systemProgram: SystemProgram, amount: u64, treasuryBump: u8, feesBump: u8): void {
-  systemProgram.transfer(treasury, to, amount, ["treasury", admin.key, treasuryBump]);
-  const feeSigner = signer(["fees", feesBump]);
+export interface Config {
+  admin: Pubkey;
+  treasuryBump: u8;
+  feesBump: u8;
+}
+
+export function payOut(admin: Signer, config: HasOne<Account<Config>, "admin">, treasury: Mut<SystemAccount>, fees: Mut<SystemAccount>, to: Mut<SystemAccount>, systemProgram: SystemProgram, amount: u64): void {
+  systemProgram.transfer(treasury, to, amount, ["treasury", admin.key, config.treasuryBump]);
+  const feeSigner = signer(["fees", config.feesBump]);
   systemProgram.transfer(fees, to, 1n, feeSigner);
 }
 ```
+
+Signer seeds are authority: whoever reaches the call spends what the PDA holds. Here `HasOne` lets only the config's
+`admin` call `payOut` (2001 for anyone else), and the bumps come from the config, where they were stored when the
+PDAs were created. Seeds that include the caller, as `["treasury", admin.key, …]` does, also limit a call to the
+caller's own PDA: another signer's seeds give another address, which then does not sign.
 
 - Every CPI takes optional signer seeds as its last argument: a seed list written there with the bump
   (`["treasury", admin.key, bump]`), or a named one. When several PDAs sign one `invoke`, pass a list of seed lists,
@@ -2459,6 +2576,8 @@ When an instruction calls `x.create(payer, seeds)` or `requirePda(x, seeds, bump
 constraint, and every seed is a string literal, an integer literal, a constant, an argument, `acct.key` or a scalar
 field of an account, the IDL entry for `x` gets Anchor's `pda.seeds` (`const` / `arg` / `account`), so Anchor and
 Codama clients derive the address themselves. An associated token account (`Ata<…>`) gets the ATA program's `pda`.
+
+**Next:** [Errors, logs, events and return values](language-errors-events.md).
 
 <!-- docs/language-errors-events.md -->
 
@@ -2498,8 +2617,9 @@ export function audit(vault: Account<Vault>): void {
 ```
 
 `require(condition, error)` fails the instruction with `error` when the condition is false. There are no exceptions:
-unlike JavaScript's `throw`, a failure cannot be caught, and the runtime discards every change the instruction made,
-including those of programs it called.
+unlike JavaScript's `throw`, a failure cannot be caught. On Solana a failed instruction fails the whole transaction:
+the runtime discards every change the transaction made, in this instruction, in the programs it called and in the
+transaction's other instructions (only the fee is charged).
 
 The error may be:
 
@@ -2522,7 +2642,9 @@ it); a zero code fails with 5100.
   `#[error_code]`. Each member is an error; its string is the message (the IDL's `msg`).
 - Codes start at 6000 and follow declaration order. Error enums of imported files are numbered first.
 - `/** @code 6200 */` before a member gives it that code (Anchor's `Name = 200`), and the members after it continue
-  from there. Codes only go up (`@code must be a number from … up`).
+  from there. Codes only go up (`@code must be a number from … up`). The tag goes on its own line above the member, or
+  first on the member's line; after other code on a line (`A = "a", /** @code 6200 */ B = "b"`) it would belong to no
+  member, so it is refused.
 - `Name = ""` has no message in the IDL, as an Anchor variant without `#[msg]`.
 - An error enum may start at code 0 (`/** @code 0 */`, Rust's `ProgramError::Custom(0)`, returned as Solana's
   CUSTOM_ZERO), for ports of native programs ([native
@@ -2642,6 +2764,8 @@ String) or fixed-size struct, at most 1024 bytes. The IDL lists it as `returns`,
   a value cannot call it ([return data as the original sets
   it](language-native.md#return-data-as-the-original-sets-it)).
 
+**Next:** [Calling other programs](language-cpi.md).
+
 <!-- docs/language-cpi.md -->
 
 # Calling other programs
@@ -2673,20 +2797,29 @@ export function tip(from: Mut<Signer>, to: Mut<SystemAccount>, systemProgram: Sy
 
 ## Tokens
 
+A mint defines a token: its supply, its decimals and the mint authority that may create more. A token account holds an
+amount of one mint for its owner, the authority that may move it; a wallet's usual one is its associated token
+account. For a complete program, see [`examples/escrow.ts`](https://github.com/typesol-lang/typesol/blob/main/examples/escrow.ts), which `typesol init my-app
+--template escrow` scaffolds with its tests.
+
 ```ts
-import { type Mint, type Mut, type Signer, type TokenAccount, type TokenInterface, type u64, type u8 } from "typesol";
+import { type Mint, type Mut, type Seeds, type Signer, type TokenAccount, type TokenInterface, type u64 } from "typesol";
 
 export function pay(owner: Signer, from: Mut<TokenAccount>, mint: Mint, to: Mut<TokenAccount>, tokenProgram: TokenInterface, amount: u64): void {
   tokenProgram.transferChecked(from, mint, to, owner, amount);
 }
 
-export function payOut(vault: Mut<TokenAccount>, mint: Mint, to: Mut<TokenAccount>, tokenProgram: TokenInterface, amount: u64, bump: u8): void {
-  tokenProgram.transferChecked(vault, mint, to, vault, amount, ["vault", mint.key, bump]);
+export function payOut(owner: Signer, vault: Seeds<Mut<TokenAccount>, ["vault", "@owner", "@mint"]>, mint: Mint, to: Mut<TokenAccount>, tokenProgram: TokenInterface, amount: u64): void {
+  tokenProgram.transferChecked(vault, mint, to, vault, amount, ["vault", owner.key, mint.key, vault.pdaBump]);
 }
 ```
 
 The token programs (`TokenProgram`, `Token2022Program`, `TokenInterface` for either) have one method per instruction.
 Pass signer seeds (with the bump) as the last argument when the authority is a PDA.
+
+- In `pay` the token program checks that `owner` signed and owns `from`. In `payOut` the vault is its own authority,
+  so the program signs for it: the `Seeds` constraint puts the signing `owner` in the vault's address, and anyone else
+  names another account (2006). Without such a check, anyone could empty the vault.
 
 | Methods | Notes |
 | --- | --- |
@@ -2701,13 +2834,37 @@ Pass signer seeds (with the bump) as the last argument when the authority is a P
 
 Token-2022 only:
 
-| Methods | Notes |
-| --- | --- |
-| `initializeTransferFeeConfig(mint, configAuthority \| null, withdrawAuthority \| null, basisPoints, maximumFee)`, `initializeMintCloseAuthority(mint, authority \| null)`, `initializeNonTransferableMint(mint)`, `initializePermanentDelegate(mint, delegate)`, `initializeDefaultAccountState(mint, frozen)`, `initializeMetadataPointer` / `initializeGroupPointer` / `initializeGroupMemberPointer` / `initializeTransferHook(mint, authority \| null, address \| null)`, `initializeInterestBearingMint(mint, rateAuthority \| null, rate)`, `initializeImmutableOwner(account)` | extension initializers, called between `createAccount` and `initializeMint2` / `initializeAccount3` |
-| `initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri)` | the metadata extension |
-| `updateDefaultAccountState(mint, freezeAuthority, frozen)`, `updateTransferHook(mint, authority, programId \| null)`, `enableRequiredMemoTransfers` / `disableRequiredMemoTransfers(account, owner)`, `updateInterestRate(mint, rateAuthority, rate)`, `transferCheckedWithFee(from, mint, to, authority, amount, fee)`, `harvestWithheldTokensToMint(mint, remainingAccounts())`, `withdrawWithheldTokensFromMint(mint, destination, authority)`, `setTransferFee(mint, authority, basisPoints, maximumFee)` | extension instructions |
-| `updateMetadataField(mint, updateAuthority, field, value)` ("name" / "symbol" / "uri" or any other key), `removeMetadataKey(mint, updateAuthority, key, idempotent)`, `updateMetadataAuthority(mint, updateAuthority, next \| null)`, `emitMetadata(mint)` | the Token Metadata interface |
-| `initializeTokenGroup(group, mint, mintAuthority, updateAuthority \| null, maxSize)`, `initializeGroupMember(member, memberMint, memberMintAuthority, group, groupUpdateAuthority)`, `updateGroupMaxSize(group, authority, maxSize)`, `updateGroupAuthority(group, authority, next \| null)` | the Token Group interface; a collection mint with a GroupPointer to itself (fund the rent for the group, which Token-2022 adds to the account) |
+- **Extension initializers**, called between `createAccount` and `initializeMint2` / `initializeAccount3`:
+  - `initializeTransferFeeConfig(mint, configAuthority | null, withdrawAuthority | null, basisPoints, maximumFee)`
+  - `initializeMintCloseAuthority(mint, authority | null)`
+  - `initializeNonTransferableMint(mint)`
+  - `initializePermanentDelegate(mint, delegate)`
+  - `initializeDefaultAccountState(mint, frozen)`
+  - `initializeMetadataPointer`, `initializeGroupPointer`, `initializeGroupMemberPointer`,
+    `initializeTransferHook(mint, authority | null, address | null)`
+  - `initializeInterestBearingMint(mint, rateAuthority | null, rate)`
+  - `initializeImmutableOwner(account)`
+- **The metadata extension**: `initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri)`.
+- **Extension instructions**:
+  - `updateDefaultAccountState(mint, freezeAuthority, frozen)`
+  - `updateTransferHook(mint, authority, programId | null)`
+  - `enableRequiredMemoTransfers` / `disableRequiredMemoTransfers(account, owner)`
+  - `updateInterestRate(mint, rateAuthority, rate)`
+  - `transferCheckedWithFee(from, mint, to, authority, amount, fee)`
+  - `harvestWithheldTokensToMint(mint, remainingAccounts())`
+  - `withdrawWithheldTokensFromMint(mint, destination, authority)`
+  - `setTransferFee(mint, authority, basisPoints, maximumFee)`
+- **The Token Metadata interface**:
+  - `updateMetadataField(mint, updateAuthority, field, value)`: "name", "symbol", "uri" or any other key
+  - `removeMetadataKey(mint, updateAuthority, key, idempotent)`
+  - `updateMetadataAuthority(mint, updateAuthority, next | null)`
+  - `emitMetadata(mint)`
+- **The Token Group interface**, on a collection mint with a GroupPointer to itself (fund the rent for the group, which
+  Token-2022 adds to the account):
+  - `initializeTokenGroup(group, mint, mintAuthority, updateAuthority | null, maxSize)`
+  - `initializeGroupMember(member, memberMint, memberMintAuthority, group, groupUpdateAuthority)`
+  - `updateGroupMaxSize(group, authority, maxSize)`
+  - `updateGroupAuthority(group, authority, next | null)`
 
 Each takes optional signer seeds.
 
@@ -2715,8 +2872,8 @@ Each takes optional signer seeds.
 
 | Parameter | Checked before the body |
 | --- | --- |
-| `TokenAccount` / `Mut<TokenAccount>` | owned by SPL Token or Token-2022 (extensions allowed, multisig accounts refused), initialized (3012 for an account never created). Fields: `mint`, `owner`, `amount`, `delegate`, `delegatedAmount`, `isFrozen`, `isNative`, `closeAuthority`, `tokenProgram` |
-| `Mint` / `Mut<Mint>` | owned by SPL Token or Token-2022, initialized (3012). Fields: `decimals`, `supply`, `mintAuthority`, `freezeAuthority`, `tokenProgram` |
+| `TokenAccount` / `Mut<TokenAccount>` | an initialized token account of SPL Token or Token-2022 (extensions allowed, multisig accounts refused): 3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length. Fields: `mint`, `owner`, `amount`, `delegate`, `delegatedAmount`, `isFrozen`, `isNative`, `closeAuthority`, `tokenProgram` |
+| `Mint` / `Mut<Mint>` | an initialized mint of SPL Token or Token-2022: the same codes as a token account. Fields: `decimals`, `supply`, `mintAuthority`, `freezeAuthority`, `tokenProgram` |
 | `HasOne<TokenAccount, "mint" \| "owner">`, `HasOne<Mint, "mintAuthority" \| "freezeAuthority">` | against the parameter with that name (2014 / 2015 / 2016 / 2017) |
 | `TokenOf<TokenAccount, "mintParam", "authorityParam", "tokenProgramParam">` | Anchor's `token::mint = …`, `token::authority = …`, `token::token_program = …`: the token account's mint (2014), owner (2015), and owner program (2021). `never` leaves one out |
 | `MintOf<Mint, "authorityParam", "freezeParam", "tokenProgramParam">` | Anchor's `mint::authority = …` etc.: mint authority (2016), freeze authority (2017), owner program (2022) |
@@ -2811,13 +2968,17 @@ export function openWallet(
     instructionsSysvar, tokenProgram, amount)` (Burn: the holder signs and gets the rent back; the token account and
     edition close, the metadata is cleared to one byte);
   - `metadataAddress(mint)`, `masterEditionAddress(mint)`.
-- **`StakeProgram`**: `initialize(stake, rentSysvar, staker, withdrawer, lockup?)` (`lockup`: `{ unixTimestamp, epoch,
-  custodian }`, none when left out), `authorize(stake, clockSysvar, authority, newAuthority, "staker" | "withdrawer",
-  custodian?)`, `delegate(stake, vote, clockSysvar, stakeHistorySysvar, stakeConfig, staker)`, `split(stake,
-  splitStake, staker, lamports)`, `deactivate(stake, clockSysvar, staker)`, `withdraw(stake, to, clockSysvar,
-  stakeHistorySysvar, withdrawer, lamports, custodian?)`, `merge(destination, source, clockSysvar, stakeHistorySysvar,
-  staker)`, `getMinimumDelegation()` (a CPI, then the u64 the Stake program returns; fails as solana_program's
-  `get_minimum_delegation` does).
+- **`StakeProgram`**:
+  - `initialize(stake, rentSysvar, staker, withdrawer, lockup?)` (`lockup`: `{ unixTimestamp, epoch, custodian }`,
+    none when left out);
+  - `authorize(stake, clockSysvar, authority, newAuthority, "staker" | "withdrawer", custodian?)`;
+  - `delegate(stake, vote, clockSysvar, stakeHistorySysvar, stakeConfig, staker)`;
+  - `split(stake, splitStake, staker, lamports)`;
+  - `deactivate(stake, clockSysvar, staker)`;
+  - `withdraw(stake, to, clockSysvar, stakeHistorySysvar, withdrawer, lamports, custodian?)`;
+  - `merge(destination, source, clockSysvar, stakeHistorySysvar, staker)`;
+  - `getMinimumDelegation()`: a CPI, then the u64 the Stake program returns; fails as solana_program's
+    `get_minimum_delegation` does.
   - Instruction tags and account lists are solana-stake-interface's builders'.
   - The sysvar and config accounts are parameters, as in anchor-spl's stake module, or `named(account, address)` (a
     native port): the instruction names `address` (`SysvarC1ock…`), as solana_program's builders do, and `account`,
@@ -2988,7 +3149,10 @@ export function execute(multisig: Account<Multisig>, transaction: Account<Transa
 
 - The runtime checks the privileges: a meta may be a signer or writable only as the transaction passed that account,
   or as a PDA of this program the seeds (fifth argument) sign for. The multisig port in the showcase
-  (`showcase/mainnet/multisig/multisig.ts`) uses it.
+  ([`showcase/mainnet/multisig/multisig.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/multisig/multisig.ts)) uses it.
+- `execute` above shows the call only: as written, anyone can make the multisig's PDA sign any stored instruction. The
+  showcase's `executeTransaction` first requires that the transaction belongs to the multisig (`HasOne`), has not run
+  yet and has enough owners' approvals, and then marks it executed.
 
 ## Programs and sysvars passed as remaining accounts
 
@@ -3011,6 +3175,9 @@ export function entry(): void {
 }
 ```
 
+- The example shows the calls only: a real instruction checks its accounts before it signs as the pool's `withdraw`
+  PDA, as the SPL Stake Pool port in [`showcase/mainnet/spl-stake-pool`](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet/spl-stake-pool) checks the pool's owner, its manager or staker
+  and the withdraw authority's address first.
 - P is `StakeProgram`, `SystemProgram`, `TokenProgram`, `Token2022Program`, `TokenInterface` (either token program),
   `AssociatedTokenProgram` or `MemoProgram`. Bind it with `const`, or call a method on it directly; pass it to a helper
   that takes that program type.
@@ -3025,7 +3192,7 @@ export function entry(): void {
   a CPI that makes an account writable or a signer when the transaction did not (and no seeds sign for it), and the
   called program checks the rest (a token account's mint and owner, a stake account's authorities).
 - The cost is the key check (four 8-byte compares) and the call itself: within a few compute units of the same call
-  written with `invoke`, which checks only the executable flag (`test/integrations/native-cpi.test.ts` measures it).
+  written with `invoke`, which checks only the executable flag ([`test/integrations/native-cpi.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/integrations/native-cpi.test.ts) measures it).
 
 ## Order of evaluation
 
@@ -3063,7 +3230,9 @@ ExtraAccountMetaList).
   has index 5.
 - `updateExtraAccountMetas(...)` rewrites and resizes an existing list.
 - Inside the hook, `isTransferring(source)` says whether Token-2022 is transferring from it.
-- See `test/fixtures/hook.ts` and the transfer-hook ports.
+- See [`test/fixtures/hook.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/hook.ts) and the transfer-hook ports.
+
+**Next:** [Sysvars, hashes, signatures and oracles](language-chain.md).
 
 <!-- docs/language-chain.md -->
 
@@ -3138,18 +3307,51 @@ export function commit(c: Mut<Commit>, owner: Pubkey, text: string, n: u64): voi
   a `Hash`.
 - A `Hash` is a PDA seed too (its 32 bytes), as Marginfi seeds an order with the hash of its bank keys.
 - `a.compare(b)` orders Pubkeys and Hashes as Rust orders their 32 bytes (-1, 0 or 1).
-- `merkleVerify(leaf, proof, root)`, with `proof` a `Vec<Hash>` instruction argument, checks a Merkle proof with
-  sorted-pair keccak (OpenZeppelin's convention). Inner nodes and leaves are hashed alike, so hash leaves as
-  OpenZeppelin does, `keccak256(keccak256(data))`, and never take the leaf itself from the arguments: an inner node
-  would pass as a leaf.
+- `merkleVerify(leaf, proof, root)`, with `proof` a `Vec<Hash>` instruction argument, returns whether the proof
+  places `leaf` under `root`, with sorted-pair keccak (OpenZeppelin's convention). Inner nodes and leaves are hashed
+  alike, so hash leaves as OpenZeppelin does, `keccak256(keccak256(data))`, and never take the leaf itself from the
+  arguments: an inner node would pass as a leaf.
 
 ## Signatures
 
-- `verifyEd25519(instructionsSysvar, signer, message)` checks that the transaction holds an Ed25519 precompile
-  instruction verifying `message` signed by `signer`.
-- `verifySecp256k1(hash, recoveryId, r, s, ethAddress)` recovers an Ethereum signer, where `hash` is
-  `keccak256(...message)` or `ethMessageHash(message)`. The hash must be computed in the program: a passed-in hash could
-  be forged.
+`merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds; they do not fail by
+themselves. Unlike a check such as `HasOne`, nothing happens when the answer is false: wrap them in
+`require(…, error)`. A call whose result is thrown away is refused at compile time.
+
+```ts
+import { type Account, type Hash, type Init, type InstructionsSysvar, type Mut, type Pubkey, type Signer, type SystemProgram, type u8, type u64, type Vec, keccak256, merkleVerify, require, verifyEd25519, verifySecp256k1 } from "typesol";
+
+export interface Drop {
+  root: Hash;
+  issuer: Pubkey;
+  ethIssuer: Hash;
+  claimed: u64;
+}
+
+export interface Receipt {
+  amount: u64;
+}
+
+export function claim(claimer: Mut<Signer>, drop: Mut<Drop>, receipt: Init<Receipt>, systemProgram: SystemProgram, amount: u64, proof: Vec<Hash>): void {
+  require(merkleVerify(keccak256(keccak256(claimer.key, amount)), proof, drop.root), "not in the list");
+  receipt.create(claimer, ["claimed", drop.key, claimer.key]);
+  receipt.amount = amount;
+  drop.claimed += amount;
+}
+
+export function approved(drop: Account<Drop>, ixs: InstructionsSysvar, who: Pubkey, r: Hash, s: Hash, v: u8): void {
+  require(verifyEd25519(ixs, drop.issuer, `allow:${who}`), "not signed by the issuer");
+  require(verifySecp256k1(keccak256(who), v, r, s, drop.ethIssuer), "not signed by the Ethereum issuer");
+}
+```
+
+- The receipt, seeded with the drop and the claimer, makes a second claim fail: its address is already in use.
+- `verifyEd25519(instructionsSysvar, signer, message)` returns whether the transaction holds an Ed25519 precompile
+  instruction verifying `message` signed by `signer`. The client adds that instruction; the runtime rejects the
+  transaction if its signature is wrong.
+- `verifySecp256k1(hash, recoveryId, r, s, ethAddress)` recovers the secp256k1 signer of `hash` and returns whether it
+  is `ethAddress` (an Ethereum address left-padded to 32 bytes), where `hash` is `keccak256(...message)` or
+  `ethMessageHash(message)`. The hash must be computed in the program: a passed-in hash could be forged.
 
 ## Instruction introspection
 
@@ -3222,7 +3424,9 @@ export function settle(player: Signer, bet: Mut<Bet>, randomness: SwitchboardRan
 
 Commit while `r.seedSlot === currentSlot() - 1n` and store `r.key` and `r.seedSlot`. Settle in a later transaction
 after checking both, with `r.value()` (32 bytes) or `r.valueU64()`, which fail (5111) unless the value was revealed in
-this slot. The example is `test/fixtures/coinflip.ts`, shortened.
+this slot. The example is [`test/fixtures/coinflip.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/coinflip.ts), shortened.
+
+**Next:** [Porting a native program](language-native.md) (advanced), or [test your program](test-your-program.md).
 
 <!-- docs/language-native.md -->
 
@@ -3234,8 +3438,8 @@ this slot. The example is `test/fixtures/coinflip.ts`, shortened.
 
 A program written without Anchor (Raydium AMM v4, SPL programs, Phoenix) reads a tag byte and its arguments itself,
 takes its accounts by position, stores accounts without discriminators and reports failures its own way. TypeSOL
-ports one as it is: the showcase ports (`showcase/mainnet/raydium-amm`, `spl-stake-pool`, `phoenix`) run beside the
-original binaries, and `test/fixtures/native.ts` is a small one. Part of the [language guide](language.md).
+ports one as it is: the showcase ports ([`showcase/mainnet/raydium-amm`](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet/raydium-amm), `spl-stake-pool`, `phoenix`) run beside the
+original binaries, and [`test/fixtures/native.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/native.ts) is a small one. Part of the [language guide](language.md).
 
 ## The fallback entry
 
@@ -3470,13 +3674,13 @@ export function cancel(market: Mut<AccountInfo>, capacity: u64, price: u64, seq:
 `rbTreeMutAt<K, V>(acct, offset, capacity, compare?)` (or `rbTreeAt` to read) is lib-sokoban 0.3's
 `RedBlackTree<K, V, N>` over account bytes, byte for byte (root, allocator, 1-based nodes of registers + key + value;
 freed nodes keep their key and value; a LIFO free list ending at the bump index), checked against the crate after every
-operation of recorded traces (`test/verification/rbtree-trace.test.ts`). Every write is the crate's own, so the account
+operation of recorded traces ([`test/verification/rbtree-trace.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/verification/rbtree-trace.test.ts)). Every write is the crate's own, so the account
 matches the original after every instruction (Phoenix's order books and trader seats).
 
 - `length`, `capacity`, `initialize()`, `get(k)` (the value in place, or null), `insert(k, v)` (the node index, or null
   when a new key finds it full; an equal key takes the value), `remove(k)` (the value, read in the freed node, or null),
   `removeAt(i)` (the node at index `i` from `addrOf` or a node's `.index`, removed with `remove`'s writes without
-  searching again: 144 CU less per cancel in `test/language/phx-costs.test.ts`; null for 0 or a node in no tree),
+  searching again: 144 CU less per cancel in [`test/language/phx-costs.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/phx-costs.test.ts); null for 0 or a node in no tree),
   `min()` / `max()` (a node: `.key`, `.value`, `.index`, or null), `addrOf(k)` (0 when absent), `nodeAt(i)` (Phoenix
   keeps a trader's node index), `for (const e of tree)` / `tree.reversed()` with `break` / `continue`.
 - **The comparator** is a function of the program, `(a: K, b: K) => i8` (any signed integer result; an unsigned one is
@@ -3541,6 +3745,24 @@ direct mapping), one that was only read (or written with the bytes it held) is f
 - `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of `Mut<…>` parameters stay as
   they are, and programs without the flag compile exactly as before.
 
+### Inout places that may be one account
+
+An `Inout<T>` argument ([Inout parameters](language-statements.md#inout-parameters)) must not share storage with
+another argument during the call. Places that only the transaction can tell apart are compared before the call, and
+the call fails with 2040 when they overlap:
+
+- two `Dup<…>` accounts, a writable and a read-only account, or a helper's own account parameters;
+- two native views under `NATIVE_ACCOUNT_WRITES`: `loadRawMut`, `loadRawMutAt`, `rawArrayMutAt` elements and
+  `rbTreeMutAt` nodes.
+
+The comparison covers an Inout argument against every other argument passed in place (another Inout one, a read-only
+struct, array or list, an account), so a read-only argument cannot change under the helper while it writes. An
+argument copied for the call shares nothing and is not compared.
+
+One pair is left to run time: a place in a `loadRawMut` view passed with the `RemainingAccount` it was loaded from.
+Without `NATIVE_ACCOUNT_WRITES` a second `loadRawMut` of it in the helper fails with 2040; with the flag the helper can
+load and write the same bytes, the flag's trade-off.
+
 ## Accounts closed, reassigned and resized by hand
 
 On remaining accounts and `AccountInfo` parameters:
@@ -3549,7 +3771,7 @@ On remaining accounts and `AccountInfo` parameters:
   account.lamports` (checked), `account.lamports = 0`, `assign(&system_program::id())`, `realloc(0, false)`. Unlike
   `close` the data is not zeroed first (a realloc to 0 drops it, and the runtime then accepts the new owner), so it
   costs a few compute units whatever the account's size, and the account ends as the original's does (gone, its
-  lamports in the receiver; `test/language/native-close.test.ts` compares it with Phoenix's own Tombstone).
+  lamports in the receiver; [`test/language/native-close.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/native-close.test.ts) compares it with Phoenix's own Tombstone).
 - `assignOwner(account, owner)` is `AccountInfo::assign` (the runtime accepts it for a writable account of this program
   whose data is empty or zeroed).
 - `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, at most
@@ -3618,7 +3840,7 @@ export function entry(): void {
     u64 { return panicsAt(QUOTE_LOTS_ADD, a + b); }`.
   - The bits `<<` loses, `**`, `mulDiv` / `mulDivCeil`, casts and u256 arithmetic keep TypeSOL's failures (Rust checks
     them differently, or with other messages).
-  - `test/language/rust-panics.test.ts` checks the lines against the Phoenix binary's own panics.
+  - [`test/language/rust-panics.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/rust-panics.test.ts) checks the lines against the Phoenix binary's own panics.
 
 ## Log lines as the original writes them
 
@@ -3686,6 +3908,8 @@ void instruction (Phoenix's Borsh `Vec<FIFOOrderId>` of the orders that rested, 
 - More than 1024 bytes fails as the Rust call does: the runtime refuses it ("Return data too large (1025 > 1024)").
 - An instruction that returns a value cannot call it (a compile error: its return value is its return data); a helper
   it calls may, and the instruction's return value, set last, replaces what the helper set.
+
+**Next:** [Built-ins](language-builtins.md): every name `"typesol"` exports.
 
 <!-- docs/language-builtins.md -->
 
@@ -3772,7 +3996,7 @@ Explained in [Types: Lists](language-types.md#lists).
 | `fixedArray` | `function fixedArray<T, N>(fill: T): FixedArray<T, N>` | Create a local fixed-length array filled with `fill`: `const xs = fixedArray<u64, 4>(0n)`. |
 | `FixedVec` | `interface FixedVec<T, N>` | A list stored inline with room for N elements: a u32 length, then N slots (Anchor `Vec<T>` with `#[max_len(N)]`, but always 4 + N × size(T) bytes). |
 | `fixedVec` | `function fixedVec<T>(items: T[]): FixedVec<T, never>` | A FixedVec value holding these elements (`acct.owners = fixedVec([a, b])`, `{ owners: fixedVec([]) }`). |
-| `Vec` | `interface Vec<T>` | A growable list. |
+| `Vec` | `interface Vec<T>` | A list whose length varies: as account data the account grows with it; as an argument it is a read-only view. |
 | `IndexedList` | `interface IndexedList<T>` | A list read by index: a Vec or FixedVec in account data, a Vec argument, or a stored local list. |
 
 ## Helpers
@@ -3793,9 +4017,9 @@ Explained in [Accounts: Account parameters and the checks they emit](language-ac
 | `Signer` | `interface Signer` | The account must have signed the transaction. |
 | `SystemAccount` | `interface SystemAccount` | An account owned by the System Program, e.g. a wallet (Anchor `SystemAccount`; 3011 otherwise). |
 | `AccountInfo` | `interface AccountInfo` | Any account, no ownership or data checks. |
-| `Account` | `type Account<T> = Readonly<T> & AccountMeta` | A program-owned account holding struct `T`. |
-| `Mut` | `type Mut<T, E> = T & AccountMeta` | Like `Account<T>` but writable. |
-| `Init` | `type Init<T>` | A program-owned account that this instruction creates as a PDA. |
+| `Account` | `type Account<T> = Readonly<T> & AccountMeta` | An account owned by this program holding struct `T`. |
+| `Mut` | `type Mut<T, E> = T & AccountMeta` | A writable account: `Mut<T>` is `Account<T>` whose fields may be written. |
+| `Init` | `type Init<T>` | An account this instruction creates: at a PDA of this program, or, with `null` seeds, a new keypair account that signs. |
 | `InitIfNeeded` | `type InitIfNeeded<T>` | Created on first use (like Anchor `init_if_needed`): `createIfNeeded(payer, seeds)` returns true when it created the account now. |
 | `Zeroed` | `type Zeroed<T> = T & AccountMeta` | An account the client already allocated with System CreateAccount (any size up to 10 MiB; over 10 KiB a program cannot create it itself), owned by this program and still zeroed: Anchor's `zero`. |
 | `Migrate` | `interface Migrate<From, To>` | Anchor 1.0's `Migration<From, To>`: an existing `From` account (owner, discriminator and size checked) that this instruction rewrites as `To` with `acct.migrate(payer, value)`, a top-level statement every path must reach. |
@@ -3814,7 +4038,7 @@ Explained in [Accounts: Constraints](language-accounts.md#constraints).
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `HasOne` | `type HasOne<A, Field, E> = A & { readonly __hasOne?: [Field, E] }` | Declarative constraints, checked before your code runs (like Anchor's account attributes). |
+| `HasOne` | `type HasOne<A, Field, E> = A & { readonly __hasOne?: [Field, E] }` | `HasOne<A, "field">`: the struct's `field` must be the key of the parameter with that name (Anchor's `has_one`; 2001). |
 | `Seeds` | `type Seeds<A, Names, Bump, ProgramId>` | The account is this program's PDA for the seeds (Anchor's `seeds = […], bump`; 2006): `"@name"` is an account's key or an argument's bytes, `"@acct.field"` a field, other strings literals. |
 | `CloseTo` | `type CloseTo<A, Destination> = A & { readonly __closeTo?: Destination }` | Close the account into the parameter `Destination` when the instruction succeeds (Anchor's `close = destination`). |
 | `Address` | `type Address<A, Base58, E> = A & { readonly __address?: [Base58, E] }` | The account must be this exact address (Anchor `address = …`, error 2012): `Address<Mut<AccountInfo>, "4Nd1…">`. |
@@ -3890,7 +4114,7 @@ Explained in [Errors, logs, events and return values: Events](language-errors-ev
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `log` | `function log(value: string \| bigint \| Pubkey \| Hash): void` | Write a string, integer or pubkey to the program log. |
+| `log` | `function log(value: string \| bigint \| Pubkey \| Hash): void` | Write a string, integer, Pubkey or Hash to the program log (a Pubkey or Hash as base58). |
 | `emit` | `function emit<T>(event: T): void` | Emit an Anchor-compatible event ("Program data: <base64>") built from an exported interface: `emit<Deposited>({ owner: owner.key, amount })`. |
 | `emitCpi` | `function emitCpi<T>(event: T, eventAuthority: EventAuthority, self: SelfProgram): void` | Like emit, but the event travels in the data of a CPI to this program (Anchor `emit_cpi!`): indexers read it from inner instructions, and it cannot be cut off by log truncation. |
 
@@ -3900,9 +4124,9 @@ Explained in [Calling other programs: invoke](language-cpi.md#invoke).
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `invoke` | `function invoke(program: Program<string> \| UncheckedProgram \| SystemProgram \| TokenProgram \| Token2022Program \| TokenInterface \| RemainingAccount, accounts: CpiAccount[], data: CpiData[], signerSeeds?: Seed[] \| SignerSeeds \| (Seed[] \| SignerSeeds)[]): void` | Cross-program invocation. |
+| `invoke` | `function invoke(program: Program<string> \| UncheckedProgram \| SystemProgram \| TokenProgram \| Token2022Program \| TokenInterface \| RemainingAccount, accounts: CpiAccount[], data: CpiData[], signerSeeds?: Seed[] \| SignerSeeds \| (Seed[] \| SignerSeeds)[]): void` | Call any program (a cross-program invocation) with an account list and instruction data. |
 | `CpiAccount` | `interface CpiAccount` | An account entry for `invoke`, built with readonly()/writable()/readonlySigner()/writableSigner(). |
-| `readonly` | `function readonly(account: AccountMeta \| RemainingAccount \| null): CpiAccount`<br>`function readonly(accounts: RemainingAccounts \| RemainingSlice): Iterable<CpiAccount>` | An optional account (`A \| null`) passed as it is, without `!`: left out of the CPI's list when it was not passed (Rust's `if let Some(a) = &self.a { accounts.push(a) }`, as for `with_remaining_accounts`). |
+| `readonly` | `function readonly(account: AccountMeta \| RemainingAccount \| null): CpiAccount`<br>`function readonly(accounts: RemainingAccounts \| RemainingSlice): Iterable<CpiAccount>` | A read-only entry of `invoke`'s account list: an account, or remaining accounts spread (`...readonly(rest)`). |
 | `writable` | `function writable(account: AccountMeta \| RemainingAccount \| null): CpiAccount`<br>`function writable(accounts: RemainingAccounts \| RemainingSlice): Iterable<CpiAccount>` | A writable account entry for `invoke` (the parameter must be `Mut<…>`); an optional account as for `readonly`. |
 | `readonlySigner` | `function readonlySigner(account: AccountMeta \| RemainingAccount): CpiAccount` | A read-only signer entry for `invoke`: the account signed, or signerSeeds sign for it. |
 | `writableSigner` | `function writableSigner(account: AccountMeta \| RemainingAccount): CpiAccount` | A writable signer entry for `invoke`: the account signed, or signerSeeds sign for it. |
@@ -3931,13 +4155,13 @@ Explained in [Calling other programs: Tokens](language-cpi.md#tokens).
 | `TokenInterface` | `interface TokenInterface` | Either token program. |
 | `TokenOf` | `type TokenOf<A, MintParam, AuthorityParam, TokenProgramParam>` | Anchor's `token::mint = mintParam, token::authority = authorityParam, token::token_program = tokenProgramParam` on an existing token account, naming the parameters (2014 / 2015 / 2021: owned by that token program); `never` leaves one out. |
 | `MintOf` | `type MintOf<A, AuthorityParam, FreezeAuthorityParam, TokenProgramParam>` | Anchor's `mint::authority = a, mint::freeze_authority = f, mint::token_program = tp` on an existing mint, naming the parameters (2016 / 2017 / 2022: owned by that token program); `never` leaves one out. |
-| `Ata` | `type Ata<A, Owner, MintParam> = A & { readonly __ata?: [Owner, MintParam] }` | Token constraints, checked before your code runs. |
+| `Ata` | `type Ata<A, Owner, MintParam> = A & { readonly __ata?: [Owner, MintParam] }` | `Ata<A, "owner", "mint">`: the account must be the associated token account of those parameters (2009). |
 | `MintExtensions` | `interface MintExtensions` | Token-2022 extensions for `mint.create(…, extensions)`: Anchor's `extensions::…` constraints. |
 | `AuthorityType` | `const AuthorityType` | Token authority kinds for setAuthority (SPL Token AuthorityType). |
 | `AssociatedTokenProgram` | `interface AssociatedTokenProgram` | The Associated Token Account program (ATokenGP…). |
 | `associatedTokenAddress` | `function associatedTokenAddress(owner: Pubkey, mint: Pubkey, tokenProgram: Pubkey): Pubkey` | The associated token account address of `owner` for `mint` under `tokenProgram`. |
 | `rentExempt` | `function rentExempt(space: u64): u64` | Rent-exempt minimum balance for an account of `space` bytes. |
-| `TOKEN_ACCOUNT_SIZE` | `const TOKEN_ACCOUNT_SIZE: u64` | SPL Token account and mint sizes, for systemProgram.createAccount. |
+| `TOKEN_ACCOUNT_SIZE` | `const TOKEN_ACCOUNT_SIZE: u64` | SPL Token's token account size, 165 bytes, for systemProgram.createAccount. |
 | `MINT_SIZE` | `const MINT_SIZE: u64` | SPL Token's mint size, 82 bytes. |
 
 ## Token-2022 extension reads
@@ -3946,7 +4170,7 @@ Explained in [Calling other programs: Token-2022 extension reads](language-cpi.m
 
 | Name | Declaration | What it is |
 | --- | --- | --- |
-| `transferFee` | `function transferFee(mint: AccountMeta \| RemainingAccount, amount: u64): u64` | Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none). transferFee: the fee withheld when `amount` is sent now (TransferFeeConfig for the current epoch; 0 without it). |
+| `transferFee` | `function transferFee(mint: AccountMeta \| RemainingAccount, amount: u64): u64` | The fee withheld when `amount` is sent now: the mint's Token-2022 TransferFeeConfig for the current epoch, 0 without it. |
 | `transferFeeInverse` | `function transferFeeInverse(mint: AccountMeta \| RemainingAccount, amountReceived: u64): u64` | The fee withheld when the recipient is to get `amountReceived` (spl-token-2022's `calculate_inverse_epoch_fee`): send `amountReceived + transferFeeInverse(mint, amountReceived)`. 0 without TransferFeeConfig; fails (5100) where spl-token-2022 has no answer. |
 | `transferFeeBasisPoints` | `function transferFeeBasisPoints(mint: AccountMeta \| RemainingAccount): u16` | The TransferFeeConfig in force this epoch: its basis points (0 without the extension). |
 | `transferFeeMaximum` | `function transferFeeMaximum(mint: AccountMeta \| RemainingAccount): u64` | The TransferFeeConfig in force this epoch: its maximum fee (0 without the extension). |
@@ -4023,10 +4247,10 @@ Explained in [Sysvars, hashes, signatures and oracles: Sysvars](language-chain.m
 | Name | Declaration | What it is |
 | --- | --- | --- |
 | `now` | `function now(): i64` | Current cluster unix timestamp (Clock sysvar). |
-| `currentSlot` | `function currentSlot(): u64` | The current slot and epoch (Clock sysvar). |
+| `currentSlot` | `function currentSlot(): u64` | The current slot (Clock sysvar). |
 | `currentEpoch` | `function currentEpoch(): u64` | The current epoch (Clock sysvar). |
 | `epochStartTimestamp` | `function epochStartTimestamp(): i64` | The Unix time the current epoch started at (Clock.epoch_start_timestamp). |
-| `slotsPerEpoch` | `function slotsPerEpoch(): u64` | The EpochSchedule sysvar: slots per epoch (after warmup), whether epochs warm up, and where normal epochs start. |
+| `slotsPerEpoch` | `function slotsPerEpoch(): u64` | The number of slots in an epoch after warmup (EpochSchedule sysvar). |
 | `epochWarmup` | `function epochWarmup(): boolean` | Whether epochs warm up (EpochSchedule sysvar). |
 | `firstNormalEpoch` | `function firstNormalEpoch(): u64` | The first epoch after warmup (EpochSchedule sysvar). |
 | `firstNormalSlot` | `function firstNormalSlot(): u64` | The first slot after warmup (EpochSchedule sysvar). |
@@ -4046,9 +4270,9 @@ Explained in [Sysvars, hashes, signatures and oracles: Hashing](language-chain.m
 | --- | --- | --- |
 | `sha256` | `function sha256(...parts: (string \| Pubkey \| Hash \| bigint \| boolean)[]): Hash` | sha256 over the parts concatenated: strings (UTF-8), Pubkeys/Hashes (32 bytes), integers (LE), booleans (1 byte). |
 | `keccak256` | `function keccak256(...parts: (string \| Pubkey \| Hash \| bigint \| boolean)[]): Hash` | keccak256 over the parts concatenated, encoded as for sha256. |
-| `merkleVerify` | `function merkleVerify(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean` | Verify a Merkle proof (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools use). |
-| `verifyEd25519` | `function verifyEd25519(instructions: InstructionsSysvar, signer: Pubkey, message: string \| Hash \| Pubkey): boolean` | True when this transaction contains an Ed25519 precompile instruction that verified `message` signed by `signer` (offsets inside the precompile's own data). |
-| `verifySecp256k1` | `function verifySecp256k1(hash: Hash, recoveryId: u8, r: Hash, s: Hash, ethAddress: Hash): boolean` | Recover the secp256k1 signer of `hash` from (r, s, recoveryId) and compare it with an Ethereum address given left-padded to 32 bytes (12 zero bytes + 20 address bytes). |
+| `merkleVerify` | `function merkleVerify(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean` | Whether `proof` places `leaf` under `root` (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools use). |
+| `verifyEd25519` | `function verifyEd25519(instructions: InstructionsSysvar, signer: Pubkey, message: string \| Hash \| Pubkey): boolean` | Whether this transaction contains an Ed25519 precompile instruction that verified `message` signed by `signer` (offsets inside the precompile's own data). |
+| `verifySecp256k1` | `function verifySecp256k1(hash: Hash, recoveryId: u8, r: Hash, s: Hash, ethAddress: Hash): boolean` | Whether the secp256k1 signer of `hash`, recovered from (r, s, recoveryId), is an Ethereum address given left-padded to 32 bytes (12 zero bytes + 20 address bytes). |
 | `ethMessageHash` | `function ethMessageHash(message: string): Hash` | The hash an Ethereum wallet signs for `personal_sign` (EIP-191): keccak256("\x19Ethereum Signed Message:\n" + length + message). |
 | `InstructionsSysvar` | `interface InstructionsSysvar` | The Instructions sysvar (Sysvar1nstructions…): every instruction of the transaction being executed. |
 | `TransactionInstruction` | `interface TransactionInstruction` | One instruction of the transaction, read from the Instructions sysvar. |
@@ -4081,7 +4305,7 @@ Explained in [Porting a native program (advanced)](language-native.md).
 | `BigVecSlice` | `interface BigVecSlice<T>` | Some elements of a BigVec, in place: `bigVec.slice(start, end)`. |
 | `loadRawAt` | `function loadRawAt<T>(account: RemainingAccount \| AccountInfo, offset: u64): Account<T>` | `loadRaw` / `loadRawMut` at a byte offset known only at run time (a native account whose parts start where its header says: Phoenix's market at byte 576). |
 | `loadRawMutAt` | `function loadRawMutAt<T>(account: RemainingAccount \| AccountInfo, offset: u64): Mut<T>` | `loadRawAt` for writing: writable and claimed as `loadRawMut` is. |
-| `rawArrayAt` | `function rawArrayAt<T>(account: RemainingAccount \| AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>` | `const slab = rawArrayMutAt<Order>(acct, offset, capacity)`: see RawArray. |
+| `rawArrayAt` | `function rawArrayAt<T>(account: RemainingAccount \| AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>` | A read-only view of `capacity` elements of `T` at `offset` in an account (see RawArray); `rawArrayMutAt` writes. |
 | `rawArrayMutAt` | `function rawArrayMutAt<T>(account: RemainingAccount \| AccountInfo, offset: u64, capacity: u64): RawArray<T>` | `rawArrayAt` for writing: elements set in place (see RawArray). |
 | `RawArray` | `interface RawArray<T>` | `capacity` elements of a fixed-size type packed in place from a run-time byte offset, the count known only at run time (a slab sized by its header). |
 | `ReadonlyRawArray` | `interface ReadonlyRawArray<T>` | A RawArray of a read-only view (`rawArrayAt`): elements are read, not written. |
@@ -4098,6 +4322,8 @@ Explained in [Porting a native program (advanced)](language-native.md).
 | `abort` | `function abort(): never` | Stop the program as Rust's `abort` does on SBF (the allocator's out-of-memory error, `std::process::abort`): the runtime's `abort` syscall, which fails the instruction with ProgramFailedToComplete and logs "SBF program panicked" (no location, nothing else). |
 | `logBase64` | `function logBase64(prefix: string, value: object): void` | Log `prefix` followed by the base64 (standard, padded) of a struct value's bytes, as a native program's `msg!("ray_log: {}", base64(bincode(log)))` does. |
 | `logComputeUnits` | `function logComputeUnits(): void` | Log the compute units left (Rust's `sol_log_compute_units()`): the runtime writes "Program consumption: <N> units remaining", as the original's line, at the same place. |
+
+**Next:** [Glossary](glossary.md): the Solana and TypeSOL terms the guide uses.
 
 <!-- docs/errors.md -->
 
@@ -4155,9 +4381,11 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 5115 | an optional account that was left out was used |
 | 6000+ | your error enums' members, in declaration order (imported files first), then one `RequireFailed<N>` error (code 6000 + N, after the highest code) per distinct `require(cond, "message")` string |
 
+A token account or mint parameter fails with 3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length.
+
 A member's string is its message (the IDL's `msg`); `X = ""` leaves the message out, as an Anchor variant without
 `#[msg]`. `/** @code 6200 */` before a member gives it that code, and the members after it continue from there (Anchor's
-`Variant = 200`); codes only go up. `require(cond, "message")` errors come after the highest code.
+`Variant = 200`); codes only go up. The tag goes on its own line above the member. `require(cond, "message")` errors come after the highest code.
 
 Any of Anchor's own codes can be raised directly: `require(cond, AnchorError.RequireKeysEqViolated)` fails with 2502,
 as `require_keys_eq!` does.
@@ -4170,11 +4398,13 @@ reported as it is (use one of your errors' codes, so clients can decode it); a z
 ## Which error a transaction gets
 
 A transaction can break several checks; it fails with the first. Within each account's constraints the checks run in
-the order Anchor's generated code runs them, so a transaction gets the same code under both:
+the order Anchor's generated code runs them, so a transaction that breaks one check gets the same code under both, and
+one that breaks several gets it too except in the cases listed after the steps:
 
-1. The account count (3005), then each account in parameter order: its type, signer (3010), `Mut` (2000), owner,
-   discriminator and size of a program account (3007 / 3012 / 3002 / 3003; a zero-copy one as Anchor's AccountLoader:
-   3007 / 3001 / 3002, then 3003), token account or mint, program address.
+1. The account count (3005), then each account in parameter order: its type, signer (3010), `Mut` (2000); for a
+   program account, initialized (3012 for an empty system account), owner (3007), size (3003, the discriminator's 8
+   bytes included), then discriminator (3002); a zero-copy one as Anchor's AccountLoader: 3007 / 3001 / 3002, then
+   3003; a token account or mint; a program address.
 2. Two writable parameters naming one account (2040).
 3. The instruction's arguments (102).
 4. Each account in parameter order, its constraints in Anchor's order: seeds (2006), associated token account (owner
@@ -4186,6 +4416,10 @@ Where TypeSOL's order differs, only a transaction that breaks two of these check
 - Anchor decodes the arguments first, and checks `mut` with the constraints (after seeds and the associated token
   account). TypeSOL keeps both earlier and later as above, which keeps binaries smaller.
 - Too few accounts fails with 3005 before any account is checked; Anchor fails on the first account it cannot find.
+- A program account's size is checked before its discriminator; Anchor's `Account::try_from` reads the discriminator
+  first (3001 when there are fewer than 8 bytes, 3002 when it differs) and then decodes the data (3003). So an account
+  of this program with another discriminator and fewer bytes than the struct fails with 3003 here and 3002 under
+  Anchor, and one with fewer than 8 bytes of data with 3003 here and 3001 under Anchor.
 - Accounts the instruction creates (`Init<…>`, `create(…)`) are created in the body, after every other check, where
   Anchor creates them before checking the other accounts.
 - TypeSOL refuses any two writable parameters naming one account (2040) unless one is `Dup<…>`, where Anchor only compares program and token
@@ -4234,6 +4468,26 @@ instruction that takes the bump as an argument.
 
 `t.send(payer, ...ixs)` sends them in one transaction; keypairs given as accounts sign too.
 
+### Seeds of other widths
+
+`t.pda` takes text, addresses or keypairs, raw bytes, and bigints, which it encodes as 8-byte little-endian u64s, as
+the program encodes a `u64` seed. A seed of another width is passed as its bytes: for a program that derives
+`["vault", owner.key, index]` with `index: u16`,
+
+```ts
+const u16 = (n: number) => {
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, n, true); // little-endian, as the program reads a u16 seed
+  return b;
+};
+const vault = await t.pda("vault", alice, u16(3));
+t.ok(await t.send(alice, t.ix("open", { index: 3 }, { owner: alice, vault })));
+```
+
+`t.pda("vault", alice, 3n)` would be another address (8 bytes for the index). `setUint32` gives a `u32` seed the same
+way. A string that is a valid address is taken as an address; pass `new TextEncoder().encode(s)` for text that only
+looks like one.
+
 ## Results
 
 | Helper | Gives |
@@ -4246,6 +4500,19 @@ instruction that takes the bump as an argument.
 | `t.errorName(code)` | the name of an error code: your program's, TypeSOL's or Anchor's |
 | `t.connection` | `{ rpc, rpcSubscriptions }` answered by this LiteSVM, for the generated client: `counter.sendInstructions(t.connection, alice, [ix])`, `counter.accounts.Counter.fetch(t.connection.rpc, address)`, views, `resolve`, `watch` and `watchEvents` (as on a cluster: `watch` yields when a later transaction changes the account, not at once; `watchEvents` gets transactions sent after it subscribed, failed ones included in the stream and skipped by the client) |
 
+### Expecting an error
+
+A test that a check holds sends the transaction that breaks it and compares the code:
+
+```ts
+const res = await t.send(alice, t.ix("spend", { amount: 50n }, { owner: alice, vault }));
+expect(t.errorCode(res)).toBe(6000);
+expect(t.errorName(t.errorCode(res))).toBe("TooMuch");
+```
+
+`t.errorCode` throws when the transaction succeeded or failed without a custom code (a runtime error such as missing
+signatures), so the test fails then too.
+
 ## Tokens and time
 
 | Helper | Does |
@@ -4254,6 +4521,20 @@ instruction that takes the bump as an argument.
 | `t.tokenAccount({ mint, owner, amount?, tokenProgram?, address? })` | writes a token account holding `amount`; pass `address` for an associated token account |
 | `t.tokenBalance(address)` | the amount a token account holds, or `null` when it does not exist |
 | `t.warp({ unixTimestamp?, slot?, seconds? })` | moves the Clock: to a timestamp or slot, or forward by `seconds` |
+
+## Accounts from a cluster
+
+To test against accounts that exist on mainnet (a mint, an oracle, another program), list them in `typesol.json` as
+`"clone": ["<address>", …]` and run `typesol clone --url mainnet-beta` once (or `typesol clone <address>…`). They are
+written to `tests/accounts/`, which `testProgram` loads into its LiteSVM before your first test; commit the directory so
+the tests run offline. `loadClonedAccounts(svm, dir)` does the same for a LiteSVM of your own.
+
+`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
+program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
+program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
+transactions named, plus any you `track(...)`.
+
+The module needs `litesvm` and `@anchor-lang/core`, which `typesol init` adds to `devDependencies`.
 
 ## Epochs and staking
 
@@ -4302,20 +4583,6 @@ expect(cluster.activation(stake).effective).toBe(90n * SOL);
 - **Rent.** In LiteSVM 1.6.1 the Stake program holds back the Rent sysvar's minimum for 200 bytes
   (`svm.minimumBalanceForRentExemption(200n)`), which is less than the `rentExemptReserve` its Initialize stores.
 
-## Accounts from a cluster
-
-To test against accounts that exist on mainnet (a mint, an oracle, another program), list them in `typesol.json` as
-`"clone": ["<address>", …]` and run `typesol clone --url mainnet-beta` once (or `typesol clone <address>…`). They are
-written to `tests/accounts/`, which `testProgram` loads into its LiteSVM before your first test; commit the directory so
-the tests run offline. `loadClonedAccounts(svm, dir)` does the same for a LiteSVM of your own.
-
-`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
-program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
-program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
-transactions named, plus any you `track(...)`.
-
-The module needs `litesvm` and `@anchor-lang/core`, which `typesol init` adds to `devDependencies`.
-
 <!-- docs/cli.md -->
 
 # CLI reference
@@ -4326,7 +4593,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 
 | Command | What it does |
 | --- | --- |
-| `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow] [--no-agent-files]` | Create a project: `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`, `programs/tsconfig.json` (with the editor plugin), `.vscode/settings.json` (the workspace TypeScript, so the plugin loads), `.gitignore`, the rules for AI coding agents (`AGENTS.md`, `CLAUDE.md` importing it, `.cursor/rules/typesol.mdc`) and the MCP server configuration (`.mcp.json`, `.cursor/mcp.json`; see [ai.md](ai.md)). `<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). `--no-agent-files` leaves out the agent rules and the MCP configuration (`AGENTS.md`, `CLAUDE.md`, `.cursor/`, `.mcp.json`); otherwise `init` lists them after the files it created. Refuses to overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing, and says whether the Agave CLI is missing or only its platform-tools (on Linux arm64, where there is no Agave CLI, the commands that set up the platform-tools' `linux-aarch64` package). |
+| `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow] [--no-agent-files]` | Create a project ([below](#typesol-init)). |
 | `typesol new <program> [--template counter\|vault\|escrow]` | In a project: add a program, `programs/<program>.ts` and `tests/<program>.test.ts` from the template, and its entry in `typesol.json`. Refuses to overwrite files or reuse a name. |
 | `typesol doctor [--url <rpc>] [--config <cli config>]` | Check what building, testing and deploying need: Node.js, the platform-tools (and a `toolchain` row: the tested ones, or untested with both versions), the Solana CLI, Docker (optional: only `--docker` builds need it; it says when they run emulated), its keypair, the RPC (`--url`, a cluster moniker, or the CLI config) and the keypair's balance there, and the project. Each problem is printed with the command that fixes it. The last line says what is ready (building and testing, or also deploying) and what the warnings concern. Exit code 1 when building is impossible (Node.js or the platform-tools missing); deploy pieces are warnings. |
 | `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--toolchain-strict] [--docker [--typesol-version <v>] [--release-record <file>]] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json` (the TypeSOL, TypeScript, clang and platform-tools versions, the host, the SBPF version, each source's sha256 and the binary's). With platform-tools other than the tested ones it warns once; `--toolchain-strict` (or `TYPESOL_TOOLCHAIN=strict`) refuses them. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. `--docker` builds in the pinned container instead ([below](#build---docker-and-verify---docker)). |
@@ -4340,7 +4607,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | `typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]` | Generate TypeSOL helpers that call another program from its IDL. Unsupported instructions are listed on stderr. |
 | `typesol port <idl.json> [--out <file.ts>]` | A TypeSOL program skeleton from an Anchor IDL (0.30+/1.x), to port an Anchor program: account structs, enums, errors, events and one function per instruction with its accounts and arguments, each body `require(false, …NotPorted)` until written. Instruction discriminators (an explicit `@discriminator` when the name derives another), account names and error codes are kept, so existing clients keep working where the layouts match; notes on stderr list where they do not (Borsh `String`/`Option` in account data, a `Vec` that is not the last field). Error codes that skip ahead are kept with `@code`, and zero-copy types keep their IDL `repr`, `serialization` and field names (`@repr`, `@serialization`, `@idlName`). |
 | `typesol client <idl.json> [--out <file.ts>] [--address <base58>]`, `typesol client --address <program id> [--url <rpc>] [--config <cli config>] [--out <file.ts>]` | Generate a typed TypeScript client on `@solana/kit` from an Anchor IDL (0.30+/1.x or TypeSOL); the IDL is validated first, and what the client leaves out is printed as notes. Without a file, the IDL is read from the chain: the canonical Program Metadata IDL, else Anchor's IDL account. See [client.md](client.md). |
-| `typesol verify <program\|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>] [--sbpf …] [--manifest <name.build.json>] [--docker …]` | Rebuild and compare with what is deployed. Without a `.so`, reads the program from the cluster (`--url`, cluster monikers such as `mainnet-beta` included, else the Solana CLI config) at `--address` or the address `typesol.json` records, under any loader (v2, upgradeable v3, v4); prints the upgrade authority (or that the program is immutable) and the last deploy slot, and compares the IDL published with `typesol idl publish` (a published IDL that differs is a mismatch). With a `.so` (e.g. `solana program dump`), compares with that file. Trailing zero padding is ignored; the SBPF version is read from the deployed ELF unless `--sbpf` is given. On a mismatch it prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the deployed build's when a build manifest's binary hash is the deployed bytes' (`--manifest`, `<deployed>.build.json` next to a given `.so`, or the local build's), and what differs; otherwise it says the deployed side's toolchain is unknown (a program on chain records none). A host difference alone is named as such; it counts only between builds of 0.44.1 or earlier, whose programs with 128-bit or signed division linked platform-tools' compiler-builtins (laid out differently by each host package). `--docker` rebuilds in the pinned container and, on a match, prints what was verified ([below](#build---docker-and-verify---docker)). |
+| `typesol verify <program\|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>] [--sbpf …] [--manifest <name.build.json>] [--docker …]` | Rebuild and compare with what is deployed ([below](#typesol-verify)). |
 | `typesol profile <logs.txt\|-> [--program <id>]` | Compute units per TypeScript line from the logs of a `--profile` build's transaction (exit 1 when the logs have no markers). |
 | `typesol help <command>` | Same as `typesol <command> --help`. |
 | `typesol --version` | Print the version. |
@@ -4352,6 +4619,44 @@ when one fails (an RPC URL can carry an API key). A `--config` file that does no
 Builds (`build`, `deploy`, `verify`, `typesol/testing`) compare the active clang with the one the release is tested
 with (`TESTED_TOOLCHAIN` in `typesol/compiler`: Agave 3.1.10, platform-tools v1.52): another one gets one warning per
 process on stderr. `TYPESOL_TOOLCHAIN=strict` makes it an error everywhere, `warn` is the default.
+
+## typesol init
+
+`typesol init [<dir>] [--name <program>] [--template counter|vault|escrow] [--no-agent-files]` creates a project:
+
+- `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`,
+  `programs/tsconfig.json` (with the editor plugin), `.vscode/settings.json` (the workspace TypeScript, so the plugin
+  loads) and `.gitignore`;
+- the rules for AI coding agents (`AGENTS.md`, `CLAUDE.md` importing it, `.cursor/rules/typesol.mdc`) and the MCP
+  server configuration (`.mcp.json`, `.cursor/mcp.json`; see [ai.md](ai.md)). `--no-agent-files` leaves them out
+  (`AGENTS.md`, `CLAUDE.md`, `.cursor/`, `.mcp.json`); otherwise `init` lists them after the files it created.
+
+`<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the
+program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above
+rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). `init` refuses to
+overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing, and
+says whether the Agave CLI is missing or only its platform-tools (on Linux arm64, where there is no Agave CLI, the
+commands that set up the platform-tools' `linux-aarch64` package).
+
+## typesol verify
+
+`typesol verify <program|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>]
+[--sbpf …] [--manifest <name.build.json>] [--docker …]` rebuilds the program and compares it with what is deployed.
+
+- **Without a `.so`** it reads the program from the cluster (`--url`, cluster monikers such as `mainnet-beta` included,
+  else the Solana CLI config) at `--address` or the address `typesol.json` records, under any loader (v2, upgradeable
+  v3, v4). It prints the upgrade authority (or that the program is immutable) and the last deploy slot, and compares
+  the IDL published with `typesol idl publish` (a published IDL that differs is a mismatch).
+- **With a `.so`** (e.g. from `solana program dump`) it compares with that file.
+- Trailing zero padding is ignored; the SBPF version is read from the deployed ELF unless `--sbpf` is given.
+- **On a mismatch** it prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the deployed build's
+  when a build manifest's binary hash is the deployed bytes' (`--manifest`, `<deployed>.build.json` next to a given
+  `.so`, or the local build's), and what differs; otherwise it says the deployed side's toolchain is unknown (a
+  program on chain records none). A host difference alone is named as such; it counts only between builds of 0.44.1
+  or earlier, whose programs with 128-bit or signed division linked platform-tools' compiler-builtins (laid out
+  differently by each host package).
+- `--docker` rebuilds in the pinned container and, on a match, prints what was verified
+  ([below](#build---docker-and-verify---docker)).
 
 ## build --docker and verify --docker
 
@@ -4554,7 +4859,9 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
    token types for token accounts (the table below).
 2. Move the constraints from `#[account(...)]` into the parameter types or the body.
 3. Port the body. Integers are `bigint`s with `n` literals, and every `+ - * / %` is checked.
-4. Test with `typesol/testing` ([test your program](test-your-program.md)), then compare the IDLs.
+4. Test with `typesol/testing` ([test your program](test-your-program.md)), then compare the IDLs, section by section
+   (with `jq`): `diff <(jq -S .instructions ../anchor/target/idl/my_program.json) <(jq -S .instructions
+   target/my_program/my_program.json)`, then the same for `.accounts`, `.types`, `.events` and `.errors`.
 
 ## Accounts and constraints
 
@@ -4576,7 +4883,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `owner = program`, `executable` | `Owner<A, "…">`, `Executable<A>` |
 | `constraint = expr @ MyError::X` (or without an error: 2003) | `constraint(acct, expr, MyError.X)` (or `constraint(acct, expr)`) at the start of the body: it runs with `acct`'s checks, where Anchor runs it |
 | `realloc = n, realloc::payer = p` | `realloc(acct, n, p)` |
-| `Option<Account<'info, T>>` | `Mut<T> \| null` (the client passes the program id to leave it out) |
+| `Option<Account<'info, T>>` | `Account<T> \| null`, or `Mut<T> \| null` with `#[account(mut)]` (the client passes the program id to leave it out) |
 | `UncheckedAccount` / `AccountInfo` | `AccountInfo` / `Mut<AccountInfo>`: check what you rely on yourself |
 | `SystemAccount<'info>` | `SystemAccount` / `Mut<SystemAccount>` |
 | `Migration<'info, From, To>` | `Migrate<From, To>`, then `acct.migrate(payer, value)`; the old struct keeps its on-chain discriminator with `/** @discriminator account:<OldName> */` |
@@ -4606,7 +4913,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `#[account] pub struct T { … }` | `export interface T { … }` |
 | `u8` … `u128`, `i8` … `i128`, `bool`, `Pubkey` | `u8` … `u128`, `i8` … `i128`, `boolean`, `Pubkey` |
 | `[T; N]` | `FixedArray<T, N>` |
-| `String` with `#[max_len(n)]` | `FixedString<N>`: a u32 length and N bytes, always N bytes long |
+| `String` with `#[max_len(n)]` | `FixedString<N>`: a u32 length and room for N bytes, always 4 + N bytes long |
 | `Vec<T>` with `#[max_len(n)]` | `Vec<T>` (any number, declared anywhere, stored after the fixed-size fields; it grows with `push(v, payer)`), or `FixedVec<T, n>`: a u32 length and room for n, always 4 + n × size bytes; in a `@layout borsh` struct, `Vec<T>` is Anchor's own, bounded only by the account |
 | `Option<T>` | `Option<T>`: fixed size (1 + size of T) |
 | `#[derive(AnchorSerialize…)] enum` | `export enum` (unit variants) or a data enum `type A = { kind: "X"; … } \| …` |
@@ -4620,8 +4927,7 @@ fields after them).
 To keep an Anchor program's existing accounts, mark the struct `/** @layout borsh */`: it is then stored exactly as
 Anchor stores it (`FixedString<N>` / `FixedVec<T, N>` / `Option<T>` become Borsh String / Vec / Option, N being the
 `#[max_len]`), its IDL type is Anchor's, and the upgraded program reads and writes the accounts in place. `typesol port`
-adds it for you. It costs some compute (the account is unpacked and packed in every instruction that uses it) but stays
-several times cheaper than Anchor. Without it, accounts that use these types need a migration (or a new program) rather
+adds it for you. It costs some compute: the account is unpacked and packed in every instruction that uses it. Without it, accounts that use these types need a migration (or a new program) rather
 than an in-place upgrade. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
 matches byte for byte. A `@layout borsh` struct passed as a whole argument, returned or emitted is Borsh too, so an
 Anchor instruction that takes or returns a struct with `String` / `Vec` / `Option` fields keeps its client bytes.
@@ -4689,9 +4995,23 @@ Anchor instruction that takes or returns a struct with `String` / `Vec` / `Optio
 
 # Troubleshooting
 
-## "the Agave CLI is not installed" (formerly "Solana SBF SDK not found")
+Grouped by when they happen; within each group, the problems a first run meets come first.
 
-Install it and its platform-tools as in the README's Quick start:
+## Install
+
+### `TypeSOL needs Node.js 22.12 or later`
+
+The CLI checks the Node.js version before anything else. On an older one, `npm install` can fail inside npm and the
+tests with `Map.groupBy is not a function`; install a current Node.js (https://nodejs.org, or `nvm install 22`).
+
+### `npm error 404 … typesol - Not found`
+
+`npx --no-install typesol` ran outside a project, or before `npm install` in it: `typesol` is the name projects install
+the package under, not a package on npm. Run `npx @typesol/cli …` there, or `npm install` in the project first.
+
+### "the Agave CLI is not installed" (formerly "Solana SBF SDK not found")
+
+Install it and its platform-tools as in the README's [Quick start](../README.md#quick-start):
 
 ```sh
 sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
@@ -4703,7 +5023,17 @@ TypeSOL looks in `~/.local/share/solana/install/active_release/bin/platform-tool
 `cargo-build-sbf` on PATH; set `TYPESOL_SBF_SDK` to a `platform-tools-sdk/sbf` directory otherwise. On Linux arm64 see
 [the next section](#linux-arm64-the-agave-installer-fails-with-a-404).
 
-## Linux arm64: the Agave installer fails with a 404
+### `cargo-build-sbf: command not found` right after installing
+
+The Agave installer adds its `bin` directory to `PATH` in `~/.profile`, which only new login shells read. In the same
+shell, run `export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"`.
+
+### "the Agave CLI is installed, but not its platform-tools" (formerly "platform-tools missing") / "no SBPF v2 libraries"
+
+`cargo-build-sbf --install-only --force-tools-install --tools-version v1.52`. Neither `cargo-build-sbf --version` (it
+downloads nothing) nor `cargo-build-sbf --force-tools-install` alone (it needs Cargo and a Cargo project) installs them.
+
+### Linux arm64: the Agave installer fails with a 404
 
 Anza publishes no Agave CLI for Linux arm64 (`agave-install-init-aarch64-unknown-linux-gnu` is not there), but
 platform-tools has a `linux-aarch64` package. With it and the SDK's C files from the x86_64 release (headers and
@@ -4721,32 +5051,15 @@ export TYPESOL_SBF_SDK=$HOME/.local/share/typesol-sdk/sbf   # add this line to ~
 Deploying needs the Solana CLI: deploy from macOS or Linux x86_64, or build the Agave CLI from source
 (https://docs.anza.xyz/cli/install). `build --docker` (linux/amd64, emulated) works on any host with Docker.
 
-## "the Agave CLI is installed, but not its platform-tools" (formerly "platform-tools missing") / "no SBPF v2 libraries"
+### Windows
 
-`cargo-build-sbf --install-only --force-tools-install --tools-version v1.52`. Neither `cargo-build-sbf --version` (it
-downloads nothing) nor `cargo-build-sbf --force-tools-install` alone (it needs Cargo and a Cargo project) installs them.
+Not tested; use WSL2 with the Linux Agave CLI.
 
-## `cargo-build-sbf: command not found` right after installing
+### Node errors such as `ERR_UNKNOWN_FILE_EXTENSION` or `ERR_REQUIRE_ESM`
 
-The Agave installer adds its `bin` directory to `PATH` in `~/.profile`, which only new login shells read. In the same
-shell, run `export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"`.
+Use Node.js 22.12 or newer.
 
-## `TypeSOL needs Node.js 22.12 or later`
-
-The CLI checks the Node.js version before anything else. On an older one, `npm install` can fail inside npm and the
-tests with `Map.groupBy is not a function`; install a current Node.js (https://nodejs.org, or `nvm install 22`).
-
-## `npm error 404 … typesol - Not found`
-
-`npx --no-install typesol` ran outside a project, or before `npm install` in it: `typesol` is the name projects install
-the package under, not a package on npm. Run `npx @typesol/cli …` there, or `npm install` in the project first.
-
-## `no payer keypair at ~/.config/solana/id.json` (deploy)
-
-`solana-keygen new` creates it (or pass `--keypair <file>`); fund it on devnet with `solana airdrop 2 --url devnet`.
-Nothing is sent before it exists.
-
-## "warning: this build uses clang … TypeSOL is tested with clang 20.1.7-rust-dev …"
+### "warning: this build uses clang … TypeSOL is tested with clang 20.1.7-rust-dev …"
 
 The active platform-tools are not the ones the release is tested with (platform-tools v1.52, from Agave 3.1.10). The
 build goes on, but the C TypeSOL generates is only checked against that clang: another one can compile it to other
@@ -4755,92 +5068,9 @@ defect fixed after 0.43.0). Install the tested ones with `cargo-build-sbf --inst
 --tools-version v1.52`; `typesol doctor` shows which are active. In CI, `--toolchain-strict` (or
 `TYPESOL_TOOLCHAIN=strict`) turns the warning into an error.
 
-## `typesol verify` says MISMATCH
+## Writing and running a program
 
-First make sure the same sources (imports included), TypeSOL version and SBPF version are used. Then the toolchain:
-verify prints the rebuild's clang and platform-tools, and the deployed build's when a `<name>.build.json` describes the
-deployed bytes (`--manifest <file>`, one next to a given `.so`, or the local build's). A program on chain carries no
-such record, so keep the build manifest of every deployment.
-
-## `--docker needs Docker: docker is not installed` / `the Docker daemon is not running`
-
-`build --docker` and `verify --docker` run in a container: install Docker, or start Docker Desktop (or `sudo systemctl
-start docker`). `typesol doctor` has a `docker` row. Nothing is built without it; drop `--docker` to build with your own
-platform-tools.
-
-## `docker build of typesol-build:… failed`
-
-The first `--docker` build makes the image, which needs the network: the base images from Docker Hub, the Agave and
-platform-tools release files from GitHub, the TypeSOL tarball from npm. A `checksum` error means a downloaded file is
-not the one the Dockerfile pins (retry; if it persists, report it). `typesol tarball check: integrity …` means the
-tarball npm served is not the one `releases/<version>.json` records: do not use that version until it is explained.
-`typesol dependency lock: …` means the lock does not describe the package's dependencies or names a package without a
-registry integrity; an `EINTEGRITY` error from `npm ci` means a downloaded dependency is not the one the lock records:
-the same.
-
-## `the local image typesol-build:… was not built from this release record and dependency lock`
-
-An image of that tag exists, made from a record or lock with other values (it names them). Two records of one version
-disagree, so find out which is right before going on; to build from the one given now, `docker image rm` the tag and run
-again.
-
-## `no dependency lock for TypeSOL <version>`
-
-Neither this package nor that version's tarball has `docker/deps/<version>.lock.json`: use a later `@typesol/cli`, which
-ships the locks of the versions before it. On arm64 machines the image is linux/amd64 and runs emulated: Docker Desktop
-provides the x86_64 emulation (QEMU or Rosetta); other Docker installs may need `binfmt` for amd64.
-
-## `no release record for TypeSOL <version>` / `could not fetch the release record`
-
-The container installs only versions whose tarball has a record: the package's own, or `releases/<version>.json` on the
-repository's main branch, which `--docker` fetches for a release newer than the package. Offline (or behind a proxy that
-blocks raw.githubusercontent.com), pass the record yourself with `--release-record releases/<version>.json` from a
-checkout, or choose a version the package records with `--typesol-version`. HTTP 404 means the repository has no record
-for that version: check that it is a released version. 0.42.0 and earlier have no record.
-
-## `this project installs typesol X …, but this is typesol Y`
-
-A `typesol` other than the project's ran `--docker`. Run the project's own (`npx --no-install typesol …`), or say which
-version to use with `--typesol-version`.
-
-## `the container build failed … the container sees only <dir>`
-
-The compiler's error is printed above it. The container mounts only the project root (or a single file's directory): an
-import from outside it is missing there.
-
-## `verify` says `differs   host`
-
-The same TypeSOL (0.44.1 or earlier) and toolchain built the two sides on different hosts. That may be the cause if the
-program has 128-bit or signed division: those versions linked platform-tools' compiler-builtins, which each host package
-lays out differently. Rebuild on the deployed side's kind of host (or with `--docker`, if the deployed build was one).
-From 0.45.0 on the host is not a difference between macOS arm64, Linux arm64 and Linux x86_64 (the hosts measured);
-`differs   host (not measured)` means one side was built on another host.
-
-## A 0.44.x program with division, deployed from macOS or Linux arm64, does not match `verify --docker`
-
-0.44.0 and 0.44.1 linked platform-tools' compiler-builtins, so a program that calls 128-bit or signed division built to
-other bytes on each host package; the container is linux/amd64 and gives the Linux x86_64 bytes. What verifies it is a
-0.44.x install (the version in its `.build.json`) on the same kind of host as the one that built it, without `--docker`:
-`npx @typesol/cli@0.44.1 verify …` on macOS arm64 for a build made there.
-
-## Windows
-
-Not tested; use WSL2 with the Linux Agave CLI.
-
-## Node errors such as `ERR_UNKNOWN_FILE_EXTENSION` or `ERR_REQUIRE_ESM`
-
-Use Node.js 22.12 or newer.
-
-## "`solana` was not found on PATH" (deploy)
-
-Install the Agave CLI, or use `typesol deploy --dry-run` and run the printed commands yourself.
-
-## "… is missing, but typesol.json records …"
-
-The program keypair under `target/deploy/` was deleted or replaced. Restore it from your backup. Without it you cannot
-upgrade the deployed program; removing `"address"` from `typesol.json` gives the program a new address.
-
-## A build error you don't recognize
+### A build error you don't recognize
 
 The compiler adds a `hint:` line under TypeScript's message where TypeScript's own advice points the wrong way for a
 program (and for a global a program does not have, such as `console` or `process`, says so in place of TypeScript's
@@ -4850,22 +5080,17 @@ cast such as `u64(x)` without `type`: `import { u64 }`); arrays are read with `.
 an account you change is a `Mut<T>` parameter; the time is `now()`, not `Date.now()`; there is no `async`, `try`,
 `throw` or `class`. The full list of what the subset covers is in [language.md](language.md).
 
-## A transaction fails with a custom error
+### A transaction fails with a custom error
 
 See [errors.md](errors.md). Failures raised by the compiler's checks log their TypeScript location, e.g. `TypeSOL:
 arithmetic overflow (vault.ts:42)`.
 
-## Heap errors (5110) building strings
+### Heap errors (5110) building strings
 
 Strings are allocated on a 32 KiB heap and never freed. Build less text, or declare `const HEAP_SIZE_KIB = 64n` and add
 a ComputeBudget `requestHeapFrame` instruction to the transaction.
 
-## `typesol idl publish` fails on a local validator with "invalid instruction data"
-
-The System Program of `solana-test-validator` (Agave 3.1 included) rejects a System instruction that the current Program
-Metadata program uses. Publishing works on mainnet-beta. The error shows the failing transaction's last log lines.
-
-## "instruction X (with the helpers inlined into it) needs N bytes of stack; SBPF v0 gives each function 4096"
+### "instruction X (with the helpers inlined into it) needs N bytes of stack; SBPF v0 gives each function 4096"
 
 Under SBPF v0 (the default) every function gets a fixed 4 KiB stack frame, and going past it corrupts memory, so the
 build refuses it. SBPF v1 and v2 (`--sbpf v1` / `v2`) grow frames dynamically, so this limit does not apply there. Large
@@ -4876,16 +5101,112 @@ may be them). Helpers are often inlined into their instruction, so their locals 
 @noinline */` to give it a 4 KiB frame of its own (a few compute units per call), or declare a large local list or
 struct of an instruction `/** @heap */` to keep it on the heap (about 18 CU for the allocation).
 
+### "… is missing, but typesol.json records …"
+
+The program keypair under `target/deploy/` was deleted or replaced. Restore it from your backup. Without it you cannot
+upgrade the deployed program; removing `"address"` from `typesol.json` gives the program a new address.
+
+## Deploy
+
+### `no payer keypair at ~/.config/solana/id.json` (deploy)
+
+`solana-keygen new` creates it (or pass `--keypair <file>`); fund it on devnet with `solana airdrop 2 --url devnet`.
+Nothing is sent before it exists.
+
+### "`solana` was not found on PATH" (deploy)
+
+Install the Agave CLI, or use `typesol deploy --dry-run` and run the printed commands yourself.
+
+### `typesol idl publish` fails on a local validator with "invalid instruction data"
+
+The System Program of `solana-test-validator` (Agave 3.1 included) rejects a System instruction that the current Program
+Metadata program uses. Publishing works on mainnet-beta. The error shows the failing transaction's last log lines.
+
+## Verify and `--docker`
+
+### `typesol verify` says MISMATCH
+
+First make sure the same sources (imports included), TypeSOL version and SBPF version are used. Then the toolchain:
+verify prints the rebuild's clang and platform-tools, and the deployed build's when a `<name>.build.json` describes the
+deployed bytes (`--manifest <file>`, one next to a given `.so`, or the local build's). A program on chain carries no
+such record, so keep the build manifest of every deployment.
+
+### `--docker needs Docker: docker is not installed` / `the Docker daemon is not running`
+
+`build --docker` and `verify --docker` run in a container: install Docker, or start Docker Desktop (or `sudo systemctl
+start docker`). `typesol doctor` has a `docker` row. Nothing is built without it; drop `--docker` to build with your own
+platform-tools.
+
+### `docker build of typesol-build:… failed`
+
+The first `--docker` build makes the image, which needs the network: the base images from Docker Hub, the Agave and
+platform-tools release files from GitHub, the TypeSOL tarball from npm. A `checksum` error means a downloaded file is
+not the one the Dockerfile pins (retry; if it persists, report it). `typesol tarball check: integrity …` means the
+tarball npm served is not the one `releases/<version>.json` records: do not use that version until it is explained.
+`typesol dependency lock: …` means the lock does not describe the package's dependencies or names a package without a
+registry integrity; an `EINTEGRITY` error from `npm ci` means a downloaded dependency is not the one the lock records:
+the same.
+
+### `the local image typesol-build:… was not built from this release record and dependency lock`
+
+An image of that tag exists, made from a record or lock with other values (it names them). Two records of one version
+disagree, so find out which is right before going on; to build from the one given now, `docker image rm` the tag and run
+again.
+
+### `no dependency lock for TypeSOL <version>`
+
+Neither this package nor that version's tarball has `docker/deps/<version>.lock.json`: use a later `@typesol/cli`, which
+ships the locks of the versions before it. On arm64 machines the image is linux/amd64 and runs emulated: Docker Desktop
+provides the x86_64 emulation (QEMU or Rosetta); other Docker installs may need `binfmt` for amd64.
+
+### `no release record for TypeSOL <version>` / `could not fetch the release record`
+
+The container installs only versions whose tarball has a record: the package's own, or `releases/<version>.json` on the
+repository's main branch, which `--docker` fetches for a release newer than the package. Offline (or behind a proxy that
+blocks raw.githubusercontent.com), pass the record yourself with `--release-record releases/<version>.json` from a
+checkout, or choose a version the package records with `--typesol-version`. HTTP 404 means the repository has no record
+for that version: check that it is a released version. 0.42.0 and earlier have no record.
+
+### `this project installs typesol X …, but this is typesol Y`
+
+A `typesol` other than the project's ran `--docker`. Run the project's own (`npx --no-install typesol …`), or say which
+version to use with `--typesol-version`.
+
+### `the container build failed … the container sees only <dir>`
+
+The compiler's error is printed above it. The container mounts only the project root (or a single file's directory): an
+import from outside it is missing there.
+
+### `verify` says `differs   host`
+
+The same TypeSOL (0.44.1 or earlier) and toolchain built the two sides on different hosts. That may be the cause if the
+program has 128-bit or signed division: those versions linked platform-tools' compiler-builtins, which each host package
+lays out differently. Rebuild on the deployed side's kind of host (or with `--docker`, if the deployed build was one).
+From 0.45.0 on the host is not a difference between macOS arm64, Linux arm64 and Linux x86_64 (the hosts measured);
+`differs   host (not measured)` means one side was built on another host.
+
+### A 0.44.x program with division, deployed from macOS or Linux arm64, does not match `verify --docker`
+
+0.44.0 and 0.44.1 linked platform-tools' compiler-builtins, so a program that calls 128-bit or signed division built to
+other bytes on each host package; the container is linux/amd64 and gives the Linux x86_64 bytes. What verifies it is a
+0.44.x install (the version in its `.build.json`) on the same kind of host as the one that built it, without `--docker`:
+`npx @typesol/cli@0.44.1 verify …` on macOS arm64 for a build made there.
+
 <!-- docs/mainnet.md -->
 
 # Deploy to mainnet
 
 From an empty directory to a program on Solana mainnet-beta: create, test, deploy, publish the IDL, then check that
 the deployed binary is the one your source builds. The program here is the counter that `typesol init` creates
-(11,400 bytes, 11.1 KiB, built with TypeSOL 0.43.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
+(11,400 bytes, 11.1 KiB, built with TypeSOL 0.45.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
 slightly); any TypeSOL project works the same way.
 
-You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Quick start).
+**Before you deploy anything that holds value.** TypeSOL has had internal security reviews by its maintainers, not an
+independent audit ([status](security-model.md#status)). Do not put significant value behind a program built with it
+until an external audit of the compiler and runtime is published, and audit your own program as you would any Solana
+program.
+
+You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's [Quick start](../README.md#quick-start)).
 
 **The toolchain you deploy with.** The binary is what the platform-tools' clang makes of the generated C, so the
 toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
@@ -5030,6 +5351,10 @@ the cluster in your Solana CLI config, and compares the bytes. `match` means any
 TypeSOL version and toolchain gets exactly the program on chain (from 0.45.0 on, on any of the hosts measured: macOS arm64, Linux arm64 with the platform-tools `linux-aarch64` package as in [troubleshooting.md](troubleshooting.md#linux-arm64-the-agave-installer-fails-with-a-404), Linux x86_64; with 0.44.1 or earlier, a
 program with 128-bit or signed division also needs the same kind of host). It also prints the upgrade authority and checks the IDL you published in step 5.
 
+A match says only that the deployed bytes are what this source and this compiler build. It does not say that the
+program, or the compiler, is correct, and it does not hold after the next upgrade: whoever holds the upgrade authority
+it prints can replace the program at any time.
+
 ### Verifying someone else's program
 
 With the source at the deployed commit, the program id and, ideally, the deployer's `<name>.build.json`:
@@ -5062,6 +5387,10 @@ registry: the evidence is the command and its output, which anyone can rerun.
 
 ## Later
 
+- **Upgrade it.** `typesol deploy` again replaces the code at the same address; the accounts keep their bytes. If an
+  account struct changed, existing accounts do not match it: a field added fails with 3003, and a field removed from
+  the middle or moved reads other fields' bytes without an error. Migrate the accounts ([migrating an
+  account](language-accounts.md#migrating-an-account)).
 - **Freeze it.** `solana program set-upgrade-authority <program id> --final` makes the program immutable. It cannot
   be undone.
 - **Close it.** `solana program close <program id> --bypass-warning` returns the rent to the authority. The program
@@ -5100,9 +5429,9 @@ Each holds for every instruction of every program the compiler accepts. A break 
 
 1. **Account count.** Fewer accounts than parameters fail (3005); more than the program takes (32, or its `MAX_ACCOUNTS`) fail before parsing (5113).
 2. **Account types.** Each parameter is checked for what its type says: `Signer` signed (3010); `Mut<…>` writable
-   (2000); a program account (`Account<T>`, `Mut<T>`) owned by this program (3007), initialized (3012), with `T`'s
-   discriminator (3002) and at least its size (3003); `TokenAccount` / `Mint` owned by SPL Token or Token-2022 and an
-   initialized account of that kind (3007 / 3003); program parameters at their fixed address and executable
+   (2000); a program account (`Account<T>`, `Mut<T>`) initialized (3012), owned by this program (3007), at least
+   `T`'s size (3003) and with `T`'s discriminator (3002), checked in that order; a `TokenAccount` / `Mint` an
+   initialized account of that kind of SPL Token or Token-2022 (3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length); program parameters at their fixed address and executable
    (3008 / 3009); `SystemAccount` owned by the System Program (3011); `Zeroed<T>` owned, all-zero discriminator and
    rent-exempt.
 3. **No aliasing.** Two writable parameters are never the same account (2040), whatever slots the transaction uses,

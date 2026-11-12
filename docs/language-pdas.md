@@ -49,10 +49,14 @@ A seed list is an array literal written where the seeds go. Each seed contribute
 | a `Pubkey` (`owner.key`, a field, `pubkey("…")`) | its 32 bytes |
 | a `Hash` (`sha256(…)`) | its 32 bytes, as Marginfi seeds an order with the hash of its bank keys |
 | an integer (an argument, a field, a local, a typed literal) | little-endian at its declared width: a `u16` gives 2 bytes; a bare `5n` is a u64, 8 bytes |
+| a unit enum value (`Side.Ask`, an argument or a field) | 1 byte, its variant index |
 | `bigEndian(x)` | an integer's bytes most significant first (`["tick_array", pool.key, bigEndian(start)]`), Rust's `to_be_bytes()` |
 | the bump (a `u8`) | 1 byte, last |
 
-A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). Solana takes at
+A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). A `string`
+argument longer than that is only known at run time: `create`, `createIfNeeded`, `requirePda` and `Seeds<…>` then fail
+with 2006, as for any other address that is not the PDA; check `byteLength(s) <= 32n` first to fail with an error of
+your own. Solana takes at
 most 16 seeds per address, the bump included. A list the derivation adds the bump to (`create`, `requirePda`,
 `findProgramAddress`) holds at most 15 entries (`at most 15 seeds: the bump the derivation adds makes 16, Solana's
 limit`); a list that ends with its bump (signer seeds, `createProgramAddress`) holds 16: 15 seeds and the bump (`at

@@ -16,7 +16,7 @@ the package under, not a package on npm. Run `npx @typesol/cli …` there, or `n
 
 ### "the Agave CLI is not installed" (formerly "Solana SBF SDK not found")
 
-Install it and its platform-tools as in the README's Quick start:
+Install it and its platform-tools as in the README's [Quick start](../README.md#quick-start):
 
 ```sh
 sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"

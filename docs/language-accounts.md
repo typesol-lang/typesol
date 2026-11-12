@@ -33,8 +33,8 @@ export function like(fan: Signer, note: Mut<Note>, original: Account<Note>): voi
 | `Init<T>` | writable; the body creates it ([below](#creating-accounts)) |
 | `InitIfNeeded<T>` | writable; the body creates it when it does not exist, else checks it |
 | `Zeroed<T>` | allocated by the client, not yet initialized, writable ([below](#zeroed-accounts)) |
-| `TokenAccount` / `Mut<TokenAccount>` | owned by SPL Token or Token-2022 (extensions allowed, multisig accounts refused), initialized (3012 for an account never created, as Anchor) |
-| `Mint` / `Mut<Mint>` | owned by SPL Token or Token-2022, initialized (3012) |
+| `TokenAccount` / `Mut<TokenAccount>` | an initialized token account of SPL Token or Token-2022 (extensions allowed, multisig accounts refused): 3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length |
+| `Mint` / `Mut<Mint>` | an initialized mint of SPL Token or Token-2022: the same codes as a token account |
 | `SystemAccount` / `Mut<SystemAccount>` | owned by the System Program, e.g. a wallet (Anchor's `SystemAccount`, 3011) |
 | `AccountInfo` / `Mut<AccountInfo>` | nothing (writable for `Mut`): check what you rely on yourself |
 | `SystemProgram`, `TokenProgram`, `Token2022Program` | the exact program address (3008) |

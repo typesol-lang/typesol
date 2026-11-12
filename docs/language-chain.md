@@ -186,6 +186,6 @@ export function settle(player: Signer, bet: Mut<Bet>, randomness: SwitchboardRan
 
 Commit while `r.seedSlot === currentSlot() - 1n` and store `r.key` and `r.seedSlot`. Settle in a later transaction
 after checking both, with `r.value()` (32 bytes) or `r.valueU64()`, which fail (5111) unless the value was revealed in
-this slot. The example is `test/fixtures/coinflip.ts`, shortened.
+this slot. The example is [`test/fixtures/coinflip.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/coinflip.ts), shortened.
 
 **Next:** [Porting a native program](language-native.md) (advanced), or [test your program](test-your-program.md).

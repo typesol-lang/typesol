@@ -10,7 +10,7 @@ independent audit ([status](security-model.md#status)). Do not put significant v
 until an external audit of the compiler and runtime is published, and audit your own program as you would any Solana
 program.
 
-You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Quick start).
+You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's [Quick start](../README.md#quick-start)).
 
 **The toolchain you deploy with.** The binary is what the platform-tools' clang makes of the generated C, so the
 toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;

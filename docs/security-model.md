@@ -26,9 +26,9 @@ Each holds for every instruction of every program the compiler accepts. A break 
 
 1. **Account count.** Fewer accounts than parameters fail (3005); more than the program takes (32, or its `MAX_ACCOUNTS`) fail before parsing (5113).
 2. **Account types.** Each parameter is checked for what its type says: `Signer` signed (3010); `Mut<…>` writable
-   (2000); a program account (`Account<T>`, `Mut<T>`) owned by this program (3007), initialized (3012), with `T`'s
-   discriminator (3002) and at least its size (3003); `TokenAccount` / `Mint` owned by SPL Token or Token-2022 and an
-   initialized account of that kind (3007 / 3003); program parameters at their fixed address and executable
+   (2000); a program account (`Account<T>`, `Mut<T>`) initialized (3012), owned by this program (3007), at least
+   `T`'s size (3003) and with `T`'s discriminator (3002), checked in that order; a `TokenAccount` / `Mint` an
+   initialized account of that kind of SPL Token or Token-2022 (3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length); program parameters at their fixed address and executable
    (3008 / 3009); `SystemAccount` owned by the System Program (3011); `Zeroed<T>` owned, all-zero discriminator and
    rent-exempt.
 3. **No aliasing.** Two writable parameters are never the same account (2040), whatever slots the transaction uses,

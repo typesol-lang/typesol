@@ -52,8 +52,21 @@ describe("check order (Anchor's)", () => {
     const owner = await fundedSigner(d.svm);
     const box = (await fundedSigner(d.svm)).address;
     const put = (data: Buffer, programAddress: string, amount = 10_000_000n) =>
-      d.svm.setAccount({ address: box, data: new Uint8Array(data), executable: false, lamports: lamports(amount), programAddress: programAddress as Address, space: BigInt(data.length) });
-    const call = () => send(d.svm, owner, [ix(d, "bump", { by: new BN(1) }, [{ address: owner.address, signer: owner }, { address: box, writable: true }])]);
+      d.svm.setAccount({
+        address: box,
+        data: new Uint8Array(data),
+        executable: false,
+        lamports: lamports(amount),
+        programAddress: programAddress as Address,
+        space: BigInt(data.length),
+      });
+    const call = () =>
+      send(d.svm, owner, [
+        ix(d, "bump", { by: new BN(1) }, [
+          { address: owner.address, signer: owner },
+          { address: box, writable: true },
+        ]),
+      ]);
     const full = 8 + 32 + 8 + 1;
     put(Buffer.alloc(0), SYSTEM_PROGRAM, 0n);
     expect(customError(await call())).toBe(3012);

@@ -121,9 +121,40 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   constants are not listed in the IDL (a constant used as a seed is recorded there as a `const` seed); closure
   parameters need their types where the closure is declared (an arrow written at a call takes them from the
   parameter); a `@layout borsh` struct's `Vec` may be any field, not only the last; `signer([…])` is written in a
-  declaration or as a helper's argument, not inside a CPI's arguments; a seed list holds at most 15 entries, so signer
-  seeds hold 14 seeds and the bump; arithmetic operators on an `f64` are not refused yet and compute on its bits
-  (documented as a limit). No program compiles differently.
+  declaration or as a helper's argument, not inside a CPI's arguments. No program compiles differently.
+- Docs: a second pass over the guide.
+  - Examples that move value or sign as a PDA now check who may call them: `payOut` in docs/language-pdas.md and
+    docs/language-cpi.md (a config account with `HasOne`, or the signer in the vault's seeds), `remove` in
+    docs/language-accounts.md (`HasOne` before `close`), and the PDA page's first example derives its second bump
+    instead of storing one from the arguments; the examples that show one mechanism only (`invokeInstruction`'s
+    `execute`, the native `programAt` entry, `Migrate`, a first-caller `InitIfNeeded` setup) say which check a real
+    instruction needs.
+  - Corrected: `merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds and
+    fail nothing by themselves (docs/language-chain.md, with an example, and their doc comments); a program account
+    is checked for initialization (3012), owner (3007), size (3003), then discriminator (3002), and the two cases where
+    Anchor's order gives another code (another discriminator with fewer bytes than the struct: 3003 here, 3002 under
+    Anchor; under 8 bytes: 3003 here, 3001 under Anchor) are listed in docs/errors.md (test/security/anchor-order.test.ts
+    pins them); a failed instruction fails the whole transaction; `>>` fails (5100) like `<<` when the amount is not
+    below the width; `FixedString<N>` takes 4 + N bytes; the first program's account is 58 bytes, and its last
+    instruction, renamed `end`, returns the total instead of closing the poll; token account and mint codes are
+    stated one way everywhere (3012 / 3007 / 3003); SECURITY.md names the review of 0.44.0 and 0.44.1 as the README
+    and docs/security-model.md do (test/cli/repository.test.ts checks the three against docs/audit.md); the README's
+    "Safe by default." is "Checked by default."; docs/mainnet.md carries the status warning, its counter is built
+    with 0.45.0, and it says what a `verify` match does not prove; docs/migrate-from-anchor.md no longer claims
+    `@layout borsh` is "several times cheaper than Anchor".
+  - New for a newcomer: "Solana in a dozen lines" and "Limits and costs" (rent, compute budget, transaction size,
+    account growth, with their sources' values at the time of writing) in docs/language-basics.md; docs/glossary.md;
+    what happens to existing accounts when an account struct changes (docs/language-accounts.md, docs/mainnet.md);
+    when to choose `FixedArray`, `FixedVec` or `Vec`; seeds of other widths and asserting an error code in
+    docs/test-your-program.md (test/cli/testing.test.ts runs both snippets); a "Next" line on every guide page.
+  - Structure: docs/language.md lists the pages first and its former sections last; docs/troubleshooting.md is
+    grouped (install, writing and running a program, deploy, verify and `--docker`); the longest table cells
+    (Token-2022 methods, `init` and `verify` in docs/cli.md) are lists; `Struct arguments`, `f64` and heap values
+    come last on docs/language-types.md; `Two parameters, one account` and `How many accounts` follow the
+    constraints. Every heading kept its text, so links to it still land.
+  - lib/typesol.d.ts changes in comments only: the built-ins page's one-liners for `currentSlot`, `slotsPerEpoch`,
+    `HasOne`, `Ata`, `transferFee`, `TOKEN_ACCOUNT_SIZE`, `readonly`, `rawArrayAt`, `Mut`, `Init`, `Account`, `log`,
+    `invoke` and `Vec` describe the name itself.
 
 ## 0.45.0 — 2026-11-12
 
