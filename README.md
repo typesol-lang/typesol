@@ -189,18 +189,22 @@ those on macOS or Linux x86_64 (Linux arm64: see
 
 ```sh
 sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
-# The installer adds this line to ~/.profile, for new shells; this shell needs it now:
+# The installer adds this line to ~/.profile for new shells, and this shell needs it now:
 export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-# Downloads the platform-tools (about 0.5 GB, up to 1.6 GB unpacked) and prints nothing for a minute or two:
+# Once: this downloads the platform-tools, about 0.5 GB and up to 1.6 GB unpacked, and prints nothing for a minute or two:
 cargo-build-sbf --install-only --force-tools-install --tools-version v1.52
 ```
 
 ```sh
-npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
+npx @typesol/cli init my-app --name counter
 cd my-app && npm install
-npm test                                      # builds the program and runs it in LiteSVM, an in-process Solana runtime
-npx --no-install typesol build                # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
+npm test
+npx --no-install typesol build
 ```
+
+`init` writes `typesol.json`, `programs/counter.ts`, `tests/counter.test.ts` and a tsconfig. `npm test` builds the program
+and runs it in LiteSVM, an in-process Solana runtime. `build` writes `target/counter/`: `counter.so`, `counter.json` (the
+IDL), `counter.client.ts` and `counter.build.json`.
 
 `init` also writes rules and an MCP server config for AI coding agents (AGENTS.md, CLAUDE.md, `.cursor/`, `.mcp.json`)
 and lists them; `--no-agent-files` leaves them out. `npm install` reports advisories (moderate and high) and packages
@@ -221,8 +225,10 @@ found`, which does not mention `@typesol/cli`: run `npx @typesol/cli …` there,
 To deploy, on devnet:
 
 ```sh
-solana-keygen new                             # once, if you have no keypair (~/.config/solana/id.json)
-solana airdrop 2 --url devnet                 # test SOL for the rent (rate-limited: https://faucet.solana.com also works)
+# Once, if you have no keypair at ~/.config/solana/id.json:
+solana-keygen new
+# Test SOL for the rent. The airdrop is rate-limited, and https://faucet.solana.com also works:
+solana airdrop 2 --url devnet
 npx --no-install typesol deploy --url devnet
 ```
 
@@ -466,11 +472,14 @@ stable already and what is still experimental: [docs/stability.md](docs/stabilit
   `--docker` image takes them), `typesol build` and LiteSVM tests work (needs `curl` and `bzip2`):
 
   ```sh
-  mkdir -p $HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools
-  curl -sSfL https://github.com/anza-xyz/agave/releases/download/v3.1.10/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C $HOME/.local/share/typesol-sdk --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c
-  curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/v1.52/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C $HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools
-  touch $HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools-v1.52.md
-  export TYPESOL_SBF_SDK=$HOME/.local/share/typesol-sdk/sbf   # add this line to ~/.profile too
+  mkdir -p "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools"
+  # About 215 MB, for the C headers and linker script of the SDK only:
+  curl -sSfL https://github.com/anza-xyz/agave/releases/download/v3.1.10/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C "$HOME/.local/share/typesol-sdk" --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c
+  # About 515 MB, 1.6 GB unpacked, and quiet for a minute or two:
+  curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/v1.52/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools"
+  touch "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools-v1.52.md"
+  # Add this line to ~/.profile too, for new shells:
+  export TYPESOL_SBF_SDK="$HOME/.local/share/typesol-sdk/sbf"
   ```
 
   `typesol doctor` prints these commands there. Deploying needs the Solana CLI: deploy from macOS or Linux x86_64,

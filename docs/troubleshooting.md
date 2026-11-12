@@ -20,8 +20,10 @@ Install it and its platform-tools as in the README's [Quick start](../README.md#
 
 ```sh
 sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
-export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"   # the installer edits ~/.profile only
-cargo-build-sbf --install-only --force-tools-install --tools-version v1.52   # about 0.5 GB, quiet for a minute or two
+# The installer adds this line to ~/.profile for new shells, and this shell needs it now:
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+# Once: this downloads the platform-tools, about 0.5 GB and up to 1.6 GB unpacked, and prints nothing for a minute or two:
+cargo-build-sbf --install-only --force-tools-install --tools-version v1.52
 ```
 
 TypeSOL looks in `~/.local/share/solana/install/active_release/bin/platform-tools-sdk/sbf` and next to
@@ -46,11 +48,14 @@ linker script, as the `--docker` image takes them), `typesol build` and LiteSVM 
 these commands there (they need `curl` and `bzip2`):
 
 ```sh
-mkdir -p $HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools
-curl -sSfL https://github.com/anza-xyz/agave/releases/download/v3.1.10/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C $HOME/.local/share/typesol-sdk --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c
-curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/v1.52/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C $HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools
-touch $HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools-v1.52.md
-export TYPESOL_SBF_SDK=$HOME/.local/share/typesol-sdk/sbf   # add this line to ~/.profile too
+mkdir -p "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools"
+# About 215 MB, for the C headers and linker script of the SDK only:
+curl -sSfL https://github.com/anza-xyz/agave/releases/download/v3.1.10/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C "$HOME/.local/share/typesol-sdk" --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c
+# About 515 MB, 1.6 GB unpacked, and quiet for a minute or two:
+curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/v1.52/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools"
+touch "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools-v1.52.md"
+# Add this line to ~/.profile too, for new shells:
+export TYPESOL_SBF_SDK="$HOME/.local/share/typesol-sdk/sbf"
 ```
 
 Deploying needs the Solana CLI: deploy from macOS or Linux x86_64, or build the Agave CLI from source

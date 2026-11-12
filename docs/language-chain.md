@@ -79,7 +79,9 @@ export function commit(c: Mut<Commit>, owner: Pubkey, text: string, n: u64): voi
 
 `merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds; they do not fail by
 themselves. Unlike a check such as `HasOne`, nothing happens when the answer is false: wrap them in
-`require(…, error)`. A call whose result is thrown away is refused at compile time.
+`require(…, error)`. The compiler refuses a call used as a statement, one that is the
+condition of an `if` with an empty body and no `else`, and one whose result is kept in a local the function never
+reads. It does not catch a helper that returns the result and is itself called as a statement.
 
 ```ts
 import { type Account, type Hash, type Init, type InstructionsSysvar, type Mut, type Pubkey, type Signer, type SystemProgram, type u8, type u64, type Vec, keccak256, merkleVerify, require, verifyEd25519, verifySecp256k1 } from "typesol";
