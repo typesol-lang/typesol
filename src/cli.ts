@@ -170,18 +170,22 @@ const COMMANDS: Record<string, Command> = {
       if (agentFiles) log(`  (${AGENT_FILES.join(", ")}: rules and the TypeSOL MCP server for AI coding agents; --no-agent-files leaves them out)`);
       const tools = toolchainCheck();
       if (!tools.ok) {
-        const missing = tools.detail.replace(/ \(.*$/, "");
+        // With install commands: what is missing, then the commands. Without (TYPESOL_SBF_SDK names a directory that is
+        // not an SDK): the reason alone, which says what to fix.
+        const missing = tools.fix?.length ? tools.detail.replace(/ \(.*$/, "") : tools.detail;
         log(
-          `\n  ! ${missing[0]!.toUpperCase()}${missing.slice(1)}; npm test compiles with the platform-tools. Install once:\n` +
-            (tools.fix ?? []).map((f) => `      ${f}`).join("\n"),
+          `\n  ! ${missing[0]!.toUpperCase()}${missing.slice(1)}; npm test compiles with the platform-tools.` +
+            (tools.fix?.length ? ` Install once:\n${tools.fix.map((f) => `      ${f}`).join("\n")}` : ""),
         );
       }
+      // No comment after a command: an interactive zsh would pass it to the command (it reads no comments by default).
       log(
         `\n  next:\n` +
           (rel === "." ? "" : `    cd ${shellQuote(rel)}\n`) +
           `    npm install\n` +
-          `    npm test             # builds ${name} and runs its test in LiteSVM, a Solana runtime in-process\n` +
-          `    npx --no-install typesol doctor   # checks the toolchain, keypair and RPC before a deploy` +
+          `    npm test\n` +
+          `    npx --no-install typesol doctor\n\n` +
+          `  npm test builds ${name} and runs its test in LiteSVM, a Solana runtime in-process; doctor checks the toolchain, keypair and RPC before a deploy.` +
           (template === "counter" ? `\n\n  other starters: typesol init <dir> --template vault (SOL at a PDA) or --template escrow (SPL token escrow)` : ""),
       );
       return 0;

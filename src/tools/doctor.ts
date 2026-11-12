@@ -7,10 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import type { Rpc, SolanaRpcApi } from "@solana/kit";
 import {
-  AGAVE_PATH,
   findToolchain,
   INSTALL_TESTED_TOOLCHAIN,
-  installCommands,
+  installLines,
   linuxArm64,
   shortClang,
   TESTED_TOOLCHAIN,
@@ -25,8 +24,6 @@ import { MIN_NODE } from "../node-version.js";
 
 /** The Agave CLI release TypeSOL is tested with (its platform-tools are the tested ones). */
 export const INSTALL_AGAVE = INSTALL_TESTED_TOOLCHAIN[0];
-/** What the platform-tools install does, said where it is printed: it is large and quiet. */
-export const PLATFORM_TOOLS_DOWNLOAD = "downloads the platform-tools (about 0.5 GB, up to 1.6 GB unpacked) and prints nothing for a minute or two";
 
 export interface Check {
   ok: boolean;
@@ -56,21 +53,9 @@ export function toolchainCheck(): Check {
   }
 }
 
-/** The install commands for this host, each with what it does when that is not obvious. */
+/** The install commands for this host, each with its note on the line above when what it does is not obvious. */
 export function installSteps(from: "agave" | "platform-tools", host: { platform: string; arch: string } = process): string[] {
-  return installCommands(from, host).map((c) =>
-    c === AGAVE_PATH
-      ? `${c}   # the installer adds this to ~/.profile, for new shells; this one needs it now`
-      : c === INSTALL_TESTED_TOOLCHAIN[1]
-        ? `${c}   # once: ${PLATFORM_TOOLS_DOWNLOAD}`
-        : c.startsWith("export TYPESOL_SBF_SDK=")
-          ? `${c}   # add this line to ~/.profile too, for new shells`
-          : c.includes("/platform-tools-linux-aarch64.")
-            ? `${c}   # about 515 MB, 1.6 GB unpacked; quiet for a minute or two`
-            : c.includes("/solana-release-")
-              ? `${c}   # about 215 MB, for the SDK's C headers and linker script only`
-              : c,
-  );
+  return installLines(from, host);
 }
 
 /** The Solana CLI (deploying only): the Agave installer, or on Linux arm64, where there is none, what to do instead. */
@@ -104,7 +89,7 @@ export function testedToolchainCheck(): Check | undefined {
     optional: !strict,
     what: "toolchain",
     detail: `untested: ${shortClang(info.clang)}, platform-tools ${info.platformTools ?? "unknown"}; TypeSOL is tested with ${tested} (Agave ${TESTED_TOOLCHAIN.agave}): binaries from another toolchain are not covered by its tests${strict ? " (TYPESOL_TOOLCHAIN=strict refuses it)" : ""}`,
-    fix: [`${INSTALL_TESTED_TOOLCHAIN[1]}   # the tested platform-tools`],
+    fix: ["# The tested platform-tools:", INSTALL_TESTED_TOOLCHAIN[1]],
   };
 }
 
@@ -376,7 +361,7 @@ export async function doctorChecks(opts: { cwd: string; url?: string; config?: s
         optional: true,
         what: "RPC",
         detail: `${rpcHost(url)} does not answer (${errText(e)})`,
-        fix: cluster === "localhost" ? ["solana-test-validator   # in another terminal"] : ["pass --url devnet, or fix json_rpc_url in the Solana CLI config"],
+        fix: cluster === "localhost" ? ["# In another terminal:", "solana-test-validator"] : ["pass --url devnet, or fix json_rpc_url in the Solana CLI config"],
       });
     }
   }

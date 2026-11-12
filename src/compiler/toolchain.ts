@@ -46,7 +46,7 @@ export class ToolchainMissing extends Error {
 }
 
 /** Locate the Solana C SDK that ships with the Agave CLI's platform-tools. */
-export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
+export function findToolchain(sbpf: Sbpf = "v0", host: { platform: string; arch: string } = process): Toolchain {
   // Where the Agave installer puts it, or next to `cargo-build-sbf` on PATH (custom --data-dir, Homebrew, Docker…).
   const onPath = (process.env.PATH ?? "")
     .split(path.delimiter)
@@ -64,24 +64,27 @@ export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
   ].filter((p): p is string => !!p);
   const sdk = candidates.find((p) => existsSync(path.join(p, "c/sbf.mk")));
   if (!sdk)
-    throw linuxArm64()
+    throw linuxArm64(host)
       ? new ToolchainMissing(
           "agave",
           "no Solana SBF SDK: TYPESOL_SBF_SDK is not set, and there is no Agave CLI for Linux arm64",
-          `Install the platform-tools' linux-aarch64 package and the SDK's C files: ${installCommands("agave").join("; ")}.`,
+          `Install the platform-tools' linux-aarch64 package and the SDK's C files:${block(installLines("agave", host))}`,
         )
       : new ToolchainMissing(
           "agave",
           "the Agave CLI is not installed (no Solana SBF SDK under ~/.local/share/solana/install/active_release or next to cargo-build-sbf on PATH)",
-          `Install it and its platform-tools: ${installCommands("agave").join("; ")}. Or set TYPESOL_SBF_SDK to a platform-tools-sdk/sbf directory.`,
+          `Set TYPESOL_SBF_SDK to a platform-tools-sdk/sbf directory, or install the Agave CLI and its platform-tools:${block(installLines("agave", host))}`,
         );
   const llvm = path.join(sdk, "dependencies/platform-tools/llvm");
   const clang = path.join(llvm, "bin", EXE("clang"));
   if (!existsSync(clang))
     throw new ToolchainMissing(
       "platform-tools",
-      `the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies)`,
-      `Install them once: ${installCommands("platform-tools").join("; ")}.`,
+      // On Linux arm64 there is no Agave CLI: the SDK found is the one TYPESOL_SBF_SDK names.
+      linuxArm64(host)
+        ? `the SBF SDK at ${sdk} has no platform-tools (nothing under ${sdk}/dependencies)`
+        : `the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies)`,
+      `Install them once:${block(installLines("platform-tools", host))}`,
     );
   // Newest clang resource directory (numeric order: "9" < "19").
   const clangInc = readdirSync(path.join(llvm, "lib/clang"))
@@ -94,7 +97,7 @@ export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
     throw new ToolchainMissing(
       "sbpf-libraries",
       `these platform-tools have no SBPF ${sbpf} libraries (${rustlib})`,
-      `Install the tested ones: ${installCommands("platform-tools").join("; ")}. Or build for another --sbpf.`,
+      `Build for another --sbpf, or install the tested ones:${block(installLines("platform-tools", host))}`,
     );
   return {
     sdk,
@@ -210,10 +213,11 @@ export function linkSharedObject(objects: string[], outSo: string, tc: Toolchain
       (info && !info.tested
         ? `this toolchain is not the tested one (${shortClang(info.clang)}${info.platformTools ? `, platform-tools ${info.platformTools}` : ""}; ` +
           `TESTED_TOOLCHAIN is ${shortClang(t.clang)}, platform-tools ${t.platformTools}), and its clang may call compiler builtins the tested one ` +
-          `does not, which runtime/typesol_builtins.c does not define: build with the tested toolchain (${INSTALL_TESTED_TOOLCHAIN[1]}). `
+          `does not, which runtime/typesol_builtins.c does not define: build with the tested toolchain (the command is below). `
         : "") +
         `the program calls ${missing.join(", ")}, which neither the runtime nor libc defines and the SBF loader cannot resolve as a syscall ` +
-        `(with the tested toolchain, a compiler builtin missing from runtime/typesol_builtins.c is a TypeSOL bug: please report it with the program)`,
+        `(with the tested toolchain, a compiler builtin missing from runtime/typesol_builtins.c is a TypeSOL bug: please report it with the program)` +
+        (info && !info.tested ? `. The tested toolchain:${block([INSTALL_TESTED_TOOLCHAIN[1]])}` : ""),
     );
   }
 }
@@ -324,13 +328,15 @@ export const AGAVE_PATH = 'export PATH="$HOME/.local/share/solana/install/active
  * needs a Solana CLI from another host.
  */
 const ARM64_SDK = "$HOME/.local/share/typesol-sdk";
+/** A path under ARM64_SDK as a shell word: quoted, as AGAVE_PATH quotes $HOME, so a HOME with a space works. */
+const arm64Path = (rest: string) => `"${ARM64_SDK}${rest}"`;
 export const linuxArm64 = (host: { platform: string; arch: string } = process) => host.platform === "linux" && host.arch === "arm64";
 export const LINUX_ARM64_INSTALL: readonly string[] = [
-  `mkdir -p ${ARM64_SDK}/sbf/dependencies/platform-tools`,
-  `curl -sSfL https://github.com/anza-xyz/agave/releases/download/v${TESTED_TOOLCHAIN.agave}/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C ${ARM64_SDK} --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c`,
-  `curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/${TESTED_TOOLCHAIN.platformTools}/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C ${ARM64_SDK}/sbf/dependencies/platform-tools`,
-  `touch ${ARM64_SDK}/sbf/dependencies/platform-tools-${TESTED_TOOLCHAIN.platformTools}.md`,
-  `export TYPESOL_SBF_SDK=${ARM64_SDK}/sbf`,
+  `mkdir -p ${arm64Path("/sbf/dependencies/platform-tools")}`,
+  `curl -sSfL https://github.com/anza-xyz/agave/releases/download/v${TESTED_TOOLCHAIN.agave}/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C ${arm64Path("")} --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c`,
+  `curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/${TESTED_TOOLCHAIN.platformTools}/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C ${arm64Path("/sbf/dependencies/platform-tools")}`,
+  `touch ${arm64Path(`/sbf/dependencies/platform-tools-${TESTED_TOOLCHAIN.platformTools}.md`)}`,
+  `export TYPESOL_SBF_SDK=${arm64Path("/sbf")}`,
 ];
 
 /**
@@ -342,6 +348,35 @@ export function installCommands(from: "agave" | "platform-tools", host: { platfo
   if (linuxArm64(host)) return [...LINUX_ARM64_INSTALL];
   return from === "agave" ? [INSTALL_TESTED_TOOLCHAIN[0], AGAVE_PATH, INSTALL_TESTED_TOOLCHAIN[1]] : [INSTALL_TESTED_TOOLCHAIN[1]];
 }
+
+/**
+ * The note printed on its own line above an install command, when what it does is not obvious; undefined for the
+ * others. A note is a `#` line holding no character a shell treats specially (no parentheses, `;`, `$`, quotes,
+ * `<`, `>`, `|`, `&`, `!`, `*`, `?`, brackets or braces), so a pasted block runs the same: bash and fish skip it as
+ * a comment, and zsh, whose interactive shells do not read comments unless `interactive_comments` is set (the macOS
+ * default), answers "command not found: #" and runs nothing from that line. A command line never carries a trailing
+ * comment: zsh would hand it to the command as arguments (test/cli/doctor.test.ts pastes the blocks into each shell).
+ */
+export function installNote(command: string): string | undefined {
+  if (command === AGAVE_PATH) return "# The installer adds this line to ~/.profile for new shells, and this shell needs it now:";
+  if (command === INSTALL_TESTED_TOOLCHAIN[1])
+    return "# Once: this downloads the platform-tools, about 0.5 GB and up to 1.6 GB unpacked, and prints nothing for a minute or two:";
+  if (command.startsWith("export TYPESOL_SBF_SDK=")) return "# Add this line to ~/.profile too, for new shells:";
+  if (command.includes("/platform-tools-linux-aarch64.")) return "# About 515 MB, 1.6 GB unpacked, and quiet for a minute or two:";
+  if (command.includes("/solana-release-")) return "# About 215 MB, for the C headers and linker script of the SDK only:";
+  return undefined;
+}
+
+/** installCommands with each command's note on the line above it: the lines `init`, `doctor` and the build print. */
+export function installLines(from: "agave" | "platform-tools", host: { platform: string; arch: string } = process): string[] {
+  return installCommands(from, host).flatMap((c) => {
+    const note = installNote(c);
+    return note ? [note, c] : [c];
+  });
+}
+
+/** An install block inside an error message: each line on its own, indented, after the sentence that ends with ":". */
+const block = (lines: readonly string[]) => lines.map((l) => `\n    ${l}`).join("");
 
 // One `clang --version` per clang a process uses: up-to-date checks and manifests ask for it on every build.
 const clangVersions = new Map<string, string>();
@@ -401,14 +436,15 @@ export function toolchainInfo(tc = findToolchain()): ToolchainInfo {
 }
 
 /** What to say about a toolchain that is not the tested one; undefined for the tested one. */
-export function untestedToolchainMessage(info: ToolchainInfo): string | undefined {
+export function untestedToolchainMessage(info: ToolchainInfo, strict = false): string | undefined {
   if (info.tested) return undefined;
   const t = TESTED_TOOLCHAIN;
   return (
-    `this build uses ${shortClang(info.clang)}${info.platformTools ? ` (platform-tools ${info.platformTools})` : ""}; ` +
+    `${strict ? "refusing to build with" : "this build uses"} ${shortClang(info.clang)}${info.platformTools ? ` (platform-tools ${info.platformTools})` : ""}; ` +
     `TypeSOL is tested with ${shortClang(t.clang)} (platform-tools ${t.platformTools}, Agave ${t.agave}). ` +
-    `Binaries from an untested toolchain are not covered by the project's tests. ` +
-    `Install the tested one: ${INSTALL_TESTED_TOOLCHAIN[1]}`
+    `Binaries from an untested toolchain are not covered by the project's tests` +
+    (strict ? ", and an untested toolchain is an error with --toolchain-strict or TYPESOL_TOOLCHAIN=strict" : "") +
+    `. Install the tested one:${block([INSTALL_TESTED_TOOLCHAIN[1]])}`
   );
 }
 
@@ -434,10 +470,7 @@ export function toolchainStrict(): boolean {
 export function checkToolchain(info: ToolchainInfo = toolchainInfo(), warn: (message: string) => void = (m) => console.error(`warning: ${m}`)): ToolchainInfo {
   const message = untestedToolchainMessage(info);
   if (!message) return info;
-  if (toolchainStrict())
-    throw new Error(
-      `${message.replace(/^this build uses/, "refusing to build with")} (an untested toolchain is an error with --toolchain-strict or TYPESOL_TOOLCHAIN=strict)`,
-    );
+  if (toolchainStrict()) throw new Error(untestedToolchainMessage(info, true));
   if (!warned) {
     warned = true;
     warn(message);

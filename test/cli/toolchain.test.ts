@@ -92,7 +92,7 @@ describe("the tested toolchain", () => {
     expect(untestedToolchainMessage(other)).toBe(
       "this build uses clang 99.1.0 (example/llvm-project 01234567) (platform-tools v9.99); TypeSOL is tested with clang 20.1.7-rust-dev " +
         "(anza-xyz/llvm-project 78496716) (platform-tools v1.52, Agave 3.1.10). Binaries from an untested toolchain are not covered by the " +
-        "project's tests. Install the tested one: cargo-build-sbf --install-only --force-tools-install --tools-version v1.52",
+        "project's tests. Install the tested one:\n    cargo-build-sbf --install-only --force-tools-install --tools-version v1.52",
     );
     const said: string[] = [];
     checkToolchain(other, (m) => said.push(m));
@@ -105,7 +105,10 @@ describe("the tested toolchain", () => {
     const before = process.env.TYPESOL_TOOLCHAIN;
     try {
       process.env.TYPESOL_TOOLCHAIN = "strict";
-      expect(() => checkToolchain(other)).toThrow(/^refusing to build with clang 99\.1\.0 .* error with --toolchain-strict or TYPESOL_TOOLCHAIN=strict\)$/);
+      // The command on a line of its own, nothing glued to it.
+      expect(() => checkToolchain(other)).toThrow(
+        /^refusing to build with clang 99\.1\.0 .* is an error with --toolchain-strict or TYPESOL_TOOLCHAIN=strict\. Install the tested one:\n {4}cargo-build-sbf --install-only --force-tools-install --tools-version v1\.52$/,
+      );
       expect(checkToolchain({ clang: TESTED_TOOLCHAIN.clang, tested: true }).tested).toBe(true);
       process.env.TYPESOL_TOOLCHAIN = "loose";
       expect(() => checkToolchain(other)).toThrow('TYPESOL_TOOLCHAIN=loose: expected "strict" or "warn"');
@@ -156,7 +159,7 @@ describe("the tested toolchain", () => {
 
     for (const strict of [run(["build", "--toolchain-strict"], dir, env), run(["build"], dir, { ...env, TYPESOL_TOOLCHAIN: "strict" })]) {
       expect(strict.status).toBe(1);
-      expect(strict.stderr).toMatch(/^error: refusing to build with clang 99\.1\.0 .*TYPESOL_TOOLCHAIN=strict\)$/m);
+      expect(strict.stderr).toMatch(/^error: refusing to build with clang 99\.1\.0 .*TYPESOL_TOOLCHAIN=strict\. Install the tested one:\n {4}cargo-build-sbf .* v1\.52\n/m);
     }
     const file = counter();
     const single = run(["build", "counter.ts", "--toolchain-strict"], file, env);
@@ -180,7 +183,7 @@ describe("the tested toolchain", () => {
     expect(untested.stdout).toMatch(
       / ! {3}toolchain +untested: clang 99\.1\.0 \(example\/llvm-project 01234567\), platform-tools v9\.99; TypeSOL is tested with clang 20\.1\.7-rust-dev \(anza-xyz\/llvm-project 78496716\), platform-tools v1\.52 \(Agave 3\.1\.10\)/,
     );
-    expect(untested.stdout).toMatch(/cargo-build-sbf --install-only --force-tools-install --tools-version v1\.52 {3}# the tested platform-tools/);
+    expect(untested.stdout).toMatch(/\n +# The tested platform-tools:\n +cargo-build-sbf --install-only --force-tools-install --tools-version v1\.52\n/);
     const strict = run(["doctor"], home, { HOME: home, TYPESOL_SBF_SDK: fakeSdk(), TYPESOL_TOOLCHAIN: "strict" });
     expect(strict.status).toBe(1);
     expect(strict.stdout).toMatch(/ERR {2}toolchain +untested: .*\(TYPESOL_TOOLCHAIN=strict refuses it\)/);

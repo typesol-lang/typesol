@@ -21,13 +21,20 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   (from `TESTED_TOOLCHAIN`), and says which is missing: "the Agave CLI is not installed" (then the installer, the
   `PATH` line and that command) or "the Agave CLI is installed, but not its platform-tools" (that command only). The
   build's errors were "Solana SBF SDK not found …" and "platform-tools missing under … Run
-  `cargo-build-sbf --force-tools-install` once." (test/cli/doctor.test.ts, both cases).
+  `cargo-build-sbf --force-tools-install` once." Each command is printed on a line of its own, with nothing after
+  it: what a command does is a `#` line above it, written without a character a shell acts on (the commands had a
+  trailing `# …` comment, which an interactive zsh, which reads no comments by default as on macOS, passed on as
+  arguments: `zsh: number expected`, `export: not valid in this context`), and no sentence's period follows a command.
+  `TYPESOL_SBF_SDK` set to a directory that is not an SDK makes `init` say so, where it printed "Install once:" and
+  nothing after it (test/cli/doctor.test.ts, both cases; it pastes the printed blocks into an interactive zsh and bash,
+  and fish where installed, with the commands stubbed).
 - Fixed: on Linux arm64 the Agave installer fails with a 404 (Anza publishes no Agave CLI for it) and nothing said so;
   `doctor` and `init` printed that installer. Building and LiteSVM tests work there with the platform-tools'
   `linux-aarch64` package and the SDK's C files from the x86_64 release, pointed at with `TYPESOL_SBF_SDK` (checked
   in a `linux/arm64` container: the three templates build and pass their tests). The README's Requirements give those
-  five commands, `doctor`, `init` and the build print them on Linux arm64, and the Solana CLI row there says that
-  deploying needs another host. The sentences that say builds are the same on Linux arm64 now say how that host was
+  five commands (`$HOME` quoted in each), `doctor`, `init` and the build print them on Linux arm64 (an SDK there
+  without its platform-tools is "the SBF SDK at … has no platform-tools", not an installed Agave CLI), and the Solana
+  CLI row there says that deploying needs another host. The sentences that say builds are the same on Linux arm64 now say how that host was
   set up (test/cli/doctor.test.ts).
 - Fixed: on Node.js older than 22.12 the CLI ran or crashed without saying why (on 20, `npm install` failed inside
   npm or the tests with `Map.groupBy is not a function`; on 22.11, `init`, `check` and `build` ran although `doctor`

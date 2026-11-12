@@ -1,6 +1,6 @@
 // The first minutes: `typesol doctor`, what `init` says when the platform-tools are missing, and the checks `deploy`
 // runs before sending anything (an RPC that does not answer, a payer that cannot pay), against a fake RPC.
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -9,7 +9,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadOrCreateKeypair } from "../../src/keys.js";
-import { AGAVE_PATH, INSTALL_TESTED_TOOLCHAIN, installCommands, LINUX_ARM64_INSTALL, linuxArm64, TESTED_TOOLCHAIN } from "../../src/compiler/toolchain.js";
+import {
+  AGAVE_PATH,
+  findToolchain,
+  INSTALL_TESTED_TOOLCHAIN,
+  installCommands,
+  LINUX_ARM64_INSTALL,
+  linuxArm64,
+  TESTED_TOOLCHAIN,
+  ToolchainMissing,
+} from "../../src/compiler/toolchain.js";
 import { doctorSummary, installSteps, isSignerUri, solanaCliFix } from "../../src/tools/doctor.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -89,16 +98,20 @@ describe("first minutes: doctor, init, deploy preflight", () => {
     if (process.platform === "linux" && process.arch === "arm64") expect(install).toEqual([...LINUX_ARM64_INSTALL]);
     else {
       expect(init.stdout).toContain("! The Agave CLI is not installed; npm test compiles with the platform-tools. Install once:");
+      // Each note on its own line above its command, as a `#` line: no comment after a command.
       expect(init.stdout).toContain(
         [
           `      ${INSTALL_TESTED_TOOLCHAIN[0]}`,
-          `      ${AGAVE_PATH}   # the installer adds this to ~/.profile, for new shells; this one needs it now`,
-          `      cargo-build-sbf --install-only --force-tools-install --tools-version ${TESTED_TOOLCHAIN.platformTools}   # once: downloads the platform-tools`,
-        ].join("\n"),
+          `      # The installer adds this line to ~/.profile for new shells, and this shell needs it now:`,
+          `      ${AGAVE_PATH}`,
+          `      # Once: this downloads the platform-tools, about 0.5 GB and up to 1.6 GB unpacked, and prints nothing for a minute or two:`,
+          `      cargo-build-sbf --install-only --force-tools-install --tools-version ${TESTED_TOOLCHAIN.platformTools}`,
+        ].join("\n") + "\n\n",
       );
     }
+    expect(init.stdout).not.toMatch(/\S {2,}#/);
     expect(init.stdout).not.toMatch(/cargo-build-sbf --version|cargo-build-sbf --force-tools-install(?! --)/);
-    expect(init.stdout).toMatch(/next:\n {4}cd app\n {4}npm install\n {4}npm test/);
+    expect(init.stdout).toMatch(/next:\n {4}cd app\n {4}npm install\n {4}npm test\n {4}npx --no-install typesol doctor\n\n/);
 
     const doctor = await run(["doctor"], path.join(dir, "app"), env);
     expect(doctor.status).toBe(1); // building is impossible without the platform-tools
@@ -124,8 +137,10 @@ describe("first minutes: doctor, init, deploy preflight", () => {
     expect(doctor.stdout).toContain(`the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies)`);
     const build = await run(["build"], path.join(dir, "app"), env);
     expect(build.status).toBe(1);
-    expect(build.stderr).toContain(`error: the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies). Install them once: `);
-    if (!linuxArm64()) expect(build.stderr).toContain(`Install them once: ${INSTALL_TESTED_TOOLCHAIN[1]}.`);
+    if (!linuxArm64())
+      expect(build.stderr).toBe(
+        `error: the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies). Install them once:\n    ${installSteps("platform-tools").join("\n    ")}\n`,
+      );
   });
 
   it("install commands per host: the README's on macOS and Linux x86_64, the linux-aarch64 package on Linux arm64", () => {
@@ -141,32 +156,120 @@ describe("first minutes: doctor, init, deploy preflight", () => {
       `/platform-tools/releases/download/${TESTED_TOOLCHAIN.platformTools}/platform-tools-linux-aarch64.tar.bz2`,
     );
     expect(LINUX_ARM64_INSTALL.join("\n")).toContain(`/agave/releases/download/v${TESTED_TOOLCHAIN.agave}/solana-release-x86_64-unknown-linux-gnu.tar.bz2`);
-    expect(installSteps("agave", arm).at(-1)).toMatch(
-      /^export TYPESOL_SBF_SDK=\$HOME\/\.local\/share\/typesol-sdk\/sbf {3}# add this line to ~\/\.profile too/,
-    );
+    expect(installSteps("agave", arm).slice(-2)).toEqual([
+      "# Add this line to ~/.profile too, for new shells:",
+      'export TYPESOL_SBF_SDK="$HOME/.local/share/typesol-sdk/sbf"',
+    ]);
+    // $HOME quoted in every command, as in the PATH line.
+    for (const c of [...LINUX_ARM64_INSTALL, AGAVE_PATH]) expect(c.replace(/"\$HOME[^"]*"/g, ""), c).not.toContain("$HOME");
+    // A note is a `#` line with no character a shell acts on; a command has no comment after it.
+    for (const lines of [installSteps("agave", mac), installSteps("platform-tools", mac), installSteps("agave", arm)])
+      for (const l of lines) {
+        if (l.startsWith("#")) expect(l, l).toMatch(/^# [A-Za-z0-9 ,.:/~-]+:$/);
+        else expect(l, l).not.toMatch(/\s#/);
+      }
     expect(solanaCliFix(arm)).toMatch(/^no Agave CLI is published for Linux arm64: deploy from macOS or Linux x86_64/);
     expect(solanaCliFix(x64)).toBe(INSTALL_TESTED_TOOLCHAIN[0]);
-    // The README and the troubleshooting page print the same commands (as written, so they can be pasted).
+  });
+
+  it("the README and the troubleshooting page give the same commands as init and doctor (their note lines aside)", () => {
+    const x64 = { platform: "linux", arch: "x64" };
+    // The commands of a block as written, so they can be pasted: its `#` note lines left out.
+    const commands = (block: string) =>
+      block
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#"));
     const readme = readFileSync(path.join(ROOT, "README.md"), "utf8");
     const quick = /## Quick start[\s\S]*?```sh\n([\s\S]*?)```/.exec(readme)![1]!;
-    expect(quick.split("\n").filter((l) => l && !l.startsWith("#"))).toEqual(installCommands("agave", x64));
+    expect(commands(quick)).toEqual(installCommands("agave", x64));
     const requirements = /## Requirements[\s\S]*?```sh\n([\s\S]*?)```/.exec(readme)![1]!;
-    expect(
-      requirements
-        .split("\n")
-        .map((l) => l.trim().replace(/ {3}#.*$/, ""))
-        .filter(Boolean),
-    ).toEqual([...LINUX_ARM64_INSTALL]);
+    expect(commands(requirements)).toEqual([...LINUX_ARM64_INSTALL]);
     const troubleshooting = readFileSync(path.join(ROOT, "docs/troubleshooting.md"), "utf8");
     for (const c of installCommands("agave", x64)) expect(troubleshooting).toContain(c);
     const arm64Docs = /## Linux arm64[\s\S]*?```sh\n([\s\S]*?)```/.exec(troubleshooting)![1]!;
-    expect(
-      arm64Docs
-        .split("\n")
-        .map((l) => l.trim().replace(/ {3}#.*$/, ""))
-        .filter(Boolean),
-    ).toEqual([...LINUX_ARM64_INSTALL]);
+    expect(commands(arm64Docs)).toEqual([...LINUX_ARM64_INSTALL]);
   });
+
+  it("init with TYPESOL_SBF_SDK naming a directory that is not an SDK says so, without an empty install list", async () => {
+    const dir = tmp();
+    const init = await run(["init", "app", "--name", "counter"], dir, { ...fresh(), TYPESOL_SBF_SDK: path.join(dir, "nope") });
+    expect(init.status).toBe(0);
+    expect(init.stdout).toContain(
+      `\n  ! TYPESOL_SBF_SDK=${path.join(dir, "nope")} is not a platform-tools-sdk/sbf directory (no c/sbf.mk there); npm test compiles with the platform-tools.\n\n  next:`,
+    );
+    expect(init.stdout).not.toContain("Install once");
+  });
+
+  it("on Linux arm64, an SDK without platform-tools is not said to be an Agave CLI", () => {
+    const sdk = path.join(tmp(), "sbf");
+    mkdirSync(path.join(sdk, "c"), { recursive: true });
+    writeFileSync(path.join(sdk, "c/sbf.mk"), "");
+    const before = process.env.TYPESOL_SBF_SDK;
+    process.env.TYPESOL_SBF_SDK = sdk;
+    try {
+      let missing: ToolchainMissing | undefined;
+      try {
+        findToolchain("v0", { platform: "linux", arch: "arm64" });
+      } catch (e) {
+        missing = e as ToolchainMissing;
+      }
+      expect(missing).toBeInstanceOf(ToolchainMissing);
+      expect(missing!.summary).toBe(`the SBF SDK at ${sdk} has no platform-tools (nothing under ${sdk}/dependencies)`);
+      expect(missing!.message).not.toContain("Agave CLI is installed");
+      expect(missing!.message).toContain(`Install them once:\n    ${installSteps("platform-tools", { platform: "linux", arch: "arm64" }).join("\n    ")}`);
+    } finally {
+      if (before === undefined) delete process.env.TYPESOL_SBF_SDK;
+      else process.env.TYPESOL_SBF_SDK = before;
+    }
+  });
+
+  // The printed blocks pasted into an interactive shell, line by line as a terminal sends them, with the commands
+  // stubbed (they echo what they were given, on stderr, which a pipe does not take): zsh without interactive_comments (the macOS default), bash, and fish
+  // when installed. Every command runs with exactly its arguments, and no line fails to parse.
+  const shells: [name: string, args: string[], define: (cmd: string) => string][] = [
+    ["zsh", ["-f", "-i"], (c) => `${c}() { echo "RAN ${c} $*" >&2; return 0; }`],
+    ["bash", ["--norc", "--noprofile", "-i"], (c) => `${c}() { echo "RAN ${c} $*" >&2; return 0; }`],
+    ["fish", ["--no-config", "-i"], (c) => `function ${c}; echo "RAN ${c} $argv" >&2; return 0; end`],
+  ];
+  const which = (bin: string) => ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"].map((d) => path.join(d, bin)).find((f) => existsSync(f));
+  for (const [shell, args, define] of shells) {
+    const bin = which(shell);
+    it.skipIf(!bin)(`the printed install blocks paste into an interactive ${shell}`, () => {
+      const stubs = ["sh", "curl", "tar", "mkdir", "touch", "cargo-build-sbf"];
+      for (const host of [
+        { platform: "darwin", arch: "arm64" },
+        { platform: "linux", arch: "arm64" },
+      ])
+        for (const from of ["agave", "platform-tools"] as const) {
+          const lines = installSteps(from, host);
+          const input = [...stubs.map(define), ...lines, 'echo "PATH $PATH"', 'echo "END $TYPESOL_SBF_SDK"', "exit"].join("\n") + "\n";
+          const home = tmp();
+          const r = spawnSync(bin!, args, { input, encoding: "utf8", env: { HOME: home, PATH: "/usr/bin:/bin", TERM: "dumb", BASH_SILENCE_DEPRECATION_WARNING: "1" } });
+          const out = `${r.stdout}${r.stderr}`;
+          expect(out, `${shell} ${host.platform} ${from}`).toContain("END");
+          // Each command ran, with the arguments as written (the PATH and SDK exports are checked by their effect).
+          for (const c of lines.filter((l) => !l.startsWith("#") && !l.startsWith("export "))) {
+            for (const stage of c.split(" | ")) {
+              // What the stub received: the words as the shell split them, quotes removed and $HOME expanded. The
+              // installer line runs curl inside sh -c "$(…)".
+              const inner = /^sh -c "\$\((.*)\)"$/.exec(stage)?.[1];
+              expect(out, stage).toContain(`RAN ${(inner ?? stage).replaceAll("$HOME", home).replaceAll('"', "")}`);
+              if (inner) expect(out, stage).toContain("RAN sh -c");
+            }
+          }
+          if (lines.includes(AGAVE_PATH)) expect(out).toContain(`PATH ${home}/.local/share/solana/install/active_release/bin:/usr/bin:/bin`);
+          if (lines.some((l) => l.startsWith("export TYPESOL_SBF_SDK=")))
+            expect(out).toContain(`END ${home}/.local/share/typesol-sdk/sbf`);
+          // No line failed: zsh answers "command not found: #" for a note and nothing else.
+          const errors = out
+            .split("\n")
+            .filter((l) => /not found|number expected|parse error|not valid in this context|no matches found|syntax error|unknown command/i.test(l))
+            .filter((l) => !/command not found: #$/.test(l.trim()));
+          expect(errors, `${shell} ${host.platform} ${from}`).toEqual([]);
+        }
+    });
+  }
 
   it("doctor ends with what is ready and what the warnings are about", () => {
     const row = (what: string, ok: boolean, optional = false) => ({ what, ok, optional, detail: "" });
@@ -174,6 +277,9 @@ describe("first minutes: doctor, init, deploy preflight", () => {
     expect(doctorSummary([...base, row("Solana CLI", true), row("keypair", true), row("RPC", true)])).toBe("Ready to build, test and deploy.");
     expect(doctorSummary([...base, row("docker", false, true), row("keypair", false, true), row("RPC", false, true)])).toBe(
       "Ready to build and test. The ! rows: deploying still needs: keypair, RPC; Docker is only for --docker builds.",
+    );
+    expect(doctorSummary([...base.slice(0, 2), row("toolchain", false, true), row("Solana CLI", true), row("keypair", true), row("RPC", true)])).toBe(
+      "Ready to build and test. The ! rows: the toolchain is not the tested one (builds work; their binaries are not covered by the tests).",
     );
     expect(doctorSummary([row("Node.js", false), row("platform-tools", false)])).toBe(
       "Not ready to build or test: fix the ERR rows (Node.js, platform-tools) first.",
