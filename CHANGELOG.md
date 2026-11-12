@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.46.0 — 2026-11-13
+
 A minor release: it adds a flag (`init --no-agent-files`) and an export of `typesol/compiler` (`typescriptMessage`),
 accepts what 0.45.0 refused (16 signer seeds, the bump included), and refuses programs 0.45.0 compiled to wrong code
 (an `f64` used with an operator, as an integer or as text; a proof or signature check whose result decides nothing; a
