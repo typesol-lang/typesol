@@ -63,6 +63,7 @@ import {
   doctorSummary,
   formatChecks,
   isSignerUri,
+  keypairFile,
   requirePayer,
   requireSolanaCli,
   rpcHost,
@@ -970,8 +971,9 @@ function readJson(file: string): unknown {
 }
 
 /** The address of a payer keypair file, for the line printed before a deploy (or why there is none). */
-function payerAddress(file: string): string {
-  if (isSignerUri(file)) return `${file} (a signer the Solana CLI resolves)`;
+function payerAddress(payer: string): string {
+  if (isSignerUri(payer)) return `${payer} (a signer the Solana CLI resolves)`;
+  const file = keypairFile(payer);
   if (!existsSync(file)) return `none at ${file} (the Solana CLI will refuse)`;
   try {
     return base58(readKeypair(file).subarray(32));

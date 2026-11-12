@@ -19,7 +19,7 @@ import {
   TESTED_TOOLCHAIN,
   ToolchainMissing,
 } from "../../src/compiler/toolchain.js";
-import { doctorSummary, installSteps, isSignerUri, solanaCliFix } from "../../src/tools/doctor.js";
+import { doctorSummary, installSteps, isSignerUri, keypairFile, solanaCliFix } from "../../src/tools/doctor.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = path.join(ROOT, "dist/cli.js");
@@ -365,9 +365,33 @@ describe("first minutes: doctor, init, deploy preflight", () => {
     const dir = tmp();
     expect((await run(["init", ".", "--name", "counter"], dir)).status).toBe(0);
     const target = path.join(dir, "target");
-    for (const uri of ["usb://ledger?key=0", "prompt://", "stdin://", "ASK", "-", "file:///x/id.json"]) expect(isSignerUri(uri), uri).toBe(true);
-    for (const file of ["id.json", "./id.json", "/home/u/.config/solana/id.json", "~/.config/solana/id.json", "C:\\keys\\id.json"])
+    for (const uri of ["usb://ledger?key=0", "prompt://", "stdin://", "prompt:", "stdin:", "USB://ledger", "ASK", "-"])
+      expect(isSignerUri(uri), uri).toBe(true);
+    for (const file of [
+      "id.json",
+      "./id.json",
+      "/home/u/.config/solana/id.json",
+      "~/.config/solana/id.json",
+      "C:\\keys\\id.json",
+      "file:///x/id.json",
+      "file:id.json",
+      "keys:prod/id.json",
+      "id.json:bak",
+      "presigner:abc",
+    ])
       expect(isSignerUri(file), file).toBe(false);
+    // A file: URI names a file as the Solana CLI reads it: its path is checked like any other.
+    expect(keypairFile("file:///x/id.json")).toBe("/x/id.json");
+    expect(keypairFile("file:id.json")).toBe("id.json");
+    expect(keypairFile("FILE:id.json")).toBe("id.json");
+    expect(keypairFile("keys:prod/id.json")).toBe("keys:prod/id.json");
+    const missingUri = await run(["deploy", "--url", "devnet", "--keypair", `file://${path.join(dir, "gone.json")}`], dir, { PATH: fakeSolana().path });
+    expect(missingUri.status).toBe(1);
+    expect(missingUri.stderr).toBe(`error: no keypair file at ${path.join(dir, "gone.json")} (given with --keypair): check the path. Nothing was sent.\n`);
+    const empty = await run(["deploy", "--url", "devnet", "--keypair", ""], dir, { PATH: fakeSolana().path });
+    expect(empty.status).toBe(1);
+    expect(empty.stderr).toBe("error: --keypair is empty: give the path of the payer's keypair file. Nothing was sent.\n");
+    expect(existsSync(target)).toBe(false);
 
     // `solana` missing: that is said first, even with a missing payer, and nothing is built.
     const noCli = await run(["deploy", "--url", rpcUrl, "--keypair", path.join(dir, "missing.json")], dir, {

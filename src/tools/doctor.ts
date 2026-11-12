@@ -198,11 +198,17 @@ const solUp = (lamports: number) => `${(Math.ceil(lamports / 1e7) / 100).toFixed
 
 /**
  * Whether a `--keypair` / `keypair_path` value is a signer the Solana CLI resolves itself rather than a file: `ASK`,
- * `-` (stdin) or a URI with a scheme (`usb://ledger?key=0`, `prompt://`, `stdin://`, `file://…`). A one-letter
- * scheme is a Windows drive (`C:\…`), a file path.
+ * `-` (stdin) or a `usb:`, `prompt:` or `stdin:` URI (`usb://ledger?key=0`, `prompt://`, `stdin://`; the scheme in any
+ * case, as the Solana CLI reads it). Anything else is a file: `file:` through keypairFile.
  */
 export function isSignerUri(source: string): boolean {
-  return source === "ASK" || source === "-" || /^[A-Za-z][A-Za-z0-9+.-]+:/.test(source);
+  return source === "ASK" || source === "-" || /^(?:usb|prompt|stdin):/i.test(source);
+}
+
+/** The file a `--keypair` / `keypair_path` value names: the path of a `file:` URI (`file:id.json`, `file:///abs/id.json`), as the Solana CLI reads it, else the value. */
+export function keypairFile(source: string): string {
+  const m = /^file:(?:\/\/[^/?#]*)?([^?#]*)/i.exec(source);
+  return m ? m[1]! : source;
 }
 
 /** Where a deploy's payer comes from, for the message when its file is missing. */
@@ -213,8 +219,17 @@ export type PayerSource = { from: "flag" } | { from: "config"; config: string } 
  * A signer URI (a Ledger, a prompt, stdin) is the Solana CLI's to resolve, so it is passed through unchecked.
  */
 export function requirePayer(url: string, payer: string, source: PayerSource = { from: "default" }): void {
-  if (isSignerUri(payer) || existsSync(payer)) return;
-  const shown = payer.replace(os.homedir(), "~");
+  if (isSignerUri(payer)) return;
+  const file = keypairFile(payer);
+  if (!file.trim()) {
+    if (source.from === "config")
+      throw new Error(
+        `keypair_path in ${source.config.replace(os.homedir(), "~")} is empty: set it to the payer's keypair file, or pass --keypair <file>. Nothing was sent.`,
+      );
+    throw new Error("--keypair is empty: give the path of the payer's keypair file. Nothing was sent.");
+  }
+  if (existsSync(file)) return;
+  const shown = file.replace(os.homedir(), "~");
   if (source.from === "flag") throw new Error(`no keypair file at ${shown} (given with --keypair): check the path. Nothing was sent.`);
   const cluster = clusterOf(url);
   if (source.from === "config")
@@ -263,8 +278,8 @@ export async function deployPreflight(opts: { url: string; payer?: string; progr
     );
   }
   // A signer URI (a Ledger, a prompt) has no address to read here: the Solana CLI resolves it and reports a shortfall.
-  if (!opts.payer || isSignerUri(opts.payer) || !existsSync(opts.payer)) return;
-  const payer = base58(readKeypair(opts.payer).subarray(32));
+  if (!opts.payer || isSignerUri(opts.payer) || !existsSync(keypairFile(opts.payer))) return;
+  const payer = base58(readKeypair(keypairFile(opts.payer)).subarray(32));
   let need = 0;
   for (const p of opts.programs) {
     const size = statSync(p.soPath).size;
