@@ -54,7 +54,9 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   and deploy." or "Not ready to build or test: fix the ERR rows (…) first." (test/cli/doctor.test.ts).
 - New flag, `init --no-agent-files`: leaves out the files for AI coding agents (AGENTS.md, CLAUDE.md,
   `.cursor/rules/typesol.mdc`, `.mcp.json`, `.cursor/mcp.json`), which `init` wrote with no way to opt out; without
-  it, `init` now names them after the files it created (test/cli/ai.test.ts). `.vscode/settings.json` is written
+  it, `init` now names them after the files it created, and where one of them is already there (a repository with
+  its own AGENTS.md), its refusal says so: "refusing to overwrite: AGENTS.md (--no-agent-files leaves out the files
+  for AI coding agents)" (test/cli/ai.test.ts). `.vscode/settings.json` is written
   either way: it makes the editor show TypeSOL's errors.
 - Hints, text only (test/language/diagnostics.test.ts):
   - an `async` instruction returning `Promise<void>` got "instructions cannot be async or generators" with no hint,
