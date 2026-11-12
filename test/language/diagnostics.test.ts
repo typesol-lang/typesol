@@ -342,6 +342,26 @@ describe("subset enforcement", () => {
       /the result of verifySecp256k1 is discarded.*returns whether the signature holds/,
     ],
     [
+      "a merkleVerify result deciding an empty if",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { if (merkleVerify(leaf, proof, root)) {} }`,
+      /the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: .*write require\(merkleVerify\(…\), error\)/,
+    ],
+    [
+      "a verifyEd25519 result deciding an empty if, negated",
+      `import { type InstructionsSysvar, verifyEd25519 } from "typesol";\nexport function f(ixs: InstructionsSysvar, who: Pubkey): void { if (!verifyEd25519(ixs, who, "hello")) {} }`,
+      /the result of verifyEd25519 is not acted on: the if around it has an empty body/,
+    ],
+    [
+      "a merkleVerify result in a const never read",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { const ok = merkleVerify(leaf, proof, root); }`,
+      /the result of merkleVerify is never read \(ok is not used\), so nothing is checked: .*write require\(merkleVerify\(…\), error\)/,
+    ],
+    [
+      "a verifySecp256k1 result assigned to a let never read",
+      `import { type Hash, verifySecp256k1, keccak256 } from "typesol";\nexport function f(who: Pubkey, r: Hash, s: Hash, e: Hash): void { let ok = false; ok = verifySecp256k1(keccak256(who), 0n, r, s, e); }`,
+      /the result of verifySecp256k1 is never read \(ok is not used\)/,
+    ],
+    [
       "a helper that may replace a struct while a reference into it is still used",
       `export interface P { x: u64; }\nexport interface H { p: P; v: u64; }\nfunction reset(h: Mut<H>): void { h.p = { x: 7n }; }\nexport function f(h: Mut<H>): void { const o = h.p; reset(h); h.v = o.x; }`,
       /"o" still refers to data in h, and reset\(\) may replace it/,
@@ -606,4 +626,25 @@ describe("codegen is stable", () => {
     if (process.env.UPDATE_GOLDEN) writeFileSync(golden, c);
     expect(c).toBe(readFileSync(golden, "utf8"));
   });
+});
+
+describe("a proof or signature check whose result decides something compiles", () => {
+  // What is caught is a result used as a statement, in an if with an empty body and no else, or kept in a local the
+  // function never reads; a wrapper helper whose boolean is dropped is not.
+  const uses = [
+    "require(merkleVerify(leaf, proof, root), 1n);",
+    "const ok = merkleVerify(leaf, proof, root); require(ok, 1n);",
+    "let ok = false; ok = merkleVerify(leaf, proof, root); b.value = ok ? 1n : 0n;",
+    "if (merkleVerify(leaf, proof, root)) { b.value = 1n; }",
+    "if (merkleVerify(leaf, proof, root)) {} else { b.value = 1n; }",
+  ];
+  for (const stmts of uses)
+    it(stmts, () => {
+      expect(
+        errorsFor(
+          `import { type Hash, merkleVerify } from "typesol";\nexport function f(b: Mut<Box>, leaf: Hash, proof: Vec<Hash>, root: Hash): void { ${stmts} }`,
+          "verifier",
+        ),
+      ).toEqual([]);
+    });
 });

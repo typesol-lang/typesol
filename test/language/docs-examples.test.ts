@@ -235,6 +235,16 @@ const REFUSED: [example: string, program: string, stable: string][] = [
     "the result of merkleVerify is discarded, so nothing is checked",
   ],
   [
+    "if (merkleVerify(leaf, proof, root)) {}",
+    `import { type Hash, type Vec, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void {\n  if (merkleVerify(leaf, proof, root)) {}\n}\n`,
+    "the result of merkleVerify is not acted on: the if around it has an empty body",
+  ],
+  [
+    "const ok = merkleVerify(leaf, proof, root);",
+    `import { type Hash, type Vec, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void {\n  const ok = merkleVerify(leaf, proof, root);\n}\n`,
+    "the result of merkleVerify is never read (ok is not used), so nothing is checked",
+  ],
+  [
     'export enum E { A = "a", /* @code 6100 */ B = "b" }',
     'export enum E { A = "a", /* @code 6100 */ B = "b" }\nexport function f(): void {}\n',
     "this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment",

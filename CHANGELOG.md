@@ -118,8 +118,13 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   nothing. The three return whether the proof or signature holds and fail nothing by themselves, so
   `merkleVerify(leaf, proof, root);` emitted the hash computation and dropped its result. Such a call is now refused:
   "the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write
-  require(merkleVerify(…), error)". No program of the repository called one that way (test/language/diagnostics.test.ts;
-  a row in the refused-constructs table of docs/language-statements.md).
+  require(merkleVerify(…), error)". Refused as well: such a call as the condition of an `if` with an empty body and no
+  `else` ("the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: …"),
+  and its result kept in a `const` or `let` (declared or assigned) that the function never reads ("the result of
+  merkleVerify is never read (ok is not used), so nothing is checked: …"). What is caught is these three forms, not
+  every unused result: a helper that returns the result, called as a statement, still compiles. No program of the
+  repository called one these ways (test/language/diagnostics.test.ts; rows in the refused-constructs table of
+  docs/language-statements.md).
 - Fixed: a `/** @code 6100 */` tag written after other code on its line (`A = "a", /** @code 6100 */ B = "b"`) was
   ignored without a word, because TypeScript attaches it to no member, and `B` took the next code instead of 6100. It
   is now refused, naming the member that follows: "this @code tag is not read: other code comes before it on its line;
