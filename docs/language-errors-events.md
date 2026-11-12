@@ -34,8 +34,9 @@ export function audit(vault: Account<Vault>): void {
 ```
 
 `require(condition, error)` fails the instruction with `error` when the condition is false. There are no exceptions:
-unlike JavaScript's `throw`, a failure cannot be caught, and the runtime discards every change the instruction made,
-including those of programs it called.
+unlike JavaScript's `throw`, a failure cannot be caught. On Solana a failed instruction fails the whole transaction:
+the runtime discards every change the transaction made, in this instruction, in the programs it called and in the
+transaction's other instructions (only the fee is charged).
 
 The error may be:
 

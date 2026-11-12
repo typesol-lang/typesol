@@ -24,7 +24,9 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
    token types for token accounts (the table below).
 2. Move the constraints from `#[account(...)]` into the parameter types or the body.
 3. Port the body. Integers are `bigint`s with `n` literals, and every `+ - * / %` is checked.
-4. Test with `typesol/testing` ([test your program](test-your-program.md)), then compare the IDLs.
+4. Test with `typesol/testing` ([test your program](test-your-program.md)), then compare the IDLs, section by section
+   (with `jq`): `diff <(jq -S .instructions ../anchor/target/idl/my_program.json) <(jq -S .instructions
+   target/my_program/my_program.json)`, then the same for `.accounts`, `.types`, `.events` and `.errors`.
 
 ## Accounts and constraints
 
@@ -46,7 +48,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `owner = program`, `executable` | `Owner<A, "…">`, `Executable<A>` |
 | `constraint = expr @ MyError::X` (or without an error: 2003) | `constraint(acct, expr, MyError.X)` (or `constraint(acct, expr)`) at the start of the body: it runs with `acct`'s checks, where Anchor runs it |
 | `realloc = n, realloc::payer = p` | `realloc(acct, n, p)` |
-| `Option<Account<'info, T>>` | `Mut<T> \| null` (the client passes the program id to leave it out) |
+| `Option<Account<'info, T>>` | `Account<T> \| null`, or `Mut<T> \| null` with `#[account(mut)]` (the client passes the program id to leave it out) |
 | `UncheckedAccount` / `AccountInfo` | `AccountInfo` / `Mut<AccountInfo>`: check what you rely on yourself |
 | `SystemAccount<'info>` | `SystemAccount` / `Mut<SystemAccount>` |
 | `Migration<'info, From, To>` | `Migrate<From, To>`, then `acct.migrate(payer, value)`; the old struct keeps its on-chain discriminator with `/** @discriminator account:<OldName> */` |
@@ -76,7 +78,7 @@ and error codes. Its notes (on stderr) list what an existing Anchor client would
 | `#[account] pub struct T { … }` | `export interface T { … }` |
 | `u8` … `u128`, `i8` … `i128`, `bool`, `Pubkey` | `u8` … `u128`, `i8` … `i128`, `boolean`, `Pubkey` |
 | `[T; N]` | `FixedArray<T, N>` |
-| `String` with `#[max_len(n)]` | `FixedString<N>`: a u32 length and N bytes, always N bytes long |
+| `String` with `#[max_len(n)]` | `FixedString<N>`: a u32 length and room for N bytes, always 4 + N bytes long |
 | `Vec<T>` with `#[max_len(n)]` | `Vec<T>` (any number, declared anywhere, stored after the fixed-size fields; it grows with `push(v, payer)`), or `FixedVec<T, n>`: a u32 length and room for n, always 4 + n × size bytes; in a `@layout borsh` struct, `Vec<T>` is Anchor's own, bounded only by the account |
 | `Option<T>` | `Option<T>`: fixed size (1 + size of T) |
 | `#[derive(AnchorSerialize…)] enum` | `export enum` (unit variants) or a data enum `type A = { kind: "X"; … } \| …` |
@@ -90,8 +92,7 @@ fields after them).
 To keep an Anchor program's existing accounts, mark the struct `/** @layout borsh */`: it is then stored exactly as
 Anchor stores it (`FixedString<N>` / `FixedVec<T, N>` / `Option<T>` become Borsh String / Vec / Option, N being the
 `#[max_len]`), its IDL type is Anchor's, and the upgraded program reads and writes the accounts in place. `typesol port`
-adds it for you. It costs some compute (the account is unpacked and packed in every instruction that uses it) but stays
-several times cheaper than Anchor. Without it, accounts that use these types need a migration (or a new program) rather
+adds it for you. It costs some compute: the account is unpacked and packed in every instruction that uses it. Without it, accounts that use these types need a migration (or a new program) rather
 than an in-place upgrade. Everything else, including instruction arguments (`String`, `Option`, `Vec` are Borsh there),
 matches byte for byte. A `@layout borsh` struct passed as a whole argument, returned or emitted is Borsh too, so an
 Anchor instruction that takes or returns a struct with `String` / `Vec` / `Option` fields keeps its client bytes.

@@ -1,6 +1,7 @@
 # Types
 
-Every value in a TypeSOL program has a type whose size and bytes are known when the program compiles. This page goes
+Every value in a TypeSOL program has a type whose layout is known when the program compiles: a fixed size for most,
+a length followed by its elements or bytes for `string` and `Vec` (see the table). This page goes
 through them: what each one is, how to write it, its bytes in account data and in instruction arguments, its limits,
 and the error code when a limit is hit at run time. Part of the [language guide](language.md).
 
@@ -43,15 +44,18 @@ export function record(stats: Mut<Stats>, by: u64, change: i64): void {
 - **Literals are bigints**: `1n`, `0n`, `-5n`. Unlike JavaScript, there are no `number`s: `1` is refused
   (`Type 'number' is not assignable to type 'bigint'`, with a hint to write `1n`), and so are `number` parameters and
   fields. A literal takes the type of the place it is used in and must fit there (`300 does not fit in u8`). A local
-  declared from a bare literal, `const x = 5n`, is a `u64`.
+  declared from a bare literal, `const x = 5n`, is a `u64`; an untyped top-level constant takes the type of each place
+  it is used in, as a literal does ([constants](language-basics.md#constants)).
 - **Both operands have one type.** `a + b` with a `u64` and a `u8` is refused: `operands have different types: u64 and
   u8; convert with u64(...) etc.` Comparisons (`<`, `<=`, `===`, …) need equal types too.
 - **Every operation is checked.** `+ - * / % **` and their assignments (`+=` … `**=`) fail the instruction on
   overflow (5100) or division by zero (5101); `**` with a negative exponent fails as well (JavaScript throws there).
   Unlike JavaScript there are no silent wraps and no `Infinity`.
 - **Bitwise operators.** `& | ^` work on equal types; `~` flips the bits within the type's width (`~1n` as a `u8` is
-  254). `<<` fails (5100) when bits would be lost or the amount is not below the width; `>>` is arithmetic on signed
-  types. The shift amount, also in `<<=` and `>>=`, may be any integer type.
+  254). Both shifts fail (5100) when the amount is negative or not below the width (`x >> 64n` on a `u64`), and `<<`
+  also when bits would be lost; `>>` is arithmetic on signed types. Unlike JavaScript, where a bigint shift never
+  fails, `1n << 64n` is not a bigger number and `x >> 200n` is not 0. The shift amount, also in `<<=` and `>>=`, may be
+  any integer type up to `u128`.
 - `++` and `--` are checked like `+= 1n`. Unary `-` needs a signed type (`unary minus needs a signed integer (i8 …
   i128)`).
 

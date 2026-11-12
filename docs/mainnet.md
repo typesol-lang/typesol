@@ -2,8 +2,13 @@
 
 From an empty directory to a program on Solana mainnet-beta: create, test, deploy, publish the IDL, then check that
 the deployed binary is the one your source builds. The program here is the counter that `typesol init` creates
-(11,400 bytes, 11.1 KiB, built with TypeSOL 0.43.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
+(11,400 bytes, 11.1 KiB, built with TypeSOL 0.45.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
 slightly); any TypeSOL project works the same way.
+
+**Before you deploy anything that holds value.** TypeSOL has had internal security reviews by its maintainers, not an
+independent audit ([status](security-model.md#status)). Do not put significant value behind a program built with it
+until an external audit of the compiler and runtime is published, and audit your own program as you would any Solana
+program.
 
 You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Quick start).
 

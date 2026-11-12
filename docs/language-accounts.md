@@ -29,7 +29,7 @@ export function like(fan: Signer, note: Mut<Note>, original: Account<Note>): voi
 | Parameter type | Checked before your code runs |
 | --- | --- |
 | `Signer` / `Mut<Signer>` | signed (3010) and, for `Mut`, writable (2000) |
-| `Account<T>` / `Mut<T>` | owned by this program (3007), initialized (3012), 8-byte discriminator matches (3002), data large enough (3003) and, for `Mut`, writable (2000). A zero-copy type is checked as Anchor's `AccountLoader` checks it ([below](#zero-copy-types-as-anchors-idl-describes-them)) |
+| `Account<T>` / `Mut<T>` | in this order: initialized (3012 for an empty system account), owned by this program (3007), data large enough (3003, discriminator included), 8-byte discriminator matches (3002); for `Mut`, writable (2000), checked before them. A zero-copy type is checked as Anchor's `AccountLoader` checks it ([below](#zero-copy-types-as-anchors-idl-describes-them)) |
 | `Init<T>` | writable; the body creates it ([below](#creating-accounts)) |
 | `InitIfNeeded<T>` | writable; the body creates it when it does not exist, else checks it |
 | `Zeroed<T>` | allocated by the client, not yet initialized, writable ([below](#zeroed-accounts)) |
@@ -123,7 +123,8 @@ export function scratch(payer: Mut<Signer>, extra: Init<Settings>, systemProgram
   `Init<T>` the body never creates is an error.
 - **`InitIfNeeded<T>`**: `const created = acct.createIfNeeded(payer, seeds)` creates the account once; afterwards it
   re-derives the PDA and checks the owner, discriminator and size (Anchor's `init_if_needed`). `acct.pdaBump` is the
-  bump after it. An existing account is used as it is: check the fields you rely on.
+  bump after it. An existing account is used as it is: check the fields you rely on. In `configure` above the first
+  caller becomes the admin; gate such a setup on the upgrade authority ([ProgramData](#programdata)).
 - Seeds, bumps and `create` under another program are on the [PDAs](language-pdas.md) page; mints, token accounts
   and associated token accounts are created the same way ([tokens](language-cpi.md#creating-mints-and-token-accounts)).
 
@@ -176,13 +177,17 @@ Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size
   give the new one a name of its own (two structs with one discriminator are refused).
 - Limits: fixed-layout structs without growable Vecs, no constraints yet, and the account cannot be passed to a helper
   (use `acct.to` fields in the instruction).
+- As written, anyone can migrate a counter and become its `owner`. With no constraints on `Migrate`, check the caller
+  in the body before `migrate`, for example against the upgrade authority of a [`ProgramData`](#programdata)
+  parameter.
 
 ## Closing and resizing
 
 ```ts
-import { type Mut, type Signer, type SystemProgram, type u64, close, realloc } from "typesol";
+import { type HasOne, type Mut, type Pubkey, type Signer, type SystemProgram, type u64, close, realloc } from "typesol";
 
 export interface Log {
+  owner: Pubkey;
   entries: u64;
 }
 
@@ -190,13 +195,14 @@ export function grow(payer: Mut<Signer>, log: Mut<Log>, systemProgram: SystemPro
   realloc(log, size, payer);
 }
 
-export function remove(owner: Mut<Signer>, log: Mut<Log>): void {
+export function remove(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">): void {
   close(log, owner);
 }
 ```
 
 - `close(account, destination)` closes a program account: its lamports go to `destination` (another writable
-  account) and its data is zeroed. The account is not used after it in the function, except its `key` (compile
+  account) and its data is zeroed. The lamports are value: `HasOne` above lets only the log's owner close it.
+  `grow` needs no such check, since only the payer pays. The account is not used after it in the function, except its `key` (compile
   errors, or 2040 at run time in a helper given one account twice). `CloseTo<A, "dest">` does the same when the
   instruction succeeds ([constraints](#constraints)).
 - `realloc(account, newSize, payer)` on a `Mut<Struct>`: growing charges the payer the extra rent (at most 10 KiB per
@@ -425,7 +431,7 @@ export function rename(profile: Mut<Profile>, name: string): void {
   back (3004). Its elements move when it grows, so a reference into one cannot outlive a `push` or an assignment.
 - `Init` of such a struct takes its space: `create(payer, seeds, space)`.
 - Programs invoked from the body (CPIs) see the account's bytes as they were when the instruction started.
-- It costs more compute than the fixed layout: the whole account is read and written each time (see the benchmarks).
+- It costs more compute than the fixed layout: the whole account is read and written each time.
 - Nested structs and list elements must be fixed-size (FixedString elements allowed).
 - The same struct is Borsh as a whole instruction argument (checked like Borsh deserialization, UTF-8 included), as
   return data and as an event. As those (not as account data) it may also hold `string` fields and data enums carrying

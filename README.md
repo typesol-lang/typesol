@@ -28,7 +28,7 @@ clients read TypeSOL programs unchanged.
 
 - **One language, end to end.** You write the program and its tests in TypeScript, and every build writes a typed
   client for it ([docs/client.md](docs/client.md)). Your editor gives you completion and type errors throughout.
-- **Safe by default.**
+- **Checked by default.**
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
   - Constraints follow Anchor's rules and use Anchor's error codes.

@@ -11,10 +11,12 @@ What differs from TypeScript, in short:
 - Integers are bigints of a declared width (`u8` … `u128`, `i8` … `i128`, `1n` literals), and every arithmetic
   operation is checked. There is no `number` and no floating point.
 - Everything comes from `"typesol"`: no Node.js, no npm packages, no `console`, no `Math`.
-- No `class`, `async`, `throw` or `try`: a failed `require` (or check, or overflow) ends the instruction and the
-  runtime discards its changes.
-- Every value has a fixed size, known when the program compiles: strings in accounts are `FixedString<N>`, lists are
-  `FixedArray`, `FixedVec` or `Vec`, and there are no dynamic objects.
+- No `class`, `async`, `throw` or `try`: a failed `require` (or check, or overflow) ends the instruction and fails the
+  whole transaction, whose changes the runtime discards.
+- Every type's layout is known when the program compiles. Locals and struct fields have a fixed size: strings in
+  accounts are `FixedString<N>`, lists are `FixedArray` or `FixedVec`. What varies in length is a `string` or `Vec`
+  argument (read in place from the instruction data), a `Vec` field (the account grows) and a string built at run time
+  (on the heap). There are no dynamic objects.
 
 For a tour, start with the [README](../README.md); to port an Anchor program, [migrate from
 Anchor](migrate-from-anchor.md).

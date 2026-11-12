@@ -5,7 +5,7 @@ program can sign for it. This page covers seeds, bumps, creating accounts at PDA
 calls to other programs, and how the IDL records them. Part of the [language guide](language.md).
 
 ```ts
-import { type Init, type Mut, type Pubkey, type Seeds, type Signer, type SystemAccount, type SystemProgram, type u16, type u64, type u8, requirePda, signer } from "typesol";
+import { type Init, type Mut, type Pubkey, type Seeds, type Signer, type SystemAccount, type SystemProgram, type u16, type u64, type u8, findProgramAddressBump, programId, requirePda, signer } from "typesol";
 
 export interface Vault {
   owner: Pubkey;
@@ -13,10 +13,10 @@ export interface Vault {
   solBump: u8;
 }
 
-export function open(owner: Mut<Signer>, vault: Init<Vault>, systemProgram: SystemProgram, index: u16, solBump: u8): void {
+export function open(owner: Mut<Signer>, vault: Init<Vault>, systemProgram: SystemProgram, index: u16): void {
   vault.bump = vault.create(owner, ["vault", owner.key, index]);
   vault.owner = owner.key;
-  vault.solBump = solBump;
+  vault.solBump = findProgramAddressBump(["sol", vault.key], programId());
 }
 
 export function pay(
@@ -33,6 +33,10 @@ export function pay(
   systemProgram.transfer(sol, to, amount, solSigner);
 }
 ```
+
+`open` creates the vault at `["vault", owner, index]` and stores both bumps, the second derived, not taken from the
+arguments. `pay` moves lamports only for the vault's owner: the `Seeds` constraint derives the vault's address from
+the signing `owner`, so another signer names another address and fails with 2006.
 
 ## Seeds
 
@@ -137,14 +141,25 @@ export function locate(book: Mut<Book>, owner: Pubkey, start: u64): void {
 A PDA of this program signs a call to another program when the call is given its seeds, with the bump:
 
 ```ts
-import { type Mut, type Signer, type SystemAccount, type SystemProgram, type u64, type u8, signer } from "typesol";
+import { type Account, type HasOne, type Mut, type Pubkey, type Signer, type SystemAccount, type SystemProgram, type u64, type u8, signer } from "typesol";
 
-export function payOut(admin: Signer, treasury: Mut<SystemAccount>, fees: Mut<SystemAccount>, to: Mut<SystemAccount>, systemProgram: SystemProgram, amount: u64, treasuryBump: u8, feesBump: u8): void {
-  systemProgram.transfer(treasury, to, amount, ["treasury", admin.key, treasuryBump]);
-  const feeSigner = signer(["fees", feesBump]);
+export interface Config {
+  admin: Pubkey;
+  treasuryBump: u8;
+  feesBump: u8;
+}
+
+export function payOut(admin: Signer, config: HasOne<Account<Config>, "admin">, treasury: Mut<SystemAccount>, fees: Mut<SystemAccount>, to: Mut<SystemAccount>, systemProgram: SystemProgram, amount: u64): void {
+  systemProgram.transfer(treasury, to, amount, ["treasury", admin.key, config.treasuryBump]);
+  const feeSigner = signer(["fees", config.feesBump]);
   systemProgram.transfer(fees, to, 1n, feeSigner);
 }
 ```
+
+Signer seeds are authority: whoever reaches the call spends what the PDA holds. Here `HasOne` lets only the config's
+`admin` call `payOut` (2001 for anyone else), and the bumps come from the config, where they were stored when the
+PDAs were created. Seeds that include the caller, as `["treasury", admin.key, …]` does, also limit a call to the
+caller's own PDA: another signer's seeds give another address, which then does not sign.
 
 - Every CPI takes optional signer seeds as its last argument: a seed list written there with the bump
   (`["treasury", admin.key, bump]`), or a named one. When several PDAs sign one `invoke`, pass a list of seed lists,

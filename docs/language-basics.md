@@ -30,8 +30,8 @@ Every other top-level statement is refused: `class`, `namespace`, `let` and `var
 
 ## A first program
 
-A poll: anyone opens one at an address derived from their key and a number, anyone votes, the creator closes it and
-gets the total back.
+A poll: anyone opens one at an address derived from their key and a number, anyone votes, and the creator ends it and
+gets the number of votes back as the instruction's result.
 
 ```ts
 import { type Account, type Init, type Mut, type Pubkey, type Signer, type SystemProgram, type u64, type u8, emit, require } from "typesol";
@@ -53,7 +53,7 @@ export interface Voted {
 
 export enum PollError {
   Closed = "The poll is closed",
-  NotCreator = "Only the creator can close the poll",
+  NotCreator = "Only the creator can end the poll",
 }
 
 const SEED = "poll";
@@ -71,7 +71,7 @@ export function vote(voter: Signer, poll: Mut<Poll>, yes: boolean): void {
   emit<Voted>({ poll: poll.key, yes });
 }
 
-export function close(creator: Signer, poll: Mut<Poll>): u64 {
+export function end(creator: Signer, poll: Mut<Poll>): u64 {
   require(poll.creator === creator.key, PollError.NotCreator);
   poll.closed = true;
   return total(poll);
@@ -88,7 +88,8 @@ Line by line:
   with `type`; functions (`require`, `emit`) without it. There is no other module to import from: no Node.js, no npm
   packages, no `console`.
 - **`export interface Poll`.** An exported interface is a struct. Used as an account's type (`Init<Poll>`,
-  `Mut<Poll>`), it is account data: an 8-byte discriminator, then the fields in order, 32 + 8 + 8 + 1 + 1 = 50 bytes.
+  `Mut<Poll>`), it is account data: an 8-byte discriminator, then the fields in order, 8 + 32 + 8 + 8 + 1 + 1 = 58
+  bytes.
   The JSDoc comments become `docs` in the IDL.
 - **`export interface Voted`.** Another struct; this one is only used by `emit<Voted>(…)`, so the IDL lists it under
   `events`.
@@ -102,11 +103,13 @@ Line by line:
   from the seeds, checks that `poll` is that address, creates the account with `creator` paying the rent, writes the
   discriminator and returns the bump. The new account's fields start at zero.
 - **`vote`.** `Mut<Poll>` is an existing account of this program holding a `Poll` (owner, discriminator and size
-  checked), writable. `require(condition, error)` fails the whole instruction when the condition is false; nothing
-  it wrote is kept. `poll.yes += 1n` is checked: an overflow fails the instruction too. Integer literals are bigints,
+  checked), writable. `require(condition, error)` fails the instruction when the condition is false, and with it
+  the whole transaction: nothing it wrote is kept. `poll.yes += 1n` is checked: an overflow fails the instruction too. Integer literals are bigints,
   written `1n`.
-- **`close`.** An instruction may return a value: the client reads it as return data, and the IDL lists it under
-  `returns`.
+- **`end`.** Only the creator may end the poll: `require` compares the stored `creator` with the signer. It sets
+  `closed`, so later votes fail with 6000, and returns the total. An instruction may return a value: the client reads
+  it as return data, and the IDL lists it under `returns`. (The account stays open; `close(account, destination)`
+  would delete it and return its rent: [closing and resizing](language-accounts.md#closing-and-resizing).)
 - **`function total`.** A function that is not exported is a helper. It takes the account as `Account<Poll>`
   (read-only) and returns a `u64`. Helpers are not entry points and are not in the IDL.
 
@@ -156,7 +159,8 @@ entry point.
 - **Result.** `void`, or one integer, `boolean`, `Pubkey`, `string` (a Borsh String) or fixed-size struct, sent as
   return data (at most 1024 bytes), listed as `returns` in the IDL and decoded by the generated client.
 - **Failure.** There are no exceptions. A failed `require`, a failed account check, an overflow or a failed call to
-  another program ends the instruction with an error code, and the runtime discards every change it made.
+  another program ends the instruction with an error code. The whole transaction fails: the runtime discards every
+  change it made, in every one of its instructions.
 
 Unlike TypeScript, an instruction cannot be `async` or a generator, and its parameters cannot be optional (`x?: u64`),
 have defaults or be a rest parameter. An argument that may be absent is an `Option<T>` the client passes as `null`.

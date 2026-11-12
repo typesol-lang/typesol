@@ -28,19 +28,23 @@ export function tip(from: Mut<Signer>, to: Mut<SystemAccount>, systemProgram: Sy
 ## Tokens
 
 ```ts
-import { type Mint, type Mut, type Signer, type TokenAccount, type TokenInterface, type u64, type u8 } from "typesol";
+import { type Mint, type Mut, type Seeds, type Signer, type TokenAccount, type TokenInterface, type u64 } from "typesol";
 
 export function pay(owner: Signer, from: Mut<TokenAccount>, mint: Mint, to: Mut<TokenAccount>, tokenProgram: TokenInterface, amount: u64): void {
   tokenProgram.transferChecked(from, mint, to, owner, amount);
 }
 
-export function payOut(vault: Mut<TokenAccount>, mint: Mint, to: Mut<TokenAccount>, tokenProgram: TokenInterface, amount: u64, bump: u8): void {
-  tokenProgram.transferChecked(vault, mint, to, vault, amount, ["vault", mint.key, bump]);
+export function payOut(owner: Signer, vault: Seeds<Mut<TokenAccount>, ["vault", "@owner", "@mint"]>, mint: Mint, to: Mut<TokenAccount>, tokenProgram: TokenInterface, amount: u64): void {
+  tokenProgram.transferChecked(vault, mint, to, vault, amount, ["vault", owner.key, mint.key, vault.pdaBump]);
 }
 ```
 
 The token programs (`TokenProgram`, `Token2022Program`, `TokenInterface` for either) have one method per instruction.
 Pass signer seeds (with the bump) as the last argument when the authority is a PDA.
+
+- In `pay` the token program checks that `owner` signed and owns `from`. In `payOut` the vault is its own authority,
+  so the program signs for it: the `Seeds` constraint puts the signing `owner` in the vault's address, and anyone else
+  names another account (2006). Without such a check, anyone could empty the vault.
 
 | Methods | Notes |
 | --- | --- |
@@ -343,6 +347,9 @@ export function execute(multisig: Account<Multisig>, transaction: Account<Transa
 - The runtime checks the privileges: a meta may be a signer or writable only as the transaction passed that account,
   or as a PDA of this program the seeds (fifth argument) sign for. The multisig port in the showcase
   (`showcase/mainnet/multisig/multisig.ts`) uses it.
+- `execute` above shows the call only: as written, anyone can make the multisig's PDA sign any stored instruction. The
+  showcase's `executeTransaction` first requires that the transaction belongs to the multisig (`HasOne`), has not run
+  yet and has enough owners' approvals, and then marks it executed.
 
 ## Programs and sysvars passed as remaining accounts
 
@@ -365,6 +372,9 @@ export function entry(): void {
 }
 ```
 
+- The example shows the calls only: a real instruction checks its accounts before it signs as the pool's `withdraw`
+  PDA, as the SPL Stake Pool port in `showcase/mainnet/spl-stake-pool` checks the pool's owner, its manager or staker
+  and the withdraw authority's address first.
 - P is `StakeProgram`, `SystemProgram`, `TokenProgram`, `Token2022Program`, `TokenInterface` (either token program),
   `AssociatedTokenProgram` or `MemoProgram`. Bind it with `const`, or call a method on it directly; pass it to a helper
   that takes that program type.
