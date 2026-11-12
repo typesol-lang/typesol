@@ -197,12 +197,13 @@ function upToDateBuild(paths: ProgramPaths, address: string, sbpf: Sbpf): Omit<B
   if (sha256(readFileSync(files.so)) !== manifest.binary) return undefined;
   const root = path.dirname(paths.entry);
   for (const [rel, hash] of Object.entries(manifest.sources)) {
-    const file = rel === "<runtime>/typesol_rt.h" ? path.join(RUNTIME_DIR, "typesol_rt.h") : path.resolve(root, rel);
+    const file = rel.startsWith("<runtime>/") ? path.join(RUNTIME_DIR, rel.slice("<runtime>/".length)) : path.resolve(root, rel);
     if (!existsSync(file) || sha256(readFileSync(file)) !== hash) return undefined;
   }
-  // A new import changes the importing file, so every source of the current program is in the list; the runtime and
-  // the entry must be there too (a manifest from another layout).
-  if (!manifest.sources["<runtime>/typesol_rt.h"] || !manifest.sources[path.basename(paths.entry)]) return undefined;
+  // A new import changes the importing file, so every source of the current program is in the list; the runtime (its
+  // header and its builtins) and the entry must be there too (a manifest from another layout or an older release).
+  if (!manifest.sources["<runtime>/typesol_rt.h"] || !manifest.sources["<runtime>/typesol_builtins.c"] || !manifest.sources[path.basename(paths.entry)])
+    return undefined;
   // A manifest from before 0.44.0 has no host: rebuild once to record the toolchain in full.
   if (!manifest.host || manifest.host.os !== process.platform || manifest.host.arch !== process.arch) return undefined;
   // Last, as it runs clang: updated platform-tools may compile the same C differently.

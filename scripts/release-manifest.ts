@@ -20,9 +20,9 @@
  *   node scripts/release-manifest.ts --check test/golden/binaries.json                             compare (exit 1)
  *
  * --docker runs this script inside the build image (built first if needed) with this checkout mounted read-only and
- * no network. The C and the IDL must match on every host; the binary must match on linux-x64, the reference's host.
- * On another host a binary can differ for programs that link compiler-builtins' 128-bit or signed division, whose
- * build differs between platform-tools host packages (docs/stability.md), so there it is reported, not failed.
+ * no network. The C, the IDL and the binary must match on every host: from 0.45.0 on programs link the runtime's own
+ * compiler builtins, not platform-tools' compiler-builtins library, which each host package lays out differently
+ * (docs/stability.md). A reference made before that (no `builtins` in its toolchain) is only binding on its own host.
  */
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
@@ -48,6 +48,8 @@ type Manifest = {
     node: string;
     typescript: string;
     runtime: string;
+    /** sha256 of runtime/typesol_builtins.c, the compiler builtins every program links (from 0.45.0 on). */
+    builtins?: string;
     /** `<process.platform>-<process.arch>` of the machine that built (recorded after 0.44.0). */
     host?: string;
     /** The sha256 of docker/Dockerfile when it was built in the build container (--docker). */
@@ -200,12 +202,16 @@ if (opt("--check")) {
           `  STALE     ${rel}: ${got.c === want.c ? "" : "the C "}${got.c !== want.c && got.idl !== want.idl ? "and " : ""}${got.idl === want.idl ? "" : "the IDL "}differ from the reference. ` +
             "If the compiler or the program changed on purpose, regenerate the reference (see the top of scripts/release-manifest.ts)",
         );
-      } else if (host === refHost) {
+      } else if (host === refHost || reference.toolchain.builtins) {
         failed++;
-        console.log(`  DIFFERS   ${rel}: the same C and IDL build to another binary here (${got.so.slice(0, 16)}…, reference ${want.so.slice(0, 16)}…)`);
+        console.log(
+          `  DIFFERS   ${rel}: the same C and IDL build to another binary here (${got.so.slice(0, 16)}…, reference ${want.so.slice(0, 16)}…; a toolchain difference)`,
+        );
       } else {
         hostOnly++;
-        console.log(`  host      ${rel}: another binary on ${host} with the same C and IDL (expected for programs that link compiler-builtins' division)`);
+        console.log(
+          `  host      ${rel}: another binary on ${host} with the same C and IDL (a reference from before 0.45.0: compiler-builtins' division differed by host)`,
+        );
       }
     }
   } finally {
@@ -276,6 +282,9 @@ const manifest: Manifest = {
     node: process.version,
     typescript: ts.default?.version ?? ts.version ?? "",
     runtime: sha256(readFileSync(path.join(compilerRoot, "runtime/typesol_rt.h"))),
+    ...(existsSync(path.join(compilerRoot, "runtime/typesol_builtins.c"))
+      ? { builtins: sha256(readFileSync(path.join(compilerRoot, "runtime/typesol_builtins.c"))) }
+      : {}),
     host,
     ...(opt("--container") ? { container: opt("--container") } : {}),
   },

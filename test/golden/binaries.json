@@ -1,17 +1,18 @@
 {
- "compiler": "0.44.0",
+ "compiler": "0.44.1",
  "toolchain": {
   "clang": "clang version 20.1.7-rust-dev (https://github.com/anza-xyz/llvm-project.git 78496716176191b2dfb728e5e38501812e7467db)",
   "platformTools": "v1.52",
   "node": "v24.22.2",
   "typescript": "6.0.3",
-  "runtime": "add67d001159babfbdfde422af6d57effbffbb132803453af2c0fb662cdd3d5d",
+  "runtime": "a668bf71b7ac6858162a268b76c89be30a8d122ee48cb96eb780d781ae521e47",
+  "builtins": "0360262020113527a6d92a66b889cccd0271af9109080b9653044530240b542b",
   "host": "linux-x64",
   "container": "3e22eb016b182bcc23249333d75b4eac8d74c99da67e20680d60e09b7faa2362"
  },
  "sources": {
   "root": "repo",
-  "commit": "7214234cb3e5369298dd469cd437ea3324abd309"
+  "commit": "f9cec88174650b4c986f32bb3053e1ab58f8e8dd"
  },
  "programs": {
   "examples/counter.ts": {
@@ -39,10 +40,64 @@
    "bytes": 30056
   },
   "showcase/mainnet/phoenix/phoenix.ts": {
-   "so": "86946a1b5ef4df13457c4f477a112b892782e393bd230811c7d836d69944ad41",
+   "so": "def1f840ed68450e611858c311e6f29eaa24d705d284adec01375ddb3fa005e7",
    "idl": "206f7aa4868fdbba00cb4c2733004d58f2dac2b2c487761d556afe85710193a8",
    "c": "223bcc049105f30d9b1e536b4db82cde23c8f8042ed2336aba2c183919314ef3",
-   "bytes": 257792
+   "bytes": 255616
+  },
+  "showcase/mainnet/marginfi/marginfi.ts": {
+   "so": "be6bb48240a17b4bbb537e1cd013964974e3bdf0ee4a145fc873a73587055d21",
+   "idl": "7653fa760726c94a3decf72b65b2159210cad6b8b358abaebbf74dc32196eb09",
+   "c": "4cafd41ad97e6465ab595059f066ba40dfb8e88db85900006cea4e86c6f787b7",
+   "bytes": 1416376
+  },
+  "showcase/mainnet/raydium-amm/raydium_amm.ts": {
+   "so": "9c171999624d87f30eb07cda29b759be53291bf2157abef0ff7cab125c14d391",
+   "idl": "fec0527cf949cabcba793ad6ec588a0c457db21276c6488f24f79dff85df5d29",
+   "c": "00d4e97f8871c5de683635b9ea2f7f0d0859de7f4fa607ce85b32ecb7df339aa",
+   "bytes": 134144
+  },
+  "showcase/mainnet/raydium-clmm/raydium_clmm.ts": {
+   "so": "b27185b6118693a12229dc003b22a6144f136c39cd952f52bc6eb95ce185a114",
+   "idl": "54ecc974a242f44296553df312498f5bc64153be988f34442677e6cab275f2af",
+   "c": "35cfc789bbe06bc68affbc90e13863790325c5a58d393c0176df489126714404",
+   "bytes": 551448
+  },
+  "showcase/mainnet/raydium-cp-swap/raydium_cp_swap.ts": {
+   "so": "b62815b1ff3f5c45cd1d72212f07465781d02e954bbe178680525547610937b2",
+   "idl": "08bbbfdcc7333ec14dc03e999844632a7e2b6b731c2a0ce1b926b92eea2e72f6",
+   "c": "04eee9e356f98062b12866a2ad0ef03ca42c422a22438022930018e54781eae3",
+   "bytes": 216976
+  },
+  "showcase/mainnet/jito-mev/priority_fee_distribution.ts": {
+   "so": "34b3df3758afd4205e915f43c59767e30c7d2cbf35540029028ab0df448c84e5",
+   "idl": "f6b5b401df15c8451d8ddec20ca1021b3cfa92ce920ade05716c56fdff9ada12",
+   "c": "847a42f58f27399f13c57a1811ec44aabe46a37809d69003b3ebea656998e032",
+   "bytes": 59088
+  },
+  "showcase/mainnet/spl-stake-pool/stake_pool.ts": {
+   "so": "92d49a55d41fe158aaf26f235aa08c98a63c50f2563cec44eac09ff2361251be",
+   "idl": "1b9b3839dbfbaed0318a94e80aaf8a657aec4a08eb4b27c08b54001142a371ac",
+   "c": "152e93f2bf1989d458696d800ab0125dd58f26875db827cba7ff19a4f0a24bad",
+   "bytes": 204592
+  },
+  "showcase/program-examples/tokens/token-2022/transfer-fee.ts": {
+   "so": "0a7529873e23837b0c39f351aa07503b723e4fe55392657e267c507459825cea",
+   "idl": "3722b3043f810c8598d0841eb02a28a074663b6954913df4ff09530fa8f09bc7",
+   "c": "4096da0f6021c17a5f52ad7bf1fb982a0922145fa73b03a100410f954b1692d8",
+   "bytes": 31136
+  },
+  "showcase/program-examples/tokens/token-fundraiser.ts": {
+   "so": "ae5544860f8bb78006e238f9d2be13b57402a65b2b22fcb47a40228ed3e3d7b7",
+   "idl": "96b097db50a28985c2dad9332eaab9f7b8eb717d418386f160bd89a1bfe28111",
+   "c": "9d65b31ca3d72df0b74aa488e341b2f90709168e2a54c89d5ca03587e12adb04",
+   "bytes": 36248
+  },
+  "showcase/program-examples/tokens/token-swap/lib.ts": {
+   "so": "32b34fcfe7523a9b71ffd6ee29134a338568ce9023ca839a4f5f75552e6c5827",
+   "idl": "3adb8c85de28e51ec264f83d8e2c7eabcce5326c08a550a05808578a311537fb",
+   "c": "aa348ae712e04a5dbb756fc0032a3012380fd2cf7b6efd529dfe5ef787bd9ce3",
+   "bytes": 69808
   }
  }
 }

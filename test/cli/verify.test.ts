@@ -16,7 +16,7 @@ describe("reproducible builds", () => {
     const b = build(ESCROW, tmp(), "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T");
     expect(readFileSync(a.soPath).equals(readFileSync(b.soPath))).toBe(true);
     expect(a.manifest.binary).toBe(b.manifest.binary);
-    expect(Object.keys(a.manifest.sources)).toEqual(["escrow.ts", "<runtime>/typesol_rt.h"]);
+    expect(Object.keys(a.manifest.sources)).toEqual(["escrow.ts", "<runtime>/typesol_rt.h", "<runtime>/typesol_builtins.c"]);
     expect(JSON.parse(readFileSync(a.manifestPath, "utf8")).clang).toMatch(/^clang version/);
   });
 

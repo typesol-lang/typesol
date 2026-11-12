@@ -8,7 +8,7 @@ import { hintForTypeScript } from "./hints.js";
 import { emitProgram, type EmitOptions } from "./emit/index.js";
 import { buildIdl } from "./idl.js";
 import { buildSharedObject, checkToolchain, shortClang, TESTED_TOOLCHAIN, type Sbpf } from "./toolchain.js";
-import { RUNTIME_DIR } from "./toolchain.js";
+import { BUILTINS_SOURCE, RUNTIME_DIR } from "./toolchain.js";
 import type { ProgramModel } from "./model.js";
 
 export { CompileError, formatDiagnostic, type Diagnostic } from "./diagnostics.js";
@@ -64,7 +64,7 @@ export interface BuildManifest {
  * machines that built the same Dockerfile (layer dates), so it identifies the image used, not the environment.
  */
 export interface ContainerIdentity {
-  /** The container platform: `linux/amd64` (the binaries of some programs depend on the platform-tools host package). */
+  /** The container platform: `linux/amd64` (before 0.45.0 some programs' binaries depended on the platform-tools host package). */
   platform: string;
   /** sha256 of docker/Dockerfile. */
   dockerfile: string;
@@ -74,8 +74,18 @@ export interface ContainerIdentity {
   base: string[];
   /** The Agave and platform-tools release files, with the sha256 the Dockerfile requires of them. */
   downloads: { url: string; sha256: string }[];
-  /** The TypeSOL package installed in the image, as its release record (releases/<version>.json) describes it. */
-  typesol: { version: string; shasum: string; integrity: string; commit: string };
+  /**
+   * The TypeSOL package installed in the image, as its release record (releases/<version>.json) describes it, and where
+   * that record came from (this package, a --release-record file, or the repository's main branch) with its sha256
+   * (recorded from 0.45.0 on).
+   */
+  typesol: {
+    version: string;
+    shasum: string;
+    integrity: string;
+    commit: string;
+    record?: { kind: "package" | "file" | "repository"; location: string; sha256: string };
+  };
 }
 
 const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
@@ -107,6 +117,7 @@ export function build(entry: string, outDir: string, programAddress: string, opt
   const sources: Record<string, string> = {};
   for (const f of gen.files) sources[path.relative(root, f)] = sha256(readFileSync(f));
   sources["<runtime>/typesol_rt.h"] = sha256(readFileSync(path.join(RUNTIME_DIR, "typesol_rt.h")));
+  sources["<runtime>/typesol_builtins.c"] = sha256(readFileSync(BUILTINS_SOURCE));
   const manifest: BuildManifest = {
     program: gen.model.name,
     compiler: COMPILER_VERSION,
@@ -147,9 +158,12 @@ export function toolchainDifferences(a: Partial<BuildManifest>, b: Partial<Build
   if (a.platformTools && b.platformTools && a.platformTools !== b.platformTools) out.push("platform-tools");
   if (a.typescript !== b.typescript) out.push("TypeScript");
   if (a.sbpf !== b.sbpf) out.push("SBPF version");
-  // The same clang gives the same object code on every host, but each platform-tools host package ships its own build
-  // of compiler-builtins, so a program that links its 128-bit or signed division differs between hosts.
-  if (a.host && b.host && (a.host.os !== b.host.os || a.host.arch !== b.host.arch)) out.push("host");
+  // The same clang gives the same object code on each host measured. Before 0.45.0 programs linked platform-tools'
+  // compiler-builtins, which each host package splits into archive members differently, so one with 128-bit or signed
+  // division linked to another layout on another host; a build that links the runtime's builtins (its manifest lists
+  // them among the sources) gives the same bytes on each host measured (docs/stability.md).
+  const linksRuntimeBuiltins = (m: Partial<BuildManifest>) => !!m.sources?.["<runtime>/typesol_builtins.c"];
+  if (a.host && b.host && (a.host.os !== b.host.os || a.host.arch !== b.host.arch) && !(linksRuntimeBuiltins(a) && linksRuntimeBuiltins(b))) out.push("host");
   return out;
 }
 

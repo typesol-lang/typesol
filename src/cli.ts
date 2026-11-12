@@ -799,7 +799,7 @@ function toolchainHint(rebuilt: BuildManifest, known: ReturnType<typeof buildMan
     const why = diff.includes("clang")
       ? "another clang can compile the same C to other bytes; "
       : diff.includes("host")
-        ? "each platform-tools host package has its own compiler-builtins, which programs with 128-bit or signed division link; "
+        ? "before 0.45.0 a program with 128-bit or signed division linked platform-tools' compiler-builtins, laid out differently by each host package; "
         : "";
     const fix =
       diff.length === 1 && diff[0] === "host"
