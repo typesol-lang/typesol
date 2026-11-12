@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CompileError, Reporter, type Diagnostic, markAliasUse } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
+import { MAX_SEEDS } from "./emit/shared.js";
 import { ASYNC_HINT, fieldTypeHint, hintForTypeScript, messageForTypeScript, unsupportedSyntax } from "./hints.js";
 import {
   type OptionInner,
@@ -2714,6 +2715,10 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
     const program = args[3] ? lit(args[3])[0] : undefined;
     if (program && !program.startsWith("@") && !decodeAddress(program))
       reporter.fail(args[3], `Seeds program: "${program}" is neither "@param" nor a base58 address`);
+    // The same limits as a seed list in code: a stored bump ends the list, a canonical one the derivation adds.
+    if (bump !== undefined && names.length + 1 > MAX_SEEDS) reporter.fail(tuple, `at most ${MAX_SEEDS} seeds, the bump included (Solana's limit)`);
+    if (bump === undefined && names.length > MAX_SEEDS - 1)
+      reporter.fail(tuple, `at most ${MAX_SEEDS - 1} seeds: the bump the derivation adds makes ${MAX_SEEDS}, Solana's limit`);
     out.seeds = { names, bump, program };
   }
   if (!args[0]) reporter.fail(node, `${name}<…> wraps an account type`);

@@ -60,4 +60,15 @@ describe("signer seeds at Solana's limit (test/fixtures/signer-seed-limit.ts)", 
     expect(compileErrors(find(15))).toBe("");
     expect(compileErrors(find(16))).toMatch(/at most 15 seeds: the bump the derivation adds makes 16, Solana's limit/);
   });
+
+  it("refuses the same in a Seeds<…> constraint: 16 names with a bump field, 16 names with the canonical bump", () => {
+    const constraint = (n: number, bump: string) =>
+      `import { type Account, type Seeds, type u8, type u64 } from "typesol";\nexport interface C { bump: u8; n: u64 }\n` +
+      `export function f(c: Seeds<Account<C>, [${list(n)}]${bump}>): void {}`;
+    expect(compileErrors(constraint(15, ', "bump"'))).toBe("");
+    expect(compileErrors(constraint(15, ""))).toBe("");
+    expect(compileErrors(constraint(16, ', "bump"'))).toBe("at most 16 seeds, the bump included (Solana's limit)");
+    expect(compileErrors(constraint(16, ""))).toBe("at most 15 seeds: the bump the derivation adds makes 16, Solana's limit");
+    expect(compileErrors(constraint(20, ', "bump"'))).toBe("at most 16 seeds, the bump included (Solana's limit)");
+  });
 });
