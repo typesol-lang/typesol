@@ -94,14 +94,14 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   returns typed `f64`) compiles as before, and so does an `f64` seed (its 8 bytes, as Rust's `to_le_bytes`). No
   program of the repository used a conversion (test/language/f64-operators.test.ts; docs/language-types.md and the
   refused-constructs table of docs/language-statements.md).
-- Changed, accepted where it was refused: signer seeds were limited to 14 seeds and the bump, one fewer than Solana allows: the limit of 15 entries,
+- Changed, now accepted: signer seeds were limited to 14 seeds and the bump, one fewer than Solana allows: the limit of 15 entries,
   meant for lists the derivation adds the bump to, was applied to signer seeds and `createProgramAddress` lists too,
   which end with their bump. They now take 16 entries, 15 seeds and the bump (Solana's `MAX_SEEDS`, checked by
   `invoke_signed` and `create_program_address`); a 17th is refused with "at most 16 seeds, the bump included
   (Solana's limit)", and a 16th seed before a derived bump with "at most 15 seeds: the bump the derivation adds makes
   16, Solana's limit" (was "at most 15 seeds" for both). test/language/signer-seed-limit.test.ts signs a CPI with
   16 entries in LiteSVM (a seed list and a bound `signer([...])`) and derives with `createProgramAddress`.
-- New refusal: a `Seeds<…>` constraint had no seed limit, so 16 or more names compiled and failed every call. It now
+- Changed, now refused: a `Seeds<…>` constraint had no seed limit, so 16 or more names compiled and failed every call. It now
   has the same limits and messages: with a bump field, "at most 16 seeds, the bump included (Solana's limit)"; with the
   canonical bump, "at most 15 seeds: the bump the derivation adds makes 16, Solana's limit"
   (test/language/signer-seed-limit.test.ts).
