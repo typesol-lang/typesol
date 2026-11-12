@@ -457,7 +457,55 @@ describe("hints for newcomers", () => {
       `export function f(b: Mut<Box>, by: u64): void { b.value = Math.max(b.value, by); }`,
       /hint: Math works on numbers; use min\(a, b\) and max\(a, b\)/,
     ],
-    ["console.log", `export function f(b: Mut<Box>): void { console.log("x"); }`, /Cannot find name 'console'[\s\S]*hint: a program writes logs with log/],
+    // TypeScript's "Cannot find name 'console'. Do you need to change your target library? …" is replaced.
+    [
+      "console.log",
+      `export function f(b: Mut<Box>): void { console.log("x"); }`,
+      /^'console' does not exist in a Solana program\nhint: a program writes logs with log\("…"\) from "typesol"$/,
+    ],
+    [
+      "process.exit",
+      `export function f(b: Mut<Box>): void { process.exit(1); }`,
+      /^'process' does not exist in a Solana program\nhint: a program has no process: stop with require/,
+    ],
+    [
+      "Date.now() into a field",
+      `export function f(b: Mut<Box>): void { b.value = Date.now(); }`,
+      /hint: the time on chain is the cluster's clock: now\(\) from "typesol"/,
+    ],
+    [
+      "Math.floor(Date.now() / 1000)",
+      `export function f(b: Mut<Box>): void { const t = Math.floor(Date.now() / 1000); b.value = 1n; }`,
+      /^unsupported call: Math\.floor\(Date\.now\(\) …\); use now\(\) from "typesol", the cluster's clock in Unix seconds \(an i64\)$/,
+    ],
+    [
+      "Math.floor",
+      `export function f(b: Mut<Box>, x: u64): void { b.value = Math.floor(3); }`,
+      /hint: Math works on numbers|unsupported call: Math\.floor; use integer division/,
+    ],
+    [
+      "a cast imported with type",
+      `export function f(b: Mut<Box>): void { b.value = u64(1n); }`,
+      /imported using 'import type'\.\nhint: u64 is a type and a function: import it without "type" to call it \(import \{ u64 \} from "typesol"/,
+    ],
+    [
+      "Signer without its import",
+      `export function f(s: Signer, b: Mut<Box>): void { b.value = 1n; }`,
+      /Cannot find name 'Signer'\.\nhint: import \{ type Signer \} from "typesol"/,
+      (h) => h.replace("type Signer, ", ""),
+    ],
+    [
+      "Mut without its import",
+      `export function g(b: Mut<Box>): void { b.value = 1n; }`,
+      /Cannot find name 'Mut'\.\nhint: import \{ type Mut \} from "typesol"/,
+      (h) => h.replace("type Mut, ", ""),
+    ],
+    [
+      "a number field",
+      `export interface N { n: number; }\nexport function f(a: Mut<N>): void {}`,
+      /field type must be an integer[^\n]*\nhint: integers are bigint types from "typesol": u64 for amounts and counts/,
+    ],
+    ["a Date field", `export interface N { at: Date; }\nexport function f(a: Mut<N>): void {}`, /\nhint: store a time as an i64 of Unix seconds; now\(\)/],
     [
       "require without its import",
       `export function f(b: Mut<Box>): void { require(b.value > 0n, "zero"); }`,
@@ -465,6 +513,11 @@ describe("hints for newcomers", () => {
       bare,
     ],
     ["async", `export async function f(b: Mut<Box>): void { b.value = 1n; }`, /hint: async is not supported/],
+    [
+      "async returning a Promise",
+      `export async function f(b: Mut<Box>): Promise<void> { b.value = 1n; }`,
+      /^instructions cannot be async or generators\nhint: async and generators are not supported: an instruction runs start to finish within one call/,
+    ],
     [
       "writing a read-only account",
       `export function f(b: Account<Box>): void { b.value = 1n; }`,

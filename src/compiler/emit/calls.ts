@@ -1047,12 +1047,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
       "Math.min": "min(a, b)",
       "Math.max": "max(a, b)",
       "Date.now": "now() (the Clock's unix timestamp)",
+      "Math.floor": "integer division (a / b with bigints rounds toward zero)",
+      "Math.trunc": "integer division (a / b with bigints rounds toward zero)",
+      "Math.ceil": "integer division rounded up: (a + b - 1n) / b",
+      "Math.round": "integer division rounded: (a + b / 2n) / b",
       "JSON.stringify": "log(…) with the values",
       Number: "u64(x) or another integer cast",
       BigInt: "u64(x) or another integer cast",
       String: "a FixedString<N> field, or log(…)",
     };
-    const hint = hints[text];
+    // Math.floor(Date.now() / 1000): the time in seconds, which is what now() gives.
+    if (/^Math\.(floor|trunc|round|ceil)$/.test(text) && ts.isCallExpression(callee.parent) && /\bDate\.now\(/.test(callee.parent.getText()))
+      return `unsupported call: ${text}(Date.now() …); use now() from "typesol", the cluster's clock in Unix seconds (an i64)`;
+    const hint = Object.hasOwn(hints, text) ? hints[text] : undefined;
     if (hint) return `unsupported call: ${text}; use ${hint}`;
     if (ts.isPropertyAccessExpression(callee) && this.accountAt(callee.expression))
       return `unsupported call: the account ${callee.expression.getText()} has no method ${callee.name.text}`;

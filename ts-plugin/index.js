@@ -115,10 +115,19 @@ function init({ typescript: ts }) {
         }
         if (!hint) return d;
         const text = `hint: ${hint}`;
+        // The compiler's message in place of TypeScript's where TypeScript's advice points the wrong way (older
+        // packages have no typescriptMessage: TypeScript's message stays).
+        let own;
+        try {
+          own = compiler.typescriptMessage && compiler.typescriptMessage(d);
+        } catch {
+          own = undefined;
+        }
+        const base = own || d.messageText;
         const messageText =
-          typeof d.messageText === "string"
-            ? `${d.messageText}\n${text}`
-            : { ...d.messageText, next: [...(d.messageText.next || []), { messageText: text, category: d.category, code: d.code, next: undefined }] };
+          typeof base === "string"
+            ? `${base}\n${text}`
+            : { ...base, next: [...(base.next || []), { messageText: text, category: d.category, code: d.code, next: undefined }] };
         return { ...d, messageText };
       });
     }

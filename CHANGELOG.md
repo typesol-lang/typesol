@@ -6,6 +6,28 @@ codes, and says so here.
 
 ## Unreleased
 
+First-run fixes, found by following the README in fresh `node:24-bookworm` containers (linux/amd64 and linux/arm64).
+No program builds to other bytes: the generated C, IDLs and binaries are those of 0.45.0 (the release manifest's check
+of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0 and by this release, are the same).
+
+- Hints, text only (test/language/diagnostics.test.ts):
+  - an `async` instruction returning `Promise<void>` got "instructions cannot be async or generators" with no hint,
+    though the README promised one; it now has one (helper functions too);
+  - `console` and other globals a program does not have (`process`, `Buffer`, `setTimeout`, `setInterval`, `fetch`,
+    `window`, `document`) led with TypeScript's "Cannot find name 'console'. Do you need to change your target
+    library? …"; the message is now "'console' does not exist in a Solana program", with the hint under it (in the
+    editor too, through `typesol/ts-plugin`);
+  - `Date.now()` where an integer is expected now points to `now()`, the cluster's clock, and
+    `Math.floor(Date.now() / 1000)` (which was "unsupported call: Math.floor") says to use `now()`;
+    `Math.floor`, `trunc`, `ceil` and `round` on their own point to integer division;
+  - calling a cast imported with `type` (`import { type u64 }`, as the templates import it, then `u64(x)`) got
+    TypeScript's "'u64' cannot be used as a value because it was imported using 'import type'" alone; the hint says
+    to import it without `type`. The templates keep `type`: the hint is where the error is;
+  - the missing-import hint covered the functions and constants `typesol` exports (`u64`, `require`, …); it now
+    covers its types and interfaces too (`import { type Signer } from "typesol"`, `Mut`, `SystemProgram`, …);
+  - a `number` field in account data got the list of allowed field types alone; it now has a hint naming the integer
+    types (and a `Date` field, one about Unix seconds and `now()`).
+
 ## 0.45.0 — 2026-11-12
 
 - New: a program builds to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 (the programs and SBPF versions

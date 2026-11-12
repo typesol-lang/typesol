@@ -29,7 +29,7 @@ export function markAliasUse(copy: ts.Node, use: ts.Node): void {
   aliasUses.set(copy, use);
 }
 
-export function diagnosticAt(node: ts.Node, message: string): Diagnostic {
+export function diagnosticAt(node: ts.Node, message: string, hint?: string): Diagnostic {
   // A problem with an aliased type is reported where the alias is used.
   for (let n: ts.Node | undefined = node; n; n = n.parent) {
     const use = aliasUses.get(n);
@@ -41,19 +41,22 @@ export function diagnosticAt(node: ts.Node, message: string): Diagnostic {
   const sf = node.getSourceFile();
   const start = node.getStart(sf);
   const { line, character } = sf.getLineAndCharacterOfPosition(start);
-  return { file: sf.fileName, line: line + 1, column: character + 1, message, length: Math.max(1, node.getEnd() - start) };
+  const length = Math.max(1, node.getEnd() - start);
+  if (!hint) return { file: sf.fileName, line: line + 1, column: character + 1, message, length };
+  return { file: sf.fileName, line: line + 1, column: character + 1, message: `${message}\nhint: ${hint}`, length, hint };
 }
 
 /** Collects diagnostics; `fail` records one and throws to unwind the current construct. */
 export class Reporter {
   readonly diagnostics: Diagnostic[] = [];
 
-  error(node: ts.Node, message: string): void {
-    this.diagnostics.push(diagnosticAt(node, message));
+  /** `hint`: what to write instead, shown as the message's last line ("hint: …") and given to tools as `hint`. */
+  error(node: ts.Node, message: string, hint?: string): void {
+    this.diagnostics.push(diagnosticAt(node, message, hint));
   }
 
-  fail(node: ts.Node, message: string): never {
-    this.error(node, message);
+  fail(node: ts.Node, message: string, hint?: string): never {
+    this.error(node, message, hint);
     throw new Bail();
   }
 

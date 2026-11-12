@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CompileError, Reporter, type Diagnostic, markAliasUse } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
-import { hintForTypeScript, unsupportedSyntax } from "./hints.js";
+import { ASYNC_HINT, fieldTypeHint, hintForTypeScript, messageForTypeScript, unsupportedSyntax } from "./hints.js";
 import {
   type OptionInner,
   optionKey,
@@ -336,7 +336,8 @@ function typecheck(entry: string, files?: SourceOverrides): { program: ts.Progra
     const diagnostics: Diagnostic[] = tsDiagnostics.map((d) => {
       const flat = ts.flattenDiagnosticMessageText(d.messageText, "\n");
       const hint = hintForTypeScript(d, flat, LIB_PATH);
-      const message = hint ? `${flat}\nhint: ${hint}` : flat;
+      const shown = messageForTypeScript(d, flat);
+      const message = hint ? `${shown}\nhint: ${hint}` : shown;
       const extra = hint ? { hint } : {};
       if (!d.file || d.start === undefined) return { file: entry, line: 1, column: 1, message, ...extra };
       const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
@@ -1564,6 +1565,7 @@ function analyzeStructs(
     reporter.fail(
       node,
       "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, FixedVec<T, N>, Vec<T>, string (events only) or another struct",
+      fieldTypeHint(node),
     );
   };
 
@@ -2036,8 +2038,8 @@ function analyzeHelper(
   groups: AccountGroups = new Map(),
 ): Helper {
   if (!fn.body) reporter.fail(fn, "helper functions need a body");
-  if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators");
-  if ((ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) reporter.fail(fn, "helper functions cannot be async");
+  if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators", ASYNC_HINT);
+  if ((ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) reporter.fail(fn, "helper functions cannot be async", ASYNC_HINT);
   if (!fn.type) reporter.fail(fn.name ?? fn, "helper functions need an explicit return type (void, an integer, boolean, Pubkey or a struct)");
   let returns: Helper["returns"] =
     fn.type.kind === ts.SyntaxKind.VoidKeyword
@@ -2303,7 +2305,7 @@ function analyzeInstruction(
   if (!fn.name || !fn.body) reporter.fail(fn, "instructions need a name and a body");
   if (fn.typeParameters?.length) reporter.fail(fn, "instructions cannot be generic");
   if (fn.asteriskToken || (ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))
-    reporter.fail(fn, "instructions cannot be async or generators");
+    reporter.fail(fn, "instructions cannot be async or generators", ASYNC_HINT);
   let returns: Instruction["returns"];
   if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword) {
     returns = fn.type.kind === ts.SyntaxKind.StringKeyword ? { kind: "string" } : resolveScalarType(fn.type, scope);
