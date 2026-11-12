@@ -155,6 +155,30 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   - lib/typesol.d.ts changes in comments only: the built-ins page's one-liners for `currentSlot`, `slotsPerEpoch`,
     `HasOne`, `Ata`, `transferFee`, `TOKEN_ACCOUNT_SIZE`, `readonly`, `rawArrayAt`, `Mut`, `Init`, `Account`, `log`,
     `invoke` and `Vec` describe the name itself.
+  - More examples check their caller: the PDA page's `payOut` takes its config at the singleton PDA `["config"]`
+    (a `HasOne` on any `Account<Config>` let anyone who created a config naming themselves admin drain `fees`), and
+    says to gate the config's creation; the native `bump` checks that `admin` signed; the native Borsh `deposit`
+    checks the pool's owner, as its text said; `makeVault` creates the vault at the seeds `payOut` checks
+    (`["vault", owner, mint]`). The examples that show one operation only say so: FixedVec's `setOwners` /
+    `addOwner` (with what the showcase multisig requires), the fallback page's `record`, the red-black tree's `place`
+    / `cancel`, the `settle` of the randomness example; `invoke`'s `payOut` and `t.pdaWithBump` point to a stored bump.
+  - Corrected: an account struct with a field added fails with 3003 only on an account of exactly the old size; one
+    created with spare space or grown since passes and reads the spare bytes, or other fields' bytes when the field
+    was inserted (docs/language-accounts.md, docs/mainnet.md). docs/errors.md said accounts are created after every
+    other check; the creates a body starts with run before the constraints (not with an account group, whose
+    arguments are decoded first). At most 32 accounts per instruction is TypeSOL's default, not the cluster's; the
+    transaction size includes the header and a recent blockhash, and an address lookup table entry costs one byte.
+    `realloc` also shrinks, so the `grow` example's open access is explained as moving no value.
+    docs/test-your-program.md names the program its error snippet runs against (`TooMuch` is 6000 there, 6001 in the
+    guide's `spend`).
+  - docs/glossary.md separates the three meanings of owner and adds Anchor, associated token account, keypair account,
+    authority, payer, remaining accounts, return data, slot and epoch, cluster, syscall, precompile, ProgramData and
+    upgrade authority (one entry, replacing "Upgrade authority"), and zero-copy; the guide's pages link a term's first
+    use to it. docs/troubleshooting.md has entries for running out of compute units and for a transaction over 1,232
+    bytes, and says what to do when `idl publish` fails on a local validator. The `Inout` overlap rule for accounts
+    is on docs/language-accounts.md ("Two parameters, one account"), the native views' part stays on
+    docs/language-native.md. docs/language-statements.md: the generic-helper and helper-result sentences use the
+    example's own functions (`bigger`, `at`), and the local-type sentence matches its example.
 
 ## 0.45.0 — 2026-11-12
 
