@@ -140,6 +140,8 @@ export function set(gauge: Mut<Gauge>, value: u64): void {
 ## Instructions
 
 An exported function is an instruction. The client calls it by name; the program finds it by its discriminator.
+`export default function bump(…)` is an instruction too, named `bump` like any other: the program has no default
+entry point.
 
 - **Discriminator.** The first 8 bytes of the instruction data: sha256("global:<name>")[..8], where `<name>` is the
   function's name in snake_case (`relayIncrement` is `global:relay_increment`), as Anchor computes it. Two functions

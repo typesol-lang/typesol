@@ -444,6 +444,8 @@ export function set(gauge: Mut<Gauge>, value: u64): void {
 ## Instructions
 
 An exported function is an instruction. The client calls it by name; the program finds it by its discriminator.
+`export default function bump(…)` is an instruction too, named `bump` like any other: the program has no default
+entry point.
 
 - **Discriminator.** The first 8 bytes of the instruction data: sha256("global:<name>")[..8], where `<name>` is the
   function's name in snake_case (`relayIncrement` is `global:relay_increment`), as Anchor computes it. Two functions
@@ -757,8 +759,8 @@ operators and comparisons, `min` / `max`, `mulDiv`, `isqrt`, `switch`, and as a 
 
 - `u256(x)` converts from any integer (a negative one fails with 4102); `u128(x)` and `u64(x)` convert back (4102
   when it does not fit).
-- A shift amount or an exponent is a `u128` or smaller (`shift by a u64 (or smaller) amount`; `the exponent of ** is a
-  u128 or smaller integer`).
+- A shift amount or an exponent is a `u128` or smaller (`a shift amount is a u128 or smaller integer`; `the exponent of
+  ** is a u128 or smaller integer`).
 - Never in account data, arguments, events, return data or CPI data: the IDL has no 256-bit integer (`A.v: u256 is for
   computation; store a u128 (or two u128s)`).
 - `log(x)` prints it only when it fits in 128 bits; a larger value fails with 5100.
@@ -1170,9 +1172,15 @@ export function summarize(o: Mut<Orders>): void {
 
 `f64` holds a 64-bit float as its IEEE bits, for events and accounts that carry one (Borsh writes those 8 bytes; the
 IDL says `f64`). There is no float arithmetic: `f64FromBits(bits)` makes one from bits the program computed with
-integers (Marginfi's events report I80F48 amounts this way), and `f64Bits(x)` reads them back. Do not use arithmetic
-operators on an `f64`: the compiler does not refuse them yet, and they would compute on the bits as integers. Float
-literals (`1.5`) are refused.
+integers (Marginfi's events report I80F48 amounts this way), and `f64Bits(x)` reads them back. Float literals (`1.5`)
+are refused.
+
+Every operator with an `f64` operand is refused, since the integer operator would compute on the bits: arithmetic,
+bitwise, shifts, unary `-` and `~`, the ordering comparisons, compound assignments, `++` / `--`, and `min`, `max`,
+`isqrt` and `mulDiv` (`+ on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float
+arithmetic …`). Compute in integers and convert at the end. Equality is refused too (`===`, `!==`, `==`, `!=` and
+`switch`): equal bits are not equal numbers, as NaN is not equal to itself and `0` equals `-0`. To compare the bits,
+say so: `f64Bits(a) === f64Bits(b)`. Copying an `f64` (to a local, a field, an event) keeps its bits.
 
 ## Heap values
 
@@ -1348,6 +1356,9 @@ export function classify(tier: Mut<Tier>, amount: u64, vip: boolean): void {
 
 A condition (in `if`, `while`, `for`, `? :`, `&&`, `||`, `!`) must be a `boolean`. Unlike JavaScript, there is no
 truthiness: `if (amount)` is refused (`expected boolean, got u64`).
+
+`==` and `!=` compile like `===` and `!==`: both operands have the same type (`operands have different types` otherwise),
+so there is no coercion for the loose forms to do.
 
 ## Loops
 
@@ -1799,6 +1810,8 @@ may gain a hint line.
 | `as` conversions | `b.value = x as u64;` (`x: u8`) | this is a u8, not a u64: \`as\` does not convert (use u64(x) and the like for integers) |
 | mixed integer widths | `b.value = b.value + x;` (`x: u8`) | operands have different types: u64 and u8; convert with u64(...) etc. |
 | unary minus on unsigned | `b.value = -n;` | unary minus needs a signed integer (i8 … i128) |
+| operators on `f64` | `b.value = r.x + r.x;` (`r.x: f64`) | + on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float arithmetic (this would compute on the bits); compute in integers and make the result with f64FromBits(bits), or take an f64's bits with f64Bits(x) |
+| `===` on `f64` | `if (r.x === r.y) {}` (`f64` fields) | === on an f64 is not supported: an f64 is held as its IEEE 754 bits, and equal bits are not equal numbers (NaN would equal itself, 0 would not equal -0); to compare the bits, write f64Bits(a) === f64Bits(b) |
 | `?.` on a non-optional value | `const v = b?.value;` | ?. works on optional accounts and Option<struct> values (other values are never null) |
 | `let` struct references | `let q = b.home;` | bind struct references with const |
 | nested destructuring | `const { home: { x } } = b;` | nested destructuring is not supported; destructure in two steps |
@@ -2324,9 +2337,11 @@ A seed list is an array literal written where the seeds go. Each seed contribute
 | `bigEndian(x)` | an integer's bytes most significant first (`["tick_array", pool.key, bigEndian(start)]`), Rust's `to_be_bytes()` |
 | the bump (a `u8`) | 1 byte, last |
 
-A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). A seed list
-written in the source holds at most 15 entries (`at most 15 seeds`): for `create`, the bump the derivation adds makes
-16, Solana's limit; signer seeds, which include the bump, hold 14 seeds and the bump.
+A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). Solana takes at
+most 16 seeds per address, the bump included. A list the derivation adds the bump to (`create`, `requirePda`,
+`findProgramAddress`) holds at most 15 entries (`at most 15 seeds: the bump the derivation adds makes 16, Solana's
+limit`); a list that ends with its bump (signer seeds, `createProgramAddress`) holds 16: 15 seeds and the bump (`at
+most 16 seeds, the bump included (Solana's limit)`).
 
 ## Creating an account at a PDA
 

@@ -146,6 +146,9 @@ export function classify(tier: Mut<Tier>, amount: u64, vip: boolean): void {
 A condition (in `if`, `while`, `for`, `? :`, `&&`, `||`, `!`) must be a `boolean`. Unlike JavaScript, there is no
 truthiness: `if (amount)` is refused (`expected boolean, got u64`).
 
+`==` and `!=` compile like `===` and `!==`: both operands have the same type (`operands have different types` otherwise),
+so there is no coercion for the loose forms to do.
+
 ## Loops
 
 ```ts
