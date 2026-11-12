@@ -49,10 +49,10 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (ts.isVariableStatement(stmt)) return this.variable(stmt.declarationList, topLevel);
     if (ts.isExpressionStatement(stmt)) return this.expressionStatement(stmt.expression, topLevel);
     if (ts.isIfStatement(stmt)) {
-      // `if (merkleVerify(…)) {}`: the result decides nothing.
+      // `if (merkleVerify(…)) {}` (or `{} else {}`): the result decides nothing.
       const checker = this.verifierCall(stmt.expression, true);
       const empty = (s: ts.Statement) => ts.isEmptyStatement(s) || (ts.isBlock(s) && s.statements.length === 0);
-      if (checker && !stmt.elseStatement && empty(stmt.thenStatement))
+      if (checker && (!stmt.elseStatement || empty(stmt.elseStatement)) && empty(stmt.thenStatement))
         this.fail(stmt, `${VERIFIER_UNUSED(checker, "is not acted on: the if around it has an empty body")}`);
       const cond = this.expect(this.expr(stmt.expression, BOOL), BOOL, stmt.expression);
       this.line(`if (${cond.c}) {`);
@@ -1794,14 +1794,16 @@ export abstract class StatementEmitter extends CpiEmitter {
   }
 
   /**
-   * `const ok = merkleVerify(…)` (or `ok = …`) where the function never reads `ok`: nothing is checked. A read
-   * anywhere in the function counts, before the assignment too: this catches a result left unused, not every path.
+   * `const ok = merkleVerify(…)` (or `ok = …`, the call in parentheses or under `as`) where the function that
+   * declares `ok` never reads it: nothing is checked. A read anywhere in that function counts, in a closure inside it
+   * and before the assignment too: this catches a result left unused, not every path.
    */
   protected refuseUnreadVerifier(name: ts.Identifier, value: ts.Expression): void {
+    while (ts.isParenthesizedExpression(value) || ts.isAsExpression(value)) value = value.expression;
     const checker = this.verifierCall(value);
     if (!checker) return;
     const symbol = this.checker.getSymbolAtLocation(name);
-    let fn: ts.Node | undefined = name.parent;
+    let fn: ts.Node | undefined = symbol?.valueDeclaration;
     while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
     if (!symbol || !fn) return;
     let read = false;

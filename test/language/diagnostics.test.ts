@@ -362,6 +362,31 @@ describe("subset enforcement", () => {
       /the result of verifySecp256k1 is never read \(ok is not used\)/,
     ],
     [
+      "a merkleVerify result a closure assigns to a local its function reads",
+      `import { type Hash, merkleVerify } from "typesol";\nexport enum E { Bad = "bad" }\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { let ok = false; const run = (): void => { ok = merkleVerify(leaf, proof, root); }; run(); require(ok, E.Bad); }`,
+      /^$/,
+    ],
+    [
+      "a merkleVerify result a closure assigns to a local nothing reads",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { let ok = false; const run = (): void => { ok = merkleVerify(leaf, proof, root); }; run(); }`,
+      /the result of merkleVerify is never read \(ok is not used\)/,
+    ],
+    [
+      "a merkleVerify result under as in a const never read",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { const ok = (merkleVerify(leaf, proof, root) as boolean); }`,
+      /the result of merkleVerify is never read \(ok is not used\)/,
+    ],
+    [
+      "a merkleVerify result deciding an if and an else both empty",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { if (merkleVerify(leaf, proof, root)) {} else {} }`,
+      /the result of merkleVerify is not acted on: the if around it has an empty body/,
+    ],
+    [
+      "a merkleVerify result deciding an if with an empty body and an else that acts",
+      `import { type Hash, merkleVerify } from "typesol";\nexport enum E { Bad = "bad" }\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { if (merkleVerify(leaf, proof, root)) {} else { require(false, E.Bad); } }`,
+      /^$/,
+    ],
+    [
       "a helper that may replace a struct while a reference into it is still used",
       `export interface P { x: u64; }\nexport interface H { p: P; v: u64; }\nfunction reset(h: Mut<H>): void { h.p = { x: 7n }; }\nexport function f(h: Mut<H>): void { const o = h.p; reset(h); h.v = o.x; }`,
       /"o" still refers to data in h, and reset\(\) may replace it/,

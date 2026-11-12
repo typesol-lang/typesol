@@ -499,11 +499,25 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
             // A doc comment belongs to the member that starts on a later line. `A = "a", /** @code 6200 */ B = "b"`
             // leaves the tag on no member (TypeScript reads it as trailing A's comma), so B would silently take the
             // next code: refuse it instead, and a tag in a comment that is not a doc comment, or in a doc comment that
-            // another one follows (only the last is read). A tag is `@code` first on a line of the comment: one that
-            // a sentence mentions (`/** see the @code docs */`) is not one.
+            // another one follows (only the last is read). In a doc comment, as TypeScript reads it, a tag is any
+            // `@code` after the start, whitespace or `*` (`/** The second. @code 6200 */` is one); in a // or /* … */
+            // comment, only one first on a line of the comment is reported, so prose (`// see the @code docs`) is not.
             const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, file.text);
             scanner.resetTokenState(stmt.members.pos);
-            const tagged = (text: string) => /^\/[*/]\**\s*@code\b/.test(text) || /\n\s*\*?\s*@code\b/.test(text);
+            const isDoc = (text: string) => text.startsWith("/**") && text !== "/**/";
+            const tagged = (text: string) =>
+              isDoc(text) ? /(?:^|[\s*])@code\b/.test(text) : /^\/[*/]\**\s*@code\b/.test(text) || /\n\s*\*?\s*@code\b/.test(text);
+            // A tag above the enum itself numbers no member: refused, not ignored.
+            for (const r of ts.getLeadingCommentRanges(file.text, stmt.pos) ?? []) {
+              const text = file.text.slice(r.pos, r.end);
+              if (r.kind === ts.SyntaxKind.MultiLineCommentTrivia && isDoc(text) && tagged(text)) {
+                const first = stmt.members[0] ? `, ${stmt.members[0].name.getText(file)}` : "";
+                reporter.fail(
+                  stmt.name,
+                  `this @code tag is not read: a tag above the enum numbers no member; put /** @code … */ above its first member${first}`,
+                );
+              }
+            }
             for (let k = scanner.scan(); k !== ts.SyntaxKind.EndOfFileToken && scanner.getTokenStart() < stmt.end; k = scanner.scan()) {
               if (k !== ts.SyntaxKind.MultiLineCommentTrivia && k !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
               const text = scanner.getTokenText();
@@ -511,7 +525,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
               const at = scanner.getTokenStart();
               const next = stmt.members.find((m) => m.getStart(file) > at);
               const above = next ? `above ${next.name.getText(file)}` : "above the member it numbers";
-              const doc = k === ts.SyntaxKind.MultiLineCommentTrivia && text.startsWith("/**") && text !== "/**/";
+              const doc = k === ts.SyntaxKind.MultiLineCommentTrivia && isDoc(text);
               if (!doc) {
                 reporter.fail(
                   next ?? stmt,
