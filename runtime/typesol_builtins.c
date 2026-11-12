@@ -17,11 +17,11 @@
  *   division for signed 64-bit values, where compiler-builtins divides bit by bit), so they cost no more compute units
  *   than compiler-builtins' versions on any input measured, and fewer on most.
  * - Multiplication and shifts (__multi3, __ashlti3, __lshrti3, __ashrti3) as assembly: the instructions
- *   compiler-builtins' build of them has for that SBPF version (MIT or Apache-2.0,
- *   https://github.com/rust-lang/compiler-builtins), one for one, so a program that calls only these links to the
- *   same bytes and costs the same compute units as before. clang compiles the equivalent C to other register choices,
- *   one to four units dearer per shift. The exception is __multi3 on SBPF v1 and v2 (whose stack frames work
- *   differently), in C, which costs less there.
+ *   compiler-builtins' build of them has for that SBPF version (https://github.com/rust-lang/compiler-builtins, under
+ *   the MIT licence and the Apache License 2.0 with LLVM exceptions; see NOTICE), one for one, so a program that
+ *   calls only these links to the same bytes and costs the same compute units as before. clang compiles the
+ *   equivalent C to other register choices, one to four units dearer per shift. The exception is __multi3 on SBPF v1
+ *   and v2 (whose stack frames work differently), in C, which costs less there.
  *
  * Rules for the C: no 128-bit multiplication, division or variable shift (each would call one of these functions,
  * itself included); 128-bit values are taken apart into 64-bit halves and put together with constant shifts, which are

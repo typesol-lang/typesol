@@ -37,6 +37,15 @@ The package ships this NOTICE and the Apache License 2.0 text (test/programs/LIC
   solana-labs/solana-program-library), licensed under the Apache License, Version 2.0. Changes: rewritten in C and
   TypeScript.
 
+- runtime/typesol_builtins.c, the assembly (__multi3 for SBPF v0; __ashlti3, __lshrti3 and __ashrti3): the
+  instructions that the compiler-builtins crate (https://github.com/rust-lang/compiler-builtins), as built in
+  platform-tools v1.52, has for these functions, written out as assembly so that a program links them from the
+  runtime's source. compiler-builtins is licensed "MIT AND Apache-2.0 WITH LLVM-exception" (its LICENSE.txt, with
+  the copyright notices of its authors and of the LLVM project); the Apache License 2.0 text is
+  test/programs/LICENSE-Apache-2.0.txt. Changes: disassembled, labels renamed. The division functions in the same
+  file are TypeSOL's own C, after the algorithms of Knuth (The Art of Computer Programming, vol. 2, algorithm D) and
+  Warren (Hacker's Delight, divlu).
+
 - dist/testing-stake.js (src/testing-stake.ts), stakeActivation: a port of Delegation::stake_activating_and_deactivating_v2
   of solana-stake-interface 4.3.0 (https://github.com/solana-program/stake, interface crate), Copyright Anza
   Maintainers. Licence: Apache-2.0 (the crate's Cargo metadata for 4.3.0; text in test/programs/LICENSE-Apache-2.0.txt). Changes: rewritten in TypeScript (BigInt arithmetic with the original's u128 saturation).
