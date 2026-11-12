@@ -42,9 +42,8 @@ codes, and says so here.
   suites, each of the 18,085 transactions sent to a program whose binary changes (the ports above and two test
   programs) was also run against 0.44.1's binary on the same state; none costs more and 2,659 cost less (in total:
   Marginfi −5.1%, Raydium AMM −7.9%, CLMM −5.0%, CP-Swap −2.3%, Jito priority-fee −1.0%, Stake Pool −0.2%, Phoenix
-  −0.004%, token-swap −0.5%, transfer-fee −0.4%, token-fundraiser −0.1%; the case studies' compute-unit tables show the
-  new figures). `test/language/builtins.test.ts` runs every builtin as SBF in LiteSVM for SBPF v0, v1 and v2,
-  against a BigInt reference and against compiler-builtins on the edge cases (0, 1, maxima, the signed minimum,
+  −0.004%, token-swap −0.5%, transfer-fee −0.4%, token-fundraiser −0.1%). `test/language/builtins.test.ts` runs
+  every builtin as SBF in LiteSVM for SBPF v0, v1 and v2, against a BigInt reference and against compiler-builtins on the edge cases (0, 1, maxima, the signed minimum,
   powers of two and their neighbours, values with one half zero, divisors above the dividend) and a seeded random set
   (with the default seed, on v0, 84,741 to 91,289 calls per multiplication or division function and 59,506 per shift;
   on v1 and v2, 41,506 to 73,289), and requires every call to cost no more compute units than compiler-builtins'.
