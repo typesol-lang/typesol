@@ -6,6 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.45.0 — 2026-11-12
+
 - New: a program builds to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 (the programs and SBPF versions
   measured are below). Up to 0.44.1 the 10 programs of the sources that call 128-bit or signed 64-bit division linked
   platform-tools' compiler-builtins Rust library and built to a different binary on each host: its functions have the
