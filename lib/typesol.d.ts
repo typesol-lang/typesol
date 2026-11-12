@@ -14,10 +14,15 @@
  * ~ flips the bits within the type's width.
  */
 
+/** Unsigned 8-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u8 = bigint;
+/** Unsigned 16-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u16 = bigint;
+/** Unsigned 32-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u32 = bigint;
+/** Unsigned 64-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u64 = bigint;
+/** Unsigned 128-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u128 = bigint;
 /**
  * 256-bit unsigned integers for computation (sqrt-price and liquidity math): locals, helper parameters and results,
@@ -25,10 +30,15 @@ export type u128 = bigint;
  * (the IDL has no 256-bit integer).
  */
 export type u256 = bigint;
+/** Signed 8-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i8 = bigint;
+/** Signed 16-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i16 = bigint;
+/** Signed 32-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i32 = bigint;
+/** Signed 64-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i64 = bigint;
+/** Signed 128-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i128 = bigint;
 
 /** A 32-byte Solana address. Compare with `===`, `!==` or `.equals()`. */
@@ -246,6 +256,7 @@ export interface RemainingAccounts extends Iterable<CpiAccount> {
 export interface RemainingSlice extends Iterable<CpiAccount> {
   readonly __remainingSlice: void;
 }
+/** The accounts passed after the declared ones, in order (see RemainingAccounts). */
 export declare function remainingAccounts(): RemainingAccounts;
 
 /**
@@ -275,6 +286,7 @@ export declare function sysvarAt<S extends StakeHistorySysvar>(account: Remainin
  * `.lamports`), and passes to a helper that takes `Account<T>` / `Mut<T>`.
  */
 export declare function loadAccount<T>(account: RemainingAccount | AccountInfo): Account<T>;
+/** `loadAccount` for writing: also writable, and loaded mutably once per instruction (2040). */
 export declare function loadAccountMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
 /**
  * A native (non-Anchor) program's own account as a fixed-layout struct, as a `#[repr(C)]` type's `load_checked` /
@@ -283,6 +295,7 @@ export declare function loadAccountMut<T>(account: RemainingAccount | AccountInf
  * mutably twice in the instruction (2040). Bind it with const: `const amm = loadRawMut<AmmInfo>(ammInfo)`.
  */
 export declare function loadRaw<T>(account: RemainingAccount | AccountInfo): Account<T>;
+/** `loadRaw` for writing: also writable and loaded mutably once per instruction (2040). */
 export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
 /**
  * `loadRaw` / `loadRawMut` at a byte offset known only at run time (a native account whose parts start where its header
@@ -293,6 +306,7 @@ export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): 
  * it may view, since its bounds were checked against the old length: take it again after (a compile error says so).
  */
 export declare function loadRawAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Account<T>;
+/** `loadRawAt` for writing: writable and claimed as `loadRawMut` is. */
 export declare function loadRawMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Mut<T>;
 /**
  * `capacity` elements of a fixed-size type packed in place from a run-time byte offset, the count known only at run
@@ -314,6 +328,7 @@ export interface ReadonlyRawArray<T> extends ListMethods<T> {
 }
 /** `const slab = rawArrayMutAt<Order>(acct, offset, capacity)`: see RawArray. */
 export declare function rawArrayAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>;
+/** `rawArrayAt` for writing: elements set in place (see RawArray). */
 export declare function rawArrayMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): RawArray<T>;
 
 /** A node of a RedBlackTree: its key (read-only), its value (in place) and its index in the tree's node array (1-based). */
@@ -397,6 +412,7 @@ export declare function rbTreeAt<K, V>(
   capacity: u64,
   compare?: (a: K, b: K) => bigint,
 ): ReadonlyRedBlackTree<K, V>;
+/** `rbTreeAt` for writing: insert, remove and initialize with lib-sokoban's own writes (see RedBlackTree). */
 export declare function rbTreeMutAt<K, V>(
   account: RemainingAccount | AccountInfo,
   offset: u64,
@@ -844,12 +860,12 @@ export interface TokenMetadataProgram extends AccountMeta {
 }
 /** The Metaplex master edition address of a mint (PDA ["metadata", program, mint, "edition"]). */
 export declare function masterEditionAddress(mint: Pubkey): Pubkey;
-/** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
 /**
  * An integer seed with its bytes most significant first (Rust's `x.to_be_bytes()`), inside a seeds list:
  * `["tick_array", pool.key, bigEndian(startIndex)]`. In `Seeds<…>` write `"@startIndex:be"`.
  */
 export declare function bigEndian(value: bigint): Seed;
+/** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
 export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
 /**
  * `Pubkey::create_program_address(seeds, program)`: the address of these seeds with the bump given as the last seed,
@@ -912,9 +928,11 @@ export declare function updateExtraAccountMetas(
   systemProgram: SystemProgram,
   extraAccounts?: ExtraAccountMeta[],
 ): void;
+/** One extra account of a transfer hook's ExtraAccountMetaList: a fixed address, or a PDA from seeds (see initExtraAccountMetas). */
 export type ExtraAccountMeta =
   | { address: Pubkey; isSigner?: boolean; isWritable?: boolean }
   | { seeds: (string | ExtraAccountSeed)[]; program?: bigint; isSigner?: boolean; isWritable?: boolean };
+/** A seed of an extra account resolved by Token-2022 at transfer time (seedAccountKey, seedAccountData, seedInstructionData). */
 export interface ExtraAccountSeed {
   readonly __extraSeed: void;
 }
@@ -1038,6 +1056,7 @@ export declare function hasExtension(account: AccountMeta | RemainingAccount, ex
 export declare function rentExempt(space: u64): u64;
 /** SPL Token account and mint sizes, for systemProgram.createAccount. */
 export declare const TOKEN_ACCOUNT_SIZE: u64;
+/** SPL Token's mint size, 82 bytes. */
 export declare const MINT_SIZE: u64;
 
 /** The account must have signed the transaction. Wrap in `Mut<Signer>` to spend its lamports. */
@@ -1092,6 +1111,7 @@ export type Seed = string | Pubkey | Hash | bigint | number;
 export interface SignerSeeds {
   readonly __signer_seeds: void;
 }
+/** Name one PDA signature's seeds (with the bump) for CPIs and helpers: `const vault = signer(["vault", owner.key, bump])`. */
 export declare function signer(seeds: Seed[]): SignerSeeds;
 
 /**
@@ -1210,6 +1230,11 @@ export interface Migrate<From, To> extends AccountMeta {
   readonly to: To;
   migrate(payer: Mut<Signer>, value: To): void;
 }
+/**
+ * The account is this program's PDA for the seeds (Anchor's `seeds = […], bump`; 2006): `"@name"` is an account's key or
+ * an argument's bytes, `"@acct.field"` a field, other strings literals. `Bump` names a stored bump field, `ProgramId`
+ * another program to derive under.
+ */
 export type Seeds<A, Names extends readonly string[], Bump extends string = never, ProgramId extends string = never> = A & {
   readonly __seeds?: [Names, Bump, ProgramId];
   /** The PDA's bump (Anchor `ctx.bumps.<account>`): the stored bump field when one is named, else the canonical bump found. */
@@ -1284,6 +1309,7 @@ export type CorePlugin = (
   | { kind: "FreezeExecute"; frozen: boolean }
   | { kind: "PermanentFreezeExecute"; frozen: boolean }
 ) & { authority?: CorePluginAuthority };
+/** The name of a Metaplex Core plugin, as `removePlugin` and the plugin readers take it. */
 export type CorePluginKind = CorePlugin["kind"] | "Groups";
 /** When a Core lifecycle event reaches an external plugin, and what the plugin may do about it. */
 export interface CoreLifecycleCheck {
@@ -1871,13 +1897,17 @@ export interface CompressedLeaf {
 
 /** The current slot and epoch (Clock sysvar). */
 export declare function currentSlot(): u64;
+/** The current epoch (Clock sysvar). */
 export declare function currentEpoch(): u64;
 /** The Unix time the current epoch started at (Clock.epoch_start_timestamp). */
 export declare function epochStartTimestamp(): i64;
 /** The EpochSchedule sysvar: slots per epoch (after warmup), whether epochs warm up, and where normal epochs start. */
 export declare function slotsPerEpoch(): u64;
+/** Whether epochs warm up (EpochSchedule sysvar). */
 export declare function epochWarmup(): boolean;
+/** The first epoch after warmup (EpochSchedule sysvar). */
 export declare function firstNormalEpoch(): u64;
+/** The first slot after warmup (EpochSchedule sysvar). */
 export declare function firstNormalSlot(): u64;
 /** The LastRestartSlot sysvar: the last slot the cluster restarted at (0 if never). */
 export declare function lastRestartSlot(): u64;
@@ -1903,6 +1933,7 @@ export interface EpochRewards {
  * needed). Native programs refuse stake operations while `epochRewards().active`.
  */
 export declare function epochRewards(): EpochRewards;
+/** Close the account into the parameter `Destination` when the instruction succeeds (Anchor's `close = destination`). */
 export type CloseTo<A, Destination extends string> = A & { readonly __closeTo?: Destination };
 
 /** A program-owned account that this instruction creates as a PDA. */
@@ -2227,9 +2258,12 @@ export interface CpiAccount {
  */
 export declare function readonly(account: AccountMeta | RemainingAccount | null): CpiAccount;
 export declare function readonly(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
+/** A writable account entry for `invoke` (the parameter must be `Mut<…>`); an optional account as for `readonly`. */
 export declare function writable(account: AccountMeta | RemainingAccount | null): CpiAccount;
 export declare function writable(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
+/** A read-only signer entry for `invoke`: the account signed, or signerSeeds sign for it. */
 export declare function readonlySigner(account: AccountMeta | RemainingAccount): CpiAccount;
+/** A writable signer entry for `invoke`: the account signed, or signerSeeds sign for it. */
 export declare function writableSigner(account: AccountMeta | RemainingAccount): CpiAccount;
 
 /** Raw bytes for instruction data. */
@@ -2548,7 +2582,7 @@ export declare function i128(value: bigint): i128;
 export declare function mulDiv(a: u64, b: u64, c: u64): u64;
 /** ceil(a * b / c), like mulDiv. */
 export declare function mulDivCeil(a: u64, b: u64, c: u64): u64;
-/** floor(sqrt(x)) for unsigned integers up to u128. */
+/** floor(sqrt(x)) for unsigned integers (u8 … u256). */
 export declare function isqrt<T extends bigint>(x: T): T;
 
 /**
@@ -2557,9 +2591,13 @@ export declare function isqrt<T extends bigint>(x: T): T;
  * Marginfi's events report I80F48 amounts, and read the bits back with `f64Bits`.
  */
 export type f64 = bigint & { readonly __f64: unique symbol };
+/** An f64 from its IEEE 754 bits, computed with integers. */
 export declare function f64FromBits(bits: u64): f64;
+/** An f64's IEEE 754 bits. */
 export declare function f64Bits(value: f64): u64;
+/** The smaller of two integers of one type. */
 export declare function min<T extends bigint>(a: T, b: T): T;
+/** The larger of two integers of one type. */
 export declare function max<T extends bigint>(a: T, b: T): T;
 
 /**
