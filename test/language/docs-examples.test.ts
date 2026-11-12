@@ -129,6 +129,19 @@ describe("the language guide's examples compile", () => {
   }
 });
 
+// Some examples make a claim the compiler's acceptance does not prove: checked here against the compiled program.
+describe("what the guide's examples claim, holds", () => {
+  it("docs/language-native.md: PoolError's codes start at 0, as the page says", () => {
+    const b = blocks("language-native.md").find((x) => x.kind === "program" && x.code.includes("export enum PoolError"))!;
+    expect(b).toBeDefined();
+    const dir = path.join(tmp, "claims", "native-errors");
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "program.ts");
+    writeFileSync(file, b.code);
+    expect(generate(file).model.errors.map((e) => `${e.name} ${e.code}`)).toEqual(["AlreadyInUse 0", "Deserialization 1"]);
+  });
+});
+
 // The "What is refused" table: each row's example (the code in its Example cell) compiled in a program around it,
 // and the stable part of the message expected from the compiler and quoted in the row.
 const H = `import { type Mut, type Signer, type Pubkey, type u64, type u8, type Vec, type FixedArray, log, require, fixedVec } from "typesol";

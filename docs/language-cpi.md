@@ -157,8 +157,8 @@ export function openWallet(
 - **`Init<TokenAccount>`, `InitIfNeeded<TokenAccount>`** without `Ata<…>` (Anchor's `token::mint` / `token::authority`):
   `vault.create(payer, ["vault", payer.key, mint.key], mint, authority)` (the authority may be `vault.key` itself)
   creates a token account at that PDA (or a keypair account with `null`), sized for the mint's extensions under
-  Token-2022. `makeVault` above makes the vault [`payOut`](#tokens) pays from: the same seeds, with the payer as its
-  owner.
+  Token-2022. `makeVault` above makes the vault [`payOut`](#tokens) pays from: the same seeds, with the payer's key
+  as the `owner` seed; the token account's owner (its authority) is the vault itself.
   `createIfNeeded` checks that an existing one has that mint and owner (2014 / 2015), not its delegate or close
   authority (as Anchor).
 - **`Ata<Init<TokenAccount>, "owner", "mint">`, `Ata<InitIfNeeded<TokenAccount>, "owner", "mint">`** (Anchor's `init` /
@@ -347,6 +347,10 @@ export function execute(multisig: Account<Multisig>, transaction: Account<Transa
 }
 ```
 
+`execute` above shows the call only: as written, anyone can make the multisig's PDA sign any stored instruction. The
+showcase's `executeTransaction` first requires that the transaction belongs to the multisig (`HasOne`), has not run
+yet and has enough owners' approvals, and then marks it executed.
+
 - The accounts are a list of structs with `pubkey`, `isSigner` and `isWritable` (a Vec or FixedVec in account data, a
   Vec argument, a stored `map` result, or a local list built on the stack); the data a list of u8 (the same, the
   instruction data or a slice of it).
@@ -384,9 +388,6 @@ export function execute(multisig: Account<Multisig>, transaction: Account<Transa
 - The runtime checks the privileges: a meta may be a signer or writable only as the transaction passed that account,
   or as a PDA of this program the seeds (fifth argument) sign for. The multisig port in the showcase
   ([`showcase/mainnet/multisig/multisig.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/multisig/multisig.ts)) uses it.
-- `execute` above shows the call only: as written, anyone can make the multisig's PDA sign any stored instruction. The
-  showcase's `executeTransaction` first requires that the transaction belongs to the multisig (`HasOne`), has not run
-  yet and has enough owners' approvals, and then marks it executed.
 
 ## Programs and sysvars passed as remaining accounts
 

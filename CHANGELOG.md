@@ -6,10 +6,12 @@ codes, and says so here.
 
 ## Unreleased
 
-A minor release: it adds a flag (`init --no-agent-files`), accepts what 0.45.0 refused (16 signer seeds, the bump
-included), and refuses programs 0.45.0 compiled to wrong code (an `f64` used with an operator, as an integer or as text; a proof or
-signature check whose result decides nothing; a `@code` tag that is not read; a `Seeds<…>` list over Solana's limit).
-Programs that use none of these build to the same bytes: the repository's 76 programs build to the same binaries and
+A minor release: it adds a flag (`init --no-agent-files`) and an export of `typesol/compiler` (`typescriptMessage`),
+accepts what 0.45.0 refused (16 signer seeds, the bump included), and refuses programs 0.45.0 compiled to wrong code
+(an `f64` used with an operator, as an integer or as text; a proof or signature check whose result decides nothing; a
+`@code` tag that is not read; a `Seeds<…>` list over Solana's limit). The package's `bin` entry is now `dist/bin.js`,
+which checks the Node.js version first, and `deploy` stops before building when the payer keypair file is missing (a
+signer URI passes through to the Solana CLI). Programs that use none of these build to the same bytes: the repository's 76 programs build to the same binaries and
 IDLs with 0.45.0 and with this release, and the release manifest's check of test/golden/binaries.json passes.
 
 - Fixed: the README's toolchain block failed when pasted. The Agave installer adds its `bin` directory to `PATH` in
@@ -47,9 +49,12 @@ IDLs with 0.45.0 and with this release, and the release manifest's check of test
   `solana program deploy` failed. It now stops before building, exit 1: "no payer keypair at
   ~/.config/solana/id.json: create one with `solana-keygen new` (or pass --keypair <file>), then fund it with
   `solana airdrop 2 --url devnet`. Nothing was sent." A `--keypair` file that is not there gets "no keypair file at
-  ./payer.json (given with --keypair): check the path. Nothing was sent.", and a missing `keypair_path` of a Solana CLI
-  config names that config. Only a file path is checked: a signer URI (`usb://ledger?key=0`, `prompt://`, `stdin://`,
-  `ASK`) goes to `solana program deploy` as before, without the balance check. `solana` missing from `PATH` is now said
+  ./payer.json (given with --keypair): check the path. Nothing was sent.", an empty one "--keypair is empty: give the
+  path of the payer's keypair file. Nothing was sent.", and a missing `keypair_path` of a Solana CLI config names that
+  config. Only a file is checked: a signer the Solana CLI resolves itself (`ASK`, `-`, and the schemes `usb:`,
+  `prompt:` and `stdin:`, as in `usb://ledger?key=0`, `prompt://`, `stdin://`) goes to `solana program deploy` as
+  before, without the balance check; a `file:` URI (`file:id.json`, `file:///abs/id.json`) is checked as the path it
+  names, and anything else is a path. `solana` missing from `PATH` is now said
   first, also before building (it was said after the build) (test/cli/doctor.test.ts, with a fake `solana`).
 - Fixed: `doctor` ended with its rows only, so three `!` rows after a passing test looked like a problem. It now ends
   with one line: "Ready to build and test. The ! rows: deploying still needs: keypair, RPC; …", "Ready to build, test
@@ -67,8 +72,7 @@ IDLs with 0.45.0 and with this release, and the release manifest's check of test
     `window`, `document`) led with TypeScript's "Cannot find name 'console'. Do you need to change your target
     library? …"; the message is now "'console' does not exist in a Solana program", with the hint under it where
     there is one (`window` and `document` have none). The editor shows the same message, hint or not, through
-    `typesol/ts-plugin` and a new export of `typesol/compiler`, `typescriptMessage(diagnostic)`: the message the CLI
-    shows in place of a TypeScript error's, or undefined to keep TypeScript's (test/cli/ts-plugin.test.ts);
+    `typesol/ts-plugin` (the new export below);
   - `Date.now()` where an integer is expected now points to `now()`, the cluster's clock, and
     `Math.floor(Date.now() / 1000)` (which was "unsupported call: Math.floor") says to use `now()`;
     `Math.floor`, `trunc`, `ceil` and `round` on their own point to integer division;
@@ -79,6 +83,9 @@ IDLs with 0.45.0 and with this release, and the release manifest's check of test
     covers its types and interfaces too (`import { type Signer } from "typesol"`, `Mut`, `SystemProgram`, …);
   - a `number` field in account data got the list of allowed field types alone; it now has a hint naming the integer
     types (and a `Date` field, one about Unix seconds and `now()`).
+- New export of `typesol/compiler`: `typescriptMessage(diagnostic)`, the message the CLI shows in place of a
+  TypeScript error's, or undefined to keep TypeScript's; `typesol/ts-plugin` uses it, so the editor shows what the CLI
+  shows (test/cli/ts-plugin.test.ts).
 - Fixed: operators on an `f64` compiled to integer operators on its IEEE 754 bits, a silently wrong result:
   `a.x + a.x` was a checked u64 add of the bits, `a.x < a.y` compared them as integers. Every operator with an `f64`
   operand is now refused (arithmetic, bitwise, shifts, unary `-` and `~`, ordering, compound assignments, `++` / `--`,
@@ -125,104 +132,104 @@ IDLs with 0.45.0 and with this release, and the release manifest's check of test
   `merkleVerify(leaf, proof, root);` emitted the hash computation and dropped its result. Such a call is now refused:
   "the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write
   require(merkleVerify(…), error)". Refused as well: such a call as the condition of an `if` with an empty body and no
-  `else` ("the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: …"),
-  and its result kept in a `const` or `let` (declared or assigned) that the function never reads ("the result of
+  `else` or an empty one ("the result of merkleVerify is not acted on: the if around it has an empty body, so nothing
+  is checked: …"), and its result (in parentheses or under `as` too) kept in a `const` or `let` (declared or assigned,
+  in a closure too) that the function declaring it never reads, a closure inside it included ("the result of
   merkleVerify is never read (ok is not used), so nothing is checked: …"). What is caught is these three forms, not
   every unused result: a helper that returns the result, called as a statement, still compiles. No program of the
   repository called one these ways (test/language/diagnostics.test.ts; rows in the refused-constructs table of
   docs/language-statements.md).
-- Fixed: a `/** @code 6100 */` tag written after other code on its line (`A = "a", /** @code 6100 */ B = "b"`) was
-  ignored without a word, because TypeScript attaches it to no member, and `B` took the next code instead of 6100. It
-  is now refused, naming the member that follows: "this @code tag is not read: other code comes before it on its line;
-  put /** @code … */ on its own line above B" (after the last member: "it follows the last member"). A tag on its own
-  line, or first on its member's line, is read as before; no program of the repository changes
-  (test/language/zero-copy-shapes.test.ts). The same goes for a tag in a `/* … */` or `//` comment ("this @code tag is
-  not read: only a doc comment (/** … */) is, not a // comment; write /** @code … */ above B") and in a doc comment
-  that another one follows before the member, of which only the last is read ("… another doc comment follows it, and
-  only the last one above B is read; put the tag in that one"). A tag is `@code` first on a line of its comment: a
-  comment that mentions it in a sentence (`/** see the @code docs */`) is not refused.
+- Fixed: a `@code` tag that TypeScript attaches to no member was ignored without a word, and the member took the next
+  code instead. Written after other code on its line (`A = "a", /** @code 6100 */ B = "b"`), it is now refused,
+  naming the member that follows: "this @code tag is not read: other code comes before it on its line; put /** @code …
+  */ on its own line above B" (after the last member: "it follows the last member"). Above the enum itself
+  (`/** @code 0 */` before `export enum PoolError {`), it is refused too: "this @code tag is not read: a tag above the
+  enum numbers no member; put /** @code … */ above its first member, AlreadyInUse". A tag on its own line, or first on
+  its member's line, is read as before; no program of the repository changes (test/language/zero-copy-shapes.test.ts).
+  The same goes for a tag in a `/* … */` or `//` comment ("this @code tag is not read: only a doc comment (/** … */)
+  is, not a // comment; write /** @code … */ above B") and in a doc comment that another one follows before the
+  member, of which only the last is read ("… another doc comment follows it, and only the last one above B is read;
+  put the tag in that one"). In a doc comment, a tag is any `@code` after the start, whitespace or `*`, as TypeScript
+  reads it, so one inside a sentence (`/** The second. @code 6200 */`) is a tag and is refused where it is not read; in
+  a `//` or `/* … */` comment only an `@code` first on a line of the comment is reported, so prose there
+  (`// see the @code docs`) is not.
 - Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
   playground, opens Quick start with the playground, says that `npm install`'s advisories come from
   `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;
   nothing of it is in a deployed program), says what npm's `E404 … typesol` outside a project means and what to run,
   and that the scaffolded counter has one more instruction than the 23-line one shown. docs/troubleshooting.md has a
   heading per symptom.
-- Docs: the language reference is a guide. docs/language.md is now an overview with the guide's pages and an index of
-  where each construct is described (its old section headings kept, so links to them still land there), and the
-  material moved into pages read in order: docs/language-basics.md (what a program is, one program explained line by
-  line), language-types.md (each type with its bytes, limits and error codes), language-statements.md (exactly which
-  TypeScript is TypeSOL, and a table of what is refused with each message), language-accounts.md, language-pdas.md,
-  language-errors-events.md, language-cpi.md, language-chain.md (sysvars, hashes, signatures, oracles) and
-  language-native.md (porting native programs, marked advanced). Every example on these pages is a complete program,
-  and test/language/docs-examples.test.ts compiles each one, checks that every refused construct of the table is
-  refused with the message it quotes, that links into the docs land on a heading (a repeated heading's anchor with
-  GitHub's `-1`, `-2` suffix), that every page but the overview and the built-ins list has a compiled program, and
-  that no TypeScript block is fenced so that it would be skipped (`~~~`, `typescript`). docs/language-builtins.md lists
-  every name `"typesol"` exports, generated from lib/typesol.d.ts by `scripts/language-builtins.ts` (`--check` in the
-  tests and in CI). lib/typesol.d.ts gains doc comments only: the 34 exports that had none have one, the comment of
-  `findProgramAddress` sat above `bigEndian` and moves to it, and `isqrt`'s says it takes integers up to `u256` (as the
-  compiler does), not up to `u128`. Corrections found while checking the reference against the compiler: top-level
-  constants are not listed in the IDL (a constant used as a seed is recorded there as a `const` seed); closure
-  parameters need their types where the closure is declared (an arrow written at a call takes them from the
-  parameter); a `@layout borsh` struct's `Vec` may be any field, not only the last; `signer([…])` is written in a
-  declaration or as a helper's argument, not inside a CPI's arguments. No program compiles differently.
-- Docs: a second pass over the guide.
-  - Examples that move value or sign as a PDA now check who may call them: `payOut` in docs/language-pdas.md and
-    docs/language-cpi.md (a config account with `HasOne`, or the signer in the vault's seeds), `remove` in
-    docs/language-accounts.md (`HasOne` before `close`), and the PDA page's first example derives its second bump
-    instead of storing one from the arguments; the examples that show one mechanism only (`invokeInstruction`'s
-    `execute`, the native `programAt` entry, `Migrate`, a first-caller `InitIfNeeded` setup) say which check a real
-    instruction needs.
-  - Corrected: `merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds and
-    fail nothing by themselves (docs/language-chain.md, with an example, and their doc comments); a program account
-    is checked for initialization (3012), owner (3007), size (3003), then discriminator (3002), and the two cases where
-    Anchor's order gives another code (another discriminator with fewer bytes than the struct: 3003 here, 3002 under
-    Anchor; under 8 bytes: 3003 here, 3001 under Anchor) are listed in docs/errors.md (test/security/anchor-order.test.ts
-    pins them); a failed instruction fails the whole transaction; `>>` fails (5100) like `<<` when the amount is not
-    below the width; `FixedString<N>` takes 4 + N bytes; the first program's account is 58 bytes, and its last
-    instruction, renamed `end`, returns the total instead of closing the poll; token account and mint codes are
-    stated one way everywhere (3012 / 3007 / 3003); SECURITY.md names the review of 0.44.0 and 0.44.1 as the README
-    and docs/security-model.md do (test/cli/repository.test.ts checks the three against docs/audit.md); the README's
-    "Safe by default." is "Checked by default."; docs/mainnet.md carries the status warning, its counter is built
-    with 0.45.0, and it says what a `verify` match does not prove; docs/migrate-from-anchor.md no longer claims
-    `@layout borsh` is "several times cheaper than Anchor".
-  - New for a newcomer: "Solana in a dozen lines" and "Limits and costs" (rent, compute budget, transaction size,
-    account growth, with their sources' values at the time of writing) in docs/language-basics.md; docs/glossary.md;
-    what happens to existing accounts when an account struct changes (docs/language-accounts.md, docs/mainnet.md);
-    when to choose `FixedArray`, `FixedVec` or `Vec`; seeds of other widths and asserting an error code in
-    docs/test-your-program.md (test/cli/testing.test.ts runs both snippets); a "Next" line on every guide page.
-  - Structure: docs/language.md lists the pages first and its former sections last; docs/troubleshooting.md is
-    grouped (install, writing and running a program, deploy, verify and `--docker`); the longest table cells
-    (Token-2022 methods, `init` and `verify` in docs/cli.md) are lists; `Struct arguments`, `f64` and heap values
-    come last on docs/language-types.md; `Two parameters, one account` and `How many accounts` follow the
-    constraints. Every heading kept its text, so links to it still land.
-  - lib/typesol.d.ts changes in comments only: the built-ins page's one-liners for `currentSlot`, `slotsPerEpoch`,
-    `HasOne`, `Ata`, `transferFee`, `TOKEN_ACCOUNT_SIZE`, `readonly`, `rawArrayAt`, `Mut`, `Init`, `Account`, `log`,
-    `invoke` and `Vec` describe the name itself.
-  - More examples check their caller: the PDA page's `payOut` takes its config at the singleton PDA `["config"]`
-    (a `HasOne` on any `Account<Config>` let anyone who created a config naming themselves admin drain `fees`), and
-    says to gate the config's creation; the native `bump` checks that `admin` signed; the native Borsh `deposit`
-    checks the pool's owner, as its text said; `makeVault` creates the vault at the seeds `payOut` checks
-    (`["vault", owner, mint]`). The examples that show one operation only say so: FixedVec's `setOwners` /
-    `addOwner` (with what the showcase multisig requires), the fallback page's `record`, the red-black tree's `place`
-    / `cancel`, the `settle` of the randomness example; `invoke`'s `payOut` and `t.pdaWithBump` point to a stored bump.
-  - Corrected: an account struct with a field added fails with 3003 only on an account of exactly the old size; one
-    created with spare space or grown since passes and reads the spare bytes, or other fields' bytes when the field
-    was inserted (docs/language-accounts.md, docs/mainnet.md). docs/errors.md said accounts are created after every
-    other check; the creates a body starts with run before the constraints (not with an account group, whose
-    arguments are decoded first). At most 32 accounts per instruction is TypeSOL's default, not the cluster's; the
-    transaction size includes the header and a recent blockhash, and an address lookup table entry costs one byte.
-    `realloc` also shrinks, so the `grow` example's open access is explained as moving no value.
-    docs/test-your-program.md names the program its error snippet runs against (`TooMuch` is 6000 there, 6001 in the
-    guide's `spend`).
-  - docs/glossary.md separates the three meanings of owner and adds Anchor, associated token account, keypair account,
-    authority, payer, remaining accounts, return data, slot and epoch, cluster, syscall, precompile, ProgramData and
-    upgrade authority (one entry, replacing "Upgrade authority"), and zero-copy; the guide's pages link a term's first
-    use to it. docs/troubleshooting.md has entries for running out of compute units and for a transaction over 1,232
-    bytes, and says what to do when `idl publish` fails on a local validator. The `Inout` overlap rule for accounts
-    is on docs/language-accounts.md ("Two parameters, one account"), the native views' part stays on
-    docs/language-native.md. docs/language-statements.md: the generic-helper and helper-result sentences use the
-    example's own functions (`bigger`, `at`), and the local-type sentence matches its example.
+- Docs: the language reference is a guide. docs/language.md is an overview: the guide's pages, then an index of where
+  each construct is described, then the former reference's sections (their headings kept, so links to them still
+  land there). The pages, read in order:
+  - docs/language-basics.md: "Solana in a dozen lines", what a program is, one program explained line by line, and
+    "Limits and costs" (rent, compute budget, transaction size with its header and a recent blockhash, an address
+    lookup table entry at one byte, account growth, with their sources' values at the time of writing; at most 32
+    accounts per instruction is TypeSOL's default, not the cluster's);
+  - language-types.md: each type with its bytes, limits and error codes, and when to choose `FixedArray`, `FixedVec`
+    or `Vec`; `Struct arguments`, `f64` and heap values come last;
+  - language-statements.md: exactly which TypeScript is TypeSOL, and a table of what is refused with each message;
+  - language-accounts.md, with what happens to existing accounts when an account struct changes (also in
+    docs/mainnet.md: a field added fails with 3003 only on an account of exactly the old size; one created with spare
+    space or grown since passes and reads the spare bytes, or other fields' bytes when the field was inserted), and
+    `Two parameters, one account` (the `Inout` overlap rule for accounts) and `How many accounts` after the
+    constraints;
+  - language-pdas.md, language-errors-events.md, language-cpi.md, language-chain.md (sysvars, hashes, signatures,
+    oracles) and language-native.md (porting native programs, marked advanced);
+  - docs/language-builtins.md lists every name `"typesol"` exports, generated from lib/typesol.d.ts by
+    `scripts/language-builtins.ts` (`--check` in the tests and in CI).
+
+  Each page ends with a "Next" line and links a term's first use to the new docs/glossary.md (the three meanings of
+  owner, Anchor, associated token account, keypair account, authority, payer, remaining accounts, return data, slot
+  and epoch, cluster, syscall, precompile, ProgramData and upgrade authority, zero-copy, and more).
+
+  What the examples guarantee: every example is a complete program, or a block marked as a fragment whose every line is
+  a line of the compiled file it is taken from. test/language/docs-examples.test.ts compiles each program, checks that
+  every refused construct of the table is refused with the message it quotes, that links into the docs land on a
+  heading (a repeated heading's anchor with GitHub's `-1`, `-2` suffix), that every page but the overview and the
+  built-ins list has a compiled program, and that no TypeScript block is fenced so that it would be skipped (`~~~`,
+  `typescript`); a claim compiling does not prove is checked against the compiled program (the error codes from 0 of
+  docs/language-native.md). An example shows the construct its section is about, and docs/language.md says that,
+  unless the text says who may call an instruction, it does not check its caller as a real program must. The examples
+  that move value or sign as a PDA do check it: the PDA page's `payOut` takes its config at the singleton PDA
+  `["config"]` with `HasOne` and says to gate the config's creation, docs/language-cpi.md's `payOut` has the signer in
+  the vault's seeds (and `makeVault` creates the vault at those seeds), `remove` has `HasOne` before `close`, the native
+  `bump` checks that `admin` signed and the native Borsh `deposit` checks the pool's owner; the PDA page's first
+  example derives its second bump, and `invoke`'s `payOut` and `t.pdaWithBump` point to a stored bump. Those that show
+  one mechanism only say so, with the check a real instruction needs, on the first line after the example
+  (`invokeInstruction`'s `execute`, `Migrate`'s `upgrade`, a first-caller `InitIfNeeded` setup, FixedVec's
+  `setOwners` / `addOwner`, the fallback's `record`, BigVec's `add`, the run-time views' `fill`, the Borsh `deposit`,
+  the red-black tree's `place` / `cancel`, the enum's `approve`, the data enum's `apply`; the native `programAt`
+  entry and the randomness example's `settle` in their text), and `grow`'s open access is explained as moving no
+  value. docs/test-your-program.md has seeds of other widths and asserting an error code, naming the program that
+  snippet runs against (test/cli/testing.test.ts runs both). docs/troubleshooting.md is grouped (install, writing and
+  running a program, deploy, verify and `--docker`), with entries for running out of compute units, for a
+  transaction over 1,232 bytes and for `idl publish` failing on a local validator; the longest table cells (Token-2022
+  methods, `init` and `verify` in docs/cli.md) are lists.
+
+  lib/typesol.d.ts gains doc comments only: the 34 exports that had none have one, the built-ins page's one-liners
+  (`currentSlot`, `slotsPerEpoch`, `HasOne`, `Ata`, `transferFee`, `TOKEN_ACCOUNT_SIZE`, `readonly`, `rawArrayAt`,
+  `Mut`, `Init`, `Account`, `log`, `invoke`, `Vec`) describe the name itself, the comment of `findProgramAddress` sat
+  above `bigEndian` and moves to it, and `isqrt`'s says it takes integers up to `u256` (as the compiler does), not up
+  to `u128`.
+- Docs, corrected (statements of the former reference and of other published pages, found while checking them
+  against the compiler; no program compiles differently): top-level constants are not listed in the IDL (a constant
+  used as a seed is recorded there as a `const` seed); closure parameters need their types where the closure is
+  declared (an arrow written at a call takes them from the parameter); a `@layout borsh` struct's `Vec` may be any
+  field, not only the last; `signer([…])` is written in a declaration or as a helper's argument, not inside a CPI's
+  arguments; `merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds and fail
+  nothing by themselves (docs/language-chain.md, with an example, and their doc comments); a program account is
+  checked for initialization (3012), owner (3007), size (3003), then discriminator (3002), and the two cases where
+  Anchor's order gives another code (another discriminator with fewer bytes than the struct: 3003 here, 3002 under
+  Anchor; under 8 bytes: 3003 here, 3001 under Anchor) are listed in docs/errors.md (test/security/anchor-order.test.ts
+  pins them); docs/errors.md said accounts are created after every other check, while the creates a body starts with
+  run before the constraints (not with an account group, whose arguments are decoded first); a failed instruction
+  fails the whole transaction; `>>` fails (5100) like `<<` when the amount is not below the width; `FixedString<N>`
+  takes 4 + N bytes; token account and mint codes are stated one way everywhere (3012 / 3007 / 3003); SECURITY.md
+  names the review of 0.44.0 and 0.44.1 as the README and docs/security-model.md do (test/cli/repository.test.ts
+  checks the three against docs/audit.md); the README's "Safe by default." is "Checked by default."; docs/mainnet.md
+  carries the status warning, its counter is built with 0.45.0, and it says what a `verify` match does not prove;
+  docs/migrate-from-anchor.md no longer claims `@layout borsh` is "several times cheaper than Anchor".
 
 ## 0.45.0 — 2026-11-12
 

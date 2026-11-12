@@ -146,6 +146,10 @@ with the terms the guide uses.
 Read in order, or jump to what you need. Every example on these pages is a complete program that compiles, unless it
 is marked as a fragment.
 
+An example shows the construct its section is about. Unless the text says who may call an instruction, the example
+does not check its caller, as a real program must: see [constraints](language-accounts.md#constraints) and
+[signing as a PDA](language-pdas.md#signing-as-a-pda).
+
 | Page | What it covers |
 | --- | --- |
 | [Language basics](language-basics.md) | Solana in a dozen lines, then what a program is: the file, imports, instructions, account data, helpers, constants, multiple files, what the compiler derives, stack and heap, limits and costs (rent, compute, transaction and account sizes) |
@@ -931,6 +935,8 @@ export function approve(request: Mut<Request>): void {
 }
 ```
 
+`approve` shows the enum only: as written, anyone approves any request.
+
 - A unit enum's members are numbered 0, 1, 2… in order; initializers are refused (`value enum members are numbered 0,
   1, 2… in order; leave out initializers`). Stored as one byte, the Borsh u8 index; an argument byte past the last
   member fails with 102.
@@ -964,6 +970,8 @@ export function apply(vault: Mut<Vault>, action: Action): void {
   vault.last = action;
 }
 ```
+
+`apply` shows the data enum only: as written, anyone applies any action to any vault.
 
 - A data enum is a union of object types, each with a `kind` string literal: Rust's enum with fields, Borsh-encoded as
   Anchor encodes one. `a.kind === "Deposit"` or `switch (a.kind)`, and TypeScript narrowing picks the variant.
@@ -2018,6 +2026,9 @@ export function scratch(payer: Mut<Signer>, extra: Init<Settings>, systemProgram
 }
 ```
 
+In `configure` above the first caller becomes the admin; gate such a setup on the upgrade authority
+([ProgramData](#programdata)).
+
 - **`Init<T>`**: `acct.create(payer, seeds)` derives the PDA, verifies that the account is that address (2006), funds
   the rent from `payer`, allocates the struct's size (up to 10 KiB), assigns it to this program and writes the
   discriminator; it returns the bump. `create(payer, null)` creates a [keypair account](glossary.md#keypair-account)
@@ -2034,8 +2045,7 @@ export function scratch(payer: Mut<Signer>, extra: Init<Settings>, systemProgram
   `Init<T>` the body never creates is an error.
 - **`InitIfNeeded<T>`**: `const created = acct.createIfNeeded(payer, seeds)` creates the account once; afterwards it
   re-derives the PDA and checks the owner, discriminator and size (Anchor's `init_if_needed`). `acct.pdaBump` is the
-  bump after it. An existing account is used as it is: check the fields you rely on. In `configure` above the first
-  caller becomes the admin; gate such a setup on the upgrade authority ([ProgramData](#programdata)).
+  bump after it. An existing account is used as it is: check the fields you rely on.
 - Seeds, bumps and `create` under another program are on the [PDAs](language-pdas.md) page; mints, token accounts
   and associated token accounts are created the same way ([tokens](language-cpi.md#creating-mints-and-token-accounts)).
 
@@ -2090,6 +2100,9 @@ export function upgrade(payer: Mut<Signer>, counter: Migrate<CounterV1, CounterV
 }
 ```
 
+As written, anyone can migrate a counter and become its `owner`. With no constraints on `Migrate`, check the caller in
+the body before `migrate`, for example against the upgrade authority of a [`ProgramData`](#programdata) parameter.
+
 Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size checked) is rewritten as `To` by
 `acct.migrate(payer, value)`, a top-level statement the instruction must reach.
 
@@ -2104,9 +2117,6 @@ Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size
   (use `acct.to` fields in the instruction).
 - `resizeAccount` on a `Mut<AccountInfo>` ([closing and resizing](#closing-and-resizing)) is the manual way: grow the
   account with the new field appended at the end, which reads as zero.
-- As written, anyone can migrate a counter and become its `owner`. With no constraints on `Migrate`, check the caller
-  in the body before `migrate`, for example against the upgrade authority of a [`ProgramData`](#programdata)
-  parameter.
 
 ## Closing and resizing
 
@@ -2977,8 +2987,8 @@ export function openWallet(
 - **`Init<TokenAccount>`, `InitIfNeeded<TokenAccount>`** without `Ata<…>` (Anchor's `token::mint` / `token::authority`):
   `vault.create(payer, ["vault", payer.key, mint.key], mint, authority)` (the authority may be `vault.key` itself)
   creates a token account at that PDA (or a keypair account with `null`), sized for the mint's extensions under
-  Token-2022. `makeVault` above makes the vault [`payOut`](#tokens) pays from: the same seeds, with the payer as its
-  owner.
+  Token-2022. `makeVault` above makes the vault [`payOut`](#tokens) pays from: the same seeds, with the payer's key
+  as the `owner` seed; the token account's owner (its authority) is the vault itself.
   `createIfNeeded` checks that an existing one has that mint and owner (2014 / 2015), not its delegate or close
   authority (as Anchor).
 - **`Ata<Init<TokenAccount>, "owner", "mint">`, `Ata<InitIfNeeded<TokenAccount>, "owner", "mint">`** (Anchor's `init` /
@@ -3167,6 +3177,10 @@ export function execute(multisig: Account<Multisig>, transaction: Account<Transa
 }
 ```
 
+`execute` above shows the call only: as written, anyone can make the multisig's PDA sign any stored instruction. The
+showcase's `executeTransaction` first requires that the transaction belongs to the multisig (`HasOne`), has not run
+yet and has enough owners' approvals, and then marks it executed.
+
 - The accounts are a list of structs with `pubkey`, `isSigner` and `isWritable` (a Vec or FixedVec in account data, a
   Vec argument, a stored `map` result, or a local list built on the stack); the data a list of u8 (the same, the
   instruction data or a slice of it).
@@ -3204,9 +3218,6 @@ export function execute(multisig: Account<Multisig>, transaction: Account<Transa
 - The runtime checks the privileges: a meta may be a signer or writable only as the transaction passed that account,
   or as a PDA of this program the seeds (fifth argument) sign for. The multisig port in the showcase
   ([`showcase/mainnet/multisig/multisig.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/multisig/multisig.ts)) uses it.
-- `execute` above shows the call only: as written, anyone can make the multisig's PDA sign any stored instruction. The
-  showcase's `executeTransaction` first requires that the transaction belongs to the multisig (`HasOne`), has not run
-  yet and has enough owners' approvals, and then marks it executed.
 
 ## Programs and sysvars passed as remaining accounts
 
@@ -3372,7 +3383,7 @@ export function commit(c: Mut<Commit>, owner: Pubkey, text: string, n: u64): voi
 `merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds; they do not fail by
 themselves. Unlike a check such as `HasOne`, nothing happens when the answer is false: wrap them in
 `require(…, error)`. The compiler refuses a call used as a statement, one that is the
-condition of an `if` with an empty body and no `else`, and one whose result is kept in a local the function never
+condition of an `if` with an empty body and no `else` or an empty one, and one whose result is kept in a local the function never
 reads. It does not catch a helper that returns the result and is itself called as a statement.
 
 ```ts
@@ -3409,6 +3420,8 @@ export function approved(drop: Account<Drop>, ixs: InstructionsSysvar, who: Pubk
 - `verifySecp256k1(hash, recoveryId, r, s, ethAddress)` recovers the secp256k1 signer of `hash` and returns whether it
   is `ethAddress` (an Ethereum address left-padded to 32 bytes), where `hash` is `keccak256(...message)` or
   `ethMessageHash(message)`. The hash must be computed in the program: a passed-in hash could be forged.
+- In `approved` a signature proves who signed the message, not for which drop or when: a real message binds the
+  program, the account and a nonce or expiry.
 
 ## Instruction introspection
 
@@ -3600,6 +3613,9 @@ export function deposit(pool: Mut<AccountInfo>, amount: u64): void {
 }
 ```
 
+`deposit` shows the decoding and encoding only: the owner is checked, but as written any caller raises
+`totalLamports`, and the original also checks that the pool is initialized.
+
 SPL Stake Pool's `StakePool` is read with `try_from_slice_unchecked` and written with `serialize`.
 `const pool = loadBorsh<StakePool>(acct)` decodes the data from byte 0 into a local struct (a copy: fields updated,
 Options narrowed and set to null or a value, data enums switched, copied, passed to helpers), and `storeBorsh(acct,
@@ -3641,6 +3657,8 @@ export function add(list: Mut<AccountInfo>, vote: Pubkey, skip: u64): void {
 }
 ```
 
+`add` shows the list operations only: as written, anyone can push to any account this program owns.
+
 `validators: BigVec<ValidatorInfo>` is SPL's `big_vec` (the stake pool's validator list): the last field of a
 fixed-layout struct read with `loadRaw` / `loadRawMut`, a u32 length then the elements, in an account allocated up
 front. Its room is the account's (`.capacity`: (size − fixed fields − 4) / size(T)), and it is never resized.
@@ -3676,6 +3694,8 @@ export function fill(market: Mut<AccountInfo>, at: u64, n: u64): void {
   for (let i = 0n; i < slots.length; i++) slots.set(i, prefix.tick + i);
 }
 ```
+
+`fill` shows the views only: as written, anyone can overwrite slots of any account this program owns.
 
 A native account whose parts start where its header says (Phoenix's market at byte 576, trees sized by
 `market_size_params`, Serum's slabs):
@@ -3856,8 +3876,8 @@ On remaining accounts and `AccountInfo` parameters:
 ```ts
 import { type u64, ProgramError, instructionData, panic, panicsAt, require } from "typesol";
 
-/** @code 0 */
 export enum PoolError {
+  /** @code 0 */
   AlreadyInUse = "Pool account already in use",
   Deserialization = "Failed to deserialize",
 }

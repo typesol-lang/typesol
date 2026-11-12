@@ -86,6 +86,9 @@ export function scratch(payer: Mut<Signer>, extra: Init<Settings>, systemProgram
 }
 ```
 
+In `configure` above the first caller becomes the admin; gate such a setup on the upgrade authority
+([ProgramData](#programdata)).
+
 - **`Init<T>`**: `acct.create(payer, seeds)` derives the PDA, verifies that the account is that address (2006), funds
   the rent from `payer`, allocates the struct's size (up to 10 KiB), assigns it to this program and writes the
   discriminator; it returns the bump. `create(payer, null)` creates a [keypair account](glossary.md#keypair-account)
@@ -102,8 +105,7 @@ export function scratch(payer: Mut<Signer>, extra: Init<Settings>, systemProgram
   `Init<T>` the body never creates is an error.
 - **`InitIfNeeded<T>`**: `const created = acct.createIfNeeded(payer, seeds)` creates the account once; afterwards it
   re-derives the PDA and checks the owner, discriminator and size (Anchor's `init_if_needed`). `acct.pdaBump` is the
-  bump after it. An existing account is used as it is: check the fields you rely on. In `configure` above the first
-  caller becomes the admin; gate such a setup on the upgrade authority ([ProgramData](#programdata)).
+  bump after it. An existing account is used as it is: check the fields you rely on.
 - Seeds, bumps and `create` under another program are on the [PDAs](language-pdas.md) page; mints, token accounts
   and associated token accounts are created the same way ([tokens](language-cpi.md#creating-mints-and-token-accounts)).
 
@@ -158,6 +160,9 @@ export function upgrade(payer: Mut<Signer>, counter: Migrate<CounterV1, CounterV
 }
 ```
 
+As written, anyone can migrate a counter and become its `owner`. With no constraints on `Migrate`, check the caller in
+the body before `migrate`, for example against the upgrade authority of a [`ProgramData`](#programdata) parameter.
+
 Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size checked) is rewritten as `To` by
 `acct.migrate(payer, value)`, a top-level statement the instruction must reach.
 
@@ -172,9 +177,6 @@ Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size
   (use `acct.to` fields in the instruction).
 - `resizeAccount` on a `Mut<AccountInfo>` ([closing and resizing](#closing-and-resizing)) is the manual way: grow the
   account with the new field appended at the end, which reads as zero.
-- As written, anyone can migrate a counter and become its `owner`. With no constraints on `Migrate`, check the caller
-  in the body before `migrate`, for example against the upgrade authority of a [`ProgramData`](#programdata)
-  parameter.
 
 ## Closing and resizing
 

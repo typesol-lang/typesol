@@ -27,6 +27,10 @@ with the terms the guide uses.
 Read in order, or jump to what you need. Every example on these pages is a complete program that compiles, unless it
 is marked as a fragment.
 
+An example shows the construct its section is about. Unless the text says who may call an instruction, the example
+does not check its caller, as a real program must: see [constraints](language-accounts.md#constraints) and
+[signing as a PDA](language-pdas.md#signing-as-a-pda).
+
 | Page | What it covers |
 | --- | --- |
 | [Language basics](language-basics.md) | Solana in a dozen lines, then what a program is: the file, imports, instructions, account data, helpers, constants, multiple files, what the compiler derives, stack and heap, limits and costs (rent, compute, transaction and account sizes) |

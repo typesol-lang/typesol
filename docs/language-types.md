@@ -222,6 +222,8 @@ export function approve(request: Mut<Request>): void {
 }
 ```
 
+`approve` shows the enum only: as written, anyone approves any request.
+
 - A unit enum's members are numbered 0, 1, 2… in order; initializers are refused (`value enum members are numbered 0,
   1, 2… in order; leave out initializers`). Stored as one byte, the Borsh u8 index; an argument byte past the last
   member fails with 102.
@@ -255,6 +257,8 @@ export function apply(vault: Mut<Vault>, action: Action): void {
   vault.last = action;
 }
 ```
+
+`apply` shows the data enum only: as written, anyone applies any action to any vault.
 
 - A data enum is a union of object types, each with a `kind` string literal: Rust's enum with fields, Borsh-encoded as
   Anchor encodes one. `a.kind === "Deposit"` or `switch (a.kind)`, and TypeScript narrowing picks the variant.

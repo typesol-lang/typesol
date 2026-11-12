@@ -80,7 +80,7 @@ export function commit(c: Mut<Commit>, owner: Pubkey, text: string, n: u64): voi
 `merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds; they do not fail by
 themselves. Unlike a check such as `HasOne`, nothing happens when the answer is false: wrap them in
 `require(…, error)`. The compiler refuses a call used as a statement, one that is the
-condition of an `if` with an empty body and no `else`, and one whose result is kept in a local the function never
+condition of an `if` with an empty body and no `else` or an empty one, and one whose result is kept in a local the function never
 reads. It does not catch a helper that returns the result and is itself called as a statement.
 
 ```ts
@@ -117,6 +117,8 @@ export function approved(drop: Account<Drop>, ixs: InstructionsSysvar, who: Pubk
 - `verifySecp256k1(hash, recoveryId, r, s, ethAddress)` recovers the secp256k1 signer of `hash` and returns whether it
   is `ethAddress` (an Ethereum address left-padded to 32 bytes), where `hash` is `keccak256(...message)` or
   `ethMessageHash(message)`. The hash must be computed in the program: a passed-in hash could be forged.
+- In `approved` a signature proves who signed the message, not for which drop or when: a real message binds the
+  program, the account and a nonce or expiry.
 
 ## Instruction introspection
 

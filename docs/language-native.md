@@ -109,6 +109,9 @@ export function deposit(pool: Mut<AccountInfo>, amount: u64): void {
 }
 ```
 
+`deposit` shows the decoding and encoding only: the owner is checked, but as written any caller raises
+`totalLamports`, and the original also checks that the pool is initialized.
+
 SPL Stake Pool's `StakePool` is read with `try_from_slice_unchecked` and written with `serialize`.
 `const pool = loadBorsh<StakePool>(acct)` decodes the data from byte 0 into a local struct (a copy: fields updated,
 Options narrowed and set to null or a value, data enums switched, copied, passed to helpers), and `storeBorsh(acct,
@@ -150,6 +153,8 @@ export function add(list: Mut<AccountInfo>, vote: Pubkey, skip: u64): void {
 }
 ```
 
+`add` shows the list operations only: as written, anyone can push to any account this program owns.
+
 `validators: BigVec<ValidatorInfo>` is SPL's `big_vec` (the stake pool's validator list): the last field of a
 fixed-layout struct read with `loadRaw` / `loadRawMut`, a u32 length then the elements, in an account allocated up
 front. Its room is the account's (`.capacity`: (size − fixed fields − 4) / size(T)), and it is never resized.
@@ -185,6 +190,8 @@ export function fill(market: Mut<AccountInfo>, at: u64, n: u64): void {
   for (let i = 0n; i < slots.length; i++) slots.set(i, prefix.tick + i);
 }
 ```
+
+`fill` shows the views only: as written, anyone can overwrite slots of any account this program owns.
 
 A native account whose parts start where its header says (Phoenix's market at byte 576, trees sized by
 `market_size_params`, Serum's slabs):
@@ -365,8 +372,8 @@ On remaining accounts and `AccountInfo` parameters:
 ```ts
 import { type u64, ProgramError, instructionData, panic, panicsAt, require } from "typesol";
 
-/** @code 0 */
 export enum PoolError {
+  /** @code 0 */
   AlreadyInUse = "Pool account already in use",
   Deserialization = "Failed to deserialize",
 }
