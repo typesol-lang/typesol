@@ -1,6 +1,6 @@
 // For AI coding agents: the files `typesol init` writes, llms.txt, `check --json` hints, and the MCP server.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +37,37 @@ describe("for AI coding agents", () => {
       expect(JSON.parse(readFileSync(path.join(dir, f), "utf8"))).toEqual({
         mcpServers: { typesol: { command: "npx", args: ["--no-install", "typesol", "mcp"] } },
       });
+  });
+
+  it("init next to an agent file of the repository says it refuses to overwrite it, and that --no-agent-files leaves it out", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-agents-"));
+    try {
+      writeFileSync(path.join(dir, "AGENTS.md"), "# Ours\n");
+      const r = spawnSync("node", [CLI, "init", ".", "--name", "app"], { cwd: dir, encoding: "utf8" });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toBe("error: refusing to overwrite: AGENTS.md (--no-agent-files leaves out the files for AI coding agents)\n");
+      const ok = spawnSync("node", [CLI, "init", ".", "--name", "app", "--no-agent-files"], { cwd: dir, encoding: "utf8" });
+      expect(ok.status, ok.stderr).toBe(0);
+      expect(readFileSync(path.join(dir, "AGENTS.md"), "utf8")).toBe("# Ours\n");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("init lists the agent files it writes, and --no-agent-files leaves them out", () => {
+    const agentFiles = ["AGENTS.md", "CLAUDE.md", ".cursor/rules/typesol.mdc", ".mcp.json", ".cursor/mcp.json"];
+    const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "typesol-ai-")));
+    const withFiles = spawnSync("node", [CLI, "init", "a", "--name", "app"], { cwd: dir, encoding: "utf8" });
+    expect(withFiles.status).toBe(0);
+    expect(withFiles.stdout).toContain(`  (${agentFiles.join(", ")}: rules and the TypeSOL MCP server for AI coding agents; --no-agent-files leaves them out)`);
+    const without = spawnSync("node", [CLI, "init", "b", "--name", "app", "--no-agent-files"], { cwd: dir, encoding: "utf8" });
+    expect(without.status).toBe(0);
+    for (const f of agentFiles) expect(existsSync(path.join(dir, "b", f)), f).toBe(false);
+    expect(existsSync(path.join(dir, "b", ".cursor"))).toBe(false);
+    expect(without.stdout).not.toMatch(/AGENTS\.md|CLAUDE\.md|mcp\.json/);
+    // The rest of the project is the same: the program, its test, the configs and the editor settings.
+    for (const f of ["typesol.json", "programs/app.ts", "tests/app.test.ts", "package.json", "tsconfig.json", ".vscode/settings.json", ".gitignore"])
+      expect(readFileSync(path.join(dir, "b", f), "utf8"), f).toBe(readFileSync(path.join(dir, "a", f), "utf8"));
   });
 
   it("never tells anyone to run `npx typesol <command>`", () => {
@@ -84,6 +115,12 @@ describe("for AI coding agents", () => {
     expect(readFileSync(path.join(ROOT, "llms-full.txt"), "utf8")).toMatch(/## Writing TypeSOL[\s\S]*<!-- docs\/language.md -->/);
     const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { files: string[] };
     expect(pkg.files).toEqual(expect.arrayContaining(["llms.txt", "llms-full.txt"]));
+  });
+
+  it("ships docs/language-builtins.md, up to date with lib/typesol.d.ts", () => {
+    const r = spawnSync("node", [path.join(ROOT, "scripts/language-builtins.ts"), "--check"], { encoding: "utf8" });
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
   });
 
   it("check --json gives each fixable error its hint as a field", () => {

@@ -34,7 +34,7 @@ Redelegate, which the deployed program refuses ("will not be enabled"), as the p
 
 ## What it needed
 
-TypeSOL gained these features for it (docs/language.md, "Porting a native program"; every other program compiles
+TypeSOL gained these features for it ([Porting a native program](language-native.md); every other program compiles
 to the same C as before):
 
 - `loadBorsh<T>` / `storeBorsh`: a Borsh account without a discriminator, read into a local struct and written back

@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "bin": {
-    "typesol": "dist/cli.js"
+    "typesol": "dist/bin.js"
   },
   "types": "./lib/typesol.d.ts",
   "exports": {

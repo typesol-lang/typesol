@@ -26,7 +26,8 @@ export function accountLimit(model: Pick<ProgramModel, "constants">): number {
   const c = model.constants.get("MAX_ACCOUNTS");
   return c && typeof c.value === "bigint" && c.value >= 32n && c.value <= 255n ? Number(c.value) : MAX_ACCOUNTS;
 }
-export const MAX_SEEDS = 15; // + bump = 16, the runtime limit
+/** Solana's limit on the seeds of one address, the bump included (MAX_SEEDS of solana-pubkey; each seed at most 32 bytes). */
+export const MAX_SEEDS = 16;
 /** Max instruction data an invoke() may build, and max event payload. */
 export const MAX_CPI_DATA = 1024;
 export const MAX_EVENT = 1024;
@@ -488,3 +489,13 @@ export function vecCount(v: NonNullable<Ref["vec"]>): string {
   if (v.big !== undefined && !v.slice) return `((uint64_t)${v.len} < ${v.big} ? (uint64_t)${v.len} : ${v.big})`;
   return v.cap === undefined || v.heap ? `((uint64_t)${v.len})` : `((uint64_t)(${v.len} < ${v.cap} ? ${v.len} : ${v.cap}))`;
 }
+
+/** An f64 used where an integer is expected (an assignment, an argument, a return, an index, a cast). */
+export const F64_TO_INT = (to: string): string =>
+  `an f64 is not an integer, so it is not converted to ${to}: it is held as its IEEE 754 bits, and the integer would be those bits; to use the bits, write f64Bits(x)`;
+/** An f64 in a template string or log(). */
+export const F64_TEXT =
+  "an f64 cannot be written as text: there is no float formatting, and the digits would be its IEEE 754 bits read as an integer; to show the bits, write f64Bits(x)";
+/** An integer used where an f64 is expected. */
+export const INT_TO_F64 = (from: string): string =>
+  `a ${from} is not an f64, so it is not converted: an f64 is made from its IEEE 754 bits with f64FromBits(bits)`;

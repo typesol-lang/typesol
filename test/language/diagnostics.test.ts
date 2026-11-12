@@ -94,7 +94,17 @@ describe("subset enforcement", () => {
       /only allowed as a local declaration|get/,
     ],
     ["oversized local arrays", `export function f(): void { const xs = fixedArray<u64, 300>(0n); }`, /N must be a literal 1\.\.256/],
-    ["zero-capacity strings", `export interface S { name: FixedString<0>; }\nexport function f(): void {}`, /capacity 1\.\.1024/],
+    [
+      "zero-capacity strings",
+      `export interface S { name: FixedString<0>; }\nexport function f(): void {}`,
+      /^FixedString<N> needs a literal capacity 1\.\.10240$/,
+    ],
+    [
+      "over-capacity strings",
+      `export interface S { name: FixedString<10241>; }\nexport function f(): void {}`,
+      /^FixedString<N> needs a literal capacity 1\.\.10240$/,
+    ],
+    ["a string capacity of 10240 (accepted)", `export interface S { name: FixedString<10240>; }\nexport function f(): void {}`, /^$/],
     ["structs that contain themselves", `export interface Node { next: Node; }\nexport function f(): void {}`, /contains itself/],
     ["variable strings in account data", `export interface S { name: string; }\nexport function f(a: Mut<S>): void {}`, /cannot be account data/],
     [
@@ -317,6 +327,66 @@ describe("subset enforcement", () => {
       /compute the signed hash here/,
     ],
     [
+      "a merkleVerify result thrown away",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { merkleVerify(leaf, proof, root); }`,
+      /the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write require\(merkleVerify\(…\), error\)/,
+    ],
+    [
+      "a verifyEd25519 result thrown away",
+      `import { type InstructionsSysvar, verifyEd25519 } from "typesol";\nexport function f(ixs: InstructionsSysvar, who: Pubkey): void { (verifyEd25519(ixs, who, "hello")); }`,
+      /the result of verifyEd25519 is discarded.*write require\(verifyEd25519\(…\), error\)/,
+    ],
+    [
+      "a verifySecp256k1 result thrown away",
+      `import { type Hash, verifySecp256k1, keccak256 } from "typesol";\nexport function f(who: Pubkey, r: Hash, s: Hash, e: Hash): void { verifySecp256k1(keccak256(who), 0n, r, s, e); }`,
+      /the result of verifySecp256k1 is discarded.*returns whether the signature holds/,
+    ],
+    [
+      "a merkleVerify result deciding an empty if",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { if (merkleVerify(leaf, proof, root)) {} }`,
+      /the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: .*write require\(merkleVerify\(…\), error\)/,
+    ],
+    [
+      "a verifyEd25519 result deciding an empty if, negated",
+      `import { type InstructionsSysvar, verifyEd25519 } from "typesol";\nexport function f(ixs: InstructionsSysvar, who: Pubkey): void { if (!verifyEd25519(ixs, who, "hello")) {} }`,
+      /the result of verifyEd25519 is not acted on: the if around it has an empty body/,
+    ],
+    [
+      "a merkleVerify result in a const never read",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { const ok = merkleVerify(leaf, proof, root); }`,
+      /the result of merkleVerify is never read \(ok is not used\), so nothing is checked: .*write require\(merkleVerify\(…\), error\)/,
+    ],
+    [
+      "a verifySecp256k1 result assigned to a let never read",
+      `import { type Hash, verifySecp256k1, keccak256 } from "typesol";\nexport function f(who: Pubkey, r: Hash, s: Hash, e: Hash): void { let ok = false; ok = verifySecp256k1(keccak256(who), 0n, r, s, e); }`,
+      /the result of verifySecp256k1 is never read \(ok is not used\)/,
+    ],
+    [
+      "a merkleVerify result a closure assigns to a local its function reads",
+      `import { type Hash, merkleVerify } from "typesol";\nexport enum E { Bad = "bad" }\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { let ok = false; const run = (): void => { ok = merkleVerify(leaf, proof, root); }; run(); require(ok, E.Bad); }`,
+      /^$/,
+    ],
+    [
+      "a merkleVerify result a closure assigns to a local nothing reads",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { let ok = false; const run = (): void => { ok = merkleVerify(leaf, proof, root); }; run(); }`,
+      /the result of merkleVerify is never read \(ok is not used\)/,
+    ],
+    [
+      "a merkleVerify result under as in a const never read",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { const ok = (merkleVerify(leaf, proof, root) as boolean); }`,
+      /the result of merkleVerify is never read \(ok is not used\)/,
+    ],
+    [
+      "a merkleVerify result deciding an if and an else both empty",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { if (merkleVerify(leaf, proof, root)) {} else {} }`,
+      /the result of merkleVerify is not acted on: the if around it has an empty body/,
+    ],
+    [
+      "a merkleVerify result deciding an if with an empty body and an else that acts",
+      `import { type Hash, merkleVerify } from "typesol";\nexport enum E { Bad = "bad" }\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { if (merkleVerify(leaf, proof, root)) {} else { require(false, E.Bad); } }`,
+      /^$/,
+    ],
+    [
       "a helper that may replace a struct while a reference into it is still used",
       `export interface P { x: u64; }\nexport interface H { p: P; v: u64; }\nfunction reset(h: Mut<H>): void { h.p = { x: 7n }; }\nexport function f(h: Mut<H>): void { const o = h.p; reset(h); h.v = o.x; }`,
       /"o" still refers to data in h, and reset\(\) may replace it/,
@@ -375,7 +445,18 @@ describe("subset enforcement", () => {
     [
       "a u256 shift amount",
       `import { u256 as U256 } from "typesol";\nexport function f(a: u64): u64 { const s = U256(1n); return a << s; }`,
-      /shift by a u64 \(or smaller\) amount/,
+      /^a shift amount is a u128 or smaller integer: convert it \(u64\(n\)\)$/,
+    ],
+    [
+      "a u128 shift amount (accepted)",
+      `import { type u128 } from "typesol";\nexport interface W { w: u128 }\nexport function f(a: u64, x: Account<W>): u64 { return a << x.w; }`,
+      /^$/,
+    ],
+    ["a function in parentheses", `export function f(): u64 { const g = ((): u64 => 1n); return g(); }`, /a function cannot be used here: bind it with const/],
+    [
+      "a function expression in parentheses",
+      `export function f(): u64 { const g = (function (): u64 { return 1n; }); return g(); }`,
+      /a function cannot be used here: bind it with const/,
     ],
     [
       "a u256 exponent",
@@ -457,7 +538,55 @@ describe("hints for newcomers", () => {
       `export function f(b: Mut<Box>, by: u64): void { b.value = Math.max(b.value, by); }`,
       /hint: Math works on numbers; use min\(a, b\) and max\(a, b\)/,
     ],
-    ["console.log", `export function f(b: Mut<Box>): void { console.log("x"); }`, /Cannot find name 'console'[\s\S]*hint: a program writes logs with log/],
+    // TypeScript's "Cannot find name 'console'. Do you need to change your target library? …" is replaced.
+    [
+      "console.log",
+      `export function f(b: Mut<Box>): void { console.log("x"); }`,
+      /^'console' does not exist in a Solana program\nhint: a program writes logs with log\("…"\) from "typesol"$/,
+    ],
+    [
+      "process.exit",
+      `export function f(b: Mut<Box>): void { process.exit(1); }`,
+      /^'process' does not exist in a Solana program\nhint: a program has no process: stop with require/,
+    ],
+    [
+      "Date.now() into a field",
+      `export function f(b: Mut<Box>): void { b.value = Date.now(); }`,
+      /hint: the time on chain is the cluster's clock: now\(\) from "typesol"/,
+    ],
+    [
+      "Math.floor(Date.now() / 1000)",
+      `export function f(b: Mut<Box>): void { const t = Math.floor(Date.now() / 1000); b.value = 1n; }`,
+      /^unsupported call: Math\.floor\(Date\.now\(\) …\); use now\(\) from "typesol", the cluster's clock in Unix seconds \(an i64\)$/,
+    ],
+    [
+      "Math.floor",
+      `export function f(b: Mut<Box>, x: u64): void { b.value = Math.floor(3); }`,
+      /hint: Math works on numbers|unsupported call: Math\.floor; use integer division/,
+    ],
+    [
+      "a cast imported with type",
+      `export function f(b: Mut<Box>): void { b.value = u64(1n); }`,
+      /imported using 'import type'\.\nhint: u64 is a type and a function: import it without "type" to call it \(import \{ u64 \} from "typesol"/,
+    ],
+    [
+      "Signer without its import",
+      `export function f(s: Signer, b: Mut<Box>): void { b.value = 1n; }`,
+      /Cannot find name 'Signer'\.\nhint: import \{ type Signer \} from "typesol"/,
+      (h) => h.replace("type Signer, ", ""),
+    ],
+    [
+      "Mut without its import",
+      `export function g(b: Mut<Box>): void { b.value = 1n; }`,
+      /Cannot find name 'Mut'\.\nhint: import \{ type Mut \} from "typesol"/,
+      (h) => h.replace("type Mut, ", ""),
+    ],
+    [
+      "a number field",
+      `export interface N { n: number; }\nexport function f(a: Mut<N>): void {}`,
+      /field type must be an integer[^\n]*\nhint: integers are bigint types from "typesol": u64 for amounts and counts/,
+    ],
+    ["a Date field", `export interface N { at: Date; }\nexport function f(a: Mut<N>): void {}`, /\nhint: store a time as an i64 of Unix seconds; now\(\)/],
     [
       "require without its import",
       `export function f(b: Mut<Box>): void { require(b.value > 0n, "zero"); }`,
@@ -465,6 +594,11 @@ describe("hints for newcomers", () => {
       bare,
     ],
     ["async", `export async function f(b: Mut<Box>): void { b.value = 1n; }`, /hint: async is not supported/],
+    [
+      "async returning a Promise",
+      `export async function f(b: Mut<Box>): Promise<void> { b.value = 1n; }`,
+      /^instructions cannot be async or generators\nhint: async and generators are not supported: an instruction runs start to finish within one call/,
+    ],
     [
       "writing a read-only account",
       `export function f(b: Account<Box>): void { b.value = 1n; }`,
@@ -517,4 +651,25 @@ describe("codegen is stable", () => {
     if (process.env.UPDATE_GOLDEN) writeFileSync(golden, c);
     expect(c).toBe(readFileSync(golden, "utf8"));
   });
+});
+
+describe("a proof or signature check whose result decides something compiles", () => {
+  // What is caught is a result used as a statement, in an if with an empty body and no else, or kept in a local the
+  // function never reads; a wrapper helper whose boolean is dropped is not.
+  const uses = [
+    "require(merkleVerify(leaf, proof, root), 1n);",
+    "const ok = merkleVerify(leaf, proof, root); require(ok, 1n);",
+    "let ok = false; ok = merkleVerify(leaf, proof, root); b.value = ok ? 1n : 0n;",
+    "if (merkleVerify(leaf, proof, root)) { b.value = 1n; }",
+    "if (merkleVerify(leaf, proof, root)) {} else { b.value = 1n; }",
+  ];
+  for (const stmts of uses)
+    it(stmts, () => {
+      expect(
+        errorsFor(
+          `import { type Hash, merkleVerify } from "typesol";\nexport function f(b: Mut<Box>, leaf: Hash, proof: Vec<Hash>, root: Hash): void { ${stmts} }`,
+          "verifier",
+        ),
+      ).toEqual([]);
+    });
 });

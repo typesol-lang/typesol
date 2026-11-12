@@ -24,7 +24,8 @@ it("counts", async () => {
 ## Instructions
 
 `t.pda(...seeds)` derives this program's PDA for the seeds; `t.pdaWithBump(...seeds)` gives `[address, bump]`, for an
-instruction that takes the bump as an argument.
+instruction that takes the bump as an argument (prefer a stored bump:
+[PDAs](language-pdas.md#checking-a-pda-in-the-body)).
 
 `t.ix(name, args, accounts, remaining?)` builds one instruction.
 
@@ -39,6 +40,26 @@ instruction that takes the bump as an argument.
 
 `t.send(payer, ...ixs)` sends them in one transaction; keypairs given as accounts sign too.
 
+### Seeds of other widths
+
+`t.pda` takes text, addresses or keypairs, raw bytes, and bigints, which it encodes as 8-byte little-endian u64s, as
+the program encodes a `u64` seed. A seed of another width is passed as its bytes: for a program that derives
+`["vault", owner.key, index]` with `index: u16`,
+
+```ts
+const u16 = (n: number) => {
+  const b = new Uint8Array(2);
+  new DataView(b.buffer).setUint16(0, n, true); // little-endian, as the program reads a u16 seed
+  return b;
+};
+const vault = await t.pda("vault", alice, u16(3));
+t.ok(await t.send(alice, t.ix("open", { index: 3 }, { owner: alice, vault })));
+```
+
+`t.pda("vault", alice, 3n)` would be another address (8 bytes for the index). `setUint32` gives a `u32` seed the same
+way. A string that is a valid address is taken as an address; pass `new TextEncoder().encode(s)` for text that only
+looks like one.
+
 ## Results
 
 | Helper | Gives |
@@ -51,6 +72,22 @@ instruction that takes the bump as an argument.
 | `t.errorName(code)` | the name of an error code: your program's, TypeSOL's or Anchor's |
 | `t.connection` | `{ rpc, rpcSubscriptions }` answered by this LiteSVM, for the generated client: `counter.sendInstructions(t.connection, alice, [ix])`, `counter.accounts.Counter.fetch(t.connection.rpc, address)`, views, `resolve`, `watch` and `watchEvents` (as on a cluster: `watch` yields when a later transaction changes the account, not at once; `watchEvents` gets transactions sent after it subscribed, failed ones included in the stream and skipped by the client) |
 
+### Expecting an error
+
+A test that a check holds sends the transaction that breaks it and compares the code. The program here is the vault
+of [seeds of other widths](#seeds-of-other-widths), whose `spend` requires `amount <= 10n` and whose only error enum is
+`export enum VaultError { TooMuch = "Amount above the limit" }`, so `TooMuch` is 6000 (in the guide's
+[`spend`](language-accounts.md#constraints), `NotOwner` comes first and `TooMuch` is 6001):
+
+```ts
+const res = await t.send(alice, t.ix("spend", { amount: 50n }, { owner: alice, vault }));
+expect(t.errorCode(res)).toBe(6000);
+expect(t.errorName(t.errorCode(res))).toBe("TooMuch");
+```
+
+`t.errorCode` throws when the transaction succeeded or failed without a custom code (a runtime error such as missing
+signatures), so the test fails then too.
+
 ## Tokens and time
 
 | Helper | Does |
@@ -59,6 +96,20 @@ instruction that takes the bump as an argument.
 | `t.tokenAccount({ mint, owner, amount?, tokenProgram?, address? })` | writes a token account holding `amount`; pass `address` for an associated token account |
 | `t.tokenBalance(address)` | the amount a token account holds, or `null` when it does not exist |
 | `t.warp({ unixTimestamp?, slot?, seconds? })` | moves the Clock: to a timestamp or slot, or forward by `seconds` |
+
+## Accounts from a cluster
+
+To test against accounts that exist on mainnet (a mint, an oracle, another program), list them in `typesol.json` as
+`"clone": ["<address>", …]` and run `typesol clone --url mainnet-beta` once (or `typesol clone <address>…`). They are
+written to `tests/accounts/`, which `testProgram` loads into its LiteSVM before your first test; commit the directory so
+the tests run offline. `loadClonedAccounts(svm, dir)` does the same for a LiteSVM of your own.
+
+`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
+program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
+program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
+transactions named, plus any you `track(...)`.
+
+The module needs `litesvm` and `@anchor-lang/core`, which `typesol init` adds to `devDependencies`.
 
 ## Epochs and staking
 
@@ -106,17 +157,3 @@ expect(cluster.activation(stake).effective).toBe(90n * SOL);
   (`newRateActivationEpoch` 0, as the Stake program has it); `null` gives the original 25%.
 - **Rent.** In LiteSVM 1.6.1 the Stake program holds back the Rent sysvar's minimum for 200 bytes
   (`svm.minimumBalanceForRentExemption(200n)`), which is less than the `rentExemptReserve` its Initialize stores.
-
-## Accounts from a cluster
-
-To test against accounts that exist on mainnet (a mint, an oracle, another program), list them in `typesol.json` as
-`"clone": ["<address>", …]` and run `typesol clone --url mainnet-beta` once (or `typesol clone <address>…`). They are
-written to `tests/accounts/`, which `testProgram` loads into its LiteSVM before your first test; commit the directory so
-the tests run offline. `loadClonedAccounts(svm, dir)` does the same for a LiteSVM of your own.
-
-`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
-program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
-program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
-transactions named, plus any you `track(...)`.
-
-The module needs `litesvm` and `@anchor-lang/core`, which `typesol init` adds to `devDependencies`.

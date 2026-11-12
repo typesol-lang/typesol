@@ -13,7 +13,18 @@ const SITE = "https://typesol.com/docs";
 
 /** The docs an agent reads, in order: [file, slug on typesol.com, what it holds]. */
 const DOCS: [string, string, string][] = [
-  ["docs/language.md", "language", "every type, check and built-in of the language"],
+  ["docs/language.md", "language", "the language guide: an overview, its pages and where each construct is described"],
+  ["docs/language-basics.md", "language-basics", "what a program is: instructions, account data, helpers, constants, files"],
+  ["docs/language-types.md", "language-types", "integers, strings, enums, structs, options and lists, with their bytes and limits"],
+  ["docs/language-statements.md", "language-statements", "which TypeScript is TypeSOL, functions and closures, and what is refused"],
+  ["docs/language-accounts.md", "language-accounts", "account parameters, the checks they emit, constraints and account layouts"],
+  ["docs/language-pdas.md", "language-pdas", "seeds, bumps, signing as a PDA, PDAs in the IDL"],
+  ["docs/language-errors-events.md", "language-errors-events", "require, error codes, logs, events and return values"],
+  ["docs/language-cpi.md", "language-cpi", "calling other programs: System, tokens, Metaplex, Stake, invoke, transfer hooks"],
+  ["docs/language-chain.md", "language-chain", "sysvars, hashes, signatures, introspection, oracles and randomness"],
+  ["docs/language-native.md", "language-native", "advanced: porting native programs (raw views, Borsh accounts, panics)"],
+  ["docs/language-builtins.md", "language-builtins", "every name typesol exports, one line each"],
+  ["docs/glossary.md", "glossary", "the Solana and TypeSOL terms the guide uses, one paragraph each"],
   ["docs/errors.md", "errors", "the error codes a program fails with"],
   ["docs/test-your-program.md", "test-your-program", "tests with typesol/testing in LiteSVM"],
   ["docs/cli.md", "cli", "the typesol commands"],

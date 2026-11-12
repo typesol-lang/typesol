@@ -5,11 +5,13 @@ TypeSOL generates programs that hold funds. Treat it accordingly.
 ## Status
 
 - The compiler, runtime and tooling have been through internal security reviews by the maintainers. The latest, of
-  0.43.0 on 2026-11-11, found defects in the compiler (one of them can break an authorization check in a helper) and
-  in the tooling; they are fixed in 0.44.0. **Rebuild and redeploy programs built with 0.43.0 or
-  earlier once it is out**; [docs/security-model.md](docs/security-model.md#review-of-0430-2026-11-11) says how to tell
-  whether a program was exposed, and [docs/audit.md](docs/audit.md#earlier-reviews) what that review did and did not
-  cover. Every release is covered by execution tests, differential tests against Anchor, and randomized tests.
+  0.44.0 on 2026-11-11, found defects in the compiler (wrong token-wrapper instruction data, and a reference that could
+  outlive a resize and reach another record) and a latent one in the runtime; they are fixed in 0.44.1. The one
+  before it, of 0.43.0, found defects fixed in 0.44.0 (one of them could break an authorization check in a helper).
+  **Rebuild and redeploy programs built before 0.44.1**;
+  [docs/security-model.md](docs/security-model.md#status) gives the status, its sections on each review say how to
+  tell whether a program was exposed, and [docs/audit.md](docs/audit.md#earlier-reviews) what each review did and did
+  not cover. Every release is covered by execution tests, differential tests against Anchor, and randomized tests.
   **TypeSOL has not been audited by an independent firm.** Do not put significant value behind programs built with it
   until an external audit of the compiler and runtime is published, and audit your own programs as you would any
   Solana program.
@@ -20,6 +22,8 @@ TypeSOL generates programs that hold funds. Treat it accordingly.
   sha256), packed from a clean export of the release tag; `node scripts/release-check.ts <version> --verify --registry`
   compares it with the registry.
 - Only the latest 0.x release receives security fixes, as fix releases (below).
+- What a compiled program can rely on is specified in [docs/security-model.md](docs/security-model.md); the package
+  for an external audit is [docs/audit.md](docs/audit.md).
 
 ## Fix releases
 
@@ -36,8 +40,6 @@ release (0.44.0 → 0.44.1), so a team can take the fix without taking new featu
 Fixes go to the latest minor only; older minors are not maintained. A fix that needs a language or layout change
 comes in the next minor. 0.44.0 itself is a minor release: besides the fixes from the 0.43.0 review it has behaviour
 changes (new compile errors, `deploy` refusing to run without a cluster).
-- What a compiled program can rely on is specified in [docs/security-model.md](docs/security-model.md); the package
-  for an external audit is [docs/audit.md](docs/audit.md).
 
 ## Reporting a vulnerability
 

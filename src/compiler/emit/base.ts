@@ -573,7 +573,12 @@ export abstract class EmitterBase {
   protected abstract accountChoice(node: ts.ConditionalExpression): Value;
   protected abstract instructionsParam(node: ts.Expression): AccountParam | undefined;
   protected abstract isTxIx(node: ts.Expression): boolean;
-  protected abstract seeds(node: ts.Expression, extra: number, bound?: boolean): { name: string; count: number; idl: IdlSeed[] | undefined };
+  protected abstract seeds(
+    node: ts.Expression,
+    extra: number,
+    bound?: boolean,
+    withBump?: boolean,
+  ): { name: string; count: number; idl: IdlSeed[] | undefined };
   protected abstract recordPda(account: AccountParam, idl: IdlSeed[] | undefined): void;
   protected abstract create(node: ts.CallExpression, target: AccountParam, topLevel: boolean, ifNeeded?: boolean): Value;
   protected abstract createAta(node: ts.CallExpression, target: AccountParam, topLevel: boolean): Value | undefined;

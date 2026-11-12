@@ -67,6 +67,42 @@ export function book(payer: Signer, book: Seeds<AccountInfo, ["book", "@side"]>,
     expect(t.ix("book", { side: { ask: {} } }, { payer }).accounts![1].address).toBe(await t.pda("book", Uint8Array.of(1)));
   });
 
+  // docs/test-your-program.md, "Seeds of other widths" and "Expecting an error": the snippets there are these lines.
+  it("derives a PDA with a u16 seed, and asserts an error code", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-testing-"));
+    const file = path.join(dir, "vault.ts");
+    writeFileSync(
+      file,
+      `import { type Init, type Mut, type Seeds, type Signer, type SystemProgram, type u16, type u64, type u8, require } from "typesol";
+export enum VaultError { TooMuch = "Amount above the limit" }
+export interface Vault { index: u16; bump: u8; }
+export function open(owner: Mut<Signer>, vault: Init<Vault>, systemProgram: SystemProgram, index: u16): void {
+  vault.bump = vault.create(owner, ["vault", owner.key, index]);
+  vault.index = index;
+}
+export function spend(owner: Signer, vault: Seeds<Mut<Vault>, ["vault", "@owner", "@vault.index"], "bump">, amount: u64): void {
+  require(amount <= 10n, VaultError.TooMuch);
+}
+`,
+    );
+    const d = await deployFile(file);
+    const t = programHarness(d.svm, d.programId, d.idl as never);
+    const alice = await t.wallet();
+    const u16 = (n: number) => {
+      const b = new Uint8Array(2);
+      new DataView(b.buffer).setUint16(0, n, true); // little-endian, as the program reads a u16 seed
+      return b;
+    };
+    const vault = await t.pda("vault", alice, u16(3));
+    t.ok(await t.send(alice, t.ix("open", { index: 3 }, { owner: alice, vault })));
+    t.ok(await t.send(alice, t.ix("spend", { amount: 5n }, { owner: alice, vault })));
+    const res = await t.send(alice, t.ix("spend", { amount: 50n }, { owner: alice, vault }));
+    expect(t.errorCode(res)).toBe(6000);
+    expect(t.errorName(t.errorCode(res))).toBe("TooMuch");
+    // A bare bigint seed is 8 bytes: another address.
+    expect(await t.pda("vault", alice, 3n)).not.toBe(vault);
+  });
+
   it("converts data-enum variants with fields like structs", async () => {
     const d = await deployFile(fileURLToPath(new URL("../fixtures/enumstr.ts", import.meta.url)));
     const t = programHarness(d.svm, d.programId, d.idl as never);

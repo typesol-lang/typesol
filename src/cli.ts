@@ -32,6 +32,7 @@ import { formatProfile, profileLogs } from "./tools/profile.js";
 import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
 import {
   addProgram,
+  AGENT_FILES,
   buildWorkspace,
   CONFIG,
   deployArgs,
@@ -59,9 +60,14 @@ import {
   clusterUrl,
   deployPreflight,
   doctorChecks,
+  doctorSummary,
   formatChecks,
-  INSTALL_AGAVE,
+  isSignerUri,
+  keypairFile,
+  requirePayer,
+  requireSolanaCli,
   rpcHost,
+  solanaNotFound,
   solanaConfig as readSolanaConfig,
   toolchainCheck,
 } from "./tools/doctor.js";
@@ -135,15 +141,16 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   init: {
-    usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow]",
+    usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow] [--no-agent-files]",
     help: [
       "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore, .vscode/settings.json (editor errors), AGENTS.md / CLAUDE.md / .cursor/rules (the rules for AI coding agents) and .mcp.json / .cursor/mcp.json (the TypeSOL MCP server).",
       "Refuses to overwrite files. <name> must be snake_case (default: derived from <dir>).",
       "--template counter   a PDA counter per user (default)",
       "--template vault     a SOL vault at a PDA: deposit, withdraw above rent, close",
       "--template escrow    an SPL token escrow: make, take, refund, with the offer PDA signing for its vault",
+      "--no-agent-files     leave out the files for AI coding agents (AGENTS.md, CLAUDE.md, .cursor/, .mcp.json)",
     ].join("\n  "),
-    options: { name: { type: "string" }, template: { type: "string" } },
+    options: { name: { type: "string" }, template: { type: "string" }, "no-agent-files": { type: "boolean" } },
     run(v, args) {
       if (args.length > 1) throw new UsageError("init takes at most one directory");
       if (v.name !== undefined && !/^[a-z][a-z0-9_]*$/.test(v.name as string))
@@ -159,19 +166,27 @@ const COMMANDS: Record<string, Command> = {
         .toLowerCase();
       const name = (v.name as string | undefined) ?? (/^[a-z]/.test(derived) ? derived : `p_${derived || "program"}`);
       const rel = path.relative(process.cwd(), root) || ".";
-      for (const f of scaffold(root, name, template as TemplateName)) log(`  created ${path.join(rel, f)}`);
+      const agentFiles = !v["no-agent-files"];
+      for (const f of scaffold(root, name, template as TemplateName, { agentFiles })) log(`  created ${path.join(rel, f)}`);
+      if (agentFiles) log(`  (${AGENT_FILES.join(", ")}: rules and the TypeSOL MCP server for AI coding agents; --no-agent-files leaves them out)`);
       const tools = toolchainCheck();
-      if (!tools.ok)
+      if (!tools.ok) {
+        // With install commands: what is missing, then the commands. Without (TYPESOL_SBF_SDK names a directory that is
+        // not an SDK): the reason alone, which says what to fix.
+        const missing = tools.fix?.length ? tools.detail.replace(/ \(.*$/, "") : tools.detail;
         log(
-          `\n  ! The Solana platform-tools are not installed yet; npm test compiles with them. Install once:\n` +
-            (tools.fix ?? []).map((f) => `      ${f}`).join("\n"),
+          `\n  ! ${missing[0]!.toUpperCase()}${missing.slice(1)}; npm test compiles with the platform-tools.` +
+            (tools.fix?.length ? ` Install once:\n${tools.fix.map((f) => `      ${f}`).join("\n")}` : ""),
         );
+      }
+      // No comment after a command: an interactive zsh would pass it to the command (it reads no comments by default).
       log(
         `\n  next:\n` +
           (rel === "." ? "" : `    cd ${shellQuote(rel)}\n`) +
           `    npm install\n` +
-          `    npm test             # builds ${name} and runs its test in LiteSVM, a Solana runtime in-process\n` +
-          `    npx --no-install typesol doctor   # checks the toolchain, keypair and RPC before a deploy` +
+          `    npm test\n` +
+          `    npx --no-install typesol doctor\n\n` +
+          `  npm test builds ${name} and runs its test in LiteSVM, a Solana runtime in-process; doctor checks the toolchain, keypair and RPC before a deploy.` +
           (template === "counter" ? `\n\n  other starters: typesol init <dir> --template vault (SOL at a PDA) or --template escrow (SPL token escrow)` : ""),
       );
       return 0;
@@ -340,7 +355,7 @@ const COMMANDS: Record<string, Command> = {
     async run(v) {
       if (v.config !== undefined) solanaConfig(v.config as string); // a --config that does not exist is a usage error, as elsewhere
       const checks = await doctorChecks({ cwd: process.cwd(), url: v.url as string | undefined, config: v.config as string | undefined });
-      log(formatChecks(checks));
+      log(`${formatChecks(checks)}\n\n  ${doctorSummary(checks)}`);
       return checks.some((c) => !c.ok && !c.optional) ? 1 : 0;
     },
   },
@@ -371,10 +386,19 @@ const COMMANDS: Record<string, Command> = {
         throw new Error(
           "no cluster: pass --url (devnet, mainnet-beta, localhost or an RPC URL), or set json_rpc_url in the Solana CLI config (`solana config set --url devnet`)",
         );
+      const payer = (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json");
+      if (url && !v["dry-run"]) {
+        // Before the build: the Solana CLI that sends it, then a payer keypair file (with the command that creates one).
+        requireSolanaCli();
+        requirePayer(
+          clusterUrl(url),
+          payer,
+          v.keypair !== undefined ? { from: "flag" } : cfg.keypair !== undefined ? { from: "config", config: cfg.file } : { from: "default" },
+        );
+      }
       const built = buildWorkspace(ws, names(ws, args), { sbpf: sbpfOf(v), needKeypair: true });
       if (url && !v["dry-run"]) {
         // Before any transaction: the RPC answers and the payer can afford it, with what to do if not.
-        const payer = (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json");
         await deployPreflight({
           url: clusterUrl(url),
           payer,
@@ -392,7 +416,7 @@ const COMMANDS: Record<string, Command> = {
         try {
           execFileSync("solana", cliArgs, { stdio: "inherit" });
         } catch (e) {
-          if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`\`solana\` was not found on PATH. Install the Agave CLI: ${INSTALL_AGAVE}`);
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Error(solanaNotFound());
           throw new Error(`solana program deploy failed for ${b.paths.name} (see its output above)`);
         }
       }
@@ -947,7 +971,9 @@ function readJson(file: string): unknown {
 }
 
 /** The address of a payer keypair file, for the line printed before a deploy (or why there is none). */
-function payerAddress(file: string): string {
+function payerAddress(payer: string): string {
+  if (isSignerUri(payer)) return `${payer} (a signer the Solana CLI resolves)`;
+  const file = keypairFile(payer);
   if (!existsSync(file)) return `none at ${file} (the Solana CLI will refuse)`;
   try {
     return base58(readKeypair(file).subarray(32));
@@ -957,10 +983,10 @@ function payerAddress(file: string): string {
 }
 
 /** json_rpc_url / keypair_path from a Solana CLI config (the given file, or the CLI's default one). */
-function solanaConfig(file?: string): { url?: string; keypair?: string } {
+function solanaConfig(file?: string): { url?: string; keypair?: string; file: string } {
   const cfg = readSolanaConfig(file);
   if (file && !cfg.exists) throw new UsageError(`${file} does not exist`);
-  return { url: cfg.url, keypair: cfg.keypair };
+  return { url: cfg.url, keypair: cfg.keypair, file: cfg.file };
 }
 
 export async function main(argv: string[]): Promise<number> {

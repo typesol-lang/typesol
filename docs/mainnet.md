@@ -2,10 +2,15 @@
 
 From an empty directory to a program on Solana mainnet-beta: create, test, deploy, publish the IDL, then check that
 the deployed binary is the one your source builds. The program here is the counter that `typesol init` creates
-(11,400 bytes, 11.1 KiB, built with TypeSOL 0.43.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
+(11,400 bytes, 11.1 KiB, built with TypeSOL 0.45.0 and platform-tools clang 20.1.7 for SBPF v0; other versions differ
 slightly); any TypeSOL project works the same way.
 
-You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's Quick start).
+**Before you deploy anything that holds value.** TypeSOL has had internal security reviews by its maintainers, not an
+independent audit ([status](security-model.md#status)). Do not put significant value behind a program built with it
+until an external audit of the compiler and runtime is published, and audit your own program as you would any Solana
+program.
+
+You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the README's [Quick start](../README.md#quick-start)).
 
 **The toolchain you deploy with.** The binary is what the platform-tools' clang makes of the generated C, so the
 toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
@@ -147,8 +152,12 @@ npx --no-install typesol verify my_app
 
 `verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
 the cluster in your Solana CLI config, and compares the bytes. `match` means anyone with your source and the same
-TypeSOL version and toolchain gets exactly the program on chain (from 0.45.0 on, on any of the hosts measured: macOS arm64, Linux arm64, Linux x86_64; with 0.44.1 or earlier, a
+TypeSOL version and toolchain gets exactly the program on chain (from 0.45.0 on, on any of the hosts measured: macOS arm64, Linux arm64 with the platform-tools `linux-aarch64` package as in [troubleshooting.md](troubleshooting.md#linux-arm64-the-agave-installer-fails-with-a-404), Linux x86_64; with 0.44.1 or earlier, a
 program with 128-bit or signed division also needs the same kind of host). It also prints the upgrade authority and checks the IDL you published in step 5.
+
+A match says only that the deployed bytes are what this source and this compiler build. It does not say that the
+program, or the compiler, is correct, and it does not hold after the next upgrade: whoever holds the upgrade authority
+it prints can replace the program at any time.
 
 ### Verifying someone else's program
 
@@ -182,6 +191,12 @@ registry: the evidence is the command and its output, which anyone can rerun.
 
 ## Later
 
+- **Upgrade it.** `typesol deploy` again replaces the code at the same address; the accounts keep their bytes. If an
+  account struct changed, existing accounts do not match it. Only the size is checked (at least the struct's): a field
+  added fails with 3003 on an account exactly the old size. On one created with spare space or grown since, it passes
+  with no error: an appended field reads the spare bytes (zero unless written), and an inserted one makes the fields
+  after it read other fields' bytes. A field removed from the middle, or moved, also reads other fields' bytes without
+  an error. Migrate the accounts ([migrating an account](language-accounts.md#migrating-an-account)).
 - **Freeze it.** `solana program set-upgrade-authority <program id> --final` makes the program immutable. It cannot
   be undone.
 - **Close it.** `solana program close <program id> --bypass-warning` returns the rent to the authority. The program

@@ -14,10 +14,15 @@
  * ~ flips the bits within the type's width.
  */
 
+/** Unsigned 8-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u8 = bigint;
+/** Unsigned 16-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u16 = bigint;
+/** Unsigned 32-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u32 = bigint;
+/** Unsigned 64-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u64 = bigint;
+/** Unsigned 128-bit integer (a `bigint` to TypeScript); literals are written `1n`. */
 export type u128 = bigint;
 /**
  * 256-bit unsigned integers for computation (sqrt-price and liquidity math): locals, helper parameters and results,
@@ -25,10 +30,15 @@ export type u128 = bigint;
  * (the IDL has no 256-bit integer).
  */
 export type u256 = bigint;
+/** Signed 8-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i8 = bigint;
+/** Signed 16-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i16 = bigint;
+/** Signed 32-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i32 = bigint;
+/** Signed 64-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i64 = bigint;
+/** Signed 128-bit integer, two's complement (a `bigint` to TypeScript). */
 export type i128 = bigint;
 
 /** A 32-byte Solana address. Compare with `===`, `!==` or `.equals()`. */
@@ -103,7 +113,8 @@ export declare function byteLength(value: string): u64;
 export type Option<T> = T | null;
 
 /**
- * A growable list. As an account struct field it is stored Borsh-style (u32 length + elements) and the account is
+ * A list whose length varies: as account data the account grows with it; as an argument it is a read-only view.
+ * As an account struct field it is stored Borsh-style (u32 length + elements) and the account is
  * resized as it grows. An account may have any number of them, declared anywhere: they are stored after the
  * fixed-size fields, in the order declared. In a `@layout borsh` struct it is Anchor's `Vec<T>`: anywhere among the
  * fields, held on the heap while the instruction runs, and bounded only by the account when it is written back
@@ -246,6 +257,7 @@ export interface RemainingAccounts extends Iterable<CpiAccount> {
 export interface RemainingSlice extends Iterable<CpiAccount> {
   readonly __remainingSlice: void;
 }
+/** The accounts passed after the declared ones, in order (see RemainingAccounts). */
 export declare function remainingAccounts(): RemainingAccounts;
 
 /**
@@ -275,6 +287,7 @@ export declare function sysvarAt<S extends StakeHistorySysvar>(account: Remainin
  * `.lamports`), and passes to a helper that takes `Account<T>` / `Mut<T>`.
  */
 export declare function loadAccount<T>(account: RemainingAccount | AccountInfo): Account<T>;
+/** `loadAccount` for writing: also writable, and loaded mutably once per instruction (2040). */
 export declare function loadAccountMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
 /**
  * A native (non-Anchor) program's own account as a fixed-layout struct, as a `#[repr(C)]` type's `load_checked` /
@@ -283,6 +296,7 @@ export declare function loadAccountMut<T>(account: RemainingAccount | AccountInf
  * mutably twice in the instruction (2040). Bind it with const: `const amm = loadRawMut<AmmInfo>(ammInfo)`.
  */
 export declare function loadRaw<T>(account: RemainingAccount | AccountInfo): Account<T>;
+/** `loadRaw` for writing: also writable and loaded mutably once per instruction (2040). */
 export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): Mut<T>;
 /**
  * `loadRaw` / `loadRawMut` at a byte offset known only at run time (a native account whose parts start where its header
@@ -293,6 +307,7 @@ export declare function loadRawMut<T>(account: RemainingAccount | AccountInfo): 
  * it may view, since its bounds were checked against the old length: take it again after (a compile error says so).
  */
 export declare function loadRawAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Account<T>;
+/** `loadRawAt` for writing: writable and claimed as `loadRawMut` is. */
 export declare function loadRawMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64): Mut<T>;
 /**
  * `capacity` elements of a fixed-size type packed in place from a run-time byte offset, the count known only at run
@@ -312,8 +327,9 @@ export interface ReadonlyRawArray<T> extends ListMethods<T> {
   get(index: bigint): Readonly<T>;
   [Symbol.iterator](): Iterator<Readonly<T>>;
 }
-/** `const slab = rawArrayMutAt<Order>(acct, offset, capacity)`: see RawArray. */
+/** A read-only view of `capacity` elements of `T` at `offset` in an account (see RawArray); `rawArrayMutAt` writes. */
 export declare function rawArrayAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): ReadonlyRawArray<T>;
+/** `rawArrayAt` for writing: elements set in place (see RawArray). */
 export declare function rawArrayMutAt<T>(account: RemainingAccount | AccountInfo, offset: u64, capacity: u64): RawArray<T>;
 
 /** A node of a RedBlackTree: its key (read-only), its value (in place) and its index in the tree's node array (1-based). */
@@ -397,6 +413,7 @@ export declare function rbTreeAt<K, V>(
   capacity: u64,
   compare?: (a: K, b: K) => bigint,
 ): ReadonlyRedBlackTree<K, V>;
+/** `rbTreeAt` for writing: insert, remove and initialize with lib-sokoban's own writes (see RedBlackTree). */
 export declare function rbTreeMutAt<K, V>(
   account: RemainingAccount | AccountInfo,
   offset: u64,
@@ -432,7 +449,8 @@ export declare function sha256(...parts: (string | Pubkey | Hash | bigint | bool
 export declare function keccak256(...parts: (string | Pubkey | Hash | bigint | boolean)[]): Hash;
 
 /**
- * Verify a Merkle proof (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools use).
+ * Whether `proof` places `leaf` under `root` (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools
+ * use). It does not fail by itself: write `require(merkleVerify(…), error)`; a call whose result is unused is refused.
  * `proof` must be a `Vec<Hash>` instruction argument. Leaves and inner nodes hash alike: build the leaf in the program
  * as OpenZeppelin does, `keccak256(keccak256(data))`, never take it from the arguments (an inner node would pass).
  */
@@ -477,15 +495,17 @@ export interface TransactionInstruction {
 export declare function stackHeight(): u64;
 
 /**
- * True when this transaction contains an Ed25519 precompile instruction that verified `message`
- * signed by `signer` (offsets inside the precompile's own data). The client adds that instruction;
+ * Whether this transaction contains an Ed25519 precompile instruction that verified `message`
+ * signed by `signer` (offsets inside the precompile's own data). It does not fail by itself: write
+ * `require(verifyEd25519(…), error)`; a call whose result is unused is refused. The client adds that instruction;
  * the runtime rejects the transaction if the signature is wrong.
  */
 export declare function verifyEd25519(instructions: InstructionsSysvar, signer: Pubkey, message: string | Hash | Pubkey): boolean;
 
 /**
- * Recover the secp256k1 signer of `hash` from (r, s, recoveryId) and compare it with an Ethereum
- * address given left-padded to 32 bytes (12 zero bytes + 20 address bytes). High-s signatures are refused.
+ * Whether the secp256k1 signer of `hash`, recovered from (r, s, recoveryId), is an Ethereum address given
+ * left-padded to 32 bytes (12 zero bytes + 20 address bytes). High-s signatures are refused. It does not fail by
+ * itself: write `require(verifySecp256k1(…), error)`; a call whose result is unused is refused.
  * `hash` must be computed in the program — `keccak256(...)` of the message or `ethMessageHash(message)` — because
  * a signature can be made up for an arbitrary hash; the compiler rejects anything else.
  */
@@ -844,12 +864,12 @@ export interface TokenMetadataProgram extends AccountMeta {
 }
 /** The Metaplex master edition address of a mint (PDA ["metadata", program, mint, "edition"]). */
 export declare function masterEditionAddress(mint: Pubkey): Pubkey;
-/** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
 /**
  * An integer seed with its bytes most significant first (Rust's `x.to_be_bytes()`), inside a seeds list:
  * `["tick_array", pool.key, bigEndian(startIndex)]`. In `Seeds<…>` write `"@startIndex:be"`.
  */
 export declare function bigEndian(value: bigint): Seed;
+/** The canonical program address of `seeds` under `program` (Rust `Pubkey::find_program_address(seeds, program).0`). */
 export declare function findProgramAddress(seeds: Seed[], program: Pubkey): Pubkey;
 /**
  * `Pubkey::create_program_address(seeds, program)`: the address of these seeds with the bump given as the last seed,
@@ -912,9 +932,11 @@ export declare function updateExtraAccountMetas(
   systemProgram: SystemProgram,
   extraAccounts?: ExtraAccountMeta[],
 ): void;
+/** One extra account of a transfer hook's ExtraAccountMetaList: a fixed address, or a PDA from seeds (see initExtraAccountMetas). */
 export type ExtraAccountMeta =
   | { address: Pubkey; isSigner?: boolean; isWritable?: boolean }
   | { seeds: (string | ExtraAccountSeed)[]; program?: bigint; isSigner?: boolean; isWritable?: boolean };
+/** A seed of an extra account resolved by Token-2022 at transfer time (seedAccountKey, seedAccountData, seedInstructionData). */
 export interface ExtraAccountSeed {
   readonly __extraSeed: void;
 }
@@ -948,7 +970,8 @@ export declare function pubkey(base58: string): Pubkey;
 export type Address<A, Base58 extends string, E = never> = A & { readonly __address?: [Base58, E] };
 
 /**
- * Token constraints, checked before your code runs:
+ * `Ata<A, "owner", "mint">`: the account must be the associated token account of those parameters (2009).
+ * It is one of the token constraints, checked before your code runs:
  *  - `HasOne<TokenAccount, "mint" | "owner">`: the token account's mint / owner is the key of the parameter with that name (2014 / 2015).
  *  - `HasOne<Mint, "mintAuthority" | "freezeAuthority">`: the mint's authority is that parameter's key (2016 / 2017).
  *  - `Ata<TokenAccount, "owner", "mint">`: the account is the associated token account of those parameters (2009).
@@ -999,8 +1022,8 @@ export declare function closeRaw(account: RemainingAccount | Mut<AccountInfo>, r
 export declare function assignOwner(account: RemainingAccount | Mut<AccountInfo>, owner: Pubkey): void;
 
 /**
- * Token-2022 extensions of a mint (any account works; legacy SPL Token mints have none).
- * transferFee: the fee withheld when `amount` is sent now (TransferFeeConfig for the current epoch; 0 without it).
+ * The fee withheld when `amount` is sent now: the mint's Token-2022 TransferFeeConfig for the current epoch, 0 without
+ * it. Like the other extension readers it takes any account (legacy SPL Token mints have no extensions).
  */
 export declare function transferFee(mint: AccountMeta | RemainingAccount, amount: u64): u64;
 /**
@@ -1036,8 +1059,9 @@ export declare function hasExtension(account: AccountMeta | RemainingAccount, ex
 
 /** Rent-exempt minimum balance for an account of `space` bytes. */
 export declare function rentExempt(space: u64): u64;
-/** SPL Token account and mint sizes, for systemProgram.createAccount. */
+/** SPL Token's token account size, 165 bytes, for systemProgram.createAccount. */
 export declare const TOKEN_ACCOUNT_SIZE: u64;
+/** SPL Token's mint size, 82 bytes. */
 export declare const MINT_SIZE: u64;
 
 /** The account must have signed the transaction. Wrap in `Mut<Signer>` to spend its lamports. */
@@ -1058,11 +1082,11 @@ export interface AccountInfo extends AccountMeta {
   readonly executable: boolean;
 }
 
-/** A program-owned account holding struct `T`. Owner and discriminator are checked. */
+/** An account owned by this program holding struct `T`. Owner, size and discriminator are checked. */
 export type Account<T> = Readonly<T> & AccountMeta;
 
 /**
- * Like `Account<T>` but writable. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. A second
+ * A writable account: `Mut<T>` is `Account<T>` whose fields may be written. Also usable as `Mut<Signer>`, `Mut<AccountInfo>`, `Mut<TokenAccount>`. A second
  * argument fails with one of your errors when the account is not writable (Anchor's `mut @ ErrorCode.X`; else 2000).
  */
 export type Mut<T, E = never> = T & AccountMeta;
@@ -1092,6 +1116,7 @@ export type Seed = string | Pubkey | Hash | bigint | number;
 export interface SignerSeeds {
   readonly __signer_seeds: void;
 }
+/** Name one PDA signature's seeds (with the bump) for CPIs and helpers: `const vault = signer(["vault", owner.key, bump])`. */
 export declare function signer(seeds: Seed[]): SignerSeeds;
 
 /**
@@ -1155,7 +1180,8 @@ export type InitIfNeeded<T> = T extends TokenAccount
         };
 
 /**
- * Declarative constraints, checked before your code runs (like Anchor's account attributes):
+ * `HasOne<A, "field">`: the struct's `field` must be the key of the parameter with that name (Anchor's `has_one`; 2001).
+ * It is one of the declarative constraints, checked before your code runs (like Anchor's account attributes):
  *  - `HasOne<Mut<Vault>, "owner">`: vault.owner must be the key of the parameter named `owner` (union for several).
  *  - `Seeds<Mut<Vault>, ["vault", "@owner"], "bump">`: the account must be the PDA of these seeds; "@name" is an
  *    account parameter (its key) or an argument (its bytes), "@acct.field" a Pubkey, integer or unit enum field of a struct
@@ -1210,6 +1236,11 @@ export interface Migrate<From, To> extends AccountMeta {
   readonly to: To;
   migrate(payer: Mut<Signer>, value: To): void;
 }
+/**
+ * The account is this program's PDA for the seeds (Anchor's `seeds = […], bump`; 2006): `"@name"` is an account's key or
+ * an argument's bytes, `"@acct.field"` a field, other strings literals. `Bump` names a stored bump field, `ProgramId`
+ * another program to derive under.
+ */
 export type Seeds<A, Names extends readonly string[], Bump extends string = never, ProgramId extends string = never> = A & {
   readonly __seeds?: [Names, Bump, ProgramId];
   /** The PDA's bump (Anchor `ctx.bumps.<account>`): the stored bump field when one is named, else the canonical bump found. */
@@ -1284,6 +1315,7 @@ export type CorePlugin = (
   | { kind: "FreezeExecute"; frozen: boolean }
   | { kind: "PermanentFreezeExecute"; frozen: boolean }
 ) & { authority?: CorePluginAuthority };
+/** The name of a Metaplex Core plugin, as `removePlugin` and the plugin readers take it. */
 export type CorePluginKind = CorePlugin["kind"] | "Groups";
 /** When a Core lifecycle event reaches an external plugin, and what the plugin may do about it. */
 export interface CoreLifecycleCheck {
@@ -1869,15 +1901,19 @@ export interface CompressedLeaf {
   index: u32;
 }
 
-/** The current slot and epoch (Clock sysvar). */
+/** The current slot (Clock sysvar). */
 export declare function currentSlot(): u64;
+/** The current epoch (Clock sysvar). */
 export declare function currentEpoch(): u64;
 /** The Unix time the current epoch started at (Clock.epoch_start_timestamp). */
 export declare function epochStartTimestamp(): i64;
-/** The EpochSchedule sysvar: slots per epoch (after warmup), whether epochs warm up, and where normal epochs start. */
+/** The number of slots in an epoch after warmup (EpochSchedule sysvar). */
 export declare function slotsPerEpoch(): u64;
+/** Whether epochs warm up (EpochSchedule sysvar). */
 export declare function epochWarmup(): boolean;
+/** The first epoch after warmup (EpochSchedule sysvar). */
 export declare function firstNormalEpoch(): u64;
+/** The first slot after warmup (EpochSchedule sysvar). */
 export declare function firstNormalSlot(): u64;
 /** The LastRestartSlot sysvar: the last slot the cluster restarted at (0 if never). */
 export declare function lastRestartSlot(): u64;
@@ -1903,9 +1939,10 @@ export interface EpochRewards {
  * needed). Native programs refuse stake operations while `epochRewards().active`.
  */
 export declare function epochRewards(): EpochRewards;
+/** Close the account into the parameter `Destination` when the instruction succeeds (Anchor's `close = destination`). */
 export type CloseTo<A, Destination extends string> = A & { readonly __closeTo?: Destination };
 
-/** A program-owned account that this instruction creates as a PDA. */
+/** An account this instruction creates: at a PDA of this program, or, with `null` seeds, a new keypair account that signs. */
 export type Init<T> = T extends TokenAccount
   ? T & {
       /**
@@ -2222,14 +2259,18 @@ export interface CpiAccount {
   readonly __cpi_account: void;
 }
 /**
- * An optional account (`A | null`) passed as it is, without `!`: left out of the CPI's list when it was not passed
+ * A read-only entry of `invoke`'s account list: an account, or remaining accounts spread (`...readonly(rest)`). An
+ * optional account (`A | null`) passed as it is, without `!`, is left out of the CPI's list when it was not passed
  * (Rust's `if let Some(a) = &self.a { accounts.push(a) }`, as for `with_remaining_accounts`).
  */
 export declare function readonly(account: AccountMeta | RemainingAccount | null): CpiAccount;
 export declare function readonly(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
+/** A writable account entry for `invoke` (the parameter must be `Mut<…>`); an optional account as for `readonly`. */
 export declare function writable(account: AccountMeta | RemainingAccount | null): CpiAccount;
 export declare function writable(accounts: RemainingAccounts | RemainingSlice): Iterable<CpiAccount>;
+/** A read-only signer entry for `invoke`: the account signed, or signerSeeds sign for it. */
 export declare function readonlySigner(account: AccountMeta | RemainingAccount): CpiAccount;
+/** A writable signer entry for `invoke`: the account signed, or signerSeeds sign for it. */
 export declare function writableSigner(account: AccountMeta | RemainingAccount): CpiAccount;
 
 /** Raw bytes for instruction data. */
@@ -2250,7 +2291,7 @@ export declare function hex(literal: string): Bytes;
 export type CpiData = bigint | boolean | Pubkey | Hash | string | null | Bytes | object | number;
 
 /**
- * Cross-program invocation. Pass `signerSeeds` (with the bump) to sign for a PDA of this program;
+ * Call any program (a cross-program invocation) with an account list and instruction data. Pass `signerSeeds` (with the bump) to sign for a PDA of this program;
  * that PDA can then be marked readonlySigner()/writableSigner().
  */
 export declare function invoke(
@@ -2481,7 +2522,7 @@ export interface InstructionBytes extends IndexedList<u8>, ListMethods<u8> {
   readPubkey(offset: u64): Pubkey;
 }
 
-/** Write a string, integer or pubkey to the program log. */
+/** Write a string, integer, Pubkey or Hash to the program log (a Pubkey or Hash as base58). */
 export declare function log(value: string | bigint | Pubkey | Hash): void;
 
 /**
@@ -2548,7 +2589,7 @@ export declare function i128(value: bigint): i128;
 export declare function mulDiv(a: u64, b: u64, c: u64): u64;
 /** ceil(a * b / c), like mulDiv. */
 export declare function mulDivCeil(a: u64, b: u64, c: u64): u64;
-/** floor(sqrt(x)) for unsigned integers up to u128. */
+/** floor(sqrt(x)) for unsigned integers (u8 … u256). */
 export declare function isqrt<T extends bigint>(x: T): T;
 
 /**
@@ -2557,9 +2598,13 @@ export declare function isqrt<T extends bigint>(x: T): T;
  * Marginfi's events report I80F48 amounts, and read the bits back with `f64Bits`.
  */
 export type f64 = bigint & { readonly __f64: unique symbol };
+/** An f64 from its IEEE 754 bits, computed with integers. */
 export declare function f64FromBits(bits: u64): f64;
+/** An f64's IEEE 754 bits. */
 export declare function f64Bits(value: f64): u64;
+/** The smaller of two integers of one type. */
 export declare function min<T extends bigint>(a: T, b: T): T;
+/** The larger of two integers of one type. */
 export declare function max<T extends bigint>(a: T, b: T): T;
 
 /**

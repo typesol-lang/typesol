@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import { CompileError, Reporter, type Diagnostic, markAliasUse } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
-import { hintForTypeScript, unsupportedSyntax } from "./hints.js";
+import { MAX_SEEDS } from "./emit/shared.js";
+import { ASYNC_HINT, fieldTypeHint, hintForTypeScript, messageForTypeScript, unsupportedSyntax } from "./hints.js";
 import {
   type OptionInner,
   optionKey,
@@ -336,7 +337,8 @@ function typecheck(entry: string, files?: SourceOverrides): { program: ts.Progra
     const diagnostics: Diagnostic[] = tsDiagnostics.map((d) => {
       const flat = ts.flattenDiagnosticMessageText(d.messageText, "\n");
       const hint = hintForTypeScript(d, flat, LIB_PATH);
-      const message = hint ? `${flat}\nhint: ${hint}` : flat;
+      const shown = messageForTypeScript(d, flat);
+      const message = hint ? `${shown}\nhint: ${hint}` : shown;
       const extra = hint ? { hint } : {};
       if (!d.file || d.start === undefined) return { file: entry, line: 1, column: 1, message, ...extra };
       const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
@@ -494,6 +496,57 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
           if (isError) {
             // String enum: program errors, codes 6000+ in declaration order (imported files first).
             const members = new Map<string, ErrorDef>();
+            // A doc comment belongs to the member that starts on a later line. `A = "a", /** @code 6200 */ B = "b"`
+            // leaves the tag on no member (TypeScript reads it as trailing A's comma), so B would silently take the
+            // next code: refuse it instead, and a tag in a comment that is not a doc comment, or in a doc comment that
+            // another one follows (only the last is read). In a doc comment, as TypeScript reads it, a tag is any
+            // `@code` after the start, whitespace or `*` (`/** The second. @code 6200 */` is one); in a // or /* … */
+            // comment, only one first on a line of the comment is reported, so prose (`// see the @code docs`) is not.
+            const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, file.text);
+            scanner.resetTokenState(stmt.members.pos);
+            const isDoc = (text: string) => text.startsWith("/**") && text !== "/**/";
+            const tagged = (text: string) =>
+              isDoc(text) ? /(?:^|[\s*])@code\b/.test(text) : /^\/[*/]\**\s*@code\b/.test(text) || /\n\s*\*?\s*@code\b/.test(text);
+            // A tag above the enum itself numbers no member: refused, not ignored.
+            for (const r of ts.getLeadingCommentRanges(file.text, stmt.pos) ?? []) {
+              const text = file.text.slice(r.pos, r.end);
+              if (r.kind === ts.SyntaxKind.MultiLineCommentTrivia && isDoc(text) && tagged(text)) {
+                const first = stmt.members[0] ? `, ${stmt.members[0].name.getText(file)}` : "";
+                reporter.fail(
+                  stmt.name,
+                  `this @code tag is not read: a tag above the enum numbers no member; put /** @code … */ above its first member${first}`,
+                );
+              }
+            }
+            for (let k = scanner.scan(); k !== ts.SyntaxKind.EndOfFileToken && scanner.getTokenStart() < stmt.end; k = scanner.scan()) {
+              if (k !== ts.SyntaxKind.MultiLineCommentTrivia && k !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
+              const text = scanner.getTokenText();
+              if (!tagged(text)) continue;
+              const at = scanner.getTokenStart();
+              const next = stmt.members.find((m) => m.getStart(file) > at);
+              const above = next ? `above ${next.name.getText(file)}` : "above the member it numbers";
+              const doc = k === ts.SyntaxKind.MultiLineCommentTrivia && isDoc(text);
+              if (!doc) {
+                reporter.fail(
+                  next ?? stmt,
+                  `this @code tag is not read: only a doc comment (/** … */) is, not a ${text.startsWith("//") ? "// comment" : "/* … */ comment"}; write /** @code … */ ${above}`,
+                );
+                continue;
+              }
+              const docs = next ? ts.getJSDocCommentsAndTags(next).filter((d) => ts.isJSDoc(d)) : [];
+              if (docs.some((d) => d.getStart(file) === at)) continue;
+              const lineStart = file.text.lastIndexOf("\n", at - 1) + 1;
+              reporter.fail(
+                next ?? stmt,
+                !next
+                  ? "this @code tag is not read: it follows the last member; put /** @code … */ on its own line above the member it numbers"
+                  : file.text.slice(lineStart, at).trim()
+                    ? `this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line ${above}`
+                    : docs.some((d) => d.getStart(file) > at)
+                      ? `this @code tag is not read: another doc comment follows it, and only the last one above ${next.name.getText(file)} is read; put the tag in that one`
+                      : `this @code tag is not read; put /** @code … */ on its own line ${above}`,
+              );
+            }
             for (const m of stmt.members) {
               if (!m.initializer || !ts.isStringLiteral(m.initializer)) reporter.fail(m, 'error enum members need a string message: Name = "message"');
               // Codes run on from the last one; `/** @code 6200 */` sets a member's (Anchor's `Variant = 200`), and the
@@ -1564,6 +1617,7 @@ function analyzeStructs(
     reporter.fail(
       node,
       "field type must be an integer, boolean, Pubkey, FixedArray<T, N>, FixedString<N>, FixedVec<T, N>, Vec<T>, string (events only) or another struct",
+      fieldTypeHint(node),
     );
   };
 
@@ -2036,8 +2090,8 @@ function analyzeHelper(
   groups: AccountGroups = new Map(),
 ): Helper {
   if (!fn.body) reporter.fail(fn, "helper functions need a body");
-  if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators");
-  if ((ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) reporter.fail(fn, "helper functions cannot be async");
+  if (fn.asteriskToken) reporter.fail(fn, "helper functions cannot be generators", ASYNC_HINT);
+  if ((ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) reporter.fail(fn, "helper functions cannot be async", ASYNC_HINT);
   if (!fn.type) reporter.fail(fn.name ?? fn, "helper functions need an explicit return type (void, an integer, boolean, Pubkey or a struct)");
   let returns: Helper["returns"] =
     fn.type.kind === ts.SyntaxKind.VoidKeyword
@@ -2303,7 +2357,7 @@ function analyzeInstruction(
   if (!fn.name || !fn.body) reporter.fail(fn, "instructions need a name and a body");
   if (fn.typeParameters?.length) reporter.fail(fn, "instructions cannot be generic");
   if (fn.asteriskToken || (ts.getModifiers(fn) ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword))
-    reporter.fail(fn, "instructions cannot be async or generators");
+    reporter.fail(fn, "instructions cannot be async or generators", ASYNC_HINT);
   let returns: Instruction["returns"];
   if (fn.type && fn.type.kind !== ts.SyntaxKind.VoidKeyword) {
     returns = fn.type.kind === ts.SyntaxKind.StringKeyword ? { kind: "string" } : resolveScalarType(fn.type, scope);
@@ -2695,6 +2749,10 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
     const program = args[3] ? lit(args[3])[0] : undefined;
     if (program && !program.startsWith("@") && !decodeAddress(program))
       reporter.fail(args[3], `Seeds program: "${program}" is neither "@param" nor a base58 address`);
+    // The same limits as a seed list in code: a stored bump ends the list, a canonical one the derivation adds.
+    if (bump !== undefined && names.length + 1 > MAX_SEEDS) reporter.fail(tuple, `at most ${MAX_SEEDS} seeds, the bump included (Solana's limit)`);
+    if (bump === undefined && names.length > MAX_SEEDS - 1)
+      reporter.fail(tuple, `at most ${MAX_SEEDS - 1} seeds: the bump the derivation adds makes ${MAX_SEEDS}, Solana's limit`);
     out.seeds = { names, bump, program };
   }
   if (!args[0]) reporter.fail(node, `${name}<…> wraps an account type`);

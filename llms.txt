@@ -8,7 +8,18 @@ The rules and the whole reference in one file: https://typesol.com/llms-full.txt
 
 ## Docs
 
-- [language](https://typesol.com/docs/language/): every type, check and built-in of the language
+- [language](https://typesol.com/docs/language/): the language guide: an overview, its pages and where each construct is described
+- [language-basics](https://typesol.com/docs/language-basics/): what a program is: instructions, account data, helpers, constants, files
+- [language-types](https://typesol.com/docs/language-types/): integers, strings, enums, structs, options and lists, with their bytes and limits
+- [language-statements](https://typesol.com/docs/language-statements/): which TypeScript is TypeSOL, functions and closures, and what is refused
+- [language-accounts](https://typesol.com/docs/language-accounts/): account parameters, the checks they emit, constraints and account layouts
+- [language-pdas](https://typesol.com/docs/language-pdas/): seeds, bumps, signing as a PDA, PDAs in the IDL
+- [language-errors-events](https://typesol.com/docs/language-errors-events/): require, error codes, logs, events and return values
+- [language-cpi](https://typesol.com/docs/language-cpi/): calling other programs: System, tokens, Metaplex, Stake, invoke, transfer hooks
+- [language-chain](https://typesol.com/docs/language-chain/): sysvars, hashes, signatures, introspection, oracles and randomness
+- [language-native](https://typesol.com/docs/language-native/): advanced: porting native programs (raw views, Borsh accounts, panics)
+- [language-builtins](https://typesol.com/docs/language-builtins/): every name typesol exports, one line each
+- [glossary](https://typesol.com/docs/glossary/): the Solana and TypeSOL terms the guide uses, one paragraph each
 - [errors](https://typesol.com/docs/errors/): the error codes a program fails with
 - [test-your-program](https://typesol.com/docs/test-your-program/): tests with typesol/testing in LiteSVM
 - [cli](https://typesol.com/docs/cli/): the typesol commands

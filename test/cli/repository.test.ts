@@ -25,6 +25,27 @@ describe("repository records", () => {
     expect(read("docs/audit.md")).not.toMatch(/macOS daily/);
   });
 
+  it("SECURITY.md, the README and docs/security-model.md name the latest review and its fix release, as docs/audit.md does", () => {
+    // docs/audit.md lists the reviews newest first: the first one's version, and the release its findings are fixed in.
+    const audit = read("docs/audit.md");
+    const earlier = audit.slice(audit.indexOf("## Earlier reviews"));
+    const reviewed = /^### (\d+\.\d+\.\d+) \(/m.exec(earlier)?.[1];
+    const fixed = /Defects found, fixed in (\d+\.\d+\.\d+)/.exec(earlier)?.[1];
+    expect(reviewed).toBeDefined();
+    expect(fixed).toBeDefined();
+    const flat = (f: string) => read(f).replace(/\s+/g, " ");
+    const security = flat("SECURITY.md");
+    expect(security).toContain(`The latest, of ${reviewed} on`);
+    const latest = security.slice(security.indexOf(`The latest, of ${reviewed} on`));
+    expect(latest.slice(0, latest.indexOf(". "))).toContain(`; they are fixed in ${fixed}`);
+    expect(security).toContain(`built before ${fixed}`);
+    const model = flat("docs/security-model.md");
+    expect(model.slice(model.indexOf("## Status"))).toContain(`the latest of ${reviewed} (above); its findings are fixed in ${fixed}.`);
+    const readme = flat("README.md");
+    expect(readme).toMatch(new RegExp(`The two latest, of \\d+\\.\\d+\\.\\d+ and ${reviewed!.replace(/\./g, "\\.")} in`));
+    expect(readme).toContain(`Programs built before ${fixed} should be rebuilt.`);
+  });
+
   it("the npm package ships the licence notices, and NOTICE names the ported code it holds", () => {
     const pkg = JSON.parse(read("package.json")) as { files: string[] };
     expect(pkg.files).toEqual(expect.arrayContaining(["LICENSE", "NOTICE", "test/programs/LICENSE-Apache-2.0.txt"]));

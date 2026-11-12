@@ -214,6 +214,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`TS_Str ${t} = ${v.c};`);
           this.line(`sol_log_((const char *)${t}.ptr, ${t}.len);`);
         } else {
+          this.refuseF64Text(args[0], v.type);
           let value = v.literal !== undefined ? this.expect(v, U64, args[0]) : v;
           // An Option TypeScript has narrowed to its value (after `x === null` was ruled out): log the value.
           if (value.type.kind === "option") {
@@ -343,6 +344,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           for (let j = 0; j < vals.length; j++) vals[j] = this.settle(vals[j], mark);
           vals.push(v);
         }
+        this.refuseF64(node, `${builtin}()`, ...vals);
         const typed = vals.find((v) => v.literal === undefined);
         if (typed?.type.kind === "int" && typed.type.name === "u256") {
           // u256: a 512-bit product in the runtime.
@@ -369,12 +371,15 @@ export abstract class CallEmitter extends ExpressionEmitter {
         // An f64 is its IEEE bits held as a u64: both are the same value, typed for the IDL and for TypeScript.
         if (args.length !== 1) this.fail(node, `${builtin}(x) takes one ${builtin === "f64Bits" ? "f64" : "u64"}`);
         const v = this.expr(args[0]);
-        const x = v.literal !== undefined ? this.literal(v.literal, U64, args[0]) : this.expect(v, U64, args[0]);
-        return { c: x.c, type: builtin === "f64Bits" ? U64 : { kind: "int", name: "u64", f64: true } };
+        const f64: Value["type"] = { kind: "int", name: "u64", f64: true };
+        const from = builtin === "f64Bits" ? f64 : U64;
+        const x = v.literal !== undefined && builtin === "f64FromBits" ? this.literal(v.literal, U64, args[0]) : this.expect(v, from, args[0]);
+        return { c: x.c, type: builtin === "f64Bits" ? U64 : f64 };
       }
       case "isqrt": {
         if (args.length !== 1) this.fail(node, "isqrt(x) takes one unsigned integer");
         const v = this.expr(args[0]);
+        this.refuseF64(node, "isqrt()", v);
         const x = v.literal !== undefined ? this.literal(v.literal, U64, args[0]) : v;
         if (x.type.kind !== "int" || INT_INFO[x.type.name].signed) this.fail(args[0], "isqrt needs an unsigned integer (u8 … u256)");
         if (x.type.name === "u256") return { c: `ts_isqrt_u256(${x.c})`, type: x.type };
@@ -388,6 +393,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const mark = this.lines.length;
         let b = this.expr(args[1], a.type.kind === "int" && a.literal === undefined ? a.type : undefined);
         a = this.settle(a, mark);
+        this.refuseF64(node, `${builtin}()`, a, b);
         if (a.literal !== undefined && b.literal !== undefined) {
           a = this.literal(a.literal, U64, args[0]);
           b = this.literal(b.literal, U64, args[1]);
@@ -654,7 +660,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         // Pubkey::create_program_address(seeds, program): the bump is the last seed; null when the seeds give a point
         // on the curve (Rust's Err(PubkeyError::InvalidSeeds)) or are too many / too long.
         if (args.length !== 2) this.fail(node, "createProgramAddress(seeds, program) takes the seeds (bump last) and the program's address");
-        const seeds = this.seeds(args[0]!, 0);
+        const seeds = this.seeds(args[0]!, 0, false, true);
         const program = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
         const t = this.tmp("cpa");
         this.model.options.set("pubkey", PUBKEY);
@@ -1047,12 +1053,19 @@ export abstract class CallEmitter extends ExpressionEmitter {
       "Math.min": "min(a, b)",
       "Math.max": "max(a, b)",
       "Date.now": "now() (the Clock's unix timestamp)",
+      "Math.floor": "integer division (a / b with bigints rounds toward zero)",
+      "Math.trunc": "integer division (a / b with bigints rounds toward zero)",
+      "Math.ceil": "integer division rounded up: (a + b - 1n) / b",
+      "Math.round": "integer division rounded: (a + b / 2n) / b",
       "JSON.stringify": "log(…) with the values",
       Number: "u64(x) or another integer cast",
       BigInt: "u64(x) or another integer cast",
       String: "a FixedString<N> field, or log(…)",
     };
-    const hint = hints[text];
+    // Math.floor(Date.now() / 1000): the time in seconds, which is what now() gives.
+    if (/^Math\.(floor|trunc|round|ceil)$/.test(text) && ts.isCallExpression(callee.parent) && /\bDate\.now\(/.test(callee.parent.getText()))
+      return `unsupported call: ${text}(Date.now() …); use now() from "typesol", the cluster's clock in Unix seconds (an i64)`;
+    const hint = Object.hasOwn(hints, text) ? hints[text] : undefined;
     if (hint) return `unsupported call: ${text}; use ${hint}`;
     if (ts.isPropertyAccessExpression(callee) && this.accountAt(callee.expression))
       return `unsupported call: the account ${callee.expression.getText()} has no method ${callee.name.text}`;
@@ -2874,7 +2887,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (ts.isCallExpression(n) && this.exportName(n.expression) === "signer") {
       if (n.arguments.length !== 1) this.fail(n, "signer([...seeds]) takes the seeds (with the bump) as an array; signer([]) signs for nothing");
       // Bound to a name or given to a helper: the list outlives this expression, so its seeds are copied now.
-      return this.seeds(n.arguments[0], 0, true);
+      return this.seeds(n.arguments[0], 0, true, true);
     }
     this.fail(n, "pass signer([...seeds with the bump]) or a SignerSeeds parameter");
   }

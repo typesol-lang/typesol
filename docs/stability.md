@@ -63,7 +63,9 @@ Meant to stay as they are; a change before 1.0 would be a breaking change listed
 
 From 0.45.0 on, the programs measured build to the same bytes on each host measured. Measured with this release's
 compiler and platform-tools v1.52 on macOS arm64 (the platform-tools `osx-aarch64` package, native), Linux arm64 and
-Linux x86_64 (the `linux-aarch64` and `linux-x86_64` packages, in containers; x86_64 is the `--docker` image): for
+Linux x86_64 (the `linux-aarch64` and `linux-x86_64` packages, in containers; x86_64 is the `--docker` image; Linux
+arm64 has no Agave CLI, so there the package is set up by hand with `TYPESOL_SBF_SDK`, as in
+[troubleshooting.md](troubleshooting.md#linux-arm64-the-agave-installer-fails-with-a-404)): for
 SBPF v0 (the default), the 76 programs of the sources (`scripts/release-manifest.ts`, every program under `examples/`
 and `showcase/`); for SBPF v1 and v2, the 14 programs of `test/golden/binaries.json` (counter, vault, escrow, multisig
 and the 10 below).

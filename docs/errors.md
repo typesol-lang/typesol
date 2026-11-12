@@ -52,9 +52,11 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 | 5115 | an optional account that was left out was used |
 | 6000+ | your error enums' members, in declaration order (imported files first), then one `RequireFailed<N>` error (code 6000 + N, after the highest code) per distinct `require(cond, "message")` string |
 
+A token account or mint parameter fails with 3012 for an empty system account (never created, or closed), 3007 for an account of another program, 3003 for a token program's account that is not an initialized token account (or mint) of its length.
+
 A member's string is its message (the IDL's `msg`); `X = ""` leaves the message out, as an Anchor variant without
 `#[msg]`. `/** @code 6200 */` before a member gives it that code, and the members after it continue from there (Anchor's
-`Variant = 200`); codes only go up. `require(cond, "message")` errors come after the highest code.
+`Variant = 200`); codes only go up. The tag goes on its own line above the member. `require(cond, "message")` errors come after the highest code.
 
 Any of Anchor's own codes can be raised directly: `require(cond, AnchorError.RequireKeysEqViolated)` fails with 2502,
 as `require_keys_eq!` does.
@@ -67,11 +69,13 @@ reported as it is (use one of your errors' codes, so clients can decode it); a z
 ## Which error a transaction gets
 
 A transaction can break several checks; it fails with the first. Within each account's constraints the checks run in
-the order Anchor's generated code runs them, so a transaction gets the same code under both:
+the order Anchor's generated code runs them, so a transaction that breaks one check gets the same code under both, and
+one that breaks several gets it too except in the cases listed after the steps:
 
-1. The account count (3005), then each account in parameter order: its type, signer (3010), `Mut` (2000), owner,
-   discriminator and size of a program account (3007 / 3012 / 3002 / 3003; a zero-copy one as Anchor's AccountLoader:
-   3007 / 3001 / 3002, then 3003), token account or mint, program address.
+1. The account count (3005), then each account in parameter order: its type, signer (3010), `Mut` (2000); for a
+   program account, initialized (3012 for an empty system account), owner (3007), size (3003, the discriminator's 8
+   bytes included), then discriminator (3002); a zero-copy one as Anchor's AccountLoader: 3007 / 3001 / 3002, then
+   3003; a token account or mint; a program address.
 2. Two writable parameters naming one account (2040).
 3. The instruction's arguments (102).
 4. Each account in parameter order, its constraints in Anchor's order: seeds (2006), associated token account (owner
@@ -81,9 +85,19 @@ the order Anchor's generated code runs them, so a transaction gets the same code
 Where TypeSOL's order differs, only a transaction that breaks two of these checks at once sees it:
 
 - Anchor decodes the arguments first, and checks `mut` with the constraints (after seeds and the associated token
-  account). TypeSOL keeps both earlier and later as above, which keeps binaries smaller.
+  account). TypeSOL decodes the arguments later, after every account's type (step 3), and checks `mut` earlier, with
+  the account's type (step 1), which keeps binaries smaller. An instruction with an [account
+  group](language-accounts.md#account-groups) decodes its arguments first, as Anchor does, then checks each account in
+  order, a group's constraints right after the group's accounts and the other constraints last.
 - Too few accounts fails with 3005 before any account is checked; Anchor fails on the first account it cannot find.
-- Accounts the instruction creates (`Init<…>`, `create(…)`) are created in the body, after every other check, where
-  Anchor creates them before checking the other accounts.
+- A program account's size is checked before its discriminator; Anchor's `Account::try_from` reads the discriminator
+  first (3001 when there are fewer than 8 bytes, 3002 when it differs) and then decodes the data (3003). So an account
+  of this program with another discriminator and fewer bytes than the struct fails with 3003 here and 3002 under
+  Anchor, and one with fewer than 8 bytes of data with 3003 here and 3001 under Anchor.
+- Accounts created by the statements a body starts with (`acct.create(…)`, `createIfNeeded(…)`, `createPda(…)`,
+  after its `constraint(…)` lines) are created after steps 1 to 3 and before the constraints of step 4, as Anchor
+  creates `init` accounts before checking the other accounts' constraints ([creating
+  accounts](language-accounts.md#creating-accounts)). A create written after other statements runs where it is, after
+  every check, and so do all creates in an instruction with an account group.
 - TypeSOL refuses any two writable parameters naming one account (2040) unless one is `Dup<…>`, where Anchor only compares program and token
   accounts: a signer passed as two writable parameters fails with 2040 here and later, or not at all, under Anchor.

@@ -25,6 +25,10 @@ import { cTokens, declaredNames, isGlobalName, parameterDecls, usedNames } from 
 /**
  * Statements: variables, assignment, control flow and return.
  */
+/** A proof or signature check whose result decides nothing: `how` says why (discarded, never read, an empty if). */
+const VERIFIER_UNUSED = (checker: string, how: string) =>
+  `the result of ${checker} ${how}, so nothing is checked: it returns whether the ${checker === "merkleVerify" ? "proof" : "signature"} holds; write require(${checker}(…), error)`;
+
 export abstract class StatementEmitter extends CpiEmitter {
   protected statement(stmt: ts.Statement, topLevel = false): void {
     const outer = this.where;
@@ -45,6 +49,11 @@ export abstract class StatementEmitter extends CpiEmitter {
     if (ts.isVariableStatement(stmt)) return this.variable(stmt.declarationList, topLevel);
     if (ts.isExpressionStatement(stmt)) return this.expressionStatement(stmt.expression, topLevel);
     if (ts.isIfStatement(stmt)) {
+      // `if (merkleVerify(…)) {}` (or `{} else {}`): the result decides nothing.
+      const checker = this.verifierCall(stmt.expression, true);
+      const empty = (s: ts.Statement) => ts.isEmptyStatement(s) || (ts.isBlock(s) && s.statements.length === 0);
+      if (checker && (!stmt.elseStatement || empty(stmt.elseStatement)) && empty(stmt.thenStatement))
+        this.fail(stmt, `${VERIFIER_UNUSED(checker, "is not acted on: the if around it has an empty body")}`);
       const cond = this.expect(this.expr(stmt.expression, BOOL), BOOL, stmt.expression);
       this.line(`if (${cond.c}) {`);
       this.block(() => this.body(stmt.thenStatement));
@@ -176,6 +185,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     const subject = this.expr(stmt.expression);
     const typed = subject.literal !== undefined ? this.literal(subject.literal, U64, stmt.expression) : subject;
+    this.refuseF64(stmt.expression, "switch", typed);
     if (typed.type.kind !== "int" && typed.type.kind !== "enum") this.fail(stmt.expression, "switch works on integers and enums");
     // C cannot switch on 128-bit values or u256 limbs: pick the case's index with comparisons, then switch on that.
     const limbs = typed.type.kind === "int" && typed.type.name === "u256";
@@ -1381,6 +1391,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     const mutable = !(list.flags & ts.NodeFlags.Const);
     if (!(list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let))) this.fail(list, "use const or let, not var");
     for (const d of list.declarations) {
+      if (ts.isIdentifier(d.name) && d.initializer) this.refuseUnreadVerifier(d.name, d.initializer);
       if (ts.isObjectBindingPattern(d.name) && d.initializer) {
         this.destructure(list, d, d.name, d.initializer, topLevel);
         continue;
@@ -1773,10 +1784,50 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
   }
 
+  /** merkleVerify, verifyEd25519 or verifySecp256k1 when `e` (in parentheses, or under `!` if `negated`) calls one. */
+  protected verifierCall(e: ts.Expression, negated = false): string | undefined {
+    while (ts.isParenthesizedExpression(e) || (negated && ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken))
+      e = ts.isParenthesizedExpression(e) ? e.expression : (e as ts.PrefixUnaryExpression).operand;
+    if (!ts.isCallExpression(e)) return undefined;
+    const name = this.exportName(e.expression);
+    return name === "merkleVerify" || name === "verifyEd25519" || name === "verifySecp256k1" ? name : undefined;
+  }
+
+  /**
+   * `const ok = merkleVerify(…)` (or `ok = …`, the call in parentheses or under `as`) where the function that
+   * declares `ok` never reads it: nothing is checked. A read anywhere in that function counts, in a closure inside it
+   * and before the assignment too: this catches a result left unused, not every path.
+   */
+  protected refuseUnreadVerifier(name: ts.Identifier, value: ts.Expression): void {
+    while (ts.isParenthesizedExpression(value) || ts.isAsExpression(value)) value = value.expression;
+    const checker = this.verifierCall(value);
+    if (!checker) return;
+    const symbol = this.checker.getSymbolAtLocation(name);
+    let fn: ts.Node | undefined = symbol?.valueDeclaration;
+    while (fn && !ts.isFunctionLike(fn)) fn = fn.parent;
+    if (!symbol || !fn) return;
+    let read = false;
+    const visit = (n: ts.Node): void => {
+      if (read) return;
+      if (ts.isIdentifier(n) && n !== name && this.checker.getSymbolAtLocation(n) === symbol) {
+        const p = n.parent;
+        const written =
+          (ts.isVariableDeclaration(p) && p.name === n) || (ts.isBinaryExpression(p) && p.left === n && p.operatorToken.kind === ts.SyntaxKind.EqualsToken);
+        if (!written) read = true;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(fn);
+    if (!read) this.fail(value, VERIFIER_UNUSED(checker, `is never read (${name.text} is not used)`));
+  }
+
   protected expressionStatement(e: ts.Expression, topLevel: boolean) {
     if (ts.isBinaryExpression(e)) {
       const op = e.operatorToken.kind;
-      if (op === ts.SyntaxKind.EqualsToken) return this.assign(e.left, e.right, undefined, topLevel);
+      if (op === ts.SyntaxKind.EqualsToken) {
+        if (ts.isIdentifier(e.left)) this.refuseUnreadVerifier(e.left, e.right);
+        return this.assign(e.left, e.right, undefined, topLevel);
+      }
       const compound: Partial<Record<ts.SyntaxKind, ts.BinaryOperator>> = {
         [ts.SyntaxKind.PlusEqualsToken]: ts.SyntaxKind.PlusToken,
         [ts.SyntaxKind.MinusEqualsToken]: ts.SyntaxKind.MinusToken,
@@ -1812,12 +1863,16 @@ export abstract class StatementEmitter extends CpiEmitter {
       (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)
     ) {
       const place = this.place(e.operand);
+      this.refuseF64(e, e.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--", { c: place.read, type: place.type });
       if (place.type.kind !== "int") this.fail(e, "++ and -- need an integer");
       const one = this.literal(1n, place.type, e);
       const op = e.operator === ts.SyntaxKind.PlusPlusToken ? ts.SyntaxKind.PlusToken : ts.SyntaxKind.MinusToken;
       this.line(place.write(this.arith(op, { c: place.read, type: place.type }, one, e).c) + ";");
       return;
     }
+    // These return whether a proof or signature holds and fail nothing by themselves: a bare call checks nothing.
+    const checker = this.verifierCall(e);
+    if (checker) this.fail(e, VERIFIER_UNUSED(checker, "is discarded"));
     if (ts.isCallExpression(e)) {
       this.call(e, topLevel);
       return;
@@ -1875,8 +1930,14 @@ export abstract class StatementEmitter extends CpiEmitter {
         rhs = this.expr(valueNode);
         if (rhs.literal !== undefined) rhs = this.literal(rhs.literal, U64, valueNode);
         if (rhs.type.kind !== "int") this.fail(valueNode, "shift amounts must be integers");
-      } else rhs = this.expect(this.expr(valueNode, place.type), place.type, valueNode);
+      } else {
+        rhs = this.expr(valueNode, place.type);
+        // `n += x` with an f64 on either side is the operator on an f64, refused as such (not as a conversion).
+        this.refuseF64(target, `${ts.tokenToString(op)}=`, current, rhs);
+        rhs = this.expect(rhs, place.type, valueNode);
+      }
       current = this.settle(current, mark);
+      this.refuseF64(target, `${ts.tokenToString(op)}=`, current, rhs);
       this.line(place.write(this.arith(op, current, rhs, target).c) + ";");
       return;
     }

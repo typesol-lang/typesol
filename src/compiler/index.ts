@@ -4,7 +4,7 @@ import ts from "typescript";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { analyze, LIB_PATH } from "./analyze.js";
-import { hintForTypeScript } from "./hints.js";
+import { hintForTypeScript, messageForTypeScript } from "./hints.js";
 import { emitProgram, type EmitOptions } from "./emit/index.js";
 import { buildIdl } from "./idl.js";
 import { buildSharedObject, checkToolchain, shortClang, TESTED_TOOLCHAIN, type Sbpf } from "./toolchain.js";
@@ -18,6 +18,16 @@ export { SBPF_VERSIONS, TESTED_TOOLCHAIN, type Sbpf } from "./toolchain.js";
 /** The hint the CLI adds under a TypeScript error (what to write instead in a TypeSOL program), for the editor plugin. */
 export function typescriptHint(d: ts.Diagnostic): string | undefined {
   return hintForTypeScript(d, ts.flattenDiagnosticMessageText(d.messageText, "\n"), LIB_PATH);
+}
+
+/**
+ * The message the CLI shows in place of a TypeScript error's, where TypeScript's advice points the wrong way (add the
+ * dom library, install @types/node, for a global a program does not have); undefined to keep TypeScript's.
+ */
+export function typescriptMessage(d: ts.Diagnostic): string | undefined {
+  const flat = ts.flattenDiagnosticMessageText(d.messageText, "\n");
+  const shown = messageForTypeScript(d, flat);
+  return shown === flat ? undefined : shown;
 }
 
 export interface Generated {

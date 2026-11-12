@@ -30,10 +30,14 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
   /**
    * Lower a seeds array literal into a `SolSignerSeed[]` with `extra` spare slots. Also describes
    * the seeds in Anchor IDL terms when every element is a constant, an argument or an account path.
+   * `withBump`: the list ends with its bump (signer seeds, createProgramAddress), so it may hold MAX_SEEDS entries;
+   * otherwise the derivation adds the bump, and the list holds one fewer.
    */
-  protected seeds(node: ts.Expression, extra: number, bound = false): { name: string; count: number; idl: IdlSeed[] | undefined } {
+  protected seeds(node: ts.Expression, extra: number, bound = false, withBump = false): { name: string; count: number; idl: IdlSeed[] | undefined } {
     if (!ts.isArrayLiteralExpression(node)) this.fail(node, "seeds must be an array literal");
-    if (node.elements.length > MAX_SEEDS) this.fail(node, `at most ${MAX_SEEDS} seeds`);
+    if (withBump && node.elements.length > MAX_SEEDS) this.fail(node, `at most ${MAX_SEEDS} seeds, the bump included (Solana's limit)`);
+    if (!withBump && node.elements.length > MAX_SEEDS - 1)
+      this.fail(node, `at most ${MAX_SEEDS - 1} seeds: the bump the derivation adds makes ${MAX_SEEDS}, Solana's limit`);
     const parts: string[] = [];
     let idl: IdlSeed[] | undefined = [];
     // The array points at its seeds, which are read when the CPI runs. Seeds that are not constants are copied when
@@ -267,7 +271,7 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
       const l = this.lookup(node.text);
       if (l?.type.kind === "signerSeeds") return { name: l.c, count: `${l.c}__n` };
     }
-    return this.seeds(node, 0);
+    return this.seeds(node, 0, false, true);
   }
 
   /**

@@ -6,6 +6,231 @@ codes, and says so here.
 
 ## Unreleased
 
+A minor release: it adds a flag (`init --no-agent-files`) and an export of `typesol/compiler` (`typescriptMessage`),
+accepts what 0.45.0 refused (16 signer seeds, the bump included), and refuses programs 0.45.0 compiled to wrong code
+(an `f64` used with an operator, as an integer or as text; a proof or signature check whose result decides nothing; a
+`@code` tag that is not read; a `Seeds<…>` list over Solana's limit). The package's `bin` entry is now `dist/bin.js`,
+which checks the Node.js version first, and `deploy` stops before building when the payer keypair file is missing (a
+signer URI passes through to the Solana CLI). Programs that use none of these build to the same bytes: the repository's 76 programs build to the same binaries and
+IDLs with 0.45.0 and with this release, and the release manifest's check of test/golden/binaries.json passes.
+
+- Fixed: the README's toolchain block failed when pasted. The Agave installer adds its `bin` directory to `PATH` in
+  `~/.profile` only, so the next line gave `cargo-build-sbf: command not found`. The block now has the
+  `export PATH=…` line between the two commands, and says that the platform-tools install downloads about 0.5 GB and
+  prints nothing for a minute or two; docs/troubleshooting.md, CONTRIBUTING.md, `init` and `doctor` print the same
+  commands (test/cli/doctor.test.ts compares the README's block with them).
+- Fixed: the commands `init`, `doctor` and the build printed for a missing toolchain did not install it.
+  `cargo-build-sbf --version` downloads nothing, and `cargo-build-sbf --force-tools-install` alone needs Cargo and a
+  Cargo project. Every message now gives `cargo-build-sbf --install-only --force-tools-install --tools-version v1.52`
+  (from `TESTED_TOOLCHAIN`), and says which is missing: "the Agave CLI is not installed" (then the installer, the
+  `PATH` line and that command) or "the Agave CLI is installed, but not its platform-tools" (that command only). The
+  build's errors were "Solana SBF SDK not found …" and "platform-tools missing under … Run
+  `cargo-build-sbf --force-tools-install` once." Each command is printed on a line of its own, with nothing after
+  it: what a command does is a `#` line above it, written without a character a shell acts on (the commands had a
+  trailing `# …` comment, which an interactive zsh, which reads no comments by default as on macOS, passed on as
+  arguments: `zsh: number expected`, `export: not valid in this context`), and no sentence's period follows a command.
+  `TYPESOL_SBF_SDK` set to a directory that is not an SDK makes `init` say so, where it printed "Install once:" and
+  nothing after it (test/cli/doctor.test.ts, both cases; it pastes the printed blocks into an interactive zsh and bash,
+  and fish where installed, with the commands stubbed).
+- Fixed: on Linux arm64 the Agave installer fails with a 404 (Anza publishes no Agave CLI for it) and nothing said so;
+  `doctor` and `init` printed that installer. Building and LiteSVM tests work there with the platform-tools'
+  `linux-aarch64` package and the SDK's C files from the x86_64 release, pointed at with `TYPESOL_SBF_SDK` (checked
+  in a `linux/arm64` container: the three templates build and pass their tests). The README's Requirements give those
+  five commands (`$HOME` quoted in each), `doctor`, `init` and the build print them on Linux arm64 (an SDK there
+  without its platform-tools is "the SBF SDK at … has no platform-tools", not an installed Agave CLI), and the Solana
+  CLI row there says that deploying needs another host. The sentences that say builds are the same on Linux arm64 now say how that host was
+  set up (test/cli/doctor.test.ts).
+- Fixed: on Node.js older than 22.12 the CLI ran or crashed without saying why (on 20, `npm install` failed inside
+  npm or the tests with `Map.groupBy is not a function`; on 22.11, `init`, `check` and `build` ran although `doctor`
+  said 22.12 was needed). The `typesol` command is now `dist/bin.js`, which checks the version before it loads
+  anything else and exits 1 with one line naming the version needed, the one running and where to get one
+  (test/cli/node-version.test.ts; checked in `node:20-bookworm` and `node:22.11-bookworm` containers).
+- Fixed: `deploy` without a payer keypair printed that the Solana CLI would refuse, built, and went on until
+  `solana program deploy` failed. It now stops before building, exit 1: "no payer keypair at
+  ~/.config/solana/id.json: create one with `solana-keygen new` (or pass --keypair <file>), then fund it with
+  `solana airdrop 2 --url devnet`. Nothing was sent." A `--keypair` file that is not there gets "no keypair file at
+  ./payer.json (given with --keypair): check the path. Nothing was sent.", an empty one "--keypair is empty: give the
+  path of the payer's keypair file. Nothing was sent.", and a missing `keypair_path` of a Solana CLI config names that
+  config. Only a file is checked: a signer the Solana CLI resolves itself (`ASK`, `-`, and the schemes `usb:`,
+  `prompt:` and `stdin:`, as in `usb://ledger?key=0`, `prompt://`, `stdin://`) goes to `solana program deploy` as
+  before, without the balance check; a `file:` URI (`file:id.json`, `file:///abs/id.json`) is checked as the path it
+  names, and anything else is a path. `solana` missing from `PATH` is now said
+  first, also before building (it was said after the build) (test/cli/doctor.test.ts, with a fake `solana`).
+- Fixed: `doctor` ended with its rows only, so three `!` rows after a passing test looked like a problem. It now ends
+  with one line: "Ready to build and test. The ! rows: deploying still needs: keypair, RPC; …", "Ready to build, test
+  and deploy." or "Not ready to build or test: fix the ERR rows (…) first." (test/cli/doctor.test.ts).
+- New flag, `init --no-agent-files`: leaves out the files for AI coding agents (AGENTS.md, CLAUDE.md,
+  `.cursor/rules/typesol.mdc`, `.mcp.json`, `.cursor/mcp.json`), which `init` wrote with no way to opt out; without
+  it, `init` now names them after the files it created, and where one of them is already there (a repository with
+  its own AGENTS.md), its refusal says so: "refusing to overwrite: AGENTS.md (--no-agent-files leaves out the files
+  for AI coding agents)" (test/cli/ai.test.ts). `.vscode/settings.json` is written
+  either way: it makes the editor show TypeSOL's errors.
+- Hints, text only (test/language/diagnostics.test.ts):
+  - an `async` instruction returning `Promise<void>` got "instructions cannot be async or generators" with no hint,
+    though the README promised one; it now has one (helper functions too);
+  - `console` and other globals a program does not have (`process`, `Buffer`, `setTimeout`, `setInterval`, `fetch`,
+    `window`, `document`) led with TypeScript's "Cannot find name 'console'. Do you need to change your target
+    library? …"; the message is now "'console' does not exist in a Solana program", with the hint under it where
+    there is one (`window` and `document` have none). The editor shows the same message, hint or not, through
+    `typesol/ts-plugin` (the new export below);
+  - `Date.now()` where an integer is expected now points to `now()`, the cluster's clock, and
+    `Math.floor(Date.now() / 1000)` (which was "unsupported call: Math.floor") says to use `now()`;
+    `Math.floor`, `trunc`, `ceil` and `round` on their own point to integer division;
+  - calling a cast imported with `type` (`import { type u64 }`, as the templates import it, then `u64(x)`) got
+    TypeScript's "'u64' cannot be used as a value because it was imported using 'import type'" alone; the hint says
+    to import it without `type`. The templates keep `type`: the hint is where the error is;
+  - the missing-import hint covered the functions and constants `typesol` exports (`u64`, `require`, …); it now
+    covers its types and interfaces too (`import { type Signer } from "typesol"`, `Mut`, `SystemProgram`, …);
+  - a `number` field in account data got the list of allowed field types alone; it now has a hint naming the integer
+    types (and a `Date` field, one about Unix seconds and `now()`).
+- New export of `typesol/compiler`: `typescriptMessage(diagnostic)`, the message the CLI shows in place of a
+  TypeScript error's, or undefined to keep TypeScript's; `typesol/ts-plugin` uses it, so the editor shows what the CLI
+  shows (test/cli/ts-plugin.test.ts).
+- Fixed: operators on an `f64` compiled to integer operators on its IEEE 754 bits, a silently wrong result:
+  `a.x + a.x` was a checked u64 add of the bits, `a.x < a.y` compared them as integers. Every operator with an `f64`
+  operand is now refused (arithmetic, bitwise, shifts, unary `-` and `~`, ordering, compound assignments, `++` / `--`,
+  and `min`, `max`, `isqrt`, `mulDiv`): "+ on an f64 is not supported: an f64 is held as its IEEE 754 bits and there
+  is no float arithmetic (this would compute on the bits); compute in integers and make the result with
+  f64FromBits(bits), or take an f64's bits with f64Bits(x)". Equality (`===`, `!==`, `==`, `!=`, `switch`) is
+  refused too, since equal bits are not equal numbers (NaN, 0 and -0): "… to compare the bits, write f64Bits(a) ===
+  f64Bits(b)". `??` over an `Option<f64>` now gives an `f64` whatever the other side expects, so `(a.o ?? a.x) * 2n`,
+  `a.n < (a.o ?? a.x)`, `min(a.n, a.o ?? a.x)` and `a.n += a.o ?? a.x` are refused too (they computed on the bits).
+- Changed: an `f64` no longer converts to an integer, nor an integer to an `f64`. `a.n = a.x`, `const z: u64 = a.x`,
+  an `f64` passed to a helper's `u64` parameter or returned as a `u64`, `xs.get(a.x)`, `u64(a.x)`, `u8(a.x)`,
+  `u128(a.x)` and `a.x as u64` compiled and used the bits as the integer; `a.n as f64` made an integer's value the
+  bits. They are refused: "an f64 is not an integer, so it is not converted to u64: it is held as its IEEE 754 bits,
+  and the integer would be those bits; to use the bits, write f64Bits(x)" (and "a u64 is not an f64, so it is not
+  converted: an f64 is made from its IEEE 754 bits with f64FromBits(bits)"). An `f64` in a template string or `log`
+  printed its bits as a decimal integer; it is refused: "an f64 cannot be written as text: there is no float
+  formatting, and the digits would be its IEEE 754 bits read as an integer; to show the bits, write f64Bits(x)".
+  Copying an `f64` to an `f64` (fields, locals, structs, events, `Option<f64>`, ternaries, `??`, helper arguments and
+  returns typed `f64`) compiles as before, and so does an `f64` seed (its 8 bytes, as Rust's `to_le_bytes`). No
+  program of the repository used a conversion (test/language/f64-operators.test.ts; docs/language-types.md and the
+  refused-constructs table of docs/language-statements.md).
+- Changed, now accepted: signer seeds were limited to 14 seeds and the bump, one fewer than Solana allows: the limit of 15 entries,
+  meant for lists the derivation adds the bump to, was applied to signer seeds and `createProgramAddress` lists too,
+  which end with their bump. They now take 16 entries, 15 seeds and the bump (Solana's `MAX_SEEDS`, checked by
+  `invoke_signed` and `create_program_address`); a 17th is refused with "at most 16 seeds, the bump included
+  (Solana's limit)", and a 16th seed before a derived bump with "at most 15 seeds: the bump the derivation adds makes
+  16, Solana's limit" (was "at most 15 seeds" for both). test/language/signer-seed-limit.test.ts signs a CPI with
+  16 entries in LiteSVM (a seed list and a bound `signer([...])`) and derives with `createProgramAddress`.
+- Changed, now refused: a `Seeds<…>` constraint had no seed limit, so 16 or more names compiled and failed every call. It now
+  has the same limits and messages: with a bump field, "at most 16 seeds, the bump included (Solana's limit)"; with the
+  canonical bump, "at most 15 seeds: the bump the derivation adds makes 16, Solana's limit"
+  (test/language/signer-seed-limit.test.ts).
+- Fixed, messages only (test/language/diagnostics.test.ts):
+  - a `u256` shift amount got "shift by a u64 (or smaller) amount", while a `u128` amount compiles (its range check
+    runs on all 128 bits); the message is now "a shift amount is a u128 or smaller integer: convert it (u64(n))";
+  - a function in parentheses (`const g = (function (): u64 { … })`) got "function expressions are not supported:
+    declare a function at the top level", though function expressions compile; an arrow there got "this syntax
+    (ArrowFunction) is not supported". Both now get "a function cannot be used here: bind it with const …". The hint
+    for template strings ("template strings are not supported …") was never shown and is gone;
+  - the test of `FixedString<0>` matched "capacity 1..1024" as a prefix of the message; it now matches the whole
+    "FixedString<N> needs a literal capacity 1..10240", and covers 10241 (refused) and 10240 (accepted).
+- Fixed: a call to `merkleVerify`, `verifyEd25519` or `verifySecp256k1` used as a statement compiled and checked
+  nothing. The three return whether the proof or signature holds and fail nothing by themselves, so
+  `merkleVerify(leaf, proof, root);` emitted the hash computation and dropped its result. Such a call is now refused:
+  "the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write
+  require(merkleVerify(…), error)". Refused as well: such a call as the condition of an `if` with an empty body and no
+  `else` or an empty one ("the result of merkleVerify is not acted on: the if around it has an empty body, so nothing
+  is checked: …"), and its result (in parentheses or under `as` too) kept in a `const` or `let` (declared or assigned,
+  in a closure too) that the function declaring it never reads, a closure inside it included ("the result of
+  merkleVerify is never read (ok is not used), so nothing is checked: …"). What is caught is these three forms, not
+  every unused result: a helper that returns the result, called as a statement, still compiles. No program of the
+  repository called one these ways (test/language/diagnostics.test.ts; rows in the refused-constructs table of
+  docs/language-statements.md).
+- Fixed: a `@code` tag that TypeScript attaches to no member was ignored without a word, and the member took the next
+  code instead. Written after other code on its line (`A = "a", /** @code 6100 */ B = "b"`), it is now refused,
+  naming the member that follows: "this @code tag is not read: other code comes before it on its line; put /** @code …
+  */ on its own line above B" (after the last member: "it follows the last member"). Above the enum itself
+  (`/** @code 0 */` before `export enum PoolError {`), it is refused too: "this @code tag is not read: a tag above the
+  enum numbers no member; put /** @code … */ above its first member, AlreadyInUse". A tag on its own line, or first on
+  its member's line, is read as before; no program of the repository changes (test/language/zero-copy-shapes.test.ts).
+  The same goes for a tag in a `/* … */` or `//` comment ("this @code tag is not read: only a doc comment (/** … */)
+  is, not a // comment; write /** @code … */ above B") and in a doc comment that another one follows before the
+  member, of which only the last is read ("… another doc comment follows it, and only the last one above B is read;
+  put the tag in that one"). In a doc comment, a tag is any `@code` after the start, whitespace or `*`, as TypeScript
+  reads it, so one inside a sentence (`/** The second. @code 6200 */`) is a tag and is refused where it is not read; in
+  a `//` or `/* … */` comment only an `@code` first on a line of the comment is reported, so prose there
+  (`// see the @code docs`) is not.
+- Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
+  playground, opens Quick start with the playground, says that `npm install`'s advisories come from
+  `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;
+  nothing of it is in a deployed program), says what npm's `E404 … typesol` outside a project means and what to run,
+  and that the scaffolded counter has one more instruction than the 23-line one shown. docs/troubleshooting.md has a
+  heading per symptom.
+- Docs: the language reference is a guide. docs/language.md is an overview: the guide's pages, then an index of where
+  each construct is described, then the former reference's sections (their headings kept, so links to them still
+  land there). The pages, read in order:
+  - docs/language-basics.md: "Solana in a dozen lines", what a program is, one program explained line by line, and
+    "Limits and costs" (rent, compute budget, transaction size with its header and a recent blockhash, an address
+    lookup table entry at one byte, account growth, with their sources' values at the time of writing; at most 32
+    accounts per instruction is TypeSOL's default, not the cluster's);
+  - language-types.md: each type with its bytes, limits and error codes, and when to choose `FixedArray`, `FixedVec`
+    or `Vec`; `Struct arguments`, `f64` and heap values come last;
+  - language-statements.md: exactly which TypeScript is TypeSOL, and a table of what is refused with each message;
+  - language-accounts.md, with what happens to existing accounts when an account struct changes (also in
+    docs/mainnet.md: a field added fails with 3003 only on an account of exactly the old size; one created with spare
+    space or grown since passes and reads the spare bytes, or other fields' bytes when the field was inserted), and
+    `Two parameters, one account` (the `Inout` overlap rule for accounts) and `How many accounts` after the
+    constraints;
+  - language-pdas.md, language-errors-events.md, language-cpi.md, language-chain.md (sysvars, hashes, signatures,
+    oracles) and language-native.md (porting native programs, marked advanced);
+  - docs/language-builtins.md lists every name `"typesol"` exports, generated from lib/typesol.d.ts by
+    `scripts/language-builtins.ts` (`--check` in the tests and in CI).
+
+  Each page ends with a "Next" line and links a term's first use to the new docs/glossary.md (the three meanings of
+  owner, Anchor, associated token account, keypair account, authority, payer, remaining accounts, return data, slot
+  and epoch, cluster, syscall, precompile, ProgramData and upgrade authority, zero-copy, and more).
+
+  What the examples guarantee: every example is a complete program, or a block marked as a fragment whose every line is
+  a line of the compiled file it is taken from. test/language/docs-examples.test.ts compiles each program, checks that
+  every refused construct of the table is refused with the message it quotes, that links into the docs land on a
+  heading (a repeated heading's anchor with GitHub's `-1`, `-2` suffix), that every page but the overview and the
+  built-ins list has a compiled program, and that no TypeScript block is fenced so that it would be skipped (`~~~`,
+  `typescript`); a claim compiling does not prove is checked against the compiled program (the error codes from 0 of
+  docs/language-native.md). An example shows the construct its section is about, and docs/language.md says that,
+  unless the text says who may call an instruction, it does not check its caller as a real program must. The examples
+  that move value or sign as a PDA do check it: the PDA page's `payOut` takes its config at the singleton PDA
+  `["config"]` with `HasOne` and says to gate the config's creation, docs/language-cpi.md's `payOut` has the signer in
+  the vault's seeds (and `makeVault` creates the vault at those seeds), `remove` has `HasOne` before `close`, the native
+  `bump` checks that `admin` signed and the native Borsh `deposit` checks the pool's owner; the PDA page's first
+  example derives its second bump, and `invoke`'s `payOut` and `t.pdaWithBump` point to a stored bump. Those that show
+  one mechanism only say so, with the check a real instruction needs, on the first line after the example
+  (`invokeInstruction`'s `execute`, `Migrate`'s `upgrade`, a first-caller `InitIfNeeded` setup, FixedVec's
+  `setOwners` / `addOwner`, the fallback's `record`, BigVec's `add`, the run-time views' `fill`, the Borsh `deposit`,
+  the red-black tree's `place` / `cancel`, the enum's `approve`, the data enum's `apply`; the native `programAt`
+  entry and the randomness example's `settle` in their text), and `grow`'s open access is explained as moving no
+  value. docs/test-your-program.md has seeds of other widths and asserting an error code, naming the program that
+  snippet runs against (test/cli/testing.test.ts runs both). docs/troubleshooting.md is grouped (install, writing and
+  running a program, deploy, verify and `--docker`), with entries for running out of compute units, for a
+  transaction over 1,232 bytes and for `idl publish` failing on a local validator; the longest table cells (Token-2022
+  methods, `init` and `verify` in docs/cli.md) are lists.
+
+  lib/typesol.d.ts gains doc comments only: the 34 exports that had none have one, the built-ins page's one-liners
+  (`currentSlot`, `slotsPerEpoch`, `HasOne`, `Ata`, `transferFee`, `TOKEN_ACCOUNT_SIZE`, `readonly`, `rawArrayAt`,
+  `Mut`, `Init`, `Account`, `log`, `invoke`, `Vec`) describe the name itself, the comment of `findProgramAddress` sat
+  above `bigEndian` and moves to it, and `isqrt`'s says it takes integers up to `u256` (as the compiler does), not up
+  to `u128`.
+- Docs, corrected (statements of the former reference and of other published pages, found while checking them
+  against the compiler; no program compiles differently): top-level constants are not listed in the IDL (a constant
+  used as a seed is recorded there as a `const` seed); closure parameters need their types where the closure is
+  declared (an arrow written at a call takes them from the parameter); a `@layout borsh` struct's `Vec` may be any
+  field, not only the last; `signer([…])` is written in a declaration or as a helper's argument, not inside a CPI's
+  arguments; `merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds and fail
+  nothing by themselves (docs/language-chain.md, with an example, and their doc comments); a program account is
+  checked for initialization (3012), owner (3007), size (3003), then discriminator (3002), and the two cases where
+  Anchor's order gives another code (another discriminator with fewer bytes than the struct: 3003 here, 3002 under
+  Anchor; under 8 bytes: 3003 here, 3001 under Anchor) are listed in docs/errors.md (test/security/anchor-order.test.ts
+  pins them); docs/errors.md said accounts are created after every other check, while the creates a body starts with
+  run before the constraints (not with an account group, whose arguments are decoded first); a failed instruction
+  fails the whole transaction; `>>` fails (5100) like `<<` when the amount is not below the width; `FixedString<N>`
+  takes 4 + N bytes; token account and mint codes are stated one way everywhere (3012 / 3007 / 3003); SECURITY.md
+  names the review of 0.44.0 and 0.44.1 as the README and docs/security-model.md do (test/cli/repository.test.ts
+  checks the three against docs/audit.md); the README's "Safe by default." is "Checked by default."; docs/mainnet.md
+  carries the status warning, its counter is built with 0.45.0, and it says what a `verify` match does not prove;
+  docs/migrate-from-anchor.md no longer claims `@layout borsh` is "several times cheaper than Anchor".
+
 ## 0.45.0 — 2026-11-12
 
 - New: a program builds to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 (the programs and SBPF versions

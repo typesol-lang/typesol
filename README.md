@@ -12,6 +12,7 @@
 </p>
 
 <p align="center">
+  <a href="#quick-start">Quick start</a> ·
   <a href="https://typesol.com">Website</a> ·
   <a href="https://typesol.com/docs/">Docs</a> ·
   <a href="https://typesol.com/docs/changelog/">Changelog</a> ·
@@ -27,7 +28,7 @@ clients read TypeSOL programs unchanged.
 
 - **One language, end to end.** You write the program and its tests in TypeScript, and every build writes a typed
   client for it ([docs/client.md](docs/client.md)). Your editor gives you completion and type errors throughout.
-- **Safe by default.**
+- **Checked by default.**
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
   - Constraints follow Anchor's rules and use Anchor's error codes.
@@ -41,11 +42,16 @@ clients read TypeSOL programs unchanged.
   chain, against its source. Every release records the hashes of its npm tarball and of every program it builds
   ([releases/](releases), [docs/testing.md](docs/testing.md#reproducing-a-release)).
   The same source, TypeSOL version and toolchain build to the same bytes on macOS arm64, Linux arm64 and Linux x86_64
-  (measured: all 76 programs of the sources for SBPF v0, 14 of them for v1 and v2;
+  (measured: all 76 programs of the sources for SBPF v0, 14 of them for v1 and v2; Linux arm64 with the platform-tools
+  `linux-aarch64` package set up as in [Requirements](#requirements), since there is no Agave CLI for it;
   [docs/stability.md](docs/stability.md#what-builds-the-same-bytes-where)).
   `typesol build --docker` builds in a pinned linux/amd64 container that anyone can rebuild from the Dockerfile, and
   `typesol verify --docker` checks a deployed program against its source in that same environment
   ([docs/mainnet.md](docs/mainnet.md#6-verify)).
+
+**Try it** in the browser, with nothing to install: [typesol.com/play](https://typesol.com/play/). On your machine, once
+Node.js and the Solana toolchain are in place ([Quick start](#quick-start), [Requirements](#requirements)):
+`npx @typesol/cli init my-app`, then `cd my-app && npm install && npm test`.
 
 <p align="center">
   <a href="#numbers">
@@ -80,7 +86,8 @@ sources are in [`showcase/mainnet`](showcase/mainnet), and where each original b
 
 ## At a glance
 
-**`counter.ts`**: a complete program, 23 lines.
+**`counter.ts`**: a complete program, 23 lines. (`typesol init` writes it with one more instruction, a read-only
+`assertAtLeast`.)
 
 ```ts
 import { type Init, type Mut, type Pubkey, type Signer,
@@ -173,21 +180,36 @@ transactions to both and compares the results.
 
 ## Quick start
 
+No install: try TypeSOL in the browser at [typesol.com/play](https://typesol.com/play/).
+
 You need Node.js 22.12 or later and the Agave CLI with its platform-tools, which hold the clang TypeSOL compiles with.
 Rust is not needed. TypeSOL is tested with **Agave 3.1.10 and platform-tools v1.52** (clang 20.1.7); to install exactly
-those:
+those on macOS or Linux x86_64 (Linux arm64: see
+[Requirements](https://github.com/typesol-lang/typesol#requirements)):
 
 ```sh
 sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+# The installer adds this line to ~/.profile for new shells, and this shell needs it now:
+export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+# Once: this downloads the platform-tools, about 0.5 GB and up to 1.6 GB unpacked, and prints nothing for a minute or two:
 cargo-build-sbf --install-only --force-tools-install --tools-version v1.52
 ```
 
 ```sh
-npx @typesol/cli init my-app --name counter   # typesol.json, programs/counter.ts, tests/counter.test.ts, tsconfig
+npx @typesol/cli init my-app --name counter
 cd my-app && npm install
-npm test                                      # builds the program and runs it in LiteSVM, an in-process Solana runtime
-npx --no-install typesol build                # target/counter/{counter.so, counter.json (IDL), counter.client.ts, counter.build.json}
+npm test
+npx --no-install typesol build
 ```
+
+`init` writes `typesol.json`, `programs/counter.ts`, `tests/counter.test.ts` and a tsconfig. `npm test` builds the program
+and runs it in LiteSVM, an in-process Solana runtime. `build` writes `target/counter/`: `counter.so`, `counter.json` (the
+IDL), `counter.client.ts` and `counter.build.json`.
+
+`init` also writes rules and an MCP server config for AI coding agents (AGENTS.md, CLAUDE.md, `.cursor/`, `.mcp.json`)
+and lists them; `--no-agent-files` leaves them out. `npm install` reports advisories (moderate and high) and packages
+with install scripts: they come from `@anchor-lang/core` and the Solana web3.js it depends on, which `typesol/testing`
+uses to encode instructions and decode accounts, so the tests need it; none of it is in the program you deploy.
 
 Other versions work, but their binaries are not covered by the project's tests: `typesol build` warns once when the
 clang is another one (`--toolchain-strict` or `TYPESOL_TOOLCHAIN=strict` makes that an error), and every build records
@@ -196,18 +218,23 @@ its clang, platform-tools and host in `<name>.build.json`.
 `npx --no-install typesol doctor` checks all of this (Node.js, platform-tools and whether they are the tested ones, Solana CLI, keypair, RPC) and prints the command
 that fixes anything missing. Inside a project, `npx --no-install typesol …` (or `npm run build`, `npm run deploy`) runs the
 project's own copy; outside one, use `npx @typesol/cli …`. Plain `npx typesol` is not TypeSOL: `typesol` is not the npm
-package's name, so where the project's copy is not installed npx would fetch whatever package has that name.
+package's name, so where the project's copy is not installed npx would fetch whatever package has that name. Outside a
+project (or before `npm install`), `npx --no-install typesol …` therefore fails with npm's `E404 … typesol - Not
+found`, which does not mention `@typesol/cli`: run `npx @typesol/cli …` there, or `npm install` in the project first.
 
 To deploy, on devnet:
 
 ```sh
-solana-keygen new                             # once, if you have no keypair (~/.config/solana/id.json)
-solana airdrop 2 --url devnet                 # test SOL for the rent (rate-limited: https://faucet.solana.com also works)
+# Once, if you have no keypair at ~/.config/solana/id.json:
+solana-keygen new
+# Test SOL for the rent. The airdrop is rate-limited, and https://faucet.solana.com also works:
+solana airdrop 2 --url devnet
 npx --no-install typesol deploy --url devnet
 ```
 
 or on a local validator: `solana-test-validator` in another terminal, `solana airdrop 5 --url localhost`, then
-`npx --no-install typesol deploy --url localhost`. `deploy` checks the RPC and the payer's balance before sending anything.
+`npx --no-install typesol deploy --url localhost`. `deploy` checks the payer's keypair, the RPC and the payer's balance
+before sending anything, and stops with the command to run when one is missing.
 
 `--template vault` or `--template escrow` starts from a SOL vault or an SPL token escrow instead of the counter, each
 with a passing LiteSVM test.
@@ -222,7 +249,8 @@ program's address.
 **Your first change.** Open `programs/counter.ts`, add an instruction (say `decrement`, with
 `require(counter.count >= 1n, …)` before `counter.count -= 1n`), call it from `tests/counter.test.ts` and run `npm test`.
 If the build refuses something, the error points at the line and, for the usual first mistakes (`1` instead of `1n`,
-`console.log`, a missing import, `async`), adds a `hint:` with what to write instead; your editor shows the same.
+`console.log`, `Date.now()`, a missing import, `async`), adds a `hint:` with what to write instead; your editor shows
+the same.
 
 **Where next**
 - The language, every type and built-in: [docs/language.md](docs/language.md).
@@ -230,7 +258,7 @@ If the build refuses something, the error points at the line and, for the usual 
 - Coming from Anchor: [docs/migrate-from-anchor.md](docs/migrate-from-anchor.md) maps every construct, and
   `typesol port` starts from your program's IDL; [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one
   program through the port.
-- Real programs checked against their mainnet binaries: [Showcase](#showcase-ports-checked-against-mainnet), with a
+- Real programs checked against their mainnet binaries: [Showcase](https://github.com/typesol-lang/typesol#showcase-ports-checked-against-mainnet), with a
   case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions; Phoenix v1, a native
   order book, the same on 3,575 transactions down to its event bytes; Raydium AMM v4, a native program, down to its log
   lines).
@@ -270,7 +298,8 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 | **Native programs** | a `@fallback` entry over the raw instruction data and accounts by position, Borsh accounts (`loadBorsh`), views of account bytes in place (also at offsets known only at run time) and lib-sokoban's red-black tree over them, byte builders (`pushLE`, `pushBorsh`, …), return data, `closeRaw`, and Rust's panics and overflow messages at the original's source locations |
 | **Interfaces** | custom discriminators (`@discriminator`), so a TypeSOL program can be a Token-2022 transfer hook, with extra accounts (ExtraAccountMetaList) |
 
-The full reference, with every type, check and built-in, is in [docs/language.md](docs/language.md).
+The [language guide](docs/language.md) explains each construct with a compiled example, and lists every type, check
+and built-in.
 
 ## Tooling
 
@@ -434,9 +463,27 @@ stable already and what is still experimental: [docs/stability.md](docs/stabilit
 
 ## Requirements
 
-- Node.js 22.12 or later.
-- The Agave CLI with platform-tools.
-- macOS or Linux. On Windows, use WSL2.
+- Node.js 22.12 or later (the CLI stops with the version it needs on an older one).
+- The Agave CLI with platform-tools (see [Quick start](#quick-start)).
+- macOS or Linux x86_64 for everything; Linux arm64 to build and test, set up as below (deploying from it needs the
+  Solana CLI built from source); on Windows, WSL2.
+- Linux arm64: Anza publishes no Agave CLI for it (the installer fails with a 404), but platform-tools has a
+  `linux-aarch64` package. With it and the SDK's C files from the x86_64 release (headers and linker script, as the
+  `--docker` image takes them), `typesol build` and LiteSVM tests work (needs `curl` and `bzip2`):
+
+  ```sh
+  mkdir -p "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools"
+  # About 215 MB, for the C headers and linker script of the SDK only:
+  curl -sSfL https://github.com/anza-xyz/agave/releases/download/v3.1.10/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C "$HOME/.local/share/typesol-sdk" --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c
+  # About 515 MB, 1.6 GB unpacked, and quiet for a minute or two:
+  curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/v1.52/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools"
+  touch "$HOME/.local/share/typesol-sdk/sbf/dependencies/platform-tools-v1.52.md"
+  # Add this line to ~/.profile too, for new shells:
+  export TYPESOL_SBF_SDK="$HOME/.local/share/typesol-sdk/sbf"
+  ```
+
+  `typesol doctor` prints these commands there. Deploying needs the Solana CLI: deploy from macOS or Linux x86_64,
+  or build the Agave CLI from source. `build --docker` (linux/amd64, emulated) works on any host with Docker.
 
 TypeSOL finds the SDK under `~/.local/share/solana/install/active_release` or next to `cargo-build-sbf` on `PATH`. Set
 `TYPESOL_SBF_SDK` to override the location. See [docs/troubleshooting.md](docs/troubleshooting.md).

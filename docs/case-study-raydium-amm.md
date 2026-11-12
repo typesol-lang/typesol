@@ -27,7 +27,7 @@ accepts them, and ignored.
 
 ## What it needed
 
-TypeSOL gained what a native program needs (docs/language.md, "Porting a native program"):
+TypeSOL gained what a native program needs ([Porting a native program](language-native.md)):
 
 - `loadRaw<T>` / `loadRawMut<T>`: accounts with no discriminator, read from byte 0. The port makes the original's own
   checks first (owner, an exact size, its error codes), then loads.

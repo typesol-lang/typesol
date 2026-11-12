@@ -7,8 +7,9 @@ a constraint or an error code.
 
 - Node.js 22.18+ for development (the scripts run `.ts` files directly; the published CLI itself needs 22.12+) and
   pnpm (`corepack enable`).
-- The Agave CLI with platform-tools: install from https://docs.anza.xyz/cli/install, then run
-  `cargo-build-sbf --version` once (it downloads platform-tools).
+- The Agave CLI with platform-tools: the commands in the README's Quick start (the Agave installer, the `PATH` line,
+  then `cargo-build-sbf --install-only --force-tools-install --tools-version v1.52`; on Linux arm64, the commands in
+  its Requirements).
 - `pnpm install && pnpm build && pnpm test`.
 - Optional: `pnpm fetch:programs` (Metaplex programs for the Token Metadata / Core / Bubblegum tests),
   `pnpm build:twins` (Anchor twins for the differential tests; needs Rust + Anchor 1.0.2).

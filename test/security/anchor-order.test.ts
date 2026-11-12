@@ -1,6 +1,6 @@
 // Which error a transaction that breaks several checks gets: each account's constraints in the order of Anchor's
 // generated try_accounts (anchor-syn's linearize), and Anchor's codes (docs/errors.md, "Which error a transaction gets").
-import { getU64Encoder } from "@solana/kit";
+import { type Address, getU64Encoder, lamports } from "@solana/kit";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -43,5 +43,42 @@ describe("check order (Anchor's)", () => {
     const mallory = await fundedSigner(d.svm);
     const M = { address: mallory.address, signer: mallory };
     expect(customError(await send(d.svm, mallory, [ix(d, "bump", { by: new BN(1) }, [M, { address: box, writable: true }])]))).toBe(2006);
+  });
+
+  // runtime/typesol_rt.h ts_check_program_account: 3012, 3007, then the size (3003) before the discriminator (3002).
+  // Anchor's Account::try_from reads the discriminator first (3001 under 8 bytes, 3002), then decodes (3003), so the
+  // two short cases below get 3003 here and 3001 / 3002 under Anchor (docs/errors.md).
+  it("a program account: not initialized (3012), owner (3007), size (3003), then discriminator (3002)", async () => {
+    const owner = await fundedSigner(d.svm);
+    const box = (await fundedSigner(d.svm)).address;
+    const put = (data: Buffer, programAddress: string, amount = 10_000_000n) =>
+      d.svm.setAccount({
+        address: box,
+        data: new Uint8Array(data),
+        executable: false,
+        lamports: lamports(amount),
+        programAddress: programAddress as Address,
+        space: BigInt(data.length),
+      });
+    const call = () =>
+      send(d.svm, owner, [
+        ix(d, "bump", { by: new BN(1) }, [
+          { address: owner.address, signer: owner },
+          { address: box, writable: true },
+        ]),
+      ]);
+    const full = 8 + 32 + 8 + 1;
+    put(Buffer.alloc(0), SYSTEM_PROGRAM, 0n);
+    expect(customError(await call())).toBe(3012);
+    put(Buffer.alloc(full), SYSTEM_PROGRAM);
+    expect(customError(await call())).toBe(3007);
+    // Another discriminator and fewer bytes than Box: the size fails first.
+    put(Buffer.alloc(full - 1, 7), d.programId);
+    expect(customError(await call())).toBe(3003);
+    put(Buffer.alloc(4, 7), d.programId);
+    expect(customError(await call())).toBe(3003);
+    // Another discriminator at full size.
+    put(Buffer.alloc(full, 7), d.programId);
+    expect(customError(await call())).toBe(3002);
   });
 });

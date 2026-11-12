@@ -172,6 +172,50 @@ describe("zero-copy shapes", () => {
     expect(compileErrors(`export enum E {\n  A = "a",\n  /** @code 5 */\n  B = "b",\n}\nexport function f(): void {}\n`)).toMatch(
       /@code must be a number from 6001 up/,
     );
+    // A tag after the previous member's comma (or after the brace) on the same line belongs to no member: refused,
+    // not ignored, so B cannot silently take the next code.
+    expect(compileErrors(`export enum E { A = "a", /** @code 6100 */ B = "b" }\nexport function f(): void {}\n`)).toMatch(
+      /this @code tag is not read: other code comes before it on its line; put \/\*\* @code … \*\/ on its own line above B/,
+    );
+    expect(compileErrors(`export enum E {\n  A = "a", /** @code 6100 */\n  B = "b",\n}\nexport function f(): void {}\n`)).toMatch(/on its own line above B/);
+    expect(compileErrors(`export enum E { /** @code 100 */ A = "a" }\nexport function f(): void {}\n`)).toMatch(/on its own line above A/);
+    expect(compileErrors(`export enum E {\n  A = "a",\n  B = "b", /** @code 6100 */\n}\nexport function f(): void {}\n`)).toMatch(/it follows the last member/);
+    // On its own line, or starting the line of its member, it is read.
+    expect(compileErrors(`export enum E {\n  A = "a",\n  /** @code 6100 */ B = "b",\n}\nexport function f(): void {}\n`)).toBe("");
+    // A tag in a comment that is not a doc comment is not read either: refused, naming the member.
+    const two = (between: string) => `export enum E {\n  A = "a",\n${between}\n  B = "b",\n}\nexport function f(): void {}\n`;
+    expect(compileErrors(two("  /* @code 6100 */"))).toBe(
+      "this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment; write /** @code … */ above B",
+    );
+    expect(compileErrors(two("  // @code 6100"))).toBe(
+      "this @code tag is not read: only a doc comment (/** … */) is, not a // comment; write /** @code … */ above B",
+    );
+    // Only the last doc comment above a member is read: a tag in an earlier one is refused, with its own reason.
+    expect(compileErrors(two("  /** @code 6100 */\n  /** Something went wrong. */"))).toBe(
+      "this @code tag is not read: another doc comment follows it, and only the last one above B is read; put the tag in that one",
+    );
+    expect(compileErrors(two("  /** Something went wrong. */\n  /** @code 6100 */"))).toBe("");
+    // In a doc comment TypeScript reads a tag anywhere after whitespace, so one inside a sentence is a tag too, and in a
+    // position that is not read it is refused like any other.
+    expect(compileErrors(`export enum E {\n  A = "a", /** The second. @code 6200 */ B = "b",\n  C = "c",\n}\nexport function f(): void {}\n`)).toBe(
+      "this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above B",
+    );
+    expect(compileErrors(two("  /** The second. @code 6200 */ /** more */"))).toBe(
+      "this @code tag is not read: another doc comment follows it, and only the last one above B is read; put the tag in that one",
+    );
+    expect(compileErrors(`export enum E {\n  A = "a", /** see the @code docs */\n  B = "b",\n}\nexport function f(): void {}\n`)).toMatch(
+      /this @code tag is not read/,
+    );
+    // In a // or /* … */ comment only a tag first on a line is reported: one in a sentence is prose, and B takes the next code.
+    expect(compileErrors(two("  // the @code docs say how codes are numbered"))).toBe("");
+    expect(compileErrors(two("  // see the @code docs"))).toBe("");
+    expect(compileErrors(two("  /* see the @code docs */"))).toBe("");
+    // A tag above the enum itself numbers no member: refused, pointing at the first member.
+    expect(compileErrors(`/** @code 0 */\nexport enum E {\n  A = "a",\n  B = "b",\n}\nexport function f(): void {}\n`)).toBe(
+      "this @code tag is not read: a tag above the enum numbers no member; put /** @code … */ above its first member, A",
+    );
+    expect(compileErrors(`/** Pool errors. @code 0 */\nexport enum E {\n  A = "a",\n}\nexport function f(): void {}\n`)).toMatch(/above its first member, A/);
+    expect(compileErrors(`/** Pool errors. */\nexport enum E {\n  /** @code 0 */\n  A = "a",\n}\nexport function f(): void {}\n`)).toBe("");
     expect(
       compileErrors(
         `import { type Account, type Pubkey } from "typesol";\nexport interface S {\n  key: Pubkey;\n}\nexport function f(s: Account<S>): void {}\n`,
