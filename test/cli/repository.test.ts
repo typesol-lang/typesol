@@ -33,6 +33,19 @@ describe("repository records", () => {
       expect(notice).toContain(s);
     expect(notice).not.toMatch(/None of it is part of the published|Examples under examples\//);
     expect(read("runtime/typesol_rt.h")).toMatch(/Ported from lib-sokoban 0\.3\.0[\s\S]*Jarry Xiao/);
+    // The routines taken from compiler-builtins: its licence expression, and its LICENSE.txt shipped verbatim.
+    const expression = '"MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)"';
+    expect(pkg.files).toContain("runtime");
+    expect(notice).toContain(expression);
+    expect(notice).toContain("runtime/LICENSE-compiler-builtins.txt");
+    expect(read("runtime/typesol_builtins.c").split("*/")[0]).toContain(expression);
+    expect(read("runtime/typesol_builtins.c").split("*/")[0]).toContain("runtime/LICENSE-compiler-builtins.txt");
+    const licence = read("runtime/LICENSE-compiler-builtins.txt");
+    expect(licence).toMatch(
+      /^The compiler-builtins crate is available for use under both the MIT license\nand the Apache-2\.0 license with the LLVM exception/,
+    );
+    for (const s of ["MIT License", "Apache License\n                           Version 2.0", "LLVM Exceptions to the Apache 2.0 License"])
+      expect(licence, s).toContain(s);
   });
 
   it("every file of a mainnet port says what it ports and under which licence, at the top", () => {
