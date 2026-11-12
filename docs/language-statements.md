@@ -328,11 +328,12 @@ while passing large values by pointer:
   an instruction argument, return data, or a struct parameter of a helper that itself takes accounts) is still passed
   in place.
 - `Pubkey`, `Option`, `string` and `u256` parameters are passed by pointer too (the SBF target passes a C struct as a
-  pointer to the caller's object). A helper that can write (it takes accounts, remaining accounts or `Inout<T>`
-  places) gets a copy taken at the call, unless the argument is a local, a temporary, an instruction argument, a
-  constant, an account's key, the program id or a parameter of the calling helper, which nothing it is given reaches;
-  a helper that writes nothing reads the caller's value in place. Text a string argument views in account data or in
-  an `Inout<T>` place is copied for such a helper too.
+  pointer to the caller's object):
+  - a helper that writes nothing reads the caller's value in place;
+  - a helper that can write (it takes accounts, remaining accounts or `Inout<T>` places) gets a copy taken at the
+    call, and so does text a string argument views in account data or in an `Inout<T>` place;
+  - except when the argument is one nothing the helper is given reaches: a local, a temporary, an instruction
+    argument, a constant, an account's key, the program id or a parameter of the calling helper, passed in place.
 - **List parameters.** A `FixedVec<T, N>` or `Vec<T>` parameter takes a Vec argument, a slice of one, or the caller's
   FixedVec of the same elements (a local, a field of a local struct or of account data) with at most N elements of
   room. It is read-only and passed as a view of its elements, by pointer; a list in account data is copied first when
@@ -413,14 +414,9 @@ shares an object passed to a function.
   `BigVec` is refused when the call may resize or filter that list (the helper takes writable or remaining accounts),
   since its elements would move. A reference into the place (`const e = p.items.get(0n)`) that is read after the call
   is refused, since the helper may replace what it points at (copy the fields first, or read them through the place).
-- **Places that may be one account at run time** (two `Dup<…>` accounts, a writable and a read-only account, two
-  native views under `NATIVE_ACCOUNT_WRITES`: `loadRawMut`, `loadRawMutAt`, `rawArrayMutAt` elements, `rbTreeMutAt`
-  nodes, a helper's own account parameters) are compared before the call: 2040 when they overlap. The comparison
-  covers an Inout argument against every other argument passed in place (another Inout one, a read-only struct, array
-  or list, an account), so a read-only argument cannot change under the helper while it writes; one copied for the
-  call shares nothing and is not compared. One pair is left to run time: a place in a `loadRawMut` view passed with
-  the `RemainingAccount` it was loaded from (without `NATIVE_ACCOUNT_WRITES` a second `loadRawMut` of it in the helper
-  fails with 2040; with the flag the helper can load and write the same bytes, the flag's trade-off).
+- **Places that may be one account at run time** (two `Dup<…>` accounts, a writable and a read-only account, native
+  views) are compared before the call: 2040 when they overlap ([which places, and the one pair left to run
+  time](language-native.md#inout-places-that-may-be-one-account)).
 - **Values are not places.** Integers, Pubkeys, strings and Options are values, which JavaScript copies into a function
   too: return the new value (`x = f(x)`) or keep it in a struct and take `Inout<ThatStruct>` (`Inout<u64>: a u64 is a
   value, which JS copies into a function too, …`). `Vec<T>`, `BigVec<T>`, accounts and data enums are refused with

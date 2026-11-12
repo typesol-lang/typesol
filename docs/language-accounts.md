@@ -57,28 +57,6 @@ account member (`key`, `lamports`, …) is refused: name it `key_` (it is `key` 
 Unlike Anchor, there is no `Context` and no `#[derive(Accounts)]` struct: the parameters are the accounts, in the order
 the client passes them. Writing to an account that is not `Mut<…>` is a TypeScript error (the field is read-only).
 
-### Two parameters, one account
-
-Two writable parameters can never be the same account: aliasing is refused with error 2040 (also when a remaining
-account written through `.lamports` or `loadAccountMut` is another account of the instruction).
-
-`Dup<Mut<T>>` (Anchor's `dup`) lifts that for one parameter when both accounts are read and written in place (not
-created, closed or `@layout borsh`; a close destination may be one, the rent reaching it through either). A write
-through either is seen through the other, so read what you need before writing. A reference into one of them
-(`const e = a.entries.get(i)`) cannot be used after a push, pop or clear through the other moved that data, as with one
-name (a compile error): copy the fields first.
-
-A remaining account can be loaded with `loadAccountMut` once per instruction: loading the same one again
-(`rest.get(i)` and `rest.get(j)` with `i == j`) is refused with 2040 too, since the two views would alias. So is a
-second `loadAccountMut` of one `AccountInfo` parameter. Two `Dup<…>` parameters that are one account may each be
-loaded (one array holding both ticks of a position, as Raydium CLMM's tick arrays).
-
-### How many accounts
-
-At most 32 accounts per instruction; more is refused with 5113. `export const MAX_ACCOUNTS = 128n` (up to 255; Anchor
-takes what the runtime allows) raises it for programs that take many remaining accounts. The CPI scratch lists are
-then kept on the heap instead of the stack; programs that do not declare it compile exactly as before.
-
 ## Creating accounts
 
 ```ts
@@ -290,6 +268,28 @@ the body, in Anchor's order, and recorded in the IDL (`relations`, `pda`, `addre
 - `Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">` checks the address as Anchor's
   `address = sysvar::instructions::ID` on an `UncheckedAccount` does (2012, with the constraints).
 
+## Two parameters, one account
+
+Two writable parameters can never be the same account: aliasing is refused with error 2040 (also when a remaining
+account written through `.lamports` or `loadAccountMut` is another account of the instruction).
+
+`Dup<Mut<T>>` (Anchor's `dup`) lifts that for one parameter when both accounts are read and written in place (not
+created, closed or `@layout borsh`; a close destination may be one, the rent reaching it through either). A write
+through either is seen through the other, so read what you need before writing. A reference into one of them
+(`const e = a.entries.get(i)`) cannot be used after a push, pop or clear through the other moved that data, as with one
+name (a compile error): copy the fields first.
+
+A remaining account can be loaded with `loadAccountMut` once per instruction: loading the same one again
+(`rest.get(i)` and `rest.get(j)` with `i == j`) is refused with 2040 too, since the two views would alias. So is a
+second `loadAccountMut` of one `AccountInfo` parameter. Two `Dup<…>` parameters that are one account may each be
+loaded (one array holding both ticks of a position, as Raydium CLMM's tick arrays).
+
+## How many accounts
+
+At most 32 accounts per instruction; more is refused with 5113. `export const MAX_ACCOUNTS = 128n` (up to 255; Anchor
+takes what the runtime allows) raises it for programs that take many remaining accounts. The CPI scratch lists are
+then kept on the heap instead of the stack; programs that do not declare it compile exactly as before.
+
 ## Optional accounts
 
 ```ts
@@ -384,10 +384,12 @@ export function count(tally: Mut<Tally>): void {
   `isWritable`, the data length and data.
 - `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)` give checked struct views (owner, discriminator and size, as
   `Account<T>` / `Mut<T>`), also of an `AccountInfo` parameter (Anchor's `AccountLoader::try_from` on an
-  `UncheckedAccount`). The view is also its account: `.key`, `.lamports`, and it passes to a helper taking `Account<T>`
-  / `Mut<T>`. A second `loadAccountMut` of one account is refused (2040), but a view declared in a loop body ends with
-  its iteration, and `loadAccountMut<Dup<T>>` in a loop also accepts an account passed more than once, one view at a
-  time, as a route back through one pool needs.
+  `UncheckedAccount`).
+  - The view is also its account: `.key`, `.lamports`, and it passes to a helper taking `Account<T>` / `Mut<T>`.
+  - A second `loadAccountMut` of one account is refused (2040), but a view declared in a loop body ends with its
+    iteration.
+  - `loadAccountMut<Dup<T>>` in a loop also accepts an account passed more than once, one view at a time, as a route
+    back through one pool needs.
 - Pass one to a helper that takes a `RemainingAccount` parameter (it reads the key, owner, lamports, data length and
   data, and loads structs from it; a `loadAccountMut` there claims the account for the rest of the instruction, so a
   second one fails with 2040), or all of them to one that takes `RemainingAccounts` (`.length`, `.get(i)`, passed on to

@@ -64,13 +64,37 @@ Pass signer seeds (with the bump) as the last argument when the authority is a P
 
 Token-2022 only:
 
-| Methods | Notes |
-| --- | --- |
-| `initializeTransferFeeConfig(mint, configAuthority \| null, withdrawAuthority \| null, basisPoints, maximumFee)`, `initializeMintCloseAuthority(mint, authority \| null)`, `initializeNonTransferableMint(mint)`, `initializePermanentDelegate(mint, delegate)`, `initializeDefaultAccountState(mint, frozen)`, `initializeMetadataPointer` / `initializeGroupPointer` / `initializeGroupMemberPointer` / `initializeTransferHook(mint, authority \| null, address \| null)`, `initializeInterestBearingMint(mint, rateAuthority \| null, rate)`, `initializeImmutableOwner(account)` | extension initializers, called between `createAccount` and `initializeMint2` / `initializeAccount3` |
-| `initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri)` | the metadata extension |
-| `updateDefaultAccountState(mint, freezeAuthority, frozen)`, `updateTransferHook(mint, authority, programId \| null)`, `enableRequiredMemoTransfers` / `disableRequiredMemoTransfers(account, owner)`, `updateInterestRate(mint, rateAuthority, rate)`, `transferCheckedWithFee(from, mint, to, authority, amount, fee)`, `harvestWithheldTokensToMint(mint, remainingAccounts())`, `withdrawWithheldTokensFromMint(mint, destination, authority)`, `setTransferFee(mint, authority, basisPoints, maximumFee)` | extension instructions |
-| `updateMetadataField(mint, updateAuthority, field, value)` ("name" / "symbol" / "uri" or any other key), `removeMetadataKey(mint, updateAuthority, key, idempotent)`, `updateMetadataAuthority(mint, updateAuthority, next \| null)`, `emitMetadata(mint)` | the Token Metadata interface |
-| `initializeTokenGroup(group, mint, mintAuthority, updateAuthority \| null, maxSize)`, `initializeGroupMember(member, memberMint, memberMintAuthority, group, groupUpdateAuthority)`, `updateGroupMaxSize(group, authority, maxSize)`, `updateGroupAuthority(group, authority, next \| null)` | the Token Group interface; a collection mint with a GroupPointer to itself (fund the rent for the group, which Token-2022 adds to the account) |
+- **Extension initializers**, called between `createAccount` and `initializeMint2` / `initializeAccount3`:
+  - `initializeTransferFeeConfig(mint, configAuthority | null, withdrawAuthority | null, basisPoints, maximumFee)`
+  - `initializeMintCloseAuthority(mint, authority | null)`
+  - `initializeNonTransferableMint(mint)`
+  - `initializePermanentDelegate(mint, delegate)`
+  - `initializeDefaultAccountState(mint, frozen)`
+  - `initializeMetadataPointer`, `initializeGroupPointer`, `initializeGroupMemberPointer`,
+    `initializeTransferHook(mint, authority | null, address | null)`
+  - `initializeInterestBearingMint(mint, rateAuthority | null, rate)`
+  - `initializeImmutableOwner(account)`
+- **The metadata extension**: `initializeMetadata(mint, updateAuthority, mintAuthority, name, symbol, uri)`.
+- **Extension instructions**:
+  - `updateDefaultAccountState(mint, freezeAuthority, frozen)`
+  - `updateTransferHook(mint, authority, programId | null)`
+  - `enableRequiredMemoTransfers` / `disableRequiredMemoTransfers(account, owner)`
+  - `updateInterestRate(mint, rateAuthority, rate)`
+  - `transferCheckedWithFee(from, mint, to, authority, amount, fee)`
+  - `harvestWithheldTokensToMint(mint, remainingAccounts())`
+  - `withdrawWithheldTokensFromMint(mint, destination, authority)`
+  - `setTransferFee(mint, authority, basisPoints, maximumFee)`
+- **The Token Metadata interface**:
+  - `updateMetadataField(mint, updateAuthority, field, value)`: "name", "symbol", "uri" or any other key
+  - `removeMetadataKey(mint, updateAuthority, key, idempotent)`
+  - `updateMetadataAuthority(mint, updateAuthority, next | null)`
+  - `emitMetadata(mint)`
+- **The Token Group interface**, on a collection mint with a GroupPointer to itself (fund the rent for the group, which
+  Token-2022 adds to the account):
+  - `initializeTokenGroup(group, mint, mintAuthority, updateAuthority | null, maxSize)`
+  - `initializeGroupMember(member, memberMint, memberMintAuthority, group, groupUpdateAuthority)`
+  - `updateGroupMaxSize(group, authority, maxSize)`
+  - `updateGroupAuthority(group, authority, next | null)`
 
 Each takes optional signer seeds.
 
@@ -174,13 +198,17 @@ export function openWallet(
     instructionsSysvar, tokenProgram, amount)` (Burn: the holder signs and gets the rent back; the token account and
     edition close, the metadata is cleared to one byte);
   - `metadataAddress(mint)`, `masterEditionAddress(mint)`.
-- **`StakeProgram`**: `initialize(stake, rentSysvar, staker, withdrawer, lockup?)` (`lockup`: `{ unixTimestamp, epoch,
-  custodian }`, none when left out), `authorize(stake, clockSysvar, authority, newAuthority, "staker" | "withdrawer",
-  custodian?)`, `delegate(stake, vote, clockSysvar, stakeHistorySysvar, stakeConfig, staker)`, `split(stake,
-  splitStake, staker, lamports)`, `deactivate(stake, clockSysvar, staker)`, `withdraw(stake, to, clockSysvar,
-  stakeHistorySysvar, withdrawer, lamports, custodian?)`, `merge(destination, source, clockSysvar, stakeHistorySysvar,
-  staker)`, `getMinimumDelegation()` (a CPI, then the u64 the Stake program returns; fails as solana_program's
-  `get_minimum_delegation` does).
+- **`StakeProgram`**:
+  - `initialize(stake, rentSysvar, staker, withdrawer, lockup?)` (`lockup`: `{ unixTimestamp, epoch, custodian }`,
+    none when left out);
+  - `authorize(stake, clockSysvar, authority, newAuthority, "staker" | "withdrawer", custodian?)`;
+  - `delegate(stake, vote, clockSysvar, stakeHistorySysvar, stakeConfig, staker)`;
+  - `split(stake, splitStake, staker, lamports)`;
+  - `deactivate(stake, clockSysvar, staker)`;
+  - `withdraw(stake, to, clockSysvar, stakeHistorySysvar, withdrawer, lamports, custodian?)`;
+  - `merge(destination, source, clockSysvar, stakeHistorySysvar, staker)`;
+  - `getMinimumDelegation()`: a CPI, then the u64 the Stake program returns; fails as solana_program's
+    `get_minimum_delegation` does.
   - Instruction tags and account lists are solana-stake-interface's builders'.
   - The sysvar and config accounts are parameters, as in anchor-spl's stake module, or `named(account, address)` (a
     native port): the instruction names `address` (`SysvarC1ock…`), as solana_program's builders do, and `account`,

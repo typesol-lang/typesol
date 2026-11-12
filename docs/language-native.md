@@ -313,6 +313,24 @@ direct mapping), one that was only read (or written with the bytes it held) is f
 - `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of `Mut<…>` parameters stay as
   they are, and programs without the flag compile exactly as before.
 
+### Inout places that may be one account
+
+An `Inout<T>` argument ([Inout parameters](language-statements.md#inout-parameters)) must not share storage with
+another argument during the call. Places that only the transaction can tell apart are compared before the call, and
+the call fails with 2040 when they overlap:
+
+- two `Dup<…>` accounts, a writable and a read-only account, or a helper's own account parameters;
+- two native views under `NATIVE_ACCOUNT_WRITES`: `loadRawMut`, `loadRawMutAt`, `rawArrayMutAt` elements and
+  `rbTreeMutAt` nodes.
+
+The comparison covers an Inout argument against every other argument passed in place (another Inout one, a read-only
+struct, array or list, an account), so a read-only argument cannot change under the helper while it writes. An
+argument copied for the call shares nothing and is not compared.
+
+One pair is left to run time: a place in a `loadRawMut` view passed with the `RemainingAccount` it was loaded from.
+Without `NATIVE_ACCOUNT_WRITES` a second `loadRawMut` of it in the helper fails with 2040; with the flag the helper can
+load and write the same bytes, the flag's trade-off.
+
 ## Accounts closed, reassigned and resized by hand
 
 On remaining accounts and `AccountInfo` parameters:

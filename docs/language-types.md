@@ -307,22 +307,6 @@ export function step(player: Mut<Player>, dx: u64): void {
 instruction arguments and results, events, an exported struct's field, a data enum's variant) cannot hold one: each
 such use is an error saying to export it.
 
-### Struct arguments
-
-`order: Order`, `ids: FixedArray<u8, 4>`, `orders: Vec<Order>` as instruction arguments are fixed layouts,
-Borsh-identical, validated on entry (booleans, enum tags, option tags, string lengths: 102) and read-only.
-
-- A struct holding a `FixedVec` that is only ever an argument is read as Anchor sends it (its FixedVec a Borsh Vec, as
-  under [`@layout borsh`](language-accounts.md#anchors-account-bytes-layout-borsh)).
-- A struct holding `Option`s (at any depth, as Anchor's `BankConfigOpt`) that is not account data is Borsh on the wire,
-  an empty Option one byte. Read its values after narrowing (`if (c.rate !== null && c.rate.zero_util !== null) …`),
-  an `Option<FixedArray<T, N>>` too (`.get(i)`, or copied whole into a `FixedArray` field).
-- An argument may be an `Option<S>` of such a struct (Anchor's `Option<WrappedI80F48>`): a tag byte, then the struct
-  when present; read its fields after `x !== null`. Helpers take the struct, not the Option.
-- Likewise `Option<Vec<T>>` (or `Vec<T> | null`, or of a FixedVec; Anchor's `Option<Vec<u8>>`): a tag byte, then the
-  Vec. Check `x !== null` before reading it as a list or passing it to a helper that takes the list.
-- A `Vec<u8>` is `bytes` in the IDL, as Anchor writes it (clients pass a Buffer).
-
 ## Option
 
 ```ts
@@ -443,12 +427,13 @@ export function reset(ms: Mut<Multisig>, first: Pubkey): void {
 - As an argument, `ids: FixedVec<u64, 8>` is a Borsh Vec of at most N elements, read like a `Vec` argument (more fail
   with 102).
 - In account data, returned structs and events it has its fixed layout.
-- **Local lists.** `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey: k, isSigner: false, isWritable: false }])`,
-  `const buf: FixedVec<u8, 600> = fixedVec([])`, `const pair: FixedArray<Meta, 2> = fixedArray(meta)`: a FixedVec or
-  FixedArray of integers, booleans, Pubkeys, enums, `FixedString<N>` or fixed-size structs on the stack. Given another
-  list (`const y: FixedVec<Pubkey, 4> = xs`) it is a copy, as a struct local is. Setting one up costs about the same
-  at any size (`fixedVec([])` of 1280 bytes is about 10 CU: the free slots are zeroed by the memset syscall, the
-  elements written in place, also as a struct literal's field).
+- **Local lists.** A FixedVec or FixedArray of integers, booleans, Pubkeys, enums, `FixedString<N>` or fixed-size
+  structs can be a local, on the stack: `const metas: FixedVec<Meta, 4> = fixedVec([{ pubkey: k, isSigner: false,
+  isWritable: false }])`, `const buf: FixedVec<u8, 600> = fixedVec([])`, `const pair: FixedArray<Meta, 2> =
+  fixedArray(meta)`.
+  - Given another list (`const y: FixedVec<Pubkey, 4> = xs`) it is a copy, as a struct local is.
+  - Setting one up costs about the same at any size: `fixedVec([])` of 1280 bytes is about 10 CU (the free slots are
+    zeroed by the memset syscall, the elements written in place, also as a struct literal's field).
 - **Size limit.** One list holds at most 2 KiB of elements (the FixedVec's u32 length aside: `FixedVec<u32, 512>`
   fits). The 4 KiB stack frame is shared with the rest of the function, and a frame that overflows is reported with
   its biggest locals; a bigger list is a compile error naming its size. [`@heap`](#heap-values) moves one to the heap.
@@ -538,9 +523,27 @@ export function summarize(o: Mut<Orders>): void {
   callback names its struct: `xs.map((o): Scored => ({ … })).filter(…).reduce(…)` (one struct per element, nothing
   stored). A fused `map` to strings is not supported: store it, annotated.
 
+## Struct arguments
+
+Advanced: what an Anchor port meets when its instructions take structs, lists and Options as arguments.
+
+`order: Order`, `ids: FixedArray<u8, 4>`, `orders: Vec<Order>` as instruction arguments are fixed layouts,
+Borsh-identical, validated on entry (booleans, enum tags, option tags, string lengths: 102) and read-only.
+
+- A struct holding a `FixedVec` that is only ever an argument is read as Anchor sends it (its FixedVec a Borsh Vec, as
+  under [`@layout borsh`](language-accounts.md#anchors-account-bytes-layout-borsh)).
+- A struct holding `Option`s (at any depth, as Anchor's `BankConfigOpt`) that is not account data is Borsh on the wire,
+  an empty Option one byte. Read its values after narrowing (`if (c.rate !== null && c.rate.zero_util !== null) …`),
+  an `Option<FixedArray<T, N>>` too (`.get(i)`, or copied whole into a `FixedArray` field).
+- An argument may be an `Option<S>` of such a struct (Anchor's `Option<WrappedI80F48>`): a tag byte, then the struct
+  when present; read its fields after `x !== null`. Helpers take the struct, not the Option.
+- Likewise `Option<Vec<T>>` (or `Vec<T> | null`, or of a FixedVec; Anchor's `Option<Vec<u8>>`): a tag byte, then the
+  Vec. Check `x !== null` before reading it as a list or passing it to a helper that takes the list.
+- A `Vec<u8>` is `bytes` in the IDL, as Anchor writes it (clients pass a Buffer).
+
 ## f64
 
-`f64` holds a 64-bit float as its IEEE bits, for events and accounts that carry one (Borsh writes those 8 bytes; the
+Advanced: for ports whose events or accounts carry a float. `f64` holds a 64-bit float as its IEEE bits, for events and accounts that carry one (Borsh writes those 8 bytes; the
 IDL says `f64`). There is no float arithmetic: `f64FromBits(bits)` makes one from bits the program computed with
 integers (Marginfi's events report I80F48 amounts this way), and `f64Bits(x)` reads them back. Float literals (`1.5`)
 are refused.
@@ -554,7 +557,7 @@ say so: `f64Bits(a) === f64Bits(b)`. Copying an `f64` (to a local, a field, an e
 
 ## Heap values
 
-Locals live on the stack. These live on the heap (32 KiB by default;
+Advanced: where memory comes from when the stack is not enough. Locals live on the stack. These live on the heap (32 KiB by default;
 [`HEAP_SIZE_KIB`](language-basics.md#memory-stack-and-heap) raises it), which is never freed during an instruction:
 
 - strings built at run time (5110 when the heap is full);

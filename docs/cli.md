@@ -6,7 +6,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 
 | Command | What it does |
 | --- | --- |
-| `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow] [--no-agent-files]` | Create a project: `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`, `programs/tsconfig.json` (with the editor plugin), `.vscode/settings.json` (the workspace TypeScript, so the plugin loads), `.gitignore`, the rules for AI coding agents (`AGENTS.md`, `CLAUDE.md` importing it, `.cursor/rules/typesol.mdc`) and the MCP server configuration (`.mcp.json`, `.cursor/mcp.json`; see [ai.md](ai.md)). `<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). `--no-agent-files` leaves out the agent rules and the MCP configuration (`AGENTS.md`, `CLAUDE.md`, `.cursor/`, `.mcp.json`); otherwise `init` lists them after the files it created. Refuses to overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing, and says whether the Agave CLI is missing or only its platform-tools (on Linux arm64, where there is no Agave CLI, the commands that set up the platform-tools' `linux-aarch64` package). |
+| `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow] [--no-agent-files]` | Create a project ([below](#typesol-init)). |
 | `typesol new <program> [--template counter\|vault\|escrow]` | In a project: add a program, `programs/<program>.ts` and `tests/<program>.test.ts` from the template, and its entry in `typesol.json`. Refuses to overwrite files or reuse a name. |
 | `typesol doctor [--url <rpc>] [--config <cli config>]` | Check what building, testing and deploying need: Node.js, the platform-tools (and a `toolchain` row: the tested ones, or untested with both versions), the Solana CLI, Docker (optional: only `--docker` builds need it; it says when they run emulated), its keypair, the RPC (`--url`, a cluster moniker, or the CLI config) and the keypair's balance there, and the project. Each problem is printed with the command that fixes it. The last line says what is ready (building and testing, or also deploying) and what the warnings concern. Exit code 1 when building is impossible (Node.js or the platform-tools missing); deploy pieces are warnings. |
 | `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--toolchain-strict] [--docker [--typesol-version <v>] [--release-record <file>]] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json` (the TypeSOL, TypeScript, clang and platform-tools versions, the host, the SBPF version, each source's sha256 and the binary's). With platform-tools other than the tested ones it warns once; `--toolchain-strict` (or `TYPESOL_TOOLCHAIN=strict`) refuses them. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. `--docker` builds in the pinned container instead ([below](#build---docker-and-verify---docker)). |
@@ -20,7 +20,7 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | `typesol cpi <idl.json> [--out <file.ts>] [--prefix <name>] [--address <base58>]` | Generate TypeSOL helpers that call another program from its IDL. Unsupported instructions are listed on stderr. |
 | `typesol port <idl.json> [--out <file.ts>]` | A TypeSOL program skeleton from an Anchor IDL (0.30+/1.x), to port an Anchor program: account structs, enums, errors, events and one function per instruction with its accounts and arguments, each body `require(false, …NotPorted)` until written. Instruction discriminators (an explicit `@discriminator` when the name derives another), account names and error codes are kept, so existing clients keep working where the layouts match; notes on stderr list where they do not (Borsh `String`/`Option` in account data, a `Vec` that is not the last field). Error codes that skip ahead are kept with `@code`, and zero-copy types keep their IDL `repr`, `serialization` and field names (`@repr`, `@serialization`, `@idlName`). |
 | `typesol client <idl.json> [--out <file.ts>] [--address <base58>]`, `typesol client --address <program id> [--url <rpc>] [--config <cli config>] [--out <file.ts>]` | Generate a typed TypeScript client on `@solana/kit` from an Anchor IDL (0.30+/1.x or TypeSOL); the IDL is validated first, and what the client leaves out is printed as notes. Without a file, the IDL is read from the chain: the canonical Program Metadata IDL, else Anchor's IDL account. See [client.md](client.md). |
-| `typesol verify <program\|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>] [--sbpf …] [--manifest <name.build.json>] [--docker …]` | Rebuild and compare with what is deployed. Without a `.so`, reads the program from the cluster (`--url`, cluster monikers such as `mainnet-beta` included, else the Solana CLI config) at `--address` or the address `typesol.json` records, under any loader (v2, upgradeable v3, v4); prints the upgrade authority (or that the program is immutable) and the last deploy slot, and compares the IDL published with `typesol idl publish` (a published IDL that differs is a mismatch). With a `.so` (e.g. `solana program dump`), compares with that file. Trailing zero padding is ignored; the SBPF version is read from the deployed ELF unless `--sbpf` is given. On a mismatch it prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the deployed build's when a build manifest's binary hash is the deployed bytes' (`--manifest`, `<deployed>.build.json` next to a given `.so`, or the local build's), and what differs; otherwise it says the deployed side's toolchain is unknown (a program on chain records none). A host difference alone is named as such; it counts only between builds of 0.44.1 or earlier, whose programs with 128-bit or signed division linked platform-tools' compiler-builtins (laid out differently by each host package). `--docker` rebuilds in the pinned container and, on a match, prints what was verified ([below](#build---docker-and-verify---docker)). |
+| `typesol verify <program\|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>] [--sbpf …] [--manifest <name.build.json>] [--docker …]` | Rebuild and compare with what is deployed ([below](#typesol-verify)). |
 | `typesol profile <logs.txt\|-> [--program <id>]` | Compute units per TypeScript line from the logs of a `--profile` build's transaction (exit 1 when the logs have no markers). |
 | `typesol help <command>` | Same as `typesol <command> --help`. |
 | `typesol --version` | Print the version. |
@@ -32,6 +32,44 @@ when one fails (an RPC URL can carry an API key). A `--config` file that does no
 Builds (`build`, `deploy`, `verify`, `typesol/testing`) compare the active clang with the one the release is tested
 with (`TESTED_TOOLCHAIN` in `typesol/compiler`: Agave 3.1.10, platform-tools v1.52): another one gets one warning per
 process on stderr. `TYPESOL_TOOLCHAIN=strict` makes it an error everywhere, `warn` is the default.
+
+## typesol init
+
+`typesol init [<dir>] [--name <program>] [--template counter|vault|escrow] [--no-agent-files]` creates a project:
+
+- `typesol.json`, `programs/<name>.ts`, `tests/<name>.test.ts` (LiteSVM), `package.json`, `tsconfig.json`,
+  `programs/tsconfig.json` (with the editor plugin), `.vscode/settings.json` (the workspace TypeScript, so the plugin
+  loads) and `.gitignore`;
+- the rules for AI coding agents (`AGENTS.md`, `CLAUDE.md` importing it, `.cursor/rules/typesol.mdc`) and the MCP
+  server configuration (`.mcp.json`, `.cursor/mcp.json`; see [ai.md](ai.md)). `--no-agent-files` leaves them out
+  (`AGENTS.md`, `CLAUDE.md`, `.cursor/`, `.mcp.json`); otherwise `init` lists them after the files it created.
+
+`<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the
+program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above
+rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). `init` refuses to
+overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing, and
+says whether the Agave CLI is missing or only its platform-tools (on Linux arm64, where there is no Agave CLI, the
+commands that set up the platform-tools' `linux-aarch64` package).
+
+## typesol verify
+
+`typesol verify <program|file.ts> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <cli config>]
+[--sbpf …] [--manifest <name.build.json>] [--docker …]` rebuilds the program and compares it with what is deployed.
+
+- **Without a `.so`** it reads the program from the cluster (`--url`, cluster monikers such as `mainnet-beta` included,
+  else the Solana CLI config) at `--address` or the address `typesol.json` records, under any loader (v2, upgradeable
+  v3, v4). It prints the upgrade authority (or that the program is immutable) and the last deploy slot, and compares
+  the IDL published with `typesol idl publish` (a published IDL that differs is a mismatch).
+- **With a `.so`** (e.g. from `solana program dump`) it compares with that file.
+- Trailing zero padding is ignored; the SBPF version is read from the deployed ELF unless `--sbpf` is given.
+- **On a mismatch** it prints the rebuild's toolchain (clang, platform-tools, host, TypeSOL) and the deployed build's
+  when a build manifest's binary hash is the deployed bytes' (`--manifest`, `<deployed>.build.json` next to a given
+  `.so`, or the local build's), and what differs; otherwise it says the deployed side's toolchain is unknown (a
+  program on chain records none). A host difference alone is named as such; it counts only between builds of 0.44.1
+  or earlier, whose programs with 128-bit or signed division linked platform-tools' compiler-builtins (laid out
+  differently by each host package).
+- `--docker` rebuilds in the pinned container and, on a match, prints what was verified
+  ([below](#build---docker-and-verify---docker)).
 
 ## build --docker and verify --docker
 
