@@ -6,6 +6,26 @@ codes, and says so here.
 
 ## Unreleased
 
+- Docs: the language reference is a guide. docs/language.md is now an overview with the guide's pages and an index of
+  where each construct is described (its old section headings kept, so links to them still land there), and the
+  material moved into pages read in order: docs/language-basics.md (what a program is, one program explained line by
+  line), language-types.md (each type with its bytes, limits and error codes), language-statements.md (exactly which
+  TypeScript is TypeSOL, and a table of what is refused with each message), language-accounts.md, language-pdas.md,
+  language-errors-events.md, language-cpi.md, language-chain.md (sysvars, hashes, signatures, oracles) and
+  language-native.md (porting native programs, marked advanced). Every example on these pages is a complete program,
+  and test/language/docs-examples.test.ts compiles each one, checks that every refused construct of the table is
+  refused with the message it quotes, and that links into the docs land on a heading. docs/language-builtins.md lists
+  every name `"typesol"` exports, generated from lib/typesol.d.ts by `scripts/language-builtins.ts` (`--check` in the
+  tests and in CI). lib/typesol.d.ts gains doc comments only: the 34 exports that had none have one, the comment of
+  `findProgramAddress` sat above `bigEndian` and moves to it, and `isqrt`'s says it takes integers up to `u256` (as the
+  compiler does), not up to `u128`. Corrections found while checking the reference against the compiler: top-level
+  constants are not listed in the IDL (a constant used as a seed is recorded there as a `const` seed); closure
+  parameters need their types where the closure is declared (an arrow written at a call takes them from the
+  parameter); a `@layout borsh` struct's `Vec` may be any field, not only the last; `signer([…])` is written in a
+  declaration or as a helper's argument, not inside a CPI's arguments; a seed list holds at most 15 entries, so signer
+  seeds hold 14 seeds and the bump; arithmetic operators on an `f64` are not refused yet and compute on its bits
+  (documented as a limit). No program compiles differently.
+
 ## 0.45.0 — 2026-11-12
 
 - New: a program builds to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 (the programs and SBPF versions
