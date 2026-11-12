@@ -6,13 +6,13 @@
   "node": "v24.22.2",
   "typescript": "6.0.3",
   "runtime": "a668bf71b7ac6858162a268b76c89be30a8d122ee48cb96eb780d781ae521e47",
-  "builtins": "d1f314cd633e17baa193a2064fd3075b39ab12921dcfa80fa90eab46f47b47e5",
+  "builtins": "6a5e359b0db7871df0ce90da7dfa61664369196b575cb535b0608f1f0431517c",
   "host": "linux-x64",
-  "container": "de9d377f1d814cb9edc7ef663ec4cd9be88ccf1f0a47ca464ec43e1e99700be1"
+  "container": "997c4c5413e4bffb4a370d03847b4e01417a7a220bfd0fc33cff93cc948cd66e"
  },
  "sources": {
   "root": "repo",
-  "commit": "0b721742db8f41b29fba99abdf0154939e2ac9bd"
+  "commit": "01b305caf18d1b44792a9c67661740e5bc8371b3"
  },
  "programs": {
   "examples/counter.ts": {
@@ -98,6 +98,54 @@
    "idl": "3adb8c85de28e51ec264f83d8e2c7eabcce5326c08a550a05808578a311537fb",
    "c": "aa348ae712e04a5dbb756fc0032a3012380fd2cf7b6efd529dfe5ef787bd9ce3",
    "bytes": 69808
+  },
+  "examples/counter.ts:v1": {
+   "so": "a1318a2347669aa2b9717f42a21f0133a699a432aeaae3a3215f702f4ae74bf3",
+   "idl": "01ff0274389c04c6fdfefec84f25ab36d000a9b0a6ff658ce7cb5b0c115f35b7",
+   "c": "215a2dd92e814423dc3f8dfebea358ba7139d60ad80ca69f24a3e16731026d28",
+   "bytes": 11152
+  },
+  "examples/escrow.ts:v1": {
+   "so": "7b9d87f81dfd7529aae5f06f25b8db7415372ce4e365da994c60fea36d01c44c",
+   "idl": "ac76534440e3e742451ba8af0194cf72b945f290d3fad245a1be27526d7860d2",
+   "c": "d56644215484453eba844686463ac61c00062dea2d633c2fd941b2d8e7a29ac4",
+   "bytes": 21472
+  },
+  "showcase/mainnet/phoenix/phoenix.ts:v1": {
+   "so": "a3379bc2f02d040ca86df35a04bf67f7ca0e3f34ca1cbc9bc6e20589aefeb75f",
+   "idl": "206f7aa4868fdbba00cb4c2733004d58f2dac2b2c487761d556afe85710193a8",
+   "c": "223bcc049105f30d9b1e536b4db82cde23c8f8042ed2336aba2c183919314ef3",
+   "bytes": 250808
+  },
+  "showcase/mainnet/marginfi/marginfi.ts:v1": {
+   "so": "42f07c0291affd036a6568868aa2b21f84bcec60ac99fd379654ca663b774fb9",
+   "idl": "7653fa760726c94a3decf72b65b2159210cad6b8b358abaebbf74dc32196eb09",
+   "c": "4cafd41ad97e6465ab595059f066ba40dfb8e88db85900006cea4e86c6f787b7",
+   "bytes": 1386368
+  },
+  "examples/counter.ts:v2": {
+   "so": "a2cb79dfa99cef38bf3a499bea00758a730fcfd62e085f489e4ff2f9831226ca",
+   "idl": "01ff0274389c04c6fdfefec84f25ab36d000a9b0a6ff658ce7cb5b0c115f35b7",
+   "c": "215a2dd92e814423dc3f8dfebea358ba7139d60ad80ca69f24a3e16731026d28",
+   "bytes": 10616
+  },
+  "examples/escrow.ts:v2": {
+   "so": "1461601428bd7e135b249189d3409e90cb334ebec0ced3a4fbd2f1f2958614a8",
+   "idl": "ac76534440e3e742451ba8af0194cf72b945f290d3fad245a1be27526d7860d2",
+   "c": "d56644215484453eba844686463ac61c00062dea2d633c2fd941b2d8e7a29ac4",
+   "bytes": 20920
+  },
+  "showcase/mainnet/phoenix/phoenix.ts:v2": {
+   "so": "f005b55849ac7e0746ec49b50501b421bff191e01321d699ae5f0c1d5b0e8c59",
+   "idl": "206f7aa4868fdbba00cb4c2733004d58f2dac2b2c487761d556afe85710193a8",
+   "c": "223bcc049105f30d9b1e536b4db82cde23c8f8042ed2336aba2c183919314ef3",
+   "bytes": 247672
+  },
+  "showcase/mainnet/marginfi/marginfi.ts:v2": {
+   "so": "37bee71c73de5ccfa86281e0fae6ca9a2c979b764378c9a8f99c3773ad80a17c",
+   "idl": "7653fa760726c94a3decf72b65b2159210cad6b8b358abaebbf74dc32196eb09",
+   "c": "4cafd41ad97e6465ab595059f066ba40dfb8e88db85900006cea4e86c6f787b7",
+   "bytes": 1391816
   }
  }
 }
