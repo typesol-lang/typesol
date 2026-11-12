@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { heapVecOf, resolveScalarType, structNameOf, typesolName } from "../analyze.js";
 import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, PUBKEY, STRING, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount, vecPlace, emptySizeC } from "./shared.js";
+import { U64, BOOL, PUBKEY, STRING, F64_TO_INT, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount, vecPlace, emptySizeC } from "./shared.js";
 import { AliasEmitter } from "./alias.js";
 
 /**
@@ -439,6 +439,7 @@ export abstract class StorageEmitter extends AliasEmitter {
     const v = this.expr(n, U64);
     const idx = v.literal !== undefined ? this.literal(v.literal, U64, n) : v;
     if (idx.type.kind !== "int") this.fail(n, "array index must be an integer");
+    if (idx.type.f64) this.fail(n, F64_TO_INT("an index"));
     const t = this.indexTemp(idx);
     return t;
   }
@@ -468,6 +469,7 @@ export abstract class StorageEmitter extends AliasEmitter {
     const v = this.expr(n, U64);
     const idx = v.literal !== undefined ? this.literal(v.literal, U64, n) : v;
     if (idx.type.kind !== "int") this.fail(n, "array index must be an integer");
+    if (idx.type.f64) this.fail(n, F64_TO_INT("an index"));
     const t = this.indexTemp(idx);
     this.line(`if (${t} >= ${typeof len === "number" ? `${len}ULL` : len}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: array index out of bounds");`);
     return t;

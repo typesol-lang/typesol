@@ -73,8 +73,20 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   is no float arithmetic (this would compute on the bits); compute in integers and make the result with
   f64FromBits(bits), or take an f64's bits with f64Bits(x)". Equality (`===`, `!==`, `==`, `!=`, `switch`) is
   refused too, since equal bits are not equal numbers (NaN, 0 and -0): "… to compare the bits, write f64Bits(a) ===
-  f64Bits(b)". No program of the repository used one (test/language/f64-operators.test.ts; docs/language-types.md
-  and the refused-constructs table of docs/language-statements.md).
+  f64Bits(b)". `??` over an `Option<f64>` now gives an `f64` whatever the other side expects, so `(a.o ?? a.x) * 2n`,
+  `a.n < (a.o ?? a.x)`, `min(a.n, a.o ?? a.x)` and `a.n += a.o ?? a.x` are refused too (they computed on the bits).
+- Changed: an `f64` no longer converts to an integer, nor an integer to an `f64`. `a.n = a.x`, `const z: u64 = a.x`,
+  an `f64` passed to a helper's `u64` parameter or returned as a `u64`, `xs.get(a.x)`, `u64(a.x)`, `u8(a.x)`,
+  `u128(a.x)` and `a.x as u64` compiled and used the bits as the integer; `a.n as f64` made an integer's value the
+  bits. They are refused: "an f64 is not an integer, so it is not converted to u64: it is held as its IEEE 754 bits,
+  and the integer would be those bits; to use the bits, write f64Bits(x)" (and "a u64 is not an f64, so it is not
+  converted: an f64 is made from its IEEE 754 bits with f64FromBits(bits)"). An `f64` in a template string or `log`
+  printed its bits as a decimal integer; it is refused: "an f64 cannot be written as text: there is no float
+  formatting, and the digits would be its IEEE 754 bits read as an integer; to show the bits, write f64Bits(x)".
+  Copying an `f64` to an `f64` (fields, locals, structs, events, `Option<f64>`, ternaries, `??`, helper arguments and
+  returns typed `f64`) compiles as before, and so does an `f64` seed (its 8 bytes, as Rust's `to_le_bytes`). No
+  program of the repository used a conversion (test/language/f64-operators.test.ts; docs/language-types.md and the
+  refused-constructs table of docs/language-statements.md).
 - Fixed: signer seeds were limited to 14 seeds and the bump, one fewer than Solana allows: the limit of 15 entries,
   meant for lists the derivation adds the bump to, was applied to signer seeds and `createProgramAddress` lists too,
   which end with their bump. They now take 16 entries, 15 seeds and the bump (Solana's `MAX_SEEDS`, checked by

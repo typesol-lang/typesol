@@ -597,6 +597,8 @@ may gain a hint line.
 | unary minus on unsigned | `b.value = -n;` | unary minus needs a signed integer (i8 … i128) |
 | operators on `f64` | `b.value = r.x + r.x;` (`r.x: f64`) | + on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float arithmetic (this would compute on the bits); compute in integers and make the result with f64FromBits(bits), or take an f64's bits with f64Bits(x) |
 | `===` on `f64` | `if (r.x === r.y) {}` (`f64` fields) | === on an f64 is not supported: an f64 is held as its IEEE 754 bits, and equal bits are not equal numbers (NaN would equal itself, 0 would not equal -0); to compare the bits, write f64Bits(a) === f64Bits(b) |
+| an `f64` as an integer | `b.value = r.x;` (`r.x: f64`) | an f64 is not an integer, so it is not converted to u64: it is held as its IEEE 754 bits, and the integer would be those bits; to use the bits, write f64Bits(x) |
+| an `f64` as text | ``log(`${r.x}`);`` (`r.x: f64`) | an f64 cannot be written as text: there is no float formatting, and the digits would be its IEEE 754 bits read as an integer; to show the bits, write f64Bits(x) |
 | `?.` on a non-optional value | `const v = b?.value;` | ?. works on optional accounts and Option<struct> values (other values are never null) |
 | `let` struct references | `let q = b.home;` | bind struct references with const |
 | nested destructuring | `const { home: { x } } = b;` | nested destructuring is not supported; destructure in two steps |

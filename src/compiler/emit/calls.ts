@@ -214,6 +214,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`TS_Str ${t} = ${v.c};`);
           this.line(`sol_log_((const char *)${t}.ptr, ${t}.len);`);
         } else {
+          this.refuseF64Text(args[0], v.type);
           let value = v.literal !== undefined ? this.expect(v, U64, args[0]) : v;
           // An Option TypeScript has narrowed to its value (after `x === null` was ruled out): log the value.
           if (value.type.kind === "option") {
@@ -370,8 +371,10 @@ export abstract class CallEmitter extends ExpressionEmitter {
         // An f64 is its IEEE bits held as a u64: both are the same value, typed for the IDL and for TypeScript.
         if (args.length !== 1) this.fail(node, `${builtin}(x) takes one ${builtin === "f64Bits" ? "f64" : "u64"}`);
         const v = this.expr(args[0]);
-        const x = v.literal !== undefined ? this.literal(v.literal, U64, args[0]) : this.expect(v, U64, args[0]);
-        return { c: x.c, type: builtin === "f64Bits" ? U64 : { kind: "int", name: "u64", f64: true } };
+        const f64: Value["type"] = { kind: "int", name: "u64", f64: true };
+        const from = builtin === "f64Bits" ? f64 : U64;
+        const x = v.literal !== undefined && builtin === "f64FromBits" ? this.literal(v.literal, U64, args[0]) : this.expect(v, from, args[0]);
+        return { c: x.c, type: builtin === "f64Bits" ? U64 : f64 };
       }
       case "isqrt": {
         if (args.length !== 1) this.fail(node, "isqrt(x) takes one unsigned integer");

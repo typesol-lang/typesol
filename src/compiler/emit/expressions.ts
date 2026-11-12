@@ -2,7 +2,7 @@ import ts from "typescript";
 import { base58 } from "../../keys.js";
 import { calleeName, resolveValueType } from "../analyze.js";
 import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, optionKey, sameType, typeName } from "../model.js";
-import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, type Value, cString, intLiteral, scalarStorageC, optC, valueC, vecCount } from "./shared.js";
+import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, F64_TEXT, F64_TO_INT, INT_TO_F64, type Value, cString, intLiteral, scalarStorageC, optC, valueC, vecCount } from "./shared.js";
 import { StorageEmitter } from "./storage.js";
 import { unsupportedSyntax } from "../hints.js";
 
@@ -46,9 +46,29 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       return { c: `((${optC(want.inner)}){1, ${stored}})`, type: want };
     }
     if (v.type.kind === "option" && want.kind !== "option") return this.expect(this.unwrap(v, node), want, node);
+    this.refuseF64Conversion(node, v.type, want);
     if (v.literal !== undefined && want.kind === "int") return this.literal(v.literal, want, node);
     if (!sameType(v.type, want)) this.fail(node, `expected ${typeName(want)}, got ${typeName(v.type)}`);
     return v;
+  }
+
+  /**
+   * An f64 is not an integer: its u64 of bits never becomes an integer's value, nor an integer an f64's, without
+   * saying so with f64Bits(x) / f64FromBits(bits). (Options are compared by their inner types.)
+   */
+  /** An f64 as text (a template, log()): the digits would be its bits' integer, not the number. */
+  protected refuseF64Text(node: ts.Node, t: ValueType): void {
+    const inner = t.kind === "option" ? (t.inner as ValueType) : t;
+    if (inner.kind === "int" && inner.f64) this.fail(node, F64_TEXT);
+  }
+
+  protected refuseF64Conversion(node: ts.Node, from: ValueType, to: ValueType): void {
+    const inner = (t: ValueType): ValueType => (t.kind === "option" ? (t.inner as ValueType) : t);
+    const a = inner(from);
+    const b = inner(to);
+    if (a.kind !== "int" || b.kind !== "int" || !a.f64 === !b.f64) return;
+    if (a.f64) this.fail(node, F64_TO_INT(typeName(b)));
+    this.fail(node, INT_TO_F64(typeName(a)));
   }
 
   /**
@@ -206,6 +226,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       if (!t || t.kind === "vecArg" || t.kind === "dataEnumArg")
         this.fail(node.type, "`as` names an integer, boolean, Pubkey, enum, option or string type the value already has");
       const v = this.expr(node.expression, t);
+      if (!v.isNull) this.refuseF64Conversion(node, v.type, t);
       // Not a conversion: `x as u64 | null` does not make an Option of a u64.
       if (v.literal === undefined && !v.isNull && !sameType(v.type, t))
         this.fail(node, `this is a ${typeName(v.type)}, not a ${typeName(t)}: \`as\` does not convert (use u64(x) and the like for integers)`);
@@ -627,6 +648,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
   protected toText(node: ts.Expression, converted?: { yes: boolean }): string {
     const v = this.expr(node);
     if (v.type.kind === "string") return v.c;
+    this.refuseF64Text(node, v.type);
     if (converted) converted.yes = true;
     if (v.type.kind === "option" && v.type.inner.kind === "pubkey") {
       // `${key}` of an Option<Pubkey> (or Hash), narrowed or not: its base58, or "null" like JS.
@@ -743,7 +765,9 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const inner = left.type.inner;
     if ((inner as { kind: string }).kind === "struct") this.fail(node, "?? works on Options of integers, booleans and Pubkeys");
     const nullable = (t: ts.Type): boolean => !!(t.flags & ts.TypeFlags.Null) || (t.isUnion() && t.types.some(nullable));
-    const type: ValueType = hint ?? (nullable(this.checker.getTypeAtLocation(node)) ? left.type : inner);
+    // Over an Option<f64> the result is an f64 whatever the context expects: an integer hint would make it the bits.
+    const f64 = inner.kind === "int" && inner.f64 === true;
+    const type: ValueType = (f64 ? undefined : hint) ?? (nullable(this.checker.getTypeAtLocation(node)) ? left.type : inner);
     const lo = this.tmp("opt");
     this.line(`${optC(inner)} ${lo} = ${left.c};`);
     const t = this.tmp("nn");
@@ -1105,6 +1129,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const v = this.expr(arg);
     if (v.literal !== undefined) return this.literal(v.literal, to, arg);
     if (v.type.kind !== "int") this.fail(arg, `${to.name}() needs an integer`);
+    if (v.type.f64) this.fail(arg, F64_TO_INT(to.name));
     if (v.type.name === to.name) return v;
     const from = INT_INFO[v.type.name];
     const target = INT_INFO[to.name];

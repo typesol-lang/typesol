@@ -201,6 +201,16 @@ const REFUSED: [example: string, program: string, stable: string][] = [
     "+ on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float arithmetic",
   ],
   [
+    "b.value = r.x;",
+    `${H}export interface R { x: f64; }\nexport function f(b: Mut<Box>, r: Mut<R>): void { b.value = r.x; }`.replace("type u64,", "type u64, type f64,"),
+    "an f64 is not an integer, so it is not converted to u64",
+  ],
+  [
+    "log(`${r.x}`);",
+    `${H}export interface R { x: f64; }\nexport function f(r: Mut<R>): void { log(\`\${r.x}\`); }`.replace("type u64,", "type u64, type f64,"),
+    "an f64 cannot be written as text",
+  ],
+  [
     "if (r.x === r.y) {}",
     `${H}export interface R { x: f64; y: f64; }\nexport function f(r: Mut<R>): void { if (r.x === r.y) {} }`.replace("type u64,", "type u64, type f64,"),
     "to compare the bits, write f64Bits(a) === f64Bits(b)",

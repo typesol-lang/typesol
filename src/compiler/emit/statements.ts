@@ -1888,7 +1888,12 @@ export abstract class StatementEmitter extends CpiEmitter {
         rhs = this.expr(valueNode);
         if (rhs.literal !== undefined) rhs = this.literal(rhs.literal, U64, valueNode);
         if (rhs.type.kind !== "int") this.fail(valueNode, "shift amounts must be integers");
-      } else rhs = this.expect(this.expr(valueNode, place.type), place.type, valueNode);
+      } else {
+        rhs = this.expr(valueNode, place.type);
+        // `n += x` with an f64 on either side is the operator on an f64, refused as such (not as a conversion).
+        this.refuseF64(target, `${ts.tokenToString(op)}=`, current, rhs);
+        rhs = this.expect(rhs, place.type, valueNode);
+      }
       current = this.settle(current, mark);
       this.refuseF64(target, `${ts.tokenToString(op)}=`, current, rhs);
       this.line(place.write(this.arith(op, current, rhs, target).c) + ";");
