@@ -7,7 +7,7 @@ with TypeSOL are out of scope; their authors audit them.
 
 ## Scope
 
-In order of priority. Line counts at 0.44.0 (November 2026).
+In order of priority. Line counts at 0.45.0 (November 2026).
 
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |
@@ -22,7 +22,7 @@ In order of priority. Line counts at 0.44.0 (November 2026).
 | 2 | Interface | `src/compiler/idl.ts`, `src/tools/clientgen.ts` | 2,460 | The IDL and the generated client must describe the program exactly (a mismatch can make clients sign the wrong thing) |
 | 3 | Build and tooling | `src/compiler/toolchain.ts`, `src/cli.ts`, `src/workspace.ts`, `src/tools/` | | Build flags, deploy and verification commands |
 
-The language surface is `lib/typesol.d.ts` (2,581 lines): every type and built-in a program can use, with its
+The language surface is `lib/typesol.d.ts` (2,619 lines): every type and built-in a program can use, with its
 documented behavior. [docs/language.md](language.md) is the reference; [docs/architecture.md](architecture.md) maps
 the code, [docs/runtime.md](runtime.md) the runtime's conventions.
 
