@@ -24,7 +24,8 @@ it("counts", async () => {
 ## Instructions
 
 `t.pda(...seeds)` derives this program's PDA for the seeds; `t.pdaWithBump(...seeds)` gives `[address, bump]`, for an
-instruction that takes the bump as an argument.
+instruction that takes the bump as an argument (prefer a stored bump:
+[PDAs](language-pdas.md#checking-a-pda-in-the-body)).
 
 `t.ix(name, args, accounts, remaining?)` builds one instruction.
 
@@ -73,7 +74,10 @@ looks like one.
 
 ### Expecting an error
 
-A test that a check holds sends the transaction that breaks it and compares the code:
+A test that a check holds sends the transaction that breaks it and compares the code. The program here is the vault
+of [seeds of other widths](#seeds-of-other-widths), whose `spend` requires `amount <= 10n` and whose only error enum is
+`export enum VaultError { TooMuch = "Amount above the limit" }`, so `TooMuch` is 6000 (in the guide's
+[`spend`](language-accounts.md#constraints), `NotOwner` comes first and `TooMuch` is 6001):
 
 ```ts
 const res = await t.send(alice, t.ix("spend", { amount: 50n }, { owner: alice, vault }));

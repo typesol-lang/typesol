@@ -85,13 +85,19 @@ one that breaks several gets it too except in the cases listed after the steps:
 Where TypeSOL's order differs, only a transaction that breaks two of these checks at once sees it:
 
 - Anchor decodes the arguments first, and checks `mut` with the constraints (after seeds and the associated token
-  account). TypeSOL keeps both earlier and later as above, which keeps binaries smaller.
+  account). TypeSOL decodes the arguments later, after every account's type (step 3), and checks `mut` earlier, with
+  the account's type (step 1), which keeps binaries smaller. An instruction with an [account
+  group](language-accounts.md#account-groups) decodes its arguments first, as Anchor does, then checks each account in
+  order, a group's constraints right after the group's accounts and the other constraints last.
 - Too few accounts fails with 3005 before any account is checked; Anchor fails on the first account it cannot find.
 - A program account's size is checked before its discriminator; Anchor's `Account::try_from` reads the discriminator
   first (3001 when there are fewer than 8 bytes, 3002 when it differs) and then decodes the data (3003). So an account
   of this program with another discriminator and fewer bytes than the struct fails with 3003 here and 3002 under
   Anchor, and one with fewer than 8 bytes of data with 3003 here and 3001 under Anchor.
-- Accounts the instruction creates (`Init<…>`, `create(…)`) are created in the body, after every other check, where
-  Anchor creates them before checking the other accounts.
+- Accounts created by the statements a body starts with (`acct.create(…)`, `createIfNeeded(…)`, `createPda(…)`,
+  after its `constraint(…)` lines) are created after steps 1 to 3 and before the constraints of step 4, as Anchor
+  creates `init` accounts before checking the other accounts' constraints ([creating
+  accounts](language-accounts.md#creating-accounts)). A create written after other statements runs where it is, after
+  every check, and so do all creates in an instruction with an account group.
 - TypeSOL refuses any two writable parameters naming one account (2040) unless one is `Dup<…>`, where Anchor only compares program and token
   accounts: a signer passed as two writable parameters fails with 2040 here and later, or not at all, under Anchor.

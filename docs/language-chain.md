@@ -1,7 +1,8 @@
 # Sysvars, hashes, signatures and oracles
 
-What a program can read from the chain besides its accounts: the clock and other sysvars, hashes and signature checks,
-the transaction's other instructions, price oracles and randomness. Part of the [language guide](language.md).
+What a program can read from the chain besides its accounts: the clock ([slot and epoch](glossary.md#slot-and-epoch))
+and other sysvars, hashes and signature checks, the transaction's other instructions, price oracles and randomness.
+Part of the [language guide](language.md).
 
 ## Sysvars
 
@@ -29,7 +30,7 @@ export function stamp(s: Mut<Stamp>): void {
 | `minimumBalance(account)`, `rentExempt(space)` | Rent: the rent-exempt minimum for an account, or for `space` bytes |
 | `slotsPerEpoch()`, `epochWarmup()`, `firstNormalEpoch()`, `firstNormalSlot()` | EpochSchedule |
 | `lastRestartSlot()` | LastRestartSlot |
-| `epochRewards()` | EpochRewards, through its syscall (Rust's `EpochRewards::get()`, no account) |
+| `epochRewards()` | EpochRewards, through its [syscall](glossary.md#syscall) (Rust's `EpochRewards::get()`, no account) |
 | `slotHashes: SlotHashesSysvar` | SlotHashes, as an account (too large for the sysvar syscalls) |
 | `history: StakeHistorySysvar` | StakeHistory, as an account |
 
@@ -108,9 +109,9 @@ export function approved(drop: Account<Drop>, ixs: InstructionsSysvar, who: Pubk
 ```
 
 - The receipt, seeded with the drop and the claimer, makes a second claim fail: its address is already in use.
-- `verifyEd25519(instructionsSysvar, signer, message)` returns whether the transaction holds an Ed25519 precompile
-  instruction verifying `message` signed by `signer`. The client adds that instruction; the runtime rejects the
-  transaction if its signature is wrong.
+- `verifyEd25519(instructionsSysvar, signer, message)` returns whether the transaction holds an Ed25519
+  [precompile](glossary.md#precompile) instruction verifying `message` signed by `signer`. The client adds that
+  instruction; the runtime rejects the transaction if its signature is wrong.
 - `verifySecp256k1(hash, recoveryId, r, s, ethAddress)` recovers the secp256k1 signer of `hash` and returns whether it
   is `ethAddress` (an Ethereum address left-padded to 32 bytes), where `hash` is `keccak256(...message)` or
   `ethMessageHash(message)`. The hash must be computed in the program: a passed-in hash could be forged.
@@ -184,8 +185,10 @@ export function settle(player: Signer, bet: Mut<Bet>, randomness: SwitchboardRan
 }
 ```
 
-Commit while `r.seedSlot === currentSlot() - 1n` and store `r.key` and `r.seedSlot`. Settle in a later transaction
-after checking both, with `r.value()` (32 bytes) or `r.valueU64()`, which fail (5111) unless the value was revealed in
-this slot. The example is [`test/fixtures/coinflip.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/coinflip.ts), shortened.
+Commit while `randomness.seedSlot === currentSlot() - 1n` and store `randomness.key` and `randomness.seedSlot`.
+Settle in a later transaction after checking both, with `randomness.value()` (32 bytes) or `randomness.valueU64()`,
+which fail (5111) unless the value was revealed in this slot. Anyone may settle a bet (`player` is any signer): the
+result depends only on the committed randomness and the stored guess, so who sends the transaction changes nothing.
+The example is [`test/fixtures/coinflip.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/coinflip.ts), shortened.
 
 **Next:** [Porting a native program](language-native.md) (advanced), or [test your program](test-your-program.md).

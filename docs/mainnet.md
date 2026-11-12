@@ -192,9 +192,11 @@ registry: the evidence is the command and its output, which anyone can rerun.
 ## Later
 
 - **Upgrade it.** `typesol deploy` again replaces the code at the same address; the accounts keep their bytes. If an
-  account struct changed, existing accounts do not match it: a field added fails with 3003, and a field removed from
-  the middle or moved reads other fields' bytes without an error. Migrate the accounts ([migrating an
-  account](language-accounts.md#migrating-an-account)).
+  account struct changed, existing accounts do not match it. Only the size is checked (at least the struct's): a field
+  added fails with 3003 on an account exactly the old size. On one created with spare space or grown since, it passes
+  with no error: an appended field reads the spare bytes (zero unless written), and an inserted one makes the fields
+  after it read other fields' bytes. A field removed from the middle, or moved, also reads other fields' bytes without
+  an error. Migrate the accounts ([migrating an account](language-accounts.md#migrating-an-account)).
 - **Freeze it.** `solana program set-upgrade-authority <program id> --final` makes the program immutable. It cannot
   be undone.
 - **Close it.** `solana program close <program id> --bypass-warning` returns the rent to the authority. The program

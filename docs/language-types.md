@@ -415,6 +415,11 @@ export function reset(ms: Mut<Multisig>, first: Pubkey): void {
 }
 ```
 
+These show the list operations only: as written, anyone can replace or add to any multisig's owners. The showcase
+multisig ([`showcase/mainnet/multisig/multisig.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/multisig/multisig.ts))
+gives its `setOwners` a `multisigSigner: Seeds<Signer, ["@multisig"], "@multisig.nonce">` parameter: the multisig's
+own PDA must sign, which only its `executeTransaction` does, for a transaction enough owners approved.
+
 - `FixedVec<T, N>` is a list with room for N elements: a u32 length and the room, always 4 + N × size(T) bytes. Any
   field, any number of them, nested structs too. Elements as for FixedArray.
 - `get`, `set`, `push(v)`, `pop()`, `clear()`, `.length`, `for … of`. `push` on a full one fails with 5104.
@@ -543,10 +548,11 @@ Borsh-identical, validated on entry (booleans, enum tags, option tags, string le
 
 ## f64
 
-Advanced: for ports whose events or accounts carry a float. `f64` holds a 64-bit float as its IEEE bits, for events and accounts that carry one (Borsh writes those 8 bytes; the
-IDL says `f64`). There is no float arithmetic: `f64FromBits(bits)` makes one from bits the program computed with
-integers (Marginfi's events report I80F48 amounts this way), and `f64Bits(x)` reads them back. Float literals (`1.5`)
-are refused.
+Advanced: for ports whose events or accounts carry a float.
+
+`f64` holds a 64-bit float as its IEEE bits (Borsh writes those 8 bytes; the IDL says `f64`). There is no float
+arithmetic: `f64FromBits(bits)` makes one from bits the program computed with integers (Marginfi's events report
+I80F48 amounts this way), and `f64Bits(x)` reads them back. Float literals (`1.5`) are refused.
 
 Every operator with an `f64` operand is refused, since the integer operator would compute on the bits: arithmetic,
 bitwise, shifts, unary `-` and `~`, the ordering comparisons, compound assignments, `++` / `--`, and `min`, `max`,
@@ -557,7 +563,9 @@ say so: `f64Bits(a) === f64Bits(b)`. Copying an `f64` (to a local, a field, an e
 
 ## Heap values
 
-Advanced: where memory comes from when the stack is not enough. Locals live on the stack. These live on the heap (32 KiB by default;
+Advanced: where memory comes from when the stack is not enough.
+
+Locals live on the stack. These live on the heap (32 KiB by default;
 [`HEAP_SIZE_KIB`](language-basics.md#memory-stack-and-heap) raises it), which is never freed during an instruction:
 
 - strings built at run time (5110 when the heap is full);

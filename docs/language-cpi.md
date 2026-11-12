@@ -120,7 +120,7 @@ export function makeMint(payer: Mut<Signer>, mint: Init<Mint>, authority: Accoun
 }
 
 export function makeVault(payer: Mut<Signer>, mint: Mint, vault: Init<TokenAccount>, tokenProgram: TokenInterface, systemProgram: SystemProgram): void {
-  vault.create(payer, ["vault", mint.key], mint, vault.key);
+  vault.create(payer, ["vault", payer.key, mint.key], mint, vault.key);
 }
 
 export function openWallet(
@@ -155,8 +155,10 @@ export function openWallet(
   not looked at, so an existing mint may carry others (a permanent delegate, say). Extensions that cannot be checked on
   an existing mint (`nonTransferable`, …) are refused on `createIfNeeded`.
 - **`Init<TokenAccount>`, `InitIfNeeded<TokenAccount>`** without `Ata<…>` (Anchor's `token::mint` / `token::authority`):
-  `vault.create(payer, ["vault", mint.key], mint, authority)` (the authority may be `vault.key` itself) creates a token
-  account at that PDA (or a keypair account with `null`), sized for the mint's extensions under Token-2022.
+  `vault.create(payer, ["vault", payer.key, mint.key], mint, authority)` (the authority may be `vault.key` itself)
+  creates a token account at that PDA (or a keypair account with `null`), sized for the mint's extensions under
+  Token-2022. `makeVault` above makes the vault [`payOut`](#tokens) pays from: the same seeds, with the payer as its
+  owner.
   `createIfNeeded` checks that an existing one has that mint and owner (2014 / 2015), not its delegate or close
   authority (as Anchor).
 - **`Ata<Init<TokenAccount>, "owner", "mint">`, `Ata<InitIfNeeded<TokenAccount>, "owner", "mint">`** (Anchor's `init` /
@@ -279,7 +281,9 @@ export function payOut(admin: Signer, treasury: Mut<SystemAccount>, recipient: M
 ```
 
 `invoke(program, accounts, data, signerSeeds?)` calls any program. The second call above is a raw System transfer
-(u32 tag 2, u64 lamports) out of a treasury PDA.
+(u32 tag 2, u64 lamports) out of a treasury PDA. Its bump comes from the arguments to keep the example short: the
+seeds hold the signer's key, so a caller can only reach a treasury of its own, but a program normally stores the bump
+when it creates the PDA and signs with that one ([PDAs](language-pdas.md#checking-a-pda-in-the-body)).
 
 ### Program
 

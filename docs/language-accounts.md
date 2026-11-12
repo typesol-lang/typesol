@@ -29,7 +29,7 @@ export function like(fan: Signer, note: Mut<Note>, original: Account<Note>): voi
 | Parameter type | Checked before your code runs |
 | --- | --- |
 | `Signer` / `Mut<Signer>` | signed (3010) and, for `Mut`, writable (2000) |
-| `Account<T>` / `Mut<T>` | in this order: initialized (3012 for an empty system account), owned by this program (3007), data large enough (3003, discriminator included), 8-byte discriminator matches (3002); for `Mut`, writable (2000), checked before them. A zero-copy type is checked as Anchor's `AccountLoader` checks it ([below](#zero-copy-types-as-anchors-idl-describes-them)) |
+| `Account<T>` / `Mut<T>` | in this order: initialized (3012 for an empty system account), owned by this program (3007), data large enough (3003, discriminator included), 8-byte discriminator matches (3002); for `Mut`, writable (2000), checked before them. A [zero-copy](glossary.md#zero-copy) type is checked as Anchor's `AccountLoader` checks it ([below](#zero-copy-types-as-anchors-idl-describes-them)) |
 | `Init<T>` | writable; the body creates it ([below](#creating-accounts)) |
 | `InitIfNeeded<T>` | writable; the body creates it when it does not exist, else checks it |
 | `Zeroed<T>` | allocated by the client, not yet initialized, writable ([below](#zeroed-accounts)) |
@@ -88,14 +88,15 @@ export function scratch(payer: Mut<Signer>, extra: Init<Settings>, systemProgram
 
 - **`Init<T>`**: `acct.create(payer, seeds)` derives the PDA, verifies that the account is that address (2006), funds
   the rent from `payer`, allocates the struct's size (up to 10 KiB), assigns it to this program and writes the
-  discriminator; it returns the bump. `create(payer, null)` creates a keypair account instead: the account must sign
-  the transaction (3010; it is a signer in the IDL). A third argument is Anchor's `space = …` (the discriminator
-  included, at least 8 + the struct's size). The new account's fields start at zero.
+  discriminator; it returns the bump. `create(payer, null)` creates a [keypair account](glossary.md#keypair-account)
+  instead: the account must sign the transaction (3010; it is a signer in the IDL). A third argument is Anchor's
+  `space = …` (the discriminator included, at least 8 + the struct's size). The new account's fields start at zero.
 - A payer that is the account being created fails with 4101; an address already in use fails in the System Program
   (0, AccountAlreadyInUse), as under Anchor's `init`. `create` also handles an address someone pre-funded: it tops up
   the rent, then allocates and assigns instead of `create_account` (which would fail).
 - The creates a body starts with (after its `constraint(…)` lines) run before the other accounts' constraints, as
-  Anchor creates `init` accounts first; a create after other statements runs where it is.
+  Anchor creates `init` accounts first; a create after other statements, or in an instruction with an [account
+  group](#account-groups), runs where it is, after the constraints.
 - `create` and `createIfNeeded` are top-level statements of the instruction (`const bump = acct.create(…)` included),
   not inside an `if`, a loop, a helper or a `return` (`… must be a top-level statement of the instruction`), and an
   `Init<T>` the body never creates is an error.
@@ -126,15 +127,18 @@ fresh keypair.
 ### Migrating an account
 
 Upgrading a program leaves its accounts as they are: each keeps its bytes, and the new code reads them with the new
-struct. The discriminator comes from the struct's name, so it still matches; only the size is checked:
+struct. The discriminator comes from the struct's name, so it still matches; only the size is checked, and only that
+the account is at least as long as the struct (8 + its size; fixed-layout structs):
 
-- A field added, anywhere, makes the struct longer than the existing accounts, which then fail with 3003.
+- A field added makes the struct longer. An account exactly the old size fails with 3003. One created with spare
+  space (`create(payer, seeds, space)`) or grown since passes when the new struct fits: a field appended at the end
+  reads the spare bytes (zero unless something wrote them), and a field inserted earlier makes the fields after it
+  read other fields' bytes, with no error.
 - A field removed from the end leaves bytes the new struct ignores. A field removed from the middle, or fields
   reordered, make the fields after it read other fields' bytes, with no error.
 - A renamed struct has another discriminator: existing accounts fail with 3002.
 
-So keep the old struct as it is, under a new name with its old discriminator, and rewrite each account as the new one
-with `Migrate<From, To>`, which resizes it and tops up its rent:
+So rewrite each account as the new struct with `Migrate<From, To>`, which resizes it and tops up its rent:
 
 ```ts
 import { type Migrate, type Mut, type Pubkey, type Signer, type SystemProgram, type u64 } from "typesol";
@@ -192,10 +196,12 @@ export function remove(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">): void
 ```
 
 - `close(account, destination)` closes a program account: its lamports go to `destination` (another writable
-  account) and its data is zeroed. The lamports are value: `HasOne` above lets only the log's owner close it.
-  `grow` needs no such check, since only the payer pays. The account is not used after it in the function, except its `key` (compile
+  account) and its data is zeroed. The account is not used after it in the function, except its `key` (compile
   errors, or 2040 at run time in a helper given one account twice). `CloseTo<A, "dest">` does the same when the
   instruction succeeds ([constraints](#constraints)).
+- Who may call them: the lamports of a closed account are value, so `HasOne` above lets only the log's owner close it.
+  `grow` moves no value out of the account (growing charges the payer, shrinking keeps the lamports in it), so it is
+  left open here; restrict it too if the extra bytes, or their absence, matter to your program.
 - `realloc(account, newSize, payer)` on a `Mut<Struct>`: growing charges the payer the extra rent (at most 10 KiB per
   instruction, 3016); shrinking keeps the lamports in the account; never below the struct. Refused on a struct with a
   growable `Vec` (its push / pop / clear size the account).
@@ -270,8 +276,9 @@ the body, in Anchor's order, and recorded in the IDL (`relations`, `pda`, `addre
 
 ## Two parameters, one account
 
-Two writable parameters can never be the same account: aliasing is refused with error 2040 (also when a remaining
-account written through `.lamports` or `loadAccountMut` is another account of the instruction).
+Two writable parameters can never be the same account: aliasing is refused with error 2040 (also when a [remaining
+account](glossary.md#remaining-accounts) written through `.lamports` or `loadAccountMut` is another account of the
+instruction).
 
 `Dup<Mut<T>>` (Anchor's `dup`) lifts that for one parameter when both accounts are read and written in place (not
 created, closed or `@layout borsh`; a close destination may be one, the rent reaching it through either). A write
@@ -283,6 +290,14 @@ A remaining account can be loaded with `loadAccountMut` once per instruction: lo
 (`rest.get(i)` and `rest.get(j)` with `i == j`) is refused with 2040 too, since the two views would alias. So is a
 second `loadAccountMut` of one `AccountInfo` parameter. Two `Dup<…>` parameters that are one account may each be
 loaded (one array holding both ticks of a position, as Raydium CLMM's tick arrays).
+
+A helper's `Inout<T>` argument ([Inout parameters](language-statements.md#inout-parameters)) must not share storage
+with another argument during the call. Places in accounts that only the transaction can tell apart (in two `Dup<…>`
+accounts, in a writable and a read-only account, in a helper's own account parameters) are compared before the call,
+which fails with 2040 when they overlap. The comparison covers an Inout argument against every other argument passed
+in place (another Inout one, a read-only struct, array or list, an account), so a read-only argument cannot change
+under the helper while it writes; an argument copied for the call shares nothing and is not compared. Native views
+are compared too ([native programs](language-native.md#inout-places-that-may-be-one-account)).
 
 ## How many accounts
 

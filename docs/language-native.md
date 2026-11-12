@@ -33,6 +33,9 @@ export function record(target: Mut<AccountInfo>, value: u64): void {
 }
 ```
 
+`record` is there to show that instructions and a fallback coexist: as written, anyone can overwrite the first 8 bytes
+of any account this program owns.
+
 `/** @fallback */ export function name(): void` is Anchor's `fallback`: it runs when no instruction's discriminator
 matches the data (short data too) instead of failing with 101. A program may have only a fallback, as a native
 program does, or instructions and a fallback.
@@ -62,6 +65,7 @@ export interface Header {
 }
 
 export function bump(market: Mut<AccountInfo>, admin: AccountInfo, amount: u64): void {
+  require(admin.isSigner, ProgramError.MissingRequiredSignature);
   require(market.dataLen === 48n, ProgramError.InvalidAccountData);
   require(loadRaw<Header>(market).version === 1n, ProgramError.InvalidAccountData);
   const header = loadRawMut<Header>(market);
@@ -74,6 +78,8 @@ export function bump(market: Mut<AccountInfo>, admin: AccountInfo, amount: u64):
   program (3007), at least the struct's size (3003); `loadRawMut` also writable (3006) and loaded once. Structs are
   packed, as `#[repr(C, packed)]`.
 - Make the original's own checks (an exact size, its error codes) before the load.
+- An `AccountInfo` is not checked at all, so a key compared with a stored one proves nothing until the account signed:
+  `bump` checks `admin.isSigner` first, as a native program does (`MissingRequiredSignature`).
 - A read-only view can be read where it is made, `loadRaw<Header>(market).inner.b` or `loadRawAt<Prefix>(market,
   576n).tick` (its checks made there). A writable one claims its account once per instruction, so it is bound to a
   const first.
@@ -85,7 +91,7 @@ export function bump(market: Mut<AccountInfo>, admin: AccountInfo, amount: u64):
 ### Borsh accounts
 
 ```ts
-import { type AccountInfo, type Mut, type Option, type Pubkey, type u64, loadBorsh, storeBorsh } from "typesol";
+import { type AccountInfo, type Mut, type Option, type Pubkey, type u64, ProgramError, loadBorsh, programId, require, storeBorsh } from "typesol";
 
 /** @layout borsh */
 export interface StakePool {
@@ -94,7 +100,8 @@ export interface StakePool {
   fee: Option<u64>;
 }
 
-export function deposit(owner: AccountInfo, pool: Mut<AccountInfo>, amount: u64): void {
+export function deposit(pool: Mut<AccountInfo>, amount: u64): void {
+  require(pool.owner === programId(), ProgramError.IllegalOwner);
   const state = loadBorsh<StakePool>(pool);
   state.totalLamports += amount;
   if (state.fee === null) state.fee = 0n;
@@ -107,9 +114,9 @@ SPL Stake Pool's `StakePool` is read with `try_from_slice_unchecked` and written
 Options narrowed and set to null or a value, data enums switched, copied, passed to helpers), and `storeBorsh(acct,
 pool)` encodes it back from byte 0.
 
-- As in Rust: no owner check and no discriminator (check the owner first, as the original does). Bytes after the value
-  are ignored when reading and left as they were when writing (an Option that became None leaves its old bytes behind
-  it).
+- As in Rust: no owner check and no discriminator; check the owner first, as the original does and `deposit` does.
+  Bytes after the value are ignored when reading and left as they were when writing (an Option that became None
+  leaves its old bytes behind it).
 - Data too short, an Option tag or boolean other than 0/1, an enum tag out of range, a String that is not UTF-8 or
   longer than its `FixedString<N>`, or an account too small for the encoding fail with `ProgramError.BorshIoError`.
 - `acct` is a remaining account, a `RemainingAccount` helper parameter or an `AccountInfo` parameter (`Mut<AccountInfo>`
@@ -245,6 +252,10 @@ freed nodes keep their key and value; a LIFO free list ending at the bump index)
 operation of recorded traces ([`test/verification/rbtree-trace.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/verification/rbtree-trace.test.ts)). Every write is the crate's own, so the account
 matches the original after every instruction (Phoenix's order books and trader seats).
 
+`place` and `cancel` show the tree operations only: `trader` is an argument, so as written anyone can rest an order
+under any trader or cancel any trader's order. Phoenix takes the trader from an account that signed and looks up its
+seat in the market's trader tree before it touches the book.
+
 - `length`, `capacity`, `initialize()`, `get(k)` (the value in place, or null), `insert(k, v)` (the node index, or null
   when a new key finds it full; an equal key takes the value), `remove(k)` (the value, read in the freed node, or null),
   `removeAt(i)` (the node at index `i` from `addrOf` or a node's `.index`, removed with `remove`'s writes without
@@ -316,16 +327,11 @@ direct mapping), one that was only read (or written with the bytes it held) is f
 ### Inout places that may be one account
 
 An `Inout<T>` argument ([Inout parameters](language-statements.md#inout-parameters)) must not share storage with
-another argument during the call. Places that only the transaction can tell apart are compared before the call, and
-the call fails with 2040 when they overlap:
-
-- two `Dup<…>` accounts, a writable and a read-only account, or a helper's own account parameters;
-- two native views under `NATIVE_ACCOUNT_WRITES`: `loadRawMut`, `loadRawMutAt`, `rawArrayMutAt` elements and
-  `rbTreeMutAt` nodes.
-
-The comparison covers an Inout argument against every other argument passed in place (another Inout one, a read-only
-struct, array or list, an account), so a read-only argument cannot change under the helper while it writes. An
-argument copied for the call shares nothing and is not compared.
+another argument during the call. In every program, places in accounts that only the transaction can tell apart are
+compared before the call and fail with 2040 when they overlap ([two parameters, one
+account](language-accounts.md#two-parameters-one-account)). Under `NATIVE_ACCOUNT_WRITES` the native views are
+compared the same way: places in two `loadRawMut` or `loadRawMutAt` views, `rawArrayMutAt` elements and `rbTreeMutAt`
+nodes, which may be views of one account.
 
 One pair is left to run time: a place in a `loadRawMut` view passed with the `RemainingAccount` it was loaded from.
 Without `NATIVE_ACCOUNT_WRITES` a second `loadRawMut` of it in the helper fails with 2040; with the flag the helper can

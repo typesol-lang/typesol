@@ -145,15 +145,16 @@ export function locate(book: Mut<Book>, owner: Pubkey, start: u64): void {
 A PDA of this program signs a call to another program when the call is given its seeds, with the bump:
 
 ```ts
-import { type Account, type HasOne, type Mut, type Pubkey, type Signer, type SystemAccount, type SystemProgram, type u64, type u8, signer } from "typesol";
+import { type Account, type HasOne, type Mut, type Pubkey, type Seeds, type Signer, type SystemAccount, type SystemProgram, type u64, type u8, signer } from "typesol";
 
 export interface Config {
   admin: Pubkey;
+  bump: u8;
   treasuryBump: u8;
   feesBump: u8;
 }
 
-export function payOut(admin: Signer, config: HasOne<Account<Config>, "admin">, treasury: Mut<SystemAccount>, fees: Mut<SystemAccount>, to: Mut<SystemAccount>, systemProgram: SystemProgram, amount: u64): void {
+export function payOut(admin: Signer, config: HasOne<Seeds<Account<Config>, ["config"], "bump">, "admin">, treasury: Mut<SystemAccount>, fees: Mut<SystemAccount>, to: Mut<SystemAccount>, systemProgram: SystemProgram, amount: u64): void {
   systemProgram.transfer(treasury, to, amount, ["treasury", admin.key, config.treasuryBump]);
   const feeSigner = signer(["fees", config.feesBump]);
   systemProgram.transfer(fees, to, 1n, feeSigner);
@@ -162,8 +163,12 @@ export function payOut(admin: Signer, config: HasOne<Account<Config>, "admin">, 
 
 Signer seeds are authority: whoever reaches the call spends what the PDA holds. Here `HasOne` lets only the config's
 `admin` call `payOut` (2001 for anyone else), and the bumps come from the config, where they were stored when the
-PDAs were created. Seeds that include the caller, as `["treasury", admin.key, …]` does, also limit a call to the
-caller's own PDA: another signer's seeds give another address, which then does not sign.
+PDAs were created. The config is itself a PDA, `["config"]`, so the program has exactly one: a `HasOne` on any
+`Account<Config>` would accept a config anyone created naming themselves admin, and drain `fees`. Whoever creates that
+one config is the admin, so gate its creation, for example on the upgrade authority
+([ProgramData](language-accounts.md#programdata)). Seeds that include the caller, as `["treasury", admin.key, …]`
+does, also limit a call to the caller's own PDA: another signer's seeds give another address, which then does not
+sign.
 
 - Every CPI takes optional signer seeds as its last argument: a seed list written there with the bump
   (`["treasury", admin.key, bump]`), or a named one. When several PDAs sign one `invoke`, pass a list of seed lists,

@@ -2,8 +2,8 @@
 
 This page explains what a TypeSOL program is: the file, its imports, its instructions and account data, and what the
 compiler derives from them. It is the first page of the [language guide](language.md). It assumes you know
-TypeScript; it does not assume you know Anchor or Rust, and [Solana in a dozen lines](#solana-in-a-dozen-lines)
-introduces the chain's terms.
+TypeScript; it does not assume you know [Anchor](glossary.md#anchor) or Rust, and [Solana in a dozen
+lines](#solana-in-a-dozen-lines) introduces the chain's terms.
 
 ## A program is a TypeScript file
 
@@ -128,8 +128,8 @@ Line by line:
   discriminator and returns the bump. The new account's fields start at zero.
 - **`vote`.** `Mut<Poll>` is an existing account of this program holding a `Poll` (owner, discriminator and size
   checked), writable. `require(condition, error)` fails the instruction when the condition is false, and with it
-  the whole transaction: nothing it wrote is kept. `poll.yes += 1n` is checked: an overflow fails the instruction too. Integer literals are bigints,
-  written `1n`.
+  the whole transaction: nothing it wrote is kept. `poll.yes += 1n` is checked: an overflow fails the instruction
+  too. Integer literals are bigints, written `1n`.
 - **`end`.** Only the creator may end the poll: `require` compares the stored `creator` with the signer. It sets
   `closed`, so later votes fail with 6000, and returns the total. An instruction may return a value: the client reads
   it as return data, and the IDL lists it under `returns`. (The account stays open; `close(account, destination)`
@@ -370,12 +370,15 @@ The cluster sets these; the numbers are those at the time of writing.
   client asks for with a ComputeBudget `SetComputeUnitLimit` instruction; past its budget the transaction fails. To
   see where a program spends them, build with `typesol build --profile` and pass the transaction's logs to `typesol
   profile` ([cli.md](cli.md)), which gives compute units per TypeScript line.
-- **Transaction size.** At most 1,232 bytes: signatures, every account's 32-byte address and the instruction data.
-  It bounds how many accounts and how many bytes of arguments one transaction can carry.
+- **Transaction size.** At most 1,232 bytes, everything included: the signatures (64 bytes each), the message
+  header, every account's 32-byte address (one byte for an account read from an address lookup table), a recent
+  blockhash and each instruction's accounts and data. It bounds how many accounts and how many bytes of arguments one
+  transaction can carry.
 - **Account size.** At most 10 MiB. `create` allocates at most 10 KiB, and an account grows by at most 10 KiB per
   instruction (3016): grow a larger one over several instructions.
-- **Accounts.** At most 32 per instruction, unless the program raises it with
-  [`MAX_ACCOUNTS`](language-accounts.md#how-many-accounts) (5113).
+
+TypeSOL sets one more: at most 32 accounts per instruction (5113), unless the program raises it with
+[`MAX_ACCOUNTS`](language-accounts.md#how-many-accounts).
 
 ## Next
 
