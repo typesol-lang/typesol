@@ -169,16 +169,68 @@ export function linkSharedObject(objects: string[], outSo: string, tc: Toolchain
   const missing = unresolvedSymbols(readFileSync(outSo)).filter((s) => !isSyscall(s));
   if (missing.length) {
     rmSync(outSo, { force: true });
+    // Another clang may call a builtin the tested one never does: say that first, as it is then the likely cause.
+    let info: ToolchainInfo | undefined;
+    try {
+      info = toolchainInfo(tc);
+    } catch {
+      /* the version cannot be read: no claim about it */
+    }
+    const t = TESTED_TOOLCHAIN;
     throw new Error(
-      `the program calls ${missing.join(", ")}, which neither the runtime nor libc defines and the SBF loader cannot resolve ` +
-        `(a compiler builtin missing from runtime/typesol_builtins.c is a TypeSOL bug: please report it with the program)`,
+      (info && !info.tested
+        ? `this toolchain is not the tested one (${shortClang(info.clang)}${info.platformTools ? `, platform-tools ${info.platformTools}` : ""}; ` +
+          `TESTED_TOOLCHAIN is ${shortClang(t.clang)}, platform-tools ${t.platformTools}), and its clang may call compiler builtins the tested one ` +
+          `does not, which runtime/typesol_builtins.c does not define: build with the tested toolchain (${INSTALL_TESTED_TOOLCHAIN[1]}). `
+        : "") +
+        `the program calls ${missing.join(", ")}, which neither the runtime nor libc defines and the SBF loader cannot resolve as a syscall ` +
+        `(with the tested toolchain, a compiler builtin missing from runtime/typesol_builtins.c is a TypeSOL bug: please report it with the program)`,
     );
   }
 }
 
-/** Syscalls the SBF loader resolves by name: `abort` and the `sol_*` family. */
+/**
+ * The syscalls a TypeSOL program may leave to the SBF loader: every one the SDK's headers declare (`@SYSCALL` in
+ * platform-tools-sdk/sbf/c/inc/sol/inc/*.inc) and every one runtime/typesol_rt.h declares itself, with `abort`.
+ * test/cli/toolchain.test.ts checks that this is exactly that set.
+ */
+export const SYSCALLS: readonly string[] = [
+  "abort",
+  "sol_alt_bn128_compression",
+  "sol_alt_bn128_group_op",
+  "sol_big_mod_exp",
+  "sol_blake3",
+  "sol_create_program_address",
+  "sol_curve_validate_point",
+  "sol_get_clock_sysvar",
+  "sol_get_epoch_rewards_sysvar",
+  "sol_get_epoch_schedule_sysvar",
+  "sol_get_last_restart_slot",
+  "sol_get_rent_sysvar",
+  "sol_get_return_data",
+  "sol_get_stack_height",
+  "sol_invoke_signed_c",
+  "sol_keccak256",
+  "sol_log_",
+  "sol_log_64_",
+  "sol_log_compute_units_",
+  "sol_log_data",
+  "sol_log_pubkey",
+  "sol_memcpy_",
+  "sol_memmove_",
+  "sol_memset_",
+  "sol_panic_",
+  "sol_poseidon",
+  "sol_remaining_compute_units",
+  "sol_secp256k1_recover",
+  "sol_set_return_data",
+  "sol_sha256",
+  "sol_try_find_program_address",
+];
+
+/** Whether the SBF loader resolves `name` as a syscall for a TypeSOL program (one of SYSCALLS). */
 export function isSyscall(name: string): boolean {
-  return name === "abort" || name.startsWith("sol_");
+  return SYSCALLS.includes(name);
 }
 
 /** The undefined symbols of an SBF shared object's dynamic symbol table (what the loader resolves as syscalls). */

@@ -161,7 +161,8 @@ export interface BuiltProgram {
 
 /**
  * The program built for a test: the existing build when it is up to date (same sources, runtime header, TypeSOL,
- * TypeScript, clang and platform-tools versions, host, SBPF version and address, not a --profile build, and the .so the manifest records),
+ * TypeScript, clang and platform-tools versions, host, SBPF version and address, not a --profile build, and the .so the manifest records;
+ * for a `build --docker` build, the same sources, SBPF version and address and the .so it records, on any host),
  * else a fresh one. Concurrent callers (parallel test workers) wait for each other instead of building over each other.
  */
 export function buildForTest(ws: Workspace, name: string): BuiltProgram {
@@ -170,6 +171,12 @@ export function buildForTest(ws: Workspace, name: string): BuiltProgram {
     const { address } = programAddress(ws, name);
     const current = upToDateBuild(paths, address, ws.sbpf);
     if (current) return { ...current, rebuilt: false };
+    // A container build whose sources changed is out of date: the test builds locally over it, and says so.
+    if (hasContainerBuild(paths))
+      console.error(
+        `note: ${path.relative(process.cwd(), paths.outDir) || "."} held a --docker build that is out of date (its sources, SBPF version or address changed); ` +
+          `the test builds it with the local toolchain: run \`typesol build --docker\` again before deploying`,
+      );
     const result = build(paths.entry, paths.outDir, address, { sbpf: ws.sbpf });
     writeClient(result.idl, path.join(paths.outDir, `${result.model.name}.client.ts`));
     return { address, soPath: result.soPath, idl: result.idl, rebuilt: true };
@@ -177,6 +184,16 @@ export function buildForTest(ws: Workspace, name: string): BuiltProgram {
 }
 
 const sha256 = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+
+/** Whether the program's build manifest records a container (`build --docker`). */
+function hasContainerBuild(paths: ProgramPaths): boolean {
+  try {
+    const file = path.join(paths.outDir, `${path.basename(paths.entry).replace(/\.ts$/, "")}.build.json`);
+    return !!(JSON.parse(readFileSync(file, "utf8")) as BuildManifest).container;
+  } catch {
+    return false;
+  }
+}
 
 /** The existing build of a program if building it again would give the same files, else undefined. */
 function upToDateBuild(paths: ProgramPaths, address: string, sbpf: Sbpf): Omit<BuiltProgram, "rebuilt"> | undefined {
@@ -192,14 +209,23 @@ function upToDateBuild(paths: ProgramPaths, address: string, sbpf: Sbpf): Omit<B
   } catch {
     return undefined;
   }
-  if (manifest.compiler !== COMPILER_VERSION || manifest.typescript !== ts.version || manifest.sbpf !== sbpf || manifest.profile) return undefined;
+  if (manifest.sbpf !== sbpf || manifest.profile) return undefined;
   if ((idl as { address?: string }).address !== address || !manifest.sources || typeof manifest.sources !== "object") return undefined;
   if (sha256(readFileSync(files.so)) !== manifest.binary) return undefined;
+  // A `build --docker` build was made by the container's TypeSOL, TypeScript and toolchain, on its linux/x64: none of
+  // those is this machine's, so they are not compared. It is up to date while the program's sources are the ones it
+  // records (and its binary the one it records, above); a test never replaces it with a local build because of the
+  // host. Its runtime files are the container's TypeSOL version's: compared only when that is this version.
+  const container = !!manifest.container;
+  if (!container && (manifest.compiler !== COMPILER_VERSION || manifest.typescript !== ts.version)) return undefined;
   const root = path.dirname(paths.entry);
   for (const [rel, hash] of Object.entries(manifest.sources)) {
-    const file = rel.startsWith("<runtime>/") ? path.join(RUNTIME_DIR, rel.slice("<runtime>/".length)) : path.resolve(root, rel);
+    const runtime = rel.startsWith("<runtime>/");
+    if (runtime && container && manifest.compiler !== COMPILER_VERSION) continue;
+    const file = runtime ? path.join(RUNTIME_DIR, rel.slice("<runtime>/".length)) : path.resolve(root, rel);
     if (!existsSync(file) || sha256(readFileSync(file)) !== hash) return undefined;
   }
+  if (container) return manifest.sources[path.basename(paths.entry)] ? { address, soPath: files.so, idl } : undefined;
   // A new import changes the importing file, so every source of the current program is in the list; the runtime (its
   // header and its builtins) and the entry must be there too (a manifest from another layout or an older release).
   if (!manifest.sources["<runtime>/typesol_rt.h"] || !manifest.sources["<runtime>/typesol_builtins.c"] || !manifest.sources[path.basename(paths.entry)])

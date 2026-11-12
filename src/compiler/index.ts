@@ -86,6 +86,12 @@ export interface ContainerIdentity {
     commit: string;
     record?: { kind: "package" | "file" | "repository"; location: string; sha256: string };
   };
+  /**
+   * The TypeSOL package's npm dependencies, installed by `npm ci` from this lock (every package checked against the
+   * integrity it records): `docker/deps/<version>.lock.json`, its sha256, and whether it came from the running
+   * package or from the version's own (checked) tarball (recorded from 0.45.0 on).
+   */
+  deps?: { path: string; sha256: string; source: "package" | "tarball" };
 }
 
 const sha256 = (data: Buffer | string) => createHash("sha256").update(data).digest("hex");
@@ -161,11 +167,19 @@ export function toolchainDifferences(a: Partial<BuildManifest>, b: Partial<Build
   // The same clang gives the same object code on each host measured. Before 0.45.0 programs linked platform-tools'
   // compiler-builtins, which each host package splits into archive members differently, so one with 128-bit or signed
   // division linked to another layout on another host; a build that links the runtime's builtins (its manifest lists
-  // them among the sources) gives the same bytes on each host measured (docs/stability.md).
+  // them among the sources) gives the same bytes on each host measured (docs/stability.md). Between two such builds
+  // the host is not a difference when both hosts were measured, and "host (not measured)" when one was not.
   const linksRuntimeBuiltins = (m: Partial<BuildManifest>) => !!m.sources?.["<runtime>/typesol_builtins.c"];
-  if (a.host && b.host && (a.host.os !== b.host.os || a.host.arch !== b.host.arch) && !(linksRuntimeBuiltins(a) && linksRuntimeBuiltins(b))) out.push("host");
+  if (a.host && b.host && (a.host.os !== b.host.os || a.host.arch !== b.host.arch)) {
+    if (!(linksRuntimeBuiltins(a) && linksRuntimeBuiltins(b))) out.push("host");
+    else if (!MEASURED_HOSTS.includes(`${a.host.os}-${a.host.arch}`) || !MEASURED_HOSTS.includes(`${b.host.os}-${b.host.arch}`))
+      out.push("host (not measured)");
+  }
   return out;
 }
+
+/** The hosts (`<os>-<arch>`) on which programs were measured to build to the same bytes (docs/stability.md). */
+export const MEASURED_HOSTS: readonly string[] = ["darwin-arm64", "linux-arm64", "linux-x64"];
 
 /** The ELF's own length (it ends with the section header table): a program account keeps it zero-padded. */
 export function elfLength(elf: Buffer): number {
