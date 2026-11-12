@@ -314,7 +314,8 @@ function caseData(c: Case): Uint8Array {
 
 describe("the builtins C can reference", () => {
   it("are the ones the runtime defines, for SBPF v0, v1 and v2", () => {
-    // Every C integer operation TypeSOL's code generator or runtime can produce, on every width.
+    // Every C integer operation TypeSOL's code generator or runtime can produce, on every width: arithmetic, shifts,
+    // the overflow builtins, and the bit operations.
     const src = path.join(tmp, "matrix.c");
     const ops = (t: string, n: string) =>
       `${t} ${n}_mul(${t} a, ${t} b) { return a * b; } ${t} ${n}_div(${t} a, ${t} b) { return a / b; } ${t} ${n}_rem(${t} a, ${t} b) { return a % b; } ` +
@@ -333,7 +334,23 @@ describe("the builtins C can reference", () => {
       ["unsigned __int128", "u128"],
       ["__int128", "i128"],
     ];
-    writeFileSync(src, types.map(([t, n]) => ops(t, n)).join(""));
+    // The bit operations: counts of leading and trailing zeros and of ones, byte swaps, ffs and parity. clang emits
+    // them inline on SBF (no libcall) today; listed so that a libcall from another clang shows here.
+    const bits = (t: string, n: string) =>
+      `int ${n}_clz(${t} a) { return __builtin_clzg(a, -1); } int ${n}_ctz(${t} a) { return __builtin_ctzg(a, -1); } int ${n}_pop(${t} a) { return __builtin_popcountg(a); }\n`;
+    const swaps =
+      "unsigned short b16(unsigned short a) { return __builtin_bswap16(a); } unsigned int b32(unsigned int a) { return __builtin_bswap32(a); } " +
+      "unsigned long long b64(unsigned long long a) { return __builtin_bswap64(a); } int ffs64(long long a) { return __builtin_ffsll(a); } " +
+      "int parity64(unsigned long long a) { return __builtin_parityll(a); }\n";
+    writeFileSync(
+      src,
+      types.map(([t, n]) => ops(t, n)).join("") +
+        types
+          .filter(([t]) => t.startsWith("unsigned"))
+          .map(([t, n]) => bits(t, n))
+          .join("") +
+        swaps,
+    );
     // The functions the file defines, in C or in assembly.
     const text = readFileSync(BUILTINS_SOURCE, "utf8");
     const inC = [...text.matchAll(/^TS_BUILTIN \w+ (__\w+)\(/gm)].map((m) => m[1]!);

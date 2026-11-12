@@ -38,18 +38,23 @@ process on stderr. `TYPESOL_TOOLCHAIN=strict` makes it an error everywhere, `war
 `--docker` builds in a container made on your machine from `docker/Dockerfile` (shipped in the package): linux/amd64
 on every machine (emulated on arm64), Node 24, the platform-tools v1.52 of Agave 3.1.10, and a TypeSOL version from
 npm whose tarball is checked against `releases/<version>.json` (sha512 integrity, sha1 shasum, every file's sha256)
-before it is installed. Every input is pinned by digest or checksum. The image is `typesol-build:<version>-<first 12
+before it is installed, with its npm dependencies installed by `npm ci` from `docker/deps/<version>.lock.json` (every
+package checked against the lock's integrity; the package's lock, or the version's own tarball's). Every input is
+pinned by digest, checksum or integrity. The image is `typesol-build:<version>-<first 12
 of the Dockerfile's sha256>`, built the first time it is needed (progress on stderr; about 750 MB of downloads) and
 reused after. Builds run with `--network none`, the sources read-only (the project root, or a single file's
 directory: imports from outside it are not there), the output directory writable, no capabilities, a read-only root
-file system, as your uid (never root). The written files are the ones `build` writes; `<name>.build.json` adds
-`container` (platform, Dockerfile sha256, base images, downloads, the TypeSOL tarball's hashes and commit, where its
-release record came from and the record's sha256, the local image id).
+file system, as your uid and gid (root for a root caller, still without capabilities). The written files are the
+ones `build` writes; `<name>.build.json` adds `container` (platform, Dockerfile sha256, base images, downloads, the
+TypeSOL tarball's hashes and the commit its record names, where the release record came from and the record's sha256,
+the dependency lock with its sha256, the local image id). An image is reused only when its labels carry this
+record's integrity, shasum, commit and file list and this lock's sha256; an image of the same tag made from other
+values is an error that names it (remove it to build from this record).
 
 | Option | |
 | --- | --- |
 | `--typesol-version <v>` | The TypeSOL in the container. Default: this `typesol`'s version (in a project that installs another `typesol` than the one running, an error naming both); for `verify`, the version of the deployed build's manifest when one is known (`--manifest`, `<deployed>.build.json`, or the local build's whose binary hash is the deployed one's). |
-| `--release-record <file>` | The record to check that version's tarball against. Default: the package's (a package ships the records of the releases before it: a record is written after its release is published), else `releases/<version>.json` fetched from the repository's main branch over HTTPS (said on stderr; where it came from and its sha256 go into `container.typesol.record`), so that the npm tarball is checked against a second, independent source. Offline, or for a version the repository has no record of, an error names this option. Versions before 0.43.0 have no record and are refused. |
+| `--release-record <file>` | The record to check that version's tarball against. Default: the package's (a package ships the records of the releases before it: a record is written after its release is published), else `releases/<version>.json` fetched from the repository's main branch over HTTPS (said on stderr; where it came from and the sha256 of its bytes go into `container.typesol.record`), so that the npm tarball is checked against a second, independent source (as with a file given here; a record the package ships came from npm too). Offline, or for a version the repository has no record of, an error names this option. Versions before 0.43.0 have no record and are refused. |
 
 Without Docker, with its daemon stopped or when the image build fails, `--docker` is an error and nothing is built;
 it never falls back to the local toolchain. `TYPESOL_DOCKER_CPUS` and `TYPESOL_DOCKER_MEMORY` (e.g. `2`, `4g`) limit

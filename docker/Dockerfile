@@ -19,10 +19,11 @@
 # runs clang and ld.lld from platform-tools directly, so cargo-build-sbf and the Solana CLI are not installed.
 #
 # One architecture, linux/amd64, on every machine (emulated on arm64 hosts), so that the environment is one recipe.
-# From TypeSOL 0.45.0 on a program builds to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 too; 0.44.1
-# and earlier linked the platform-tools compiler-builtins library, which each host package lays out differently, so a
-# program with 128-bit or signed division got other bytes from each (docs/stability.md has both measurements). Every
-# base image below is pinned by its linux/amd64 manifest digest, not by a multi-platform index.
+# From TypeSOL 0.45.0 on the programs measured build to the same bytes on macOS arm64, Linux arm64 and Linux x86_64
+# too (76 for SBPF v0, 14 for v1 and v2; CI checks a set of them on every change); 0.44.1 and earlier linked the
+# platform-tools compiler-builtins library, which each host package lays out differently, so a program with 128-bit
+# or signed division got other bytes from each (docs/stability.md has both measurements). Every base image below is
+# pinned by its linux/amd64 manifest digest, not by a multi-platform index.
 
 # Unpacking: busybox's tar reads .tar.bz2, which the slim Node image cannot without installing bzip2.
 FROM busybox:1.37.0-glibc@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4 AS sdk
@@ -71,7 +72,7 @@ const walk = (d) => readdirSync(d).flatMap((f) => (statSync(path.join(d, f)).isD
 const files = new Map(walk(unpacked).map((f) => [path.relative(unpacked, f), createHash("sha256").update(readFileSync(f)).digest("hex")]));
 for (const f of r.files) if (files.get(f.path) !== f.sha256) fail(`${f.path}: sha256 ${files.get(f.path) ?? "missing"}, the record has ${f.sha256}`);
 if (files.size !== r.files.length) fail(`the tarball has ${files.size} files, the record ${r.files.length}`);
-console.log(`typesol tarball check: @typesol/cli@${version} ${shasum}, ${files.size} files as recorded (commit ${r.commit})`);
+console.log(`typesol tarball check: @typesol/cli@${version} ${shasum}, ${files.size} files as recorded (the record names commit ${r.commit})`);
 EOF
 
 # The script a container build runs: the given programs built with this image's TypeSOL, through its public API

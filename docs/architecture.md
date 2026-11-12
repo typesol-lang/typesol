@@ -31,7 +31,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `lib/` | `typesol.d.ts`, the language surface programs typecheck against |
 | `ts-plugin/` | The editor plugin (`typesol/ts-plugin`) |
 | `examples/` | Example programs; the `typesol init` templates are copies of three of them |
-| `test/` | The compiler's test suite (`pnpm test:core`), by subject: `language/`, `security/`, `examples/`, `integrations/` (token, Metaplex, oracle and other CPIs), `client/`, `cli/`, `verification/` (differential and fuzz tests). Shared: `harness.ts` and the `*-helpers.ts`, `fixtures/` (programs the tests compile), `golden/` (pinned generated C and clients, and the build container's binaries of five programs), `programs/` (third-party program binaries, see its SOURCES.md), `anchor-twins/` (below) |
+| `test/` | The compiler's test suite (`pnpm test:core`), by subject: `language/`, `security/`, `examples/`, `integrations/` (token, Metaplex, oracle and other CPIs), `client/`, `cli/`, `verification/` (differential and fuzz tests). Shared: `harness.ts` and the `*-helpers.ts`, `fixtures/` (programs the tests compile), `golden/` (pinned generated C and clients, and what 14 programs build to in the build container: SBPF v0, and v1 and v2 for four of them), `programs/` (third-party program binaries, see its SOURCES.md), `anchor-twins/` (below) |
 | `showcase/` | Ports, apart from the compiler's own tests (`pnpm test:showcase`, its own CI job): `mainnet/` (Phoenix v1, SPL Stake Pool, Raydium AMM v4, CP-Swap and CLMM, Jito's MEV programs, Marginfi, coral-xyz/multisig, each checked against the binary on mainnet), `program-examples/` (TypeSOL rewrites of solana-developers/program-examples), `test/` (their differential tests, fuzzers, helpers and fixtures; `porting/` for the program-examples) |
 | `test/anchor-twins/` | Anchor twins of the counter, vault and escrow examples, for the differential tests (`pnpm build:twins`) and the zero-copy client test; the benchmarks themselves are in [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) |
 | `scripts/` | `smoke.ts`, `localnet.sh` and `localnet-fixtures.ts` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers), `codegen-snapshot.ts` (the generated C and IDL of every program, to diff a refactor), `release-manifest.ts` (a release's binary, IDL and toolchain hashes; the cross-host check against `test/golden/binaries.json`) |
@@ -187,7 +187,8 @@ These invariants are easy to break. Each one has tests.
 
 `test/golden/counter.c` pins the output for the counter example. Run
 `UPDATE_GOLDEN=1 pnpm test test/language/diagnostics.test.ts`, review the diff, and commit it with the change.
-`test/golden/binaries.json` pins what 14 programs build to in the `--docker` container; when they change,
+`test/golden/binaries.json` pins what 14 programs build to in the `--docker` container (SBPF v0, and counter,
+escrow, Phoenix and Marginfi for v1 and v2 too); when they change,
 regenerate it as [testing.md](testing.md#across-hosts) says (CI's cross-host check fails with `STALE` until then).
 
 For refactors that should not change behaviour, compare binaries: build every example and fixture before and after

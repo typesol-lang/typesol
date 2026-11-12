@@ -32,10 +32,12 @@ declares (`TESTED_TOOLCHAIN` in `src/compiler/toolchain.ts`: Agave 3.1.10, platf
 one warn, and the review of 0.43.0 traced one defect to how that backend passes struct arguments. The platform-tools
 host package mattered too, up to 0.44.1: its compiler-builtins library, which each of the macOS, Linux arm64 and
 Linux x86_64 packages lays out differently, made a program with 128-bit or signed division link to different bytes on
-each. From 0.45.0 on the builtins are TypeSOL's own C, compiled with the program, and the 76 programs of the sources
-build to the same bytes on the three hosts ([stability.md](stability.md#what-builds-the-same-bytes-where)). The
-reference environment for binaries is the `--docker` build container (`docker/Dockerfile`, linux/amd64, every input
-pinned), which `typesol verify --docker` rebuilds in.
+each. From 0.45.0 on the builtins are TypeSOL's own C, compiled with the program, and the programs measured build to
+the same bytes on the three hosts (the 76 of the sources for SBPF v0, 14 for v1 and v2;
+[stability.md](stability.md#what-builds-the-same-bytes-where)). The reference environment for binaries is the
+`--docker` build container (`docker/Dockerfile`, linux/amd64; base images by digest, release files by sha256, the
+TypeSOL tarball by its release record and its npm dependencies by a lock whose every integrity `npm ci` checks), which
+`typesol verify --docker` rebuilds in.
 
 ## What to check
 

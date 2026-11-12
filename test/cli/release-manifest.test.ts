@@ -55,7 +55,7 @@ describe("release-manifest --check", () => {
     const differs = check((r) => ((r.programs["examples/counter.ts"] as { so: string }).so = "0".repeat(64)));
     expect(differs.status).toBe(1);
     expect(differs.stdout).toMatch(/DIFFERS {3}examples\/counter\.ts: the same C and IDL build to another binary here/);
-    // A reference from another host that links the runtime's builtins (0.45.0 on) binds on every host.
+    // A reference from another host that links the runtime's builtins (0.45.0 on) binds on whichever host runs the check.
     const elsewhere = check((r) => {
       r.toolchain.host = "freebsd-riscv64";
       (r.programs["examples/counter.ts"] as { so: string }).so = "0".repeat(64);

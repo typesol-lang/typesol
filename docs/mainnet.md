@@ -11,8 +11,8 @@ You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the R
 toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
 `typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). The host does not
 matter from 0.45.0 on: with the same TypeSOL and toolchain a program builds to the same bytes on macOS arm64, Linux
-arm64 and Linux x86_64 (measured over 76 programs; up to 0.44.1 a program with 128-bit or signed division did not,
-[stability.md](stability.md#what-builds-the-same-bytes-where)). For a program others should be able to verify, build
+arm64 and Linux x86_64 (measured over 76 programs for SBPF v0 and 14 for v1 and v2; up to 0.44.1 a program with
+128-bit or signed division did not, [stability.md](stability.md#what-builds-the-same-bytes-where)). For a program others should be able to verify, build
 it with `--docker` (step 2) all the same: a pinned linux/amd64 container that anyone can rebuild, so the whole
 environment is one recipe. Keep
 `target/my_app/my_app.build.json` with each deployment, next to the commit you deployed: it records the TypeSOL,
@@ -54,18 +54,28 @@ npx --no-install typesol build --docker
 
 The same files, built inside a container instead of with your platform-tools. The container is made on your machine
 from `docker/Dockerfile`, which ships in the package; every input is pinned: the Node and busybox base images by their
-linux/amd64 digests, the Agave 3.1.10 and platform-tools v1.52 release files by sha256, and the TypeSOL package (the
+linux/amd64 digests, the Agave 3.1.10 and platform-tools v1.52 release files by sha256, the TypeSOL package (the
 version your project uses) by its release record, `releases/<version>.json`: the npm tarball's sha512 integrity and
-sha1 shasum and every file's sha256, checked before it is installed. The first `--docker` build of a TypeSOL version
+sha1 shasum and every file's sha256, checked before it is installed, and its npm dependencies (TypeScript, the
+compiler's front end, among them) by that version's lock, `docker/deps/<version>.lock.json`, which `npm ci` installs
+checking every package's integrity, with no install scripts. The lock of a version ships in the package of that
+version (and in later ones); the locks of 0.43.0, 0.44.0 and 0.44.1, released before locks existed, were resolved
+from the npm registry on 2026-11-12, so their integrity values are what the registry served then, not what an image
+built at their release installed. The first `--docker` build of a TypeSOL version
 builds the image (about 750 MB of downloads, a few minutes; Docker must be running, `typesol doctor` shows it); later
-ones take seconds. The build runs with no network, the project mounted read-only, the output directory writable, as
-your user, never root. `my_app.build.json` then records the container: the platform, the Dockerfile's sha256, the
-pinned base images and downloads, the TypeSOL tarball's hashes, where its release record came from (with the
-record's sha256) and the local image id.
+ones take seconds. The build runs with no network, the project mounted read-only, the output directory writable,
+with no capabilities, as your uid and gid (root for a root caller). `my_app.build.json` then records the container:
+the platform, the Dockerfile's sha256, the pinned base images and downloads, the TypeSOL tarball's hashes, the commit
+its release record names, where the record came from (with the record's sha256), the dependency lock and its sha256,
+and the local image id.
 
 Deploy that `my_app.so` with the Solana CLI, `solana program deploy target/my_app/my_app.so --program-id
-target/deploy/my_app-keypair.json --use-rpc` (with your `--url`): `typesol deploy`, `--dry-run` included, builds again
-with your local platform-tools and overwrites the container build. Commit the source, keep
+target/deploy/my_app-keypair.json --use-rpc` (with your `--url`). What replaces the container build: `typesol deploy`
+(`--dry-run` included) and `typesol build` without `--docker`, which build again with your local platform-tools and
+overwrite it; and `npm test` once the program's sources, SBPF version or address changed, which rebuilds it locally
+and says so (`note: … held a --docker build that is out of date`). What does not: `npm test` while the sources are
+the ones `my_app.build.json` records and the `.so` is the one it records, on any host: the tests then run the
+container's binary. After a local build, `typesol build --docker` again before deploying. Commit the source, keep
 `my_app.build.json`, and publish the commit and that file with the program id.
 
 The TypeSOL inside the container is the version this `typesol` is, the one your project installs (`npx --no-install
@@ -77,9 +87,12 @@ published; for a release the package does not record (the newest one, or a later
 (`https://raw.githubusercontent.com/typesol-lang/typesol/main/releases/<version>.json`, unauthenticated HTTPS), prints
 where it came from and its sha256, and records both in `my_app.build.json` (`container.typesol.record`). The check is
 then two independent sources agreeing: the tarball npm serves must be the one the repository's record describes, so a
-tampered package would have to be matched by a tampered repository. Offline, or when the repository has no record for
-that version, it is an error that names `--release-record <file>`, which passes the record yourself (from a checkout,
-`releases/<version>.json`).
+tampered package would have to be matched by a tampered repository. That holds for a fetched record and for a
+`--release-record` file; for a version whose record ships in the running package, the record came from npm too (in
+an earlier package), so the check is then against what npm served before. Offline, or when the repository has no
+record for that version, it is an error that names `--release-record <file>`, which passes the record yourself (from
+a checkout, `releases/<version>.json`). Between `npm publish` and the commit of the release's record the repository
+answers HTTP 404: `--release-record` is the way then.
 
 ## 3. A wallet with SOL
 
@@ -150,9 +163,12 @@ npx --no-install typesol verify my_app --address <program id> --url mainnet-beta
 TypeSOL version is the deployed build's (from the manifest whose binary hash is the deployed bytes'), or
 `--typesol-version <v>`; months later, the current `@typesol/cli` installs the old version in the container, checked
 against its release record. On a match it prints what was verified: the program, the source directory and its git
-commit (and whether it has uncommitted changes), the TypeSOL version and tarball and where its release record came
-from, the clang and platform-tools, the
-container's Dockerfile sha256, base images and downloads, and the command that repeats it. On a mismatch it shows the
+commit (and whether it has uncommitted changes), the TypeSOL version and tarball, the commit its record names and
+where the record came from, the dependency lock and its sha256, the clang and platform-tools, the container's
+Dockerfile sha256, base images and downloads, and the command that repeats it (with every option given that changes
+the result: `--address`, `--url`, `--config`, `--sbpf`, `--manifest`, `--release-record`). A program built with
+0.44.x on macOS or Linux arm64 that calls 128-bit or signed division does not match a `--docker` rebuild (those
+versions' binaries depended on the host package; [troubleshooting](troubleshooting.md)). On a mismatch it shows the
 toolchain of each side that is known, as without `--docker`. Exit codes: 0 match, 3 mismatch.
 
 What this is not: the container is built locally from pinned inputs, not pulled from a published image, so the first

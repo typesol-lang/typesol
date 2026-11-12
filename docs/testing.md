@@ -77,25 +77,32 @@ Linux arm64 and Linux x86_64, and why 0.44.1 and earlier differed for programs w
 reference environment is the `--docker` build container (linux/amd64). `test/golden/binaries.json` holds what 14
 programs build to there with the checkout's compiler: counter, vault, escrow, multisig, and the 10 that call 128-bit or
 signed division (the Phoenix, Marginfi, Raydium AMM, CLMM and CP-Swap, Jito priority-fee and Stake Pool ports,
-transfer-fee, token-fundraiser, token-swap), the ones whose binary used to depend on the host. CI checks on every change
-that its Linux x86_64 runner, with platform-tools installed by `cargo-build-sbf`, gives the same C, IDL and bytes; on
+transfer-fee, token-fundraiser, token-swap), the ones whose binary used to depend on the host, for SBPF v0; and
+counter, escrow, Phoenix and Marginfi for v1 and v2 (`<path>:v1`, `<path>:v2`). CI checks on every change that its
+Linux x86_64 runner, with platform-tools installed by `cargo-build-sbf`, gives the same C, IDL and bytes (the same
+host package as the container's, installed separately); the macOS workflow, run on demand, checks macOS arm64. On
 another host the check is the same (binary included):
 
 ```sh
 node scripts/release-manifest.ts --check test/golden/binaries.json      # what CI runs; the same result on macOS
 node scripts/release-manifest.ts --docker --out test/golden/binaries.json --programs \
-  examples/counter.ts,examples/vault.ts,examples/escrow.ts,showcase/mainnet/multisig/multisig.ts,showcase/mainnet/phoenix/phoenix.ts,showcase/mainnet/marginfi/marginfi.ts,showcase/mainnet/raydium-amm/raydium_amm.ts,showcase/mainnet/raydium-clmm/raydium_clmm.ts,showcase/mainnet/raydium-cp-swap/raydium_cp_swap.ts,showcase/mainnet/jito-mev/priority_fee_distribution.ts,showcase/mainnet/spl-stake-pool/stake_pool.ts,showcase/program-examples/tokens/token-2022/transfer-fee.ts,showcase/program-examples/tokens/token-fundraiser.ts,showcase/program-examples/tokens/token-swap/lib.ts
+  examples/counter.ts,examples/vault.ts,examples/escrow.ts,showcase/mainnet/multisig/multisig.ts,showcase/mainnet/phoenix/phoenix.ts,showcase/mainnet/marginfi/marginfi.ts,showcase/mainnet/raydium-amm/raydium_amm.ts,showcase/mainnet/raydium-clmm/raydium_clmm.ts,showcase/mainnet/raydium-cp-swap/raydium_cp_swap.ts,showcase/mainnet/jito-mev/priority_fee_distribution.ts,showcase/mainnet/spl-stake-pool/stake_pool.ts,showcase/program-examples/tokens/token-2022/transfer-fee.ts,showcase/program-examples/tokens/token-fundraiser.ts,showcase/program-examples/tokens/token-swap/lib.ts,examples/counter.ts:v1,examples/escrow.ts:v1,showcase/mainnet/phoenix/phoenix.ts:v1,showcase/mainnet/marginfi/marginfi.ts:v1,examples/counter.ts:v2,examples/escrow.ts:v2,showcase/mainnet/phoenix/phoenix.ts:v2,showcase/mainnet/marginfi/marginfi.ts:v2
 ```
 
-The second regenerates the file in the container (Docker, the checkout built with `pnpm build`; no network once the
-image exists), after a change that alters what those programs compile to. `--check` says `STALE` when the C or IDL
-differ (regenerate) and `DIFFERS` when the same C and IDL give other bytes (a toolchain problem). The whole set, on more
+The second regenerates the file in the container (Docker, the checkout built with `pnpm build`, committed: `--docker`
+refuses a tree with uncommitted changes, as the file records the commit; no network once the image exists), after a
+change that alters what those programs compile to. `--check` says `STALE` when the C or IDL differ (regenerate) and
+`DIFFERS` when the same C and IDL give other bytes (a toolchain problem); it fails on a reference that lists no
+program, has an entry that did not build, or was made from uncommitted changes (`sources.dirty`).
+`test/cli/release-manifest.test.ts` covers each outcome. The whole set, on more
 hosts: build `scripts/release-manifest.ts` (every program) on each and compare with `--diff`, as for a release. The
 compiler builtins themselves are tested by `test/language/builtins.test.ts`: each against a BigInt reference and
 against platform-tools' compiler-builtins on edge cases and a seeded random set (`FUZZ_SEED`, `BUILTINS_RANDOM`), run as
-SBF in LiteSVM for SBPF v0, v1 and v2, with each call's compute units compared to compiler-builtins' (never more). The
-container itself is tested by `test/cli/docker.test.ts` with `TYPESOL_DOCKER_TESTS=1` (off in CI: the first image
-build downloads about 750 MB).
+SBF in LiteSVM for SBPF v0, v1 and v2, with each call's compute units compared to compiler-builtins' (never more).
+With the default seed that is 84,741 to 91,289 calls per multiplication or division function and 59,506 per shift on
+v0, and 41,506 to 73,289 on v1 and v2. The container itself is tested by `test/cli/docker.test.ts` with
+`TYPESOL_DOCKER_TESTS=1` (off in CI: the first image build downloads about 750 MB); without Docker the same file
+checks the Dockerfile's tarball and dependency-lock scripts on crafted inputs.
 
 ### The npm tarball
 
@@ -118,4 +125,15 @@ entry with a fixed date and mode, in a fixed order; what can still change the by
 or another Node (its zlib compresses the archive). The record also keeps the uncompressed archive's sha256 and each
 file's, which compare across those, and `--verify --tarball` says which files differ, if any. 0.42.0 and earlier
 were published from a maintainer's checkout without a record.
+
+### The build container's dependencies
+
+The `--docker` image installs a TypeSOL version's npm dependencies with `npm ci` from `docker/deps/<version>.lock.json`
+(an npm lockfile v3 of the package's runtime dependencies only), so every package is checked against the integrity
+the lock records and nothing is resolved when the image is built. `node scripts/release-check.ts <version> --lock`
+writes it from `package.json` (when it has that version) or from the published package's dependencies (`npm view`),
+resolved from the registry at that moment; the release procedure runs it before the release commit, so the lock of
+version N ships in package N, and the check of the tag refuses a release without it (or with one for other
+dependencies) and installs it with `npm ci` in a temporary directory. The locks of 0.43.0, 0.44.0 and 0.44.1 were
+made this way on 2026-11-12, after those releases: their integrity values are what the registry served that day.
 

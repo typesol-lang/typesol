@@ -26,7 +26,16 @@ build's). A program on chain carries no such record, so keep the build manifest 
 the base images from Docker Hub, the Agave and platform-tools release files from GitHub, the TypeSOL tarball from npm.
 A `checksum` error means a downloaded file is not the one the Dockerfile pins (retry; if it persists, report it).
 `typesol tarball check: integrity …` means the tarball npm served is not the one `releases/<version>.json` records:
-do not use that version until it is explained. On arm64 machines the image is linux/amd64 and runs emulated: Docker
+do not use that version until it is explained. `typesol dependency lock: …` means the lock does not describe the
+package's dependencies or names a package without a registry integrity; an `EINTEGRITY` error from `npm ci` means a
+downloaded dependency is not the one the lock records: the same.
+
+**`the local image typesol-build:… was not built from this release record and dependency lock`** — an image of that
+tag exists, made from a record or lock with other values (it names them). Two records of one version disagree, so
+find out which is right before going on; to build from the one given now, `docker image rm` the tag and run again.
+
+**`no dependency lock for TypeSOL <version>`** — neither this package nor that version's tarball has
+`docker/deps/<version>.lock.json`: use a later `@typesol/cli`, which ships the locks of the versions before it. On arm64 machines the image is linux/amd64 and runs emulated: Docker
 Desktop provides the x86_64 emulation (QEMU or Rosetta); other Docker installs may need `binfmt` for amd64.
 
 **`no release record for TypeSOL <version>`** / **`could not fetch the release record`** — the container installs only
@@ -43,10 +52,17 @@ Run the project's own (`npx --no-install typesol …`), or say which version to 
 container mounts only the project root (or a single file's directory): an import from outside it is missing there.
 
 **`verify` says `differs   host`** — the same TypeSOL (0.44.1 or earlier) and toolchain built the two sides on
-different hosts, and the program has 128-bit or signed division: those versions linked platform-tools'
-compiler-builtins, which each host package lays out differently. Rebuild on the deployed side's kind of host (or with
-`--docker`, if the deployed build was one). From 0.45.0 on the host is not a difference: builds gave the same bytes on
-macOS arm64, Linux arm64 and Linux x86_64.
+different hosts. That may be the cause if the program has 128-bit or signed division: those versions linked
+platform-tools' compiler-builtins, which each host package lays out differently. Rebuild on the deployed side's kind
+of host (or with `--docker`, if the deployed build was one). From 0.45.0 on the host is not a difference between
+macOS arm64, Linux arm64 and Linux x86_64 (the hosts measured); `differs   host (not measured)` means one side was
+built on another host.
+
+**A 0.44.x program with division, deployed from macOS or Linux arm64, does not match `verify --docker`** — 0.44.0 and
+0.44.1 linked platform-tools' compiler-builtins, so a program that calls 128-bit or signed division built to other
+bytes on each host package; the container is linux/amd64 and gives the Linux x86_64 bytes. What verifies it is a
+0.44.x install (the version in its `.build.json`) on the same kind of host as the one that built it, without
+`--docker`: `npx @typesol/cli@0.44.1 verify …` on macOS arm64 for a build made there.
 
 **Windows** — not tested; use WSL2 with the Linux Agave CLI.
 

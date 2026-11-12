@@ -53,7 +53,9 @@ compiler:
 
 1. Merge `develop` into `main` through a pull request with green CI.
 2. On `main`: set `version` in `package.json`, rename `## Unreleased` in CHANGELOG.md to `## <version> — <YYYY-MM-DD>`
-   (start a new empty `## Unreleased` above it), commit as `Release v<version>`.
+   (start a new empty `## Unreleased` above it), write the build container's dependency lock with
+   `node scripts/release-check.ts <version> --lock` (`docker/deps/<version>.lock.json`, the package's runtime
+   dependencies resolved from the registry), and commit all three as `Release v<version>`.
 3. Tag it: `git tag -a v<version> -m "TypeSOL <version>"`, push the tag, and create the GitHub Release from the tag
    with that CHANGELOG section as notes.
 4. Publishing to npm (as `@typesol/cli`) is separate and manual, from a maintainer's machine with npm 2FA. Tags and
@@ -62,7 +64,9 @@ compiler:
       `bash scripts/fetch-programs.sh` first, or the showcase tests that need them fail).
    2. `node scripts/release-check.ts <version>`: it exports the tag with `git archive` into a temporary directory
       (never your working tree), runs `pnpm install --frozen-lockfile`, `pnpm build` and `pnpm lint` there, checks
-      that `package.json` has the tag's version and that CHANGELOG.md has its `## <version> — <date>` section, packs
+      that `package.json` has the tag's version and that CHANGELOG.md has its `## <version> — <date>` section, that
+      `docker/deps/<version>.lock.json` is there and locks `package.json`'s dependencies (installing it with `npm ci`,
+      which checks every package's integrity against the registry), packs
       the tarball and writes `releases/<version>.json` (the tag's commit, the tarball's size, sha1 shasum and sha512
       integrity, every file's sha256, and the Node, pnpm and npm versions used). It prints the tarball's path.
       `--tests` runs the suite there as well.

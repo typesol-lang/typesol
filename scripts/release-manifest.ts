@@ -22,9 +22,10 @@
  *   node scripts/release-manifest.ts --check test/golden/binaries.json                             compare (exit 1)
  *
  * --docker runs this script inside the build image (built first if needed) with this checkout mounted read-only and
- * no network. The C, the IDL and the binary must match on every host: from 0.45.0 on programs link the runtime's own
- * compiler builtins, not platform-tools' compiler-builtins library, which each host package lays out differently
- * (docs/stability.md). A reference made before that (no `builtins` in its toolchain) is only binding on its own host.
+ * no network. --check requires the C, the IDL and the binary to match on whichever host runs it (CI: Linux x86_64 on
+ * every change, macOS arm64 on demand): from 0.45.0 on programs link the runtime's own compiler builtins, not
+ * platform-tools' compiler-builtins library, which each host package lays out differently (docs/stability.md has the
+ * hosts measured). A reference made before that (no `builtins` in its toolchain) is only binding on its own host.
  * --check fails on a reference with nothing to compare (no program, or an entry that did not build) and on one made
  * from a tree with uncommitted changes (`sources.dirty`); --docker refuses such a tree, as the commit it records would
  * not describe it.

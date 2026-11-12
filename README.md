@@ -41,7 +41,8 @@ clients read TypeSOL programs unchanged.
   chain, against its source. Every release records the hashes of its npm tarball and of every program it builds
   ([releases/](releases), [docs/testing.md](docs/testing.md#reproducing-a-release)).
   The same source, TypeSOL version and toolchain build to the same bytes on macOS arm64, Linux arm64 and Linux x86_64
-  (all 76 programs of the sources, measured; [docs/stability.md](docs/stability.md#what-builds-the-same-bytes-where)).
+  (measured: all 76 programs of the sources for SBPF v0, 14 of them for v1 and v2;
+  [docs/stability.md](docs/stability.md#what-builds-the-same-bytes-where)).
   `typesol build --docker` builds in a pinned linux/amd64 container that anyone can rebuild from the Dockerfile, and
   `typesol verify --docker` checks a deployed program against its source in that same environment
   ([docs/mainnet.md](docs/mainnet.md#6-verify)).

@@ -4,9 +4,10 @@
 // tarball by its release record); no image is pulled except the pinned base images, and none is pushed anywhere.
 //
 // One platform, linux/amd64, so that the whole environment is one recipe. From 0.45.0 on a program builds to the same
-// bytes on macOS arm64, Linux arm64 and Linux x86_64 as well (measured over 76 programs, docs/stability.md); TypeSOL
-// 0.44.1 and earlier linked platform-tools' compiler-builtins, whose layout differed by host package, so for those
-// versions the container's platform decides the bytes of programs with 128-bit or signed division.
+// bytes on macOS arm64, Linux arm64 and Linux x86_64 as well (measured over 76 programs for SBPF v0 and 14 for v1 and
+// v2, docs/stability.md); TypeSOL 0.44.1 and earlier linked platform-tools' compiler-builtins, whose layout differed by
+// host package, so for those versions the container's platform decides the bytes of programs with 128-bit or signed
+// division.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

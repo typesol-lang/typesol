@@ -62,11 +62,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm lint # scripts/ typecheck against dist/
-      # Cross-host determinism, on every change: the programs in test/golden/binaries.json build here (Linux x86_64, the
-      # platform-tools v1.52 cargo-build-sbf installed) to the C, IDL and bytes the --docker build container gave
-      # (regenerate with `node scripts/release-manifest.ts --docker …`, see the top of that script).
+      # Determinism across installs and hosts: the programs in test/golden/binaries.json (SBPF v0, and v1 and v2 for
+      # four of them) build here, with the platform-tools v1.52 cargo-build-sbf installed above, to the C, IDL and bytes
+      # the --docker build container gave (linux/amd64; regenerate with `node scripts/release-manifest.ts --docker …`,
+      # see the top of that script). On pushes and pull requests that is the ubuntu-latest runner: the same
+      # platform-tools host package (linux-x86_64) as the container, installed independently. macos.yml runs this job
+      # on macos-15, where it compares the osx-aarch64 package's builds with the container's.
       - name: Binaries match the build container's
-        if: runner.os == 'Linux' && matrix.node == 24
+        if: matrix.node == 24
         run: node scripts/release-manifest.ts --check test/golden/binaries.json
       # The tests are only evidence for the toolchain the compiler declares as tested (TESTED_TOOLCHAIN in
       # src/compiler/toolchain.ts): doctor fails here when the installed clang is another one.
