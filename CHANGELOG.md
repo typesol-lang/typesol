@@ -6,13 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
-A minor release, not a fix release: it accepts what 0.45.0 refused (16 signer seeds, the bump included, and the new
-`init --no-agent-files`), and refuses programs 0.45.0 compiled to wrong code (an `f64` used as an integer or as text,
-operators on an `f64`, a proof or signature check whose result decides nothing, a `@code` tag that is not read, a
-`Seeds<…>` list over Solana's limit). Most of it is first-run fixes, found by following the README in fresh
-`node:24-bookworm` containers (linux/amd64 and linux/arm64). Programs that use none of these build to the same bytes:
-the 76 programs of the repository's sources build to the same binaries and IDLs with 0.45.0 and with this release, and
-the release manifest's check of test/golden/binaries.json (C, IDL and binary) passes.
+A minor release: it accepts what 0.45.0 refused (16 signer seeds, the bump included; `init --no-agent-files`), and
+refuses programs 0.45.0 compiled to wrong code (an `f64` used with an operator, as an integer or as text; a proof or
+signature check whose result decides nothing; a `@code` tag that is not read; a `Seeds<…>` list over Solana's limit).
+Programs that use none of these build to the same bytes: the repository's 76 programs build to the same binaries and
+IDLs with 0.45.0 and with this release, and the release manifest's check of test/golden/binaries.json passes.
 
 - Fixed: the README's toolchain block failed when pasted. The Agave installer adds its `bin` directory to `PATH` in
   `~/.profile` only, so the next line gave `cargo-build-sbf: command not found`. The block now has the
