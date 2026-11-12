@@ -6,8 +6,8 @@ codes, and says so here.
 
 ## Unreleased
 
-A minor release: it accepts what 0.45.0 refused (16 signer seeds, the bump included; `init --no-agent-files`), and
-refuses programs 0.45.0 compiled to wrong code (an `f64` used with an operator, as an integer or as text; a proof or
+A minor release: it adds a flag (`init --no-agent-files`), accepts what 0.45.0 refused (16 signer seeds, the bump
+included), and refuses programs 0.45.0 compiled to wrong code (an `f64` used with an operator, as an integer or as text; a proof or
 signature check whose result decides nothing; a `@code` tag that is not read; a `Seeds<…>` list over Solana's limit).
 Programs that use none of these build to the same bytes: the repository's 76 programs build to the same binaries and
 IDLs with 0.45.0 and with this release, and the release manifest's check of test/golden/binaries.json passes.
