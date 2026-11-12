@@ -42,7 +42,7 @@ import {
   withBuildLock,
   type Workspace,
 } from "./workspace.js";
-import { chooseTypesolVersion, containerBuild, ensureImage, sourceRevision, type BuildImage } from "./tools/docker.js";
+import { chooseTypesolVersion, containerBuild, ensureImage, findReleaseRecord, needDocker, sourceRevision, type BuildImage } from "./tools/docker.js";
 import {
   cliRpc,
   clusterUrl,
@@ -91,7 +91,7 @@ const DOCKER_HELP = [
   "--docker             build in the pinned container (docker/Dockerfile: linux/amd64, Agave 3.1.10 platform-tools v1.52,",
   "                     the TypeSOL tarball checked against releases/<version>.json); the image is built locally the first time",
   "--typesol-version <v>  the TypeSOL version inside the container (default: this one; for verify, the deployed build's manifest's)",
-  "--release-record <file>  the releases/<v>.json to check that version's tarball against, when this package does not ship it",
+  "--release-record <file>  the releases/<v>.json to check that version's tarball against (default: this package's, else the repository's)",
 ].join("\n  ");
 const DOCKER_OPTIONS = { docker: { type: "boolean" }, "typesol-version": { type: "string" }, "release-record": { type: "string" } } as const;
 
@@ -187,7 +187,7 @@ const COMMANDS: Record<string, Command> = {
       "toolchain-strict": { type: "boolean" },
       ...DOCKER_OPTIONS,
     },
-    run(v, args) {
+    async run(v, args) {
       if (v["toolchain-strict"]) setToolchainStrict();
       const sbpf = sbpfOf(v);
       const profile = !!v.profile;
@@ -201,7 +201,7 @@ const COMMANDS: Record<string, Command> = {
           throw new UsageError(`--out and --program-id do not apply to programs of ${CONFIG} (use "out" there; keypairs live in <out>/deploy/)`);
         if (!v.quiet && process.stdout.isTTY) log(banner());
         if (v.docker) {
-          const image = buildImage(v, ws.root);
+          const image = await buildImage(v, ws.root);
           const progs = (inProject ? [inProject] : names(ws, args)).map((name) => programPaths(ws, name));
           // The same locks as a local build: another process building one of these programs would write the same files.
           const { jobs, built } = withBuildLocks(
@@ -247,7 +247,7 @@ const COMMANDS: Record<string, Command> = {
       if (given !== undefined && !existsSync(given))
         throw new UsageError(`--program-id ${given} does not exist (leave --program-id out to create a keypair next to the output)`);
       const keyFile = given ?? path.join(outDir, `${name}-keypair.json`);
-      const image = v.docker ? buildImage(v, ws?.root) : undefined;
+      const image = v.docker ? await buildImage(v, ws?.root) : undefined;
       mkdirSync(path.dirname(keyFile), { recursive: true });
       const { address, created } = loadOrCreateKeypair(keyFile);
       let res: Pick<BuildResult, "soPath" | "idlPath" | "manifestPath">;
@@ -594,7 +594,7 @@ const COMMANDS: Record<string, Command> = {
       let root: string | undefined;
       try {
         if (v.docker) {
-          image = buildImage(v, ws?.root, known.deployed ? { version: known.deployed.manifest.compiler, from: relPath(known.deployed.file) } : undefined);
+          image = await buildImage(v, ws?.root, known.deployed ? { version: known.deployed.manifest.compiler, from: relPath(known.deployed.file) } : undefined);
           root = ws && name ? ws.root : path.dirname(path.resolve(entry));
           const [r] = containerBuild(image, root, [{ entry, outDir: dir, address, sbpf }]);
           rebuilt = r!.manifest;
@@ -853,7 +853,8 @@ function verifiedLines(o: {
   return [
     `  verified  ${o.what} is what ${relPath(path.resolve(o.entry))} builds to in the pinned build container:`,
     `    source     ${o.root}${rev ? ` (git ${rev.commit}${rev.clean ? "" : ", with uncommitted changes"})` : " (not a git checkout)"}`,
-    `    TypeSOL    ${id.typesol.version}, npm tarball shasum ${id.typesol.shasum} (releases/${id.typesol.version}.json, commit ${id.typesol.commit})`,
+    `    TypeSOL    ${id.typesol.version}, npm tarball shasum ${id.typesol.shasum} (commit ${id.typesol.commit}), as releases/${id.typesol.version}.json records it`,
+    `    record     ${recordLine(id.typesol.record) ?? `releases/${id.typesol.version}.json`}`,
     `    toolchain  ${shortClang(o.rebuilt.clang)}, platform-tools ${o.rebuilt.platformTools ?? "unknown"}, TypeScript ${o.rebuilt.typescript}`,
     `    container  ${id.platform}, Dockerfile sha256 ${id.dockerfile}, local image ${id.image}`,
     ...id.base.map((b) => `    base       ${b}`),
@@ -862,16 +863,34 @@ function verifiedLines(o: {
   ];
 }
 
+/** Where a container build's release record came from, in one line. */
+function recordLine(r: BuildImage["identity"]["typesol"]["record"]): string | undefined {
+  if (!r) return undefined;
+  const where =
+    r.kind === "package"
+      ? `${r.location} in this package`
+      : r.kind === "file"
+        ? `${r.location} (--release-record)`
+        : `${r.location} (the repository's main branch)`;
+  return `${where}, sha256 ${r.sha256}`;
+}
+
 /** --typesol-version and --release-record only mean something with --docker. */
 function dockerOptions(v: Record<string, unknown>): void {
   for (const o of ["typesol-version", "release-record"])
     if (v[o] !== undefined && !v.docker) throw new UsageError(`--${o} applies to container builds: add --docker`);
 }
 
-/** The build image for --docker, built first if needed, with the TypeSOL version chosen for it (said on stderr). */
-function buildImage(v: Record<string, unknown>, projectRoot: string | undefined, deployed?: { version: string; from: string }): BuildImage {
+/**
+ * The build image for --docker, built first if needed, with the TypeSOL version chosen for it (said on stderr). The
+ * version's release record is this package's, the --release-record file, or (a release newer than this package) the
+ * repository's.
+ */
+async function buildImage(v: Record<string, unknown>, projectRoot: string | undefined, deployed?: { version: string; from: string }): Promise<BuildImage> {
   const { version, why } = chooseTypesolVersion({ given: v["typesol-version"] as string | undefined, deployed, projectRoot, cliVersion: COMPILER_VERSION });
-  const image = ensureImage(version, v["release-record"] as string | undefined);
+  needDocker(); // before any download: without Docker there is nothing to check a record for
+  const found = await findReleaseRecord(version, { file: v["release-record"] as string | undefined });
+  const image = ensureImage(version, found);
   console.error(`  container ${image.tag}: TypeSOL ${version} (${why}), ${image.identity.platform}`);
   return image;
 }

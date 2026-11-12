@@ -13,7 +13,18 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { COMPILER_VERSION, TESTED_TOOLCHAIN } from "../../src/compiler/index.ts";
 import { dockerCheck } from "../../src/tools/doctor.ts";
-import { chooseTypesolVersion, DOCKER_PLATFORM, dockerfileInputs, dockerStatus, ensureImage, recordedVersions, releaseRecord } from "../../src/tools/docker.ts";
+import {
+  chooseTypesolVersion,
+  DOCKER_PLATFORM,
+  dockerfileInputs,
+  dockerStatus,
+  ensureImage,
+  findReleaseRecord,
+  type FetchText,
+  recordedVersions,
+  RELEASES_URL,
+  releaseRecord,
+} from "../../src/tools/docker.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = path.join(ROOT, "dist/cli.js");
@@ -70,7 +81,73 @@ describe("the build container's recipe", () => {
     const wrong = path.join(tmp(), "r.json");
     copyFileSync(path.join(ROOT, "releases/0.43.0.json"), wrong);
     expect(() => releaseRecord("0.44.0", wrong)).toThrow(/is not the release record of TypeSOL 0\.44\.0/);
-    expect(releaseRecord("0.43.0", wrong).path).toBe(wrong);
+    expect(releaseRecord("0.43.0", wrong).source).toMatchObject({ kind: "file", location: wrong });
+  });
+
+  it("finds a newer release's record on the repository's main branch, with where it came from; offline or absent names --release-record", async () => {
+    // The fetch is the test's: no network. A release newer than this package: its record is committed after publishing.
+    const shipped = readFileSync(path.join(ROOT, "releases/0.44.1.json"), "utf8");
+    const newer = shipped.replaceAll('"version": "0.44.1"', '"version": "9.9.9"');
+    const asked: string[] = [];
+    const serve =
+      (status: number, body = ""): FetchText =>
+      async (url) => {
+        asked.push(url);
+        return { ok: status === 200, status, text: async () => body };
+      };
+    const logged: string[] = [];
+    const found = await findReleaseRecord("9.9.9", { fetch: serve(200, newer), log: (s) => logged.push(s) });
+    expect(asked).toEqual([`${RELEASES_URL}/9.9.9.json`]);
+    expect(RELEASES_URL).toBe("https://raw.githubusercontent.com/typesol-lang/typesol/main/releases");
+    expect(found.record.version).toBe("9.9.9");
+    expect(found.text).toBe(newer);
+    expect(found.source).toEqual({ kind: "repository", location: `${RELEASES_URL}/9.9.9.json`, sha256: createHash("sha256").update(newer).digest("hex") });
+    expect(logged.join("\n")).toContain(`releases/9.9.9.json from ${RELEASES_URL}/9.9.9.json (sha256 ${found.source.sha256})`);
+
+    // The package's own record, or the file given, is used as it is: nothing fetched.
+    asked.length = 0;
+    const own = await findReleaseRecord("0.44.1", { fetch: serve(500) });
+    expect(own.source).toEqual({ kind: "package", location: "releases/0.44.1.json", sha256: createHash("sha256").update(shipped).digest("hex") });
+    const file = path.join(tmp(), "9.9.9.json");
+    writeFileSync(file, newer);
+    expect((await findReleaseRecord("9.9.9", { file, fetch: serve(500) })).source).toMatchObject({ kind: "file", location: file });
+    await expect(findReleaseRecord("0.42.0", { fetch: serve(200, newer) })).rejects.toThrow(/before 0\.43\.0 have no record/);
+    await expect(findReleaseRecord("../../x", { fetch: serve(200, newer) })).rejects.toThrow(/not a TypeSOL version/);
+    expect(asked).toEqual([]);
+
+    // Absent, offline, a server error, another version's record: errors that name --release-record or say what is wrong.
+    await expect(findReleaseRecord("9.9.9", { fetch: serve(404) })).rejects.toThrow(
+      /main branch has none \(.*9\.9\.9\.json: HTTP 404\)[\s\S]*--release-record <file>/,
+    );
+    const offline: FetchText = async () => {
+      throw new TypeError("fetch failed");
+    };
+    await expect(findReleaseRecord("9.9.9", { fetch: offline })).rejects.toThrow(
+      /could not fetch the release record of TypeSOL 9\.9\.9 .*\(fetch failed; offline\?\)[\s\S]*--release-record <file>/,
+    );
+    await expect(findReleaseRecord("9.9.9", { fetch: serve(503) })).rejects.toThrow(/HTTP 503\): pass the record with --release-record <file>/);
+    await expect(findReleaseRecord("9.9.9", { fetch: serve(200, shipped) })).rejects.toThrow(/is not the release record of TypeSOL 9\.9\.9/);
+    await expect(findReleaseRecord("9.9.9", { fetch: serve(200, "<html>") })).rejects.toThrow(/not valid JSON/);
+  });
+
+  it("records where the release record came from in the image's identity", () => {
+    const shipped = readFileSync(path.join(ROOT, "releases/0.44.1.json"), "utf8");
+    const record = JSON.parse(shipped) as { tarball: { integrity: string } };
+    // A docker that has the image already (version, inspect): ensureImage builds nothing and reports the identity.
+    const bin = fakeDocker(
+      `case "$1" in version) echo "29.0.0 linux/amd64";; image) echo "sha256:feed linux/amd64 ${record.tarball.integrity}";; *) exit 9;; esac`,
+    );
+    const saved = process.env.PATH;
+    process.env.PATH = `${bin}${path.delimiter}${saved}`;
+    try {
+      const source = { kind: "repository" as const, location: `${RELEASES_URL}/0.44.1.json`, sha256: "ab".repeat(32) };
+      const image = ensureImage("0.44.1", { record: releaseRecord("0.44.1").record, text: shipped, source }, () => {});
+      expect(image.identity.image).toBe("sha256:feed");
+      expect(image.identity.typesol).toMatchObject({ version: "0.44.1", record: source });
+      expect(ensureImage("0.44.1", undefined, () => {}).identity.typesol.record).toMatchObject({ kind: "package", location: "releases/0.44.1.json" });
+    } finally {
+      process.env.PATH = saved;
+    }
   });
 
   it("chooses the TypeSOL version: --typesol-version, the deployed build's, this one; a project that installs another is an error", () => {
@@ -102,7 +179,8 @@ describe("--docker without a working Docker", () => {
     expect(existsSync(path.join(dir, "target"))).toBe(false); // no local build in its place, not even a keypair
 
     const failing = fakeDocker('case "$1" in version) echo "29.0.0 linux/amd64";; image) exit 1;; build) echo "pull failed" >&2; exit 17;; esac');
-    const broken = run(["build", "counter.ts", "--docker"], dir, { PATH: failing });
+    // A recorded version: the record is the package's, nothing is fetched.
+    const broken = run(["build", "counter.ts", "--docker", "--typesol-version", recordedVersions().at(-1)!], dir, { PATH: failing });
     expect(broken.status).toBe(1);
     expect(broken.stderr).toMatch(/building typesol-build:\d+\.\d+\.\d+-[0-9a-f]{12} \(linux\/amd64\)/);
     expect(broken.stderr).toMatch(/docker build of typesol-build:.* failed \(exit 17; .*never falls back to the local toolchain/);

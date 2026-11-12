@@ -3,9 +3,10 @@
 // the user's machine from the Dockerfile's pinned inputs (base images by digest, release files by sha256, the TypeSOL
 // tarball by its release record); no image is pulled except the pinned base images, and none is pushed anywhere.
 //
-// One platform, linux/amd64: the C and the IDL are the same on every host, and so is clang's object code, but each
-// platform-tools host package ships its own build of compiler-builtins, so a program that links its 128-bit or signed
-// division builds to different bytes on macOS, Linux arm64 and Linux x86_64 (docs/stability.md has the measurement).
+// One platform, linux/amd64, so that the whole environment is one recipe. From 0.45.0 on a program builds to the same
+// bytes on macOS arm64, Linux arm64 and Linux x86_64 as well (measured over 76 programs, docs/stability.md); TypeSOL
+// 0.44.1 and earlier linked platform-tools' compiler-builtins, whose layout differed by host package, so for those
+// versions the container's platform decides the bytes of programs with 128-bit or signed division.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -85,11 +86,55 @@ export function recordedVersions(dir = RELEASES_DIR): string[] {
     });
 }
 
+/** Where a release record came from: this package, a file given with --release-record, or the repository's main branch. */
+export interface RecordSource {
+  kind: "package" | "file" | "repository";
+  /** `releases/<version>.json` (in the package), the file as given, or the URL it was fetched from. */
+  location: string;
+  /** sha256 of the record's bytes. */
+  sha256: string;
+}
+
+/** A release record, its bytes (what the image build checks the tarball against), and where it came from. */
+export interface FoundRecord {
+  record: ReleaseRecord;
+  text: string;
+  source: RecordSource;
+}
+
+/**
+ * Where a release's record is fetched from when this package does not ship it: the repository's main branch, where it
+ * is committed after the release is published (the package of version N cannot contain releases/N.json).
+ */
+export const RELEASES_URL = "https://raw.githubusercontent.com/typesol-lang/typesol/main/releases";
+
+/** The fetch a record lookup uses (tests pass their own: no network). */
+export type FetchText = (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+
+function parseRecord(text: string, version: string, where: string): ReleaseRecord {
+  let r: ReleaseRecord;
+  try {
+    r = JSON.parse(text) as ReleaseRecord;
+  } catch (e) {
+    throw new DockerError(`${where}: not valid JSON (${(e as Error).message})`);
+  }
+  if (r?.version !== version || typeof r.tarball?.shasum !== "string" || typeof r.tarball.integrity !== "string" || !Array.isArray(r.files))
+    throw new DockerError(`${where} is not the release record of TypeSOL ${version} (version, tarball.shasum, tarball.integrity and files are required)`);
+  return r;
+}
+
+/** Whether `version` comes before 0.43.0, the first release with a record. */
+function beforeRecords(version: string): boolean {
+  const [major, minor] = version.split(".").map(Number) as [number, number];
+  return major === 0 && minor < 43;
+}
+
 /**
  * The release record of `version`: `file` (`--release-record`, e.g. releases/<version>.json from the repository), or
- * the one this package ships. A version without one is refused: its tarball could not be checked.
+ * the one this package ships. A version without one is refused: its tarball could not be checked. (findReleaseRecord
+ * also fetches a newer release's record from the repository.)
  */
-export function releaseRecord(version: string, file?: string, dir = RELEASES_DIR): { record: ReleaseRecord; path: string } {
+export function releaseRecord(version: string, file?: string, dir = RELEASES_DIR): FoundRecord {
   const at = file ?? path.join(dir, `${version}.json`);
   if (!existsSync(at)) {
     const known = recordedVersions(dir);
@@ -103,15 +148,55 @@ export function releaseRecord(version: string, file?: string, dir = RELEASES_DIR
             `Versions before 0.43.0 have no record and cannot be built in the container.`,
     );
   }
-  let r: ReleaseRecord;
+  const bytes = readFileSync(at);
+  const text = bytes.toString("utf8");
+  const record = parseRecord(text, version, at);
+  return {
+    record,
+    text,
+    source: file ? { kind: "file", location: file, sha256: sha256(bytes) } : { kind: "package", location: `releases/${version}.json`, sha256: sha256(bytes) },
+  };
+}
+
+/**
+ * The release record of `version` for a container build: `file` when given, else the package's, else (a release newer
+ * than this package, whose record was committed after the package was published) releases/<version>.json fetched from
+ * the repository's main branch over HTTPS. The check then rests on two independent sources agreeing: the tarball npm
+ * serves and the record the repository holds. Offline, or when the repository has no record for the version, it is an
+ * error that names --release-record. Where the record came from goes to `log` and into the build's manifest.
+ */
+export async function findReleaseRecord(
+  version: string,
+  opts: { file?: string; dir?: string; fetch?: FetchText; log?: (s: string) => void; timeoutMs?: number } = {},
+): Promise<FoundRecord> {
+  const dir = opts.dir ?? RELEASES_DIR;
+  if (!VERSION.test(version)) throw new DockerError(`"${version}" is not a TypeSOL version (e.g. 0.44.0)`);
+  if (opts.file || existsSync(path.join(dir, `${version}.json`)) || beforeRecords(version)) return releaseRecord(version, opts.file, dir);
+  const url = `${RELEASES_URL}/${version}.json`;
+  const fetchText = opts.fetch ?? (globalThis.fetch as unknown as FetchText);
+  const instead =
+    `pass the record with --release-record <file> (releases/${version}.json from the repository), ` +
+    `or build a version this package records (${recordedVersions(dir).join(", ") || "none"}) with --typesol-version`;
+  let text: string;
   try {
-    r = JSON.parse(readFileSync(at, "utf8")) as ReleaseRecord;
+    const res = await fetchText(url, { signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000) });
+    if (res.status === 404)
+      throw new DockerError(
+        `no release record for TypeSOL ${version}: this package does not ship one, and the repository's main branch has none (${url}: HTTP 404). ` +
+          `Is ${version} a released version? Otherwise ${instead}.`,
+      );
+    if (!res.ok) throw new DockerError(`could not fetch the release record of TypeSOL ${version} from ${url} (HTTP ${res.status}): ${instead}.`);
+    text = await res.text();
   } catch (e) {
-    throw new DockerError(`${at}: not valid JSON (${(e as Error).message})`);
+    if (e instanceof DockerError) throw e;
+    throw new DockerError(
+      `could not fetch the release record of TypeSOL ${version} from ${url} (${(e as Error).message}; offline?). This package does not ship it: ${instead}.`,
+    );
   }
-  if (r?.version !== version || typeof r.tarball?.shasum !== "string" || typeof r.tarball.integrity !== "string" || !Array.isArray(r.files))
-    throw new DockerError(`${at} is not the release record of TypeSOL ${version} (version, tarball.shasum, tarball.integrity and files are required)`);
-  return { record: r, path: at };
+  const record = parseRecord(text, version, url);
+  const digest = sha256(text);
+  (opts.log ?? ((s: string) => console.error(s)))(`  record    releases/${version}.json from ${url} (sha256 ${digest}): this package was published before it`);
+  return { record, text, source: { kind: "repository", location: url, sha256: digest } };
 }
 
 /**
@@ -155,9 +240,10 @@ export interface BuildImage {
  * The image for `version`, built first when this machine has none (`typesol-build:<version>-<Dockerfile sha256>`).
  * Progress goes to stderr. Building needs the network (base images, release files, npm); running it does not.
  */
-export function ensureImage(version: string, recordFile?: string, log: (s: string) => void = (s) => console.error(s)): BuildImage {
+export function ensureImage(version: string, found?: FoundRecord, log: (s: string) => void = (s) => console.error(s)): BuildImage {
   needDocker();
-  const { record, path: recordPath } = releaseRecord(version, recordFile);
+  const { record, text, source } = found ?? releaseRecord(version);
+  if (record.version !== version) throw new DockerError(`the release record is of TypeSOL ${record.version}, not ${version}`);
   const dockerfile = readFileSync(DOCKERFILE, "utf8");
   const dockerfileSha = sha256(dockerfile);
   const tag = `${IMAGE}:${version}-${dockerfileSha.slice(0, 12)}`;
@@ -169,7 +255,7 @@ export function ensureImage(version: string, recordFile?: string, log: (s: strin
     const ctx = mkdtempSync(path.join(os.tmpdir(), "typesol-image-"));
     try {
       copyFileSync(DOCKERFILE, path.join(ctx, "Dockerfile"));
-      copyFileSync(recordPath, path.join(ctx, "release.json"));
+      writeFileSync(path.join(ctx, "release.json"), text);
       const r = spawnSync(
         "docker",
         [
@@ -208,7 +294,7 @@ export function ensureImage(version: string, recordFile?: string, log: (s: strin
       image: id,
       base,
       downloads,
-      typesol: { version, shasum: record.tarball.shasum, integrity: record.tarball.integrity, commit: record.commit },
+      typesol: { version, shasum: record.tarball.shasum, integrity: record.tarball.integrity, commit: record.commit, record: source },
     },
   };
 }
