@@ -102,6 +102,12 @@ describe("for AI coding agents", () => {
     expect(pkg.files).toEqual(expect.arrayContaining(["llms.txt", "llms-full.txt"]));
   });
 
+  it("ships docs/language-builtins.md, up to date with lib/typesol.d.ts", () => {
+    const r = spawnSync("node", [path.join(ROOT, "scripts/language-builtins.ts"), "--check"], { encoding: "utf8" });
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+  });
+
   it("check --json gives each fixable error its hint as a field", () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-ai-check-"));
     const file = path.join(dir, "p.ts");

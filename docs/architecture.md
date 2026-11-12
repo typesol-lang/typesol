@@ -1,7 +1,7 @@
 # Architecture
 
 This document is for people changing TypeSOL itself. To write programs with it, read the [README](../README.md) and
-the [language reference](language.md).
+the [language guide](language.md).
 
 ## Pipeline
 
@@ -34,7 +34,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `test/` | The compiler's test suite (`pnpm test:core`), by subject: `language/`, `security/`, `examples/`, `integrations/` (token, Metaplex, oracle and other CPIs), `client/`, `cli/`, `verification/` (differential and fuzz tests). Shared: `harness.ts` and the `*-helpers.ts`, `fixtures/` (programs the tests compile), `golden/` (pinned generated C and clients, and what 14 programs build to in the build container: SBPF v0, and v1 and v2 for four of them), `programs/` (third-party program binaries, see its SOURCES.md), `anchor-twins/` (below) |
 | `showcase/` | Ports, apart from the compiler's own tests (`pnpm test:showcase`, its own CI job): `mainnet/` (Phoenix v1, SPL Stake Pool, Raydium AMM v4, CP-Swap and CLMM, Jito's MEV programs, Marginfi, coral-xyz/multisig, each checked against the binary on mainnet), `program-examples/` (TypeSOL rewrites of solana-developers/program-examples), `test/` (their differential tests, fuzzers, helpers and fixtures; `porting/` for the program-examples) |
 | `test/anchor-twins/` | Anchor twins of the counter, vault and escrow examples, for the differential tests (`pnpm build:twins`) and the zero-copy client test; the benchmarks themselves are in [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) |
-| `scripts/` | `smoke.ts`, `localnet.sh` and `localnet-fixtures.ts` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers), `codegen-snapshot.ts` (the generated C and IDL of every program, to diff a refactor), `release-manifest.ts` (a release's binary, IDL and toolchain hashes; the cross-host check against `test/golden/binaries.json`) |
+| `scripts/` | `smoke.ts`, `localnet.sh` and `localnet-fixtures.ts` (a local validator run), `fetch-programs.sh` (third-party binaries), `readme-bench.ts` (the README numbers), `codegen-snapshot.ts` (the generated C and IDL of every program, to diff a refactor), `release-manifest.ts` (a release's binary, IDL and toolchain hashes; the cross-host check against `test/golden/binaries.json`), `language-builtins.ts` (`docs/language-builtins.md`, generated from `lib/typesol.d.ts`; `--check` in CI) |
 | `docker/` | The Dockerfile of the `--docker` build container |
 | `releases/` | Each release's npm tarball record (`scripts/release-check.ts`); shipped, so `--docker` can check the tarball it installs |
 | `docs/` | User and contributor documentation (also published on typesol.com) |
@@ -166,7 +166,9 @@ These invariants are easy to break. Each one has tests.
    so that callers can wrap it in `TS_TRY`.
 4. Add an execution test that compiles a fixture under `test/fixtures/` and runs it in LiteSVM. Add a diagnostics
    case in `test/language/diagnostics.test.ts` for each misuse you reject.
-5. Document it in `docs/language.md` and add a line to `CHANGELOG.md`.
+5. Document it in the language guide page it belongs to (`docs/language-*.md`, with an example the guide's test
+   compiles), run `node scripts/language-builtins.ts` to list it in `docs/language-builtins.md`, and add a line to
+   `CHANGELOG.md`.
 
 ### Add an account constraint
 
@@ -201,6 +203,7 @@ the change. The sha256 values in the `*.build.json` manifests must not change.
 | --- | --- |
 | `test/<subject>/<feature>.test.ts` | Execution tests. Each compiles fixtures and runs them in LiteSVM through `test/harness.ts`. |
 | `test/language/diagnostics.test.ts` | Every rejected construct, plus the golden C. |
+| `test/language/docs-examples.test.ts` | Every example of the language guide (`docs/language*.md`) compiles, its refused constructs are refused with the quoted message, and links into the docs land on a heading. |
 | `test/security/hardening.test.ts`, `test/security/regressions.test.ts` | Attacks and edge cases that once failed. Keep each as a negative test. |
 | `test/verification/fuzz-*.test.ts`, `test/verification/differential.test.ts` | Randomized checks against BigInt, a TypeScript state model, and the Anchor twins in `test/anchor-twins`. See [testing.md](testing.md). |
 | `test/verification/rbtree-trace.test.ts` | The RedBlackTree replaying traces lib-sokoban 0.3 itself recorded (`test/verification/rbtree/`, rebuilt by its `regenerate.sh` with a small Rust oracle the tests do not need), bytes compared after every operation. |

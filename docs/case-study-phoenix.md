@@ -42,7 +42,7 @@ zero-padding retries, the market's statuses down to Tombstone, and the events by
 
 ## What it needed
 
-TypeSOL gained these features for it (docs/language.md, "Porting a native program"); programs that use none of them
+TypeSOL gained these features for it ([Porting a native program](language-native.md)); programs that use none of them
 compile to the same C as before:
 
 - **lib-sokoban's RedBlackTree** over account bytes, `rbTreeAt` / `rbTreeMutAt`: `get`, `insert`, `remove`, `min`,

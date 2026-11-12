@@ -62,6 +62,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm lint # scripts/ typecheck against dist/
+      - run: node scripts/language-builtins.ts --check # docs/language-builtins.md is generated from lib/typesol.d.ts
       # Determinism across installs and hosts: the programs in test/golden/binaries.json (SBPF v0, and v1 and v2 for
       # four of them) build here, with the platform-tools v1.52 cargo-build-sbf installed above, to the C, IDL and bytes
       # the --docker build container gave (linux/amd64; regenerate with `node scripts/release-manifest.ts --docker …`,

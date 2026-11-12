@@ -292,7 +292,8 @@ Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts
 | **Native programs** | a `@fallback` entry over the raw instruction data and accounts by position, Borsh accounts (`loadBorsh`), views of account bytes in place (also at offsets known only at run time) and lib-sokoban's red-black tree over them, byte builders (`pushLE`, `pushBorsh`, …), return data, `closeRaw`, and Rust's panics and overflow messages at the original's source locations |
 | **Interfaces** | custom discriminators (`@discriminator`), so a TypeSOL program can be a Token-2022 transfer hook, with extra accounts (ExtraAccountMetaList) |
 
-The full reference, with every type, check and built-in, is in [docs/language.md](docs/language.md).
+The [language guide](docs/language.md) explains each construct with a compiled example, and lists every type, check
+and built-in.
 
 ## Tooling
 
