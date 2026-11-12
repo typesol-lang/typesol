@@ -24,6 +24,7 @@ const DOCS: [string, string, string][] = [
   ["docs/language-chain.md", "language-chain", "sysvars, hashes, signatures, introspection, oracles and randomness"],
   ["docs/language-native.md", "language-native", "advanced: porting native programs (raw views, Borsh accounts, panics)"],
   ["docs/language-builtins.md", "language-builtins", "every name typesol exports, one line each"],
+  ["docs/glossary.md", "glossary", "the Solana and TypeSOL terms the guide uses, one paragraph each"],
   ["docs/errors.md", "errors", "the error codes a program fails with"],
   ["docs/test-your-program.md", "test-your-program", "tests with typesol/testing in LiteSVM"],
   ["docs/cli.md", "cli", "the typesol commands"],

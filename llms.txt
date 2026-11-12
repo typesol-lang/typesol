@@ -19,6 +19,7 @@ The rules and the whole reference in one file: https://typesol.com/llms-full.txt
 - [language-chain](https://typesol.com/docs/language-chain/): sysvars, hashes, signatures, introspection, oracles and randomness
 - [language-native](https://typesol.com/docs/language-native/): advanced: porting native programs (raw views, Borsh accounts, panics)
 - [language-builtins](https://typesol.com/docs/language-builtins/): every name typesol exports, one line each
+- [glossary](https://typesol.com/docs/glossary/): the Solana and TypeSOL terms the guide uses, one paragraph each
 - [errors](https://typesol.com/docs/errors/): the error codes a program fails with
 - [test-your-program](https://typesol.com/docs/test-your-program/): tests with typesol/testing in LiteSVM
 - [cli](https://typesol.com/docs/cli/): the typesol commands
