@@ -335,7 +335,8 @@ describe("generated client: typechecks", () => {
     expect(files.some((f) => f.includes("orderbook"))).toBe(true);
     expect(files.length).toBeGreaterThan(25);
     expect(strictProblems(files)).toEqual([]);
-  });
+    // Over a hundred programs are built here, each with its own compile of the runtime's builtins: a slow runner needs more than the default minute.
+  }, 240_000);
 });
 
 /** A minimal Anchor-style IDL with the given parts. */

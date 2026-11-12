@@ -10,10 +10,28 @@
  *
  * --compiler: a @typesol/cli package (or this checkout, the default; run `pnpm build` first). --sources: the tree
  * whose examples/ and ports (showcase/program-examples/, or showcase/ after 0.38.0) are built (default: this checkout). Every program is built at one address, so
- * the IDLs compare too.
+ * the IDLs compare too. --programs a.ts,b.ts builds only those (paths relative to --sources); `a.ts:v1` builds that
+ * one for another SBPF version, and --sbpf v1 makes v1 the default (a program built for v1 or v2 is listed as
+ * `<path>:v1`, so a manifest says which version each entry is).
+ *
+ * The cross-host check (CI, on every change): test/golden/binaries.json holds what a fixed set of programs builds to
+ * in the reference environment, the --docker container (linux/amd64, platform-tools v1.52), with this checkout's
+ * compiler. --check builds the same programs with the active toolchain and compares:
+ *
+ *   node scripts/release-manifest.ts --docker --programs <list> --out test/golden/binaries.json   regenerate it
+ *   node scripts/release-manifest.ts --check test/golden/binaries.json                             compare (exit 1)
+ *
+ * --docker runs this script inside the build image (built first if needed) with this checkout mounted read-only and
+ * no network. --check requires the C, the IDL and the binary to match on whichever host runs it (CI: Linux x86_64 on
+ * every change, macOS arm64 on demand): from 0.45.0 on programs link the runtime's own compiler builtins, not
+ * platform-tools' compiler-builtins library, which each host package lays out differently (docs/stability.md has the
+ * hosts measured). A reference made before that (no `builtins` in its toolchain) is only binding on its own host.
+ * --check fails on a reference with nothing to compare (no program, or an entry that did not build) and on one made
+ * from a tree with uncommitted changes (`sources.dirty`); --docker refuses such a tree, as the commit it records would
+ * not describe it.
  */
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -30,11 +48,25 @@ const sha256 = (b: Buffer | string) => createHash("sha256").update(b).digest("he
 
 type Manifest = {
   compiler: string;
-  toolchain: { clang: string; platformTools?: string; node: string; typescript: string; runtime: string };
-  sources: { root: string; commit?: string };
+  toolchain: {
+    clang: string;
+    platformTools?: string;
+    node: string;
+    typescript: string;
+    runtime: string;
+    /** sha256 of runtime/typesol_builtins.c, the compiler builtins every program links (from 0.45.0 on). */
+    builtins?: string;
+    /** `<process.platform>-<process.arch>` of the machine that built (recorded after 0.44.0). */
+    host?: string;
+    /** The sha256 of docker/Dockerfile when it was built in the build container (--docker). */
+    container?: string;
+  };
+  /** `dirty`: the tree had uncommitted changes, so `commit` does not describe what was built. */
+  sources: { root: string; commit?: string; dirty?: boolean };
   programs: Record<string, { so: string; idl: string; c: string; bytes: number } | { error: string }>;
-  references: Record<string, string>;
-  corpus: { files: number; sha256: string };
+  /** Left out with --programs (a set, not a release). */
+  references?: Record<string, string>;
+  corpus?: { files: number; sha256: string };
 };
 
 if (args[0] === "--diff") {
@@ -59,11 +91,77 @@ if (args[0] === "--diff") {
   process.exit(0);
 }
 
+if (args.includes("--docker")) process.exit(await inContainer());
+
+/** This script again, in the build container: the checkout read-only at /repo, the output's directory writable. */
+async function inContainer(): Promise<number> {
+  if (opt("--compiler") || opt("--sources") || args.includes("--check"))
+    throw new Error("--docker builds this checkout with its own compiler: leave out --compiler, --sources and --check");
+  const out = path.resolve(opt("--out") ?? "manifest.json");
+  const docker = (await import(pathToFileURL(path.join(here, "dist/tools/docker.js")).href)) as typeof import("../dist/tools/docker.js");
+  // Any recorded version's image has the same toolchain (one Dockerfile); its own TypeSOL is not used here.
+  const version = docker.recordedVersions().at(-1);
+  if (!version) throw new Error("no release record in releases/: the build image needs one");
+  // The reference records the commit it was made from: a tree with uncommitted changes is not that commit.
+  let commit = "";
+  try {
+    commit = execFileSync("git", ["-C", here, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    /* not a checkout */
+  }
+  if (commit && treeDirty(here))
+    throw new Error("--docker records the checkout's commit: commit or remove the uncommitted changes first (git status --porcelain lists them)");
+  const image = docker.ensureImage(version);
+  const pass = args.filter((a, i) => a !== "--docker" && a !== "--out" && args[i - 1] !== "--out");
+  const r = spawnSync(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "--pull",
+      "never",
+      "--platform",
+      docker.DOCKER_PLATFORM,
+      "--network",
+      "none",
+      "--read-only",
+      "--tmpfs",
+      "/tmp",
+      "--cap-drop",
+      "ALL",
+      "--user",
+      docker.containerUser(),
+      ...docker.limits(),
+      "--mount",
+      `type=bind,src=${here},dst=/repo,readonly`,
+      "--mount",
+      `type=bind,src=${path.dirname(out)},dst=/out`,
+      image.tag,
+      "node",
+      "/repo/scripts/release-manifest.ts",
+      ...pass,
+      "--out",
+      `/out/${path.basename(out)}`,
+      "--container",
+      image.identity.dockerfile,
+      ...(commit ? ["--commit", commit] : []),
+    ],
+    { stdio: "inherit" },
+  );
+  return r.status ?? 1;
+}
+
+/** Whether a checkout has uncommitted changes (tracked or untracked, as git status lists them). */
+function treeDirty(dir: string): boolean {
+  const r = spawnSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" });
+  return r.status !== 0 || r.stdout.trim() !== "";
+}
+
 const compilerRoot = path.resolve(opt("--compiler") ?? here);
 const sourceRoot = path.resolve(opt("--sources") ?? here);
 const out = opt("--out") ?? "manifest.json";
 const compiler = (await import(pathToFileURL(path.join(compilerRoot, "dist/compiler/index.js")).href)) as {
-  build: (entry: string, outDir: string, address: string) => { soPath: string; idlPath: string; cPath: string };
+  build: (entry: string, outDir: string, address: string, opts?: { sbpf?: Sbpf }) => { soPath: string; idlPath: string; cPath: string };
   COMPILER_VERSION: string;
 };
 const toolchain = (await import(pathToFileURL(path.join(compilerRoot, "dist/compiler/toolchain.js")).href)) as {
@@ -94,18 +192,103 @@ const files = (dir: string): string[] => {
   return found;
 };
 
+type Sbpf = "v0" | "v1" | "v2";
+const defaultSbpf = (opt("--sbpf") ?? "v0") as Sbpf;
+if (!["v0", "v1", "v2"].includes(defaultSbpf)) throw new Error(`--sbpf ${defaultSbpf}: expected v0, v1 or v2`);
+/** A program entry, `<path>` or `<path>:<sbpf>`, as its path and SBPF version. */
+const spec = (s: string, fallback: Sbpf = "v0"): { rel: string; sbpf: Sbpf } => {
+  const m = /^(.*):(v[012])$/.exec(s);
+  return m ? { rel: m[1]!, sbpf: m[2] as Sbpf } : { rel: s, sbpf: fallback };
+};
+/** The key of a program in a manifest: its path, with the SBPF version when it is not v0. */
+const key = (rel: string, sbpf: Sbpf) => (sbpf === "v0" ? rel : `${rel}:${sbpf}`);
+
+const host = `${process.platform}-${process.arch}`;
+const buildOne = (entry: string, dir: string, sbpf: Sbpf = "v0") => {
+  // Only v0 through the old signature: an older compiler package then builds as it always did.
+  const r = sbpf === "v0" ? compiler.build(entry, dir, ADDRESS) : compiler.build(entry, dir, ADDRESS, { sbpf });
+  const so = readFileSync(r.soPath);
+  return { so: sha256(so), idl: sha256(readFileSync(r.idlPath)), c: sha256(readFileSync(r.cPath)), bytes: so.length };
+};
+
+if (opt("--check")) {
+  const reference = JSON.parse(readFileSync(opt("--check")!, "utf8")) as Manifest;
+  const refHost = reference.toolchain.host ?? "unknown";
+  // A reference that compares nothing would pass every host: refuse it, as one made from uncommitted changes.
+  const entries = Object.entries(reference.programs ?? {});
+  const broken = entries.filter(([, p]) => "error" in p).map(([n]) => n);
+  if (!entries.length || broken.length || reference.sources?.dirty) {
+    console.log(
+      !entries.length
+        ? `${opt("--check")}: the reference lists no program, so it checks nothing`
+        : broken.length
+          ? `${opt("--check")}: ${broken.length} entry(ies) did not build when the reference was made (${broken.join(", ")}): regenerate it`
+          : `${opt("--check")}: made from a tree with uncommitted changes (sources.dirty), so its commit does not describe it: regenerate it from a clean checkout`,
+    );
+    process.exit(1);
+  }
+  const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-check-"));
+  let failed = 0;
+  let hostOnly = 0;
+  console.log(`reference: ${opt("--check")} (${reference.toolchain.container ? "build container, " : ""}${refHost}); this host: ${host}`);
+  try {
+    for (const [i, [name, want]] of entries.entries()) {
+      if ("error" in want) continue;
+      const { rel: file, sbpf } = spec(name);
+      const rel = name;
+      const got = buildOne(path.join(sourceRoot, file), path.join(dir, String(i)), sbpf);
+      const text = got.c === want.c && got.idl === want.idl;
+      if (text && got.so === want.so) console.log(`  same      ${rel} (${got.bytes} bytes)`);
+      else if (!text) {
+        failed++;
+        console.log(
+          `  STALE     ${rel}: ${got.c === want.c ? "" : "the C "}${got.c !== want.c && got.idl !== want.idl ? "and " : ""}${got.idl === want.idl ? "" : "the IDL "}differ from the reference. ` +
+            "If the compiler or the program changed on purpose, regenerate the reference (see the top of scripts/release-manifest.ts)",
+        );
+      } else if (host === refHost || reference.toolchain.builtins) {
+        failed++;
+        console.log(
+          `  DIFFERS   ${rel}: the same C and IDL build to another binary here (${got.so.slice(0, 16)}…, reference ${want.so.slice(0, 16)}…; a toolchain difference)`,
+        );
+      } else {
+        hostOnly++;
+        console.log(
+          `  host      ${rel}: another binary on ${host} with the same C and IDL (a reference from before 0.45.0: compiler-builtins' division differed by host)`,
+        );
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log(
+    failed
+      ? `${failed} program(s) differ from the reference`
+      : `no difference${hostOnly ? `, apart from ${hostOnly} binary(ies) on a host other than the reference's (${refHost})` : ": every program builds to the reference's bytes"}`,
+  );
+  process.exit(failed ? 1 : 0);
+}
+
 const programs: Manifest["programs"] = {};
 const scratch = mkdtempSync(path.join(os.tmpdir(), "typesol-manifest-"));
 // The programs: examples/, and the mainnet ports and program-examples ports (examples/ and test/ports/ up to 0.38.0,
 // showcase/mainnet/ and showcase/program-examples/ after).
 const roots = ["examples", "test/ports", "showcase/mainnet", "showcase/program-examples"].map((d) => path.join(sourceRoot, d)).filter((d) => existsSync(d));
-const entries = roots.flatMap((d) => files(d)).filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"));
-for (const [i, entry] of entries.entries()) {
-  const rel = path.relative(sourceRoot, entry);
+// --programs a.ts,b.ts: only those entries (paths relative to --sources), e.g. the small set the cross-host check builds.
+const only = opt("--programs")
+  ?.split(",")
+  .filter(Boolean)
+  .map((p) => spec(p, defaultSbpf));
+const entries =
+  only ??
+  roots
+    .flatMap((d) => files(d))
+    .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"))
+    .map((f) => ({ rel: path.relative(sourceRoot, f), sbpf: defaultSbpf }));
+for (const [i, { rel: file, sbpf }] of entries.entries()) {
+  const entry = path.join(sourceRoot, file);
+  const rel = key(file, sbpf);
   try {
-    const r = compiler.build(entry, path.join(scratch, String(i)), ADDRESS);
-    const so = readFileSync(r.soPath);
-    programs[rel] = { so: sha256(so), idl: sha256(readFileSync(r.idlPath)), c: sha256(readFileSync(r.cPath)), bytes: so.length };
+    programs[rel] = buildOne(entry, path.join(scratch, String(i)), sbpf);
   } catch (e) {
     // Files that are not programs on their own (modules other files import) are listed with why.
     programs[rel] = {
@@ -118,20 +301,25 @@ for (const [i, entry] of entries.entries()) {
 }
 rmSync(scratch, { recursive: true, force: true });
 
-const references: Manifest["references"] = {};
-for (const f of files(path.join(sourceRoot, "test/programs"))) if (f.endsWith(".so")) references[path.relative(sourceRoot, f)] = sha256(readFileSync(f));
-const corpus = files(path.join(sourceRoot, "test")).filter((f) => !f.endsWith(".so"));
+// A set (--programs) is not a release: no reference binaries or corpus, which change with every test.
+const references: Record<string, string> = {};
 const corpusHash = createHash("sha256");
-for (const f of corpus)
-  corpusHash
-    .update(`${path.relative(sourceRoot, f)}\0`)
-    .update(readFileSync(f))
-    .update("\0");
-let commit: string | undefined;
+let corpusFiles = 0;
+if (!only) {
+  for (const f of files(path.join(sourceRoot, "test/programs"))) if (f.endsWith(".so")) references[path.relative(sourceRoot, f)] = sha256(readFileSync(f));
+  for (const f of files(path.join(sourceRoot, "test")).filter((f) => !f.endsWith(".so"))) {
+    corpusFiles++;
+    corpusHash
+      .update(`${path.relative(sourceRoot, f)}\0`)
+      .update(readFileSync(f))
+      .update("\0");
+  }
+}
+let commit: string | undefined = opt("--commit");
 try {
-  commit = execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  commit ??= execFileSync("git", ["-C", sourceRoot, "rev-parse", "HEAD"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
 } catch {
-  /* not a checkout */
+  /* not a checkout (or the container, where --commit gives it) */
 }
 const clang = toolchain.findToolchain().clang;
 const manifest: Manifest = {
@@ -143,11 +331,16 @@ const manifest: Manifest = {
     node: process.version,
     typescript: ts.default?.version ?? ts.version ?? "",
     runtime: sha256(readFileSync(path.join(compilerRoot, "runtime/typesol_rt.h"))),
+    ...(existsSync(path.join(compilerRoot, "runtime/typesol_builtins.c"))
+      ? { builtins: sha256(readFileSync(path.join(compilerRoot, "runtime/typesol_builtins.c"))) }
+      : {}),
+    host,
+    ...(opt("--container") ? { container: opt("--container") } : {}),
   },
-  sources: { root: path.basename(sourceRoot), ...(commit ? { commit } : {}) },
+  // In the container the checkout is read-only and git may not be there: --docker checked it before starting.
+  sources: { root: path.basename(sourceRoot), ...(commit ? { commit } : {}), ...(!opt("--commit") && commit && treeDirty(sourceRoot) ? { dirty: true } : {}) },
   programs,
-  references,
-  corpus: { files: corpus.length, sha256: corpusHash.digest("hex") },
+  ...(only ? {} : { references, corpus: { files: corpusFiles, sha256: corpusHash.digest("hex") } }),
 };
 writeFileSync(out, `${JSON.stringify(manifest, null, 1)}\n`);
 const built = Object.values(programs).filter((p) => !("error" in p)).length;

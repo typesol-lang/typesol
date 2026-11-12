@@ -13,14 +13,16 @@ import {
   describeToolchain,
   elfLength,
   generate,
+  MEASURED_HOSTS,
   SBPF_VERSIONS,
   toolchainDifferences,
   verifyBinary,
   type BuildManifest,
+  type BuildResult,
   type Diagnostic,
   type Sbpf,
 } from "./compiler/index.js";
-import { setToolchainStrict } from "./compiler/toolchain.js";
+import { setToolchainStrict, shortClang } from "./compiler/toolchain.js";
 import { generateCpi, type Idl } from "./tools/cpigen.js";
 import { generatePort, type PortIdl } from "./tools/portgen.js";
 import { generateClient, writeClient, type ClientIdl } from "./tools/clientgen.js";
@@ -38,8 +40,20 @@ import {
   programForEntry,
   programPaths,
   scaffold,
+  withBuildLock,
   type Workspace,
 } from "./workspace.js";
+import {
+  chooseTypesolVersion,
+  containerBuild,
+  ensureImage,
+  findReleaseRecord,
+  needDocker,
+  repeatCommand,
+  shellQuote,
+  sourceRevision,
+  type BuildImage,
+} from "./tools/docker.js";
 import {
   cliRpc,
   clusterUrl,
@@ -84,6 +98,13 @@ function banner(): string {
 const SBPF = `--sbpf v0|v1|v2      SBPF version (default v0, or "sbpf" in ${CONFIG}); v1/v2 need clusters that enabled them`;
 const TOOLCHAIN_STRICT =
   "--toolchain-strict   refuse to build with platform-tools other than the tested ones (default: one warning); also TYPESOL_TOOLCHAIN=strict";
+const DOCKER_HELP = [
+  "--docker             build in the pinned container (docker/Dockerfile: linux/amd64, Agave 3.1.10 platform-tools v1.52,",
+  "                     the TypeSOL tarball checked against releases/<version>.json); the image is built locally the first time",
+  "--typesol-version <v>  the TypeSOL version inside the container (default: this one; for verify, the deployed build's manifest's)",
+  "--release-record <file>  the releases/<v>.json to check that version's tarball against (default: this package's, else the repository's)",
+].join("\n  ");
+const DOCKER_OPTIONS = { docker: { type: "boolean" }, "typesol-version": { type: "string" }, "release-record": { type: "string" } } as const;
 
 interface Command {
   usage: string;
@@ -158,13 +179,14 @@ const COMMANDS: Record<string, Command> = {
   },
   build: {
     usage:
-      "typesol build [<program>…] [--sbpf v0|v1|v2] [--profile] [--toolchain-strict]\n  typesol build <program.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--toolchain-strict]",
+      "typesol build [<program>…] [--sbpf v0|v1|v2] [--profile] [--toolchain-strict] [--docker [--typesol-version <v>] [--release-record <file>]]\n  typesol build <program.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--toolchain-strict] [--docker …]",
     help: [
       `In a project (${CONFIG}): build every program, or the ones named, into <out>/<name>/ (.so, IDL .json, .client.ts, .c, .build.json).`,
       "Outside a project, or with a .ts file: build that file (its keypair is created next to the output if needed).",
       SBPF,
       "--profile            log a marker and the remaining compute units before every statement (for `typesol profile`; not for release)",
       TOOLCHAIN_STRICT,
+      DOCKER_HELP,
       "--quiet              no banner",
     ].join("\n  "),
     options: {
@@ -174,8 +196,9 @@ const COMMANDS: Record<string, Command> = {
       "program-id": { type: "string" },
       quiet: { type: "boolean" },
       "toolchain-strict": { type: "boolean" },
+      ...DOCKER_OPTIONS,
     },
-    run(v, args) {
+    async run(v, args) {
       if (v["toolchain-strict"]) setToolchainStrict();
       const sbpf = sbpfOf(v);
       const profile = !!v.profile;
@@ -183,10 +206,36 @@ const COMMANDS: Record<string, Command> = {
       const file = args.length === 1 && args[0].endsWith(".ts") ? args[0] : undefined;
       // A .ts that is one of the project's programs builds as that program (same keypair, output and settings).
       const inProject = ws && (file ? programForEntry(ws, file) : undefined);
+      dockerOptions(v);
       if (ws && (!file || inProject)) {
         if (v.out || v["program-id"])
           throw new UsageError(`--out and --program-id do not apply to programs of ${CONFIG} (use "out" there; keypairs live in <out>/deploy/)`);
         if (!v.quiet && process.stdout.isTTY) log(banner());
+        if (v.docker) {
+          const image = await buildImage(v, ws.root);
+          const progs = (inProject ? [inProject] : names(ws, args)).map((name) => programPaths(ws, name));
+          // The same locks as a local build: another process building one of these programs would write the same files.
+          const { jobs, built } = withBuildLocks(
+            progs.map((p) => p.outDir),
+            () => {
+              const jobs = progs.map((paths) => ({ paths, ...programAddress(ws, paths.name) }));
+              const built = containerBuild(
+                image,
+                ws.root,
+                jobs.map((j) => ({ entry: j.paths.entry, outDir: j.paths.outDir, address: j.address, sbpf: sbpf ?? ws.sbpf, profile })),
+              );
+              return { jobs, built };
+            },
+          );
+          built.forEach((r, i) => {
+            const j = jobs[i]!;
+            log(
+              `  ${j.paths.name.padEnd(12)} ${j.address}${j.created ? " (new keypair)" : j.keyless ? " (no keypair here: deploying needs it)" : ""}  ${path.relative(process.cwd(), r.soPath)}`,
+            );
+          });
+          log(containerLine(image));
+          return 0;
+        }
         for (const b of buildWorkspace(ws, inProject ? [inProject] : names(ws, args), { sbpf, profile }))
           log(
             `  ${b.paths.name.padEnd(12)} ${b.address}${b.created ? " (new keypair)" : b.keyless ? " (no keypair here: deploying needs it)" : ""}  ${path.relative(process.cwd(), b.result.soPath)}`,
@@ -202,23 +251,34 @@ const COMMANDS: Record<string, Command> = {
       mustExist(file);
       if (!v.quiet && process.stdout.isTTY) log(banner());
       const outDir = (v.out as string | undefined) ?? path.join(path.dirname(file), "target");
-      const { model } = generate(file);
+      // The program is named after its entry file. With --docker the container's TypeSOL compiles it, not this one.
+      const name = v.docker ? path.basename(file).replace(/\.ts$/, "") : generate(file).model.name;
       const given = v["program-id"] as string | undefined;
       // A keypair given by name must be there: creating one in its place would give the program a new address.
       if (given !== undefined && !existsSync(given))
         throw new UsageError(`--program-id ${given} does not exist (leave --program-id out to create a keypair next to the output)`);
-      const keyFile = given ?? path.join(outDir, `${model.name}-keypair.json`);
+      const keyFile = given ?? path.join(outDir, `${name}-keypair.json`);
+      const image = v.docker ? await buildImage(v, ws?.root) : undefined;
       mkdirSync(path.dirname(keyFile), { recursive: true });
       const { address, created } = loadOrCreateKeypair(keyFile);
-      const res = build(file, outDir, address, { sbpf: sbpf ?? "v0", profile });
-      const client = writeClient(res.idl, path.join(outDir, `${model.name}.client.ts`));
-      log(`  program   ${model.name}`);
+      let res: Pick<BuildResult, "soPath" | "idlPath" | "manifestPath">;
+      if (image) {
+        // The container sees the entry's directory: the program and the files it imports from there.
+        const [r] = containerBuild(image, path.dirname(path.resolve(file)), [{ entry: file, outDir, address, sbpf: sbpf ?? "v0", profile }]);
+        res = { soPath: r!.soPath, idlPath: path.join(outDir, `${name}.json`), manifestPath: r!.manifestPath };
+      } else {
+        const local = build(file, outDir, address, { sbpf: sbpf ?? "v0", profile });
+        writeClient(local.idl, path.join(outDir, `${name}.client.ts`));
+        res = local;
+      }
+      log(`  program   ${name}`);
       log(`  address   ${address}${created ? "  (new keypair: keep it, it is the program's address)" : ""}`);
       log(`  binary    ${res.soPath}`);
       log(`  idl       ${res.idlPath}`);
-      log(`  client    ${client.path}`);
+      log(`  client    ${path.join(outDir, `${name}.client.ts`)}`);
       log(`  manifest  ${res.manifestPath}`);
       log(`\n  deploy:   solana program deploy ${shellQuote(res.soPath)} --program-id ${shellQuote(keyFile)}`);
+      if (image) log(containerLine(image));
       return 0;
     },
   },
@@ -471,7 +531,7 @@ const COMMANDS: Record<string, Command> = {
   },
   verify: {
     usage:
-      "typesol verify <program.ts | program> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--manifest <name.build.json>]",
+      "typesol verify <program.ts | program> [<deployed.so>] [--address <program id>] [--url <rpc>] [--config <solana cli config>] [--sbpf v0|v1|v2] [--manifest <name.build.json>] [--docker [--typesol-version <v>] [--release-record <file>]]",
     help: [
       "Rebuild and compare with what is deployed. Exit 0 on a match, 3 on a mismatch.",
       "With a .so (e.g. from `solana program dump`): compare with that file.",
@@ -484,9 +544,20 @@ const COMMANDS: Record<string, Command> = {
       "manifest whose binary hash is the deployed one's (--manifest, <deployed>.build.json next to a given .so, or the",
       "local build's). A program on chain carries no record of what built it: keep the .build.json with the deployment.",
       "--manifest <file>   the <name>.build.json of the build that was deployed",
+      "With --docker the rebuild runs in the pinned container, with the TypeSOL version of the deployed build's manifest",
+      "(when one is known) unless --typesol-version is given; on a match it prints what was verified, for anyone to repeat.",
+      DOCKER_HELP,
     ].join("\n  "),
-    options: { sbpf: { type: "string" }, address: { type: "string" }, url: { type: "string" }, config: { type: "string" }, manifest: { type: "string" } },
+    options: {
+      sbpf: { type: "string" },
+      address: { type: "string" },
+      url: { type: "string" },
+      config: { type: "string" },
+      manifest: { type: "string" },
+      ...DOCKER_OPTIONS,
+    },
     async run(v, args) {
+      dockerOptions(v);
       if (args.length < 1 || args.length > 2) throw new UsageError("verify takes the program and, optionally, the deployed .so");
       const [target, deployedPath] = args;
       if (deployedPath && (v.address || v.url)) throw new UsageError("give either a deployed .so or --address/--url, not both");
@@ -518,32 +589,43 @@ const COMMANDS: Record<string, Command> = {
       // ELF e_flags (offset 0x30) hold the SBPF version: 0 for v0, 1 for v1, 2 for v2.
       const flags = deployed.length > 0x34 && deployed.readUInt32BE(0) === 0x7f454c46 ? deployed.readUInt32LE(0x30) : 0;
       const sbpf = sbpfOf(v) ?? SBPF_VERSIONS[flags] ?? "v0";
+      const programName = path.basename(entry).replace(/\.ts$/, "");
+      // The rebuild's own output directory is temporary; the local build's manifest sits in the usual place.
+      const local = ws && name ? programPaths(ws, name).outDir : path.join(path.dirname(entry), "target");
+      const candidates = [
+        v.manifest as string | undefined,
+        deployedPath ? deployedPath.replace(/\.so$/, "") + ".build.json" : undefined,
+        path.join(local, `${programName}.build.json`),
+      ].filter((f): f is string => !!f);
+      const known = buildManifests(deployed, candidates);
+      const address = onChain?.address ?? "11111111111111111111111111111111";
       const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-verify-"));
-      let res, same;
+      let rebuilt: BuildManifest, idl: object, same: boolean;
+      let image: BuildImage | undefined;
+      let root: string | undefined;
       try {
-        res = build(entry, dir, onChain?.address ?? "11111111111111111111111111111111", { sbpf });
-        same = verifyBinary(deployed, readFileSync(res.soPath));
+        if (v.docker) {
+          image = await buildImage(v, ws?.root, known.deployed ? { version: known.deployed.manifest.compiler, from: relPath(known.deployed.file) } : undefined);
+          root = ws && name ? ws.root : path.dirname(path.resolve(entry));
+          const [r] = containerBuild(image, root, [{ entry, outDir: dir, address, sbpf }]);
+          rebuilt = r!.manifest;
+          idl = JSON.parse(readFileSync(path.join(dir, `${r!.name}.json`), "utf8")) as object;
+          same = verifyBinary(deployed, readFileSync(r!.soPath));
+        } else {
+          const res = build(entry, dir, address, { sbpf });
+          rebuilt = res.manifest;
+          idl = res.idl;
+          same = verifyBinary(deployed, readFileSync(res.soPath));
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
       const what =
         deployedPath ??
         `${onChain!.address} (${onChain!.info.dataAccount === onChain!.address ? "" : `data ${onChain!.info.dataAccount}, `}loader ${onChain!.info.loader})`;
-      log(
-        same
-          ? `  match     ${res.manifest.binary} (sbpf ${sbpf})`
-          : `  MISMATCH  ${what} is not what ${entry} builds to (${res.manifest.binary}, sbpf ${sbpf})`,
-      );
-      if (!same) {
-        // The rebuild's own output directory was temporary; the local build's manifest sits in the usual place.
-        const local = ws && name ? programPaths(ws, name).outDir : path.join(path.dirname(entry), "target");
-        const candidates = [
-          v.manifest as string | undefined,
-          deployedPath ? deployedPath.replace(/\.so$/, "") + ".build.json" : undefined,
-          path.join(local, `${res.manifest.program}.build.json`),
-        ].filter((f): f is string => !!f);
-        for (const line of toolchainHint(res.manifest, deployed, candidates, !!v.manifest)) log(line);
-      }
+      log(same ? `  match     ${rebuilt.binary} (sbpf ${sbpf})` : `  MISMATCH  ${what} is not what ${entry} builds to (${rebuilt.binary}, sbpf ${sbpf})`);
+      if (same && image && root) for (const line of verifiedLines({ what, entry, root, rebuilt, image, args, v })) log(line);
+      if (!same) for (const line of toolchainHint(rebuilt, known, !!v.manifest)) log(line);
       if (!onChain) return same ? 0 : 3;
 
       const { info } = onChain;
@@ -564,7 +646,7 @@ const COMMANDS: Record<string, Command> = {
         log(`  IDL ERROR  the IDL at ${at} could not be read: ${(e as Error).message}`);
         return 3;
       }
-      const idlSame = canonicalJson(published) === canonicalJson(res.idl);
+      const idlSame = canonicalJson(published) === canonicalJson(idl);
       log(
         idlSame
           ? "  idl       match: the published IDL is the one the source builds"
@@ -682,16 +764,16 @@ function mustExist(file: string): string {
 }
 
 /**
- * After a verify mismatch: the toolchain of the rebuild and, when a build manifest describes the deployed bytes (its
- * binary hash is theirs), of the deployed build, and what differs. A manifest that describes other bytes (an older
- * local build) is only mentioned: its toolchain says nothing about the deployed binary.
+ * The build manifests among `candidates` (files that may not exist): the one whose binary hash is the deployed bytes'
+ * (it describes the deployed build), and the others, which describe other binaries (an older local build).
  */
-function toolchainHint(rebuilt: BuildManifest, deployed: Buffer, candidates: string[], explicit: boolean): string[] {
-  const lines = [`  rebuilt   ${describeToolchain(rebuilt)}`];
+function buildManifests(
+  deployed: Buffer,
+  candidates: string[],
+): { deployed?: { file: string; manifest: BuildManifest }; unrelated: { file: string; manifest: BuildManifest }[] } {
   const deployedHash = createHash("sha256")
     .update(deployed.subarray(0, elfLength(deployed)))
     .digest("hex");
-  let other: { file: string; manifest: BuildManifest } | undefined;
   const unrelated: { file: string; manifest: BuildManifest }[] = [];
   for (const file of [...new Set(candidates.map((c) => path.resolve(c)))]) {
     if (!existsSync(file)) continue;
@@ -702,19 +784,45 @@ function toolchainHint(rebuilt: BuildManifest, deployed: Buffer, candidates: str
       continue;
     }
     if (typeof manifest?.clang !== "string" || typeof manifest.binary !== "string") continue;
-    if (manifest.binary === deployedHash) {
-      other = { file, manifest };
-      break;
-    }
+    if (manifest.binary === deployedHash) return { deployed: { file, manifest }, unrelated };
     unrelated.push({ file, manifest });
   }
-  const rel = (f: string) => path.relative(process.cwd(), f) || f;
+  return { unrelated };
+}
+
+/** A path as the user would type it here: relative below the working directory, absolute elsewhere. */
+const relPath = (f: string) => {
+  const rel = path.relative(process.cwd(), f);
+  return !rel ? f : rel.startsWith("..") || path.isAbsolute(rel) ? path.resolve(f) : rel;
+};
+
+/**
+ * After a verify mismatch: the toolchain of the rebuild and, when a build manifest describes the deployed bytes (its
+ * binary hash is theirs), of the deployed build, and what differs. A manifest that describes other bytes (an older
+ * local build) is only mentioned: its toolchain says nothing about the deployed binary.
+ */
+function toolchainHint(rebuilt: BuildManifest, known: ReturnType<typeof buildManifests>, explicit: boolean): string[] {
+  const lines = [`  rebuilt   ${describeToolchain(rebuilt)}`];
+  const other = known.deployed;
   if (other) {
-    lines.push(`  deployed  ${describeToolchain(other.manifest)} (${rel(other.file)}, whose binary hash is the deployed one's)`);
+    lines.push(`  deployed  ${describeToolchain(other.manifest)} (${relPath(other.file)}, whose binary hash is the deployed one's)`);
     const diff = toolchainDifferences(rebuilt, other.manifest);
+    const why = diff.includes("clang")
+      ? "another clang can compile the same C to other bytes; "
+      : diff.includes("host")
+        ? "the host may be the cause if the program uses 128-bit or signed division: before 0.45.0 those linked platform-tools' compiler-builtins, laid out differently by each host package; "
+        : diff.includes("host (not measured)")
+          ? `the same bytes on another host were measured only on ${MEASURED_HOSTS.join(", ")}; `
+          : "";
+    const fix =
+      diff.length === 1 && diff[0]!.startsWith("host")
+        ? other.manifest.container
+          ? "rebuild with --docker, as the deployed build was"
+          : `rebuild on a ${other.manifest.host!.os}-${other.manifest.host!.arch} host, or deploy a --docker build so that anyone can rebuild it`
+        : `rebuild with the deployed side's ${diff.join(" and ")} to compare like with like`;
     lines.push(
       diff.length
-        ? `  differs   ${diff.join(", ")}: ${diff.includes("clang") ? "another clang can compile the same C to other bytes; " : ""}rebuild with the deployed side's ${diff.join(" and ")} to compare like with like`
+        ? `  differs   ${diff.join(", ")}: ${why}${fix}`
         : "  same toolchain and compiler versions on both sides: the sources (or an import, or the runtime header) differ",
     );
     return lines;
@@ -723,19 +831,88 @@ function toolchainHint(rebuilt: BuildManifest, deployed: Buffer, candidates: str
     "  deployed  toolchain unknown: a deployed program records nothing about what built it" +
       (explicit ? "" : "; pass --manifest <name>.build.json, kept from the build that was deployed"),
   );
-  for (const u of unrelated) {
+  for (const u of known.unrelated) {
     const diff = toolchainDifferences(rebuilt, u.manifest);
     lines.push(
-      `  note      ${rel(u.file)} describes another binary (${u.manifest.binary.slice(0, 12)}…, ${describeToolchain(u.manifest)})` +
+      `  note      ${relPath(u.file)} describes another binary (${u.manifest.binary.slice(0, 12)}…, ${describeToolchain(u.manifest)})` +
         (diff.length ? `; it differs from the rebuild in ${diff.join(", ")}` : ""),
     );
   }
   return lines;
 }
 
-/** Quote a command-line word for a POSIX shell when it needs it. */
-function shellQuote(s: string): string {
-  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
+/** After a container verify matched: what was verified, in terms a third party can repeat. */
+function verifiedLines(o: {
+  what: string;
+  entry: string;
+  root: string;
+  rebuilt: BuildManifest;
+  image: BuildImage;
+  args: string[];
+  v: Record<string, unknown>;
+}): string[] {
+  const id = o.image.identity;
+  const rev = sourceRevision(o.root);
+  return [
+    `  verified  ${o.what} is what ${relPath(path.resolve(o.entry))} builds to in the pinned build container:`,
+    `    source     ${o.root}${rev ? ` (git ${rev.commit}${rev.clean ? "" : ", with uncommitted changes"})` : " (not a git checkout)"}`,
+    `    TypeSOL    ${id.typesol.version}, npm tarball shasum ${id.typesol.shasum}, as releases/${id.typesol.version}.json records it (the record names commit ${id.typesol.commit})`,
+    `    record     ${recordLine(id.typesol.record) ?? `releases/${id.typesol.version}.json`}`,
+    ...(id.deps
+      ? [
+          `    deps       ${id.deps.path} sha256 ${id.deps.sha256} (${id.deps.source === "package" ? "this package's" : "the checked tarball's"}), installed with npm ci`,
+        ]
+      : []),
+    `    toolchain  ${shortClang(o.rebuilt.clang)}, platform-tools ${o.rebuilt.platformTools ?? "unknown"}, TypeScript ${o.rebuilt.typescript}`,
+    `    container  ${id.platform}, Dockerfile sha256 ${id.dockerfile}, local image ${id.image}`,
+    ...id.base.map((b) => `    base       ${b}`),
+    ...id.downloads.map((d) => `    download   ${d.url.split("/").pop()} sha256 ${d.sha256}`),
+    `    repeat     ${repeatCommand(o.args, o.v, id.typesol.version)}`,
+  ];
+}
+
+/** Where a container build's release record came from, in one line. */
+function recordLine(r: BuildImage["identity"]["typesol"]["record"]): string | undefined {
+  if (!r) return undefined;
+  const where =
+    r.kind === "package"
+      ? `${r.location} in this package`
+      : r.kind === "file"
+        ? `${r.location} (--release-record)`
+        : `${r.location} (the repository's main branch)`;
+  return `${where}, sha256 ${r.sha256}`;
+}
+
+/** --typesol-version and --release-record only mean something with --docker. */
+function dockerOptions(v: Record<string, unknown>): void {
+  for (const o of ["typesol-version", "release-record"])
+    if (v[o] !== undefined && !v.docker) throw new UsageError(`--${o} applies to container builds: add --docker`);
+}
+
+/**
+ * The build image for --docker, built first if needed, with the TypeSOL version chosen for it (said on stderr). The
+ * version's release record is this package's, the --release-record file, or (a release newer than this package) the
+ * repository's.
+ */
+async function buildImage(v: Record<string, unknown>, projectRoot: string | undefined, deployed?: { version: string; from: string }): Promise<BuildImage> {
+  const { version, why } = chooseTypesolVersion({ given: v["typesol-version"] as string | undefined, deployed, projectRoot, cliVersion: COMPILER_VERSION });
+  needDocker(); // before any download: without Docker there is nothing to check a record for
+  const found = await findReleaseRecord(version, { file: v["release-record"] as string | undefined });
+  const image = ensureImage(version, found);
+  console.error(`  container ${image.tag}: TypeSOL ${version} (${why}), ${image.identity.platform}`);
+  return image;
+}
+
+/** The container build's environment in one line, for the build's report. */
+function containerLine(image: BuildImage): string {
+  const id = image.identity;
+  return `  built in  ${id.platform} container ${image.tag} (Dockerfile sha256 ${id.dockerfile.slice(0, 16)}…, TypeSOL ${id.typesol.version} tarball ${id.typesol.shasum}${id.deps ? `, dependency lock ${id.deps.sha256.slice(0, 16)}…` : ""}); recorded in each .build.json`;
+}
+
+/** Hold the build lock of every directory while `fn` runs (one container builds them all). */
+function withBuildLocks<T>(dirs: string[], fn: () => T): T {
+  const [first, ...rest] = [...new Set(dirs)].sort();
+  return first === undefined ? fn() : withBuildLock(first, () => withBuildLocks(rest, fn));
 }
 
 function one(args: string[], what: string): string {

@@ -4,7 +4,19 @@
 // whose clang is a script that reports another version and otherwise runs the real clang (the same bytes come out).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,14 +24,18 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   checkToolchain,
   findToolchain,
+  isSyscall,
+  linkSharedObject,
   platformToolsVersion,
+  sbfCflags,
+  SYSCALLS,
   setToolchainStrict,
   shortClang,
   TESTED_TOOLCHAIN,
   toolchainInfo,
   untestedToolchainMessage,
 } from "../../src/compiler/toolchain.ts";
-import { describeToolchain, elfLength, toolchainDifferences } from "../../src/compiler/index.ts";
+import { describeToolchain, elfLength, MEASURED_HOSTS, toolchainDifferences } from "../../src/compiler/index.ts";
 import { buildForTest, findWorkspace } from "../../src/workspace.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -184,6 +200,98 @@ describe("the tested toolchain", () => {
     expect(buildForTest(ws, "keep").rebuilt).toBe(true);
     expect(JSON.parse(readFileSync(file, "utf8")).host).toEqual({ os: process.platform, arch: process.arch });
     expect(buildForTest(ws, "keep").rebuilt).toBe(false);
+
+    // The runtime's builtins: a manifest that does not list them (0.44.1 or earlier), or lists another file, is rebuilt.
+    const current = JSON.parse(readFileSync(file, "utf8"));
+    const { "<runtime>/typesol_builtins.c": _builtins, ...older } = current.sources;
+    writeFileSync(file, JSON.stringify({ ...current, sources: older }));
+    expect(buildForTest(ws, "keep").rebuilt).toBe(true);
+    writeFileSync(file, JSON.stringify({ ...current, sources: { ...current.sources, "<runtime>/typesol_builtins.c": "0".repeat(64) } }));
+    expect(buildForTest(ws, "keep").rebuilt).toBe(true);
+    expect(buildForTest(ws, "keep").rebuilt).toBe(false);
+  });
+
+  it("a --docker build is up to date on any host while its sources and binary are the ones it records", () => {
+    const dir = tmp();
+    expect(run(["init", ".", "--name", "boxed"], dir).status).toBe(0);
+    const ws = findWorkspace(dir)!;
+    expect(buildForTest(ws, "boxed").rebuilt).toBe(true);
+    const file = path.join(dir, "target/boxed/boxed.build.json");
+    // What a container build of another TypeSOL version records: its linux/x64, its clang, its runtime files.
+    const local = JSON.parse(readFileSync(file, "utf8"));
+    const boxed = {
+      ...local,
+      compiler: "0.44.0",
+      clang: FAKE_CLANG,
+      typescript: "5.0.0",
+      host: { os: process.platform === "linux" ? "darwin" : "linux", arch: "x64" },
+      sources: { ...local.sources, "<runtime>/typesol_rt.h": "1".repeat(64), "<runtime>/typesol_builtins.c": undefined },
+      container: { platform: "linux/amd64", dockerfile: "d".repeat(64) },
+    };
+    writeFileSync(file, JSON.stringify(boxed));
+    const saved = console.error;
+    const said: string[] = [];
+    console.error = (m: string) => said.push(m);
+    try {
+      expect(buildForTest(ws, "boxed").rebuilt).toBe(false);
+      expect(JSON.parse(readFileSync(file, "utf8")).container).toBeDefined();
+      // The same version's runtime files must be this package's.
+      writeFileSync(file, JSON.stringify({ ...boxed, compiler: local.compiler }));
+      expect(buildForTest(ws, "boxed").rebuilt).toBe(true);
+      expect(said.join("\n")).toMatch(/held a --docker build that is out of date .* run `typesol build --docker` again before deploying/);
+      // Another binary than the one recorded, or a changed source: out of date, and a local build replaces it.
+      writeFileSync(file, JSON.stringify(boxed));
+      expect(buildForTest(ws, "boxed").rebuilt).toBe(false);
+      writeFileSync(file, JSON.stringify({ ...boxed, binary: "2".repeat(64) }));
+      expect(buildForTest(ws, "boxed").rebuilt).toBe(true);
+      writeFileSync(file, JSON.stringify(boxed));
+      writeFileSync(path.join(dir, "programs/boxed.ts"), readFileSync(path.join(dir, "programs/boxed.ts"), "utf8") + "\n// changed\n");
+      expect(buildForTest(ws, "boxed").rebuilt).toBe(true);
+      expect(JSON.parse(readFileSync(file, "utf8")).container).toBeUndefined();
+    } finally {
+      console.error = saved;
+    }
+  });
+
+  it("leaves the loader only the syscalls the SDK and the runtime declare; any other undefined symbol fails the link", () => {
+    // SYSCALLS is exactly the SDK's `@SYSCALL` declarations and the runtime header's own syscall prototypes.
+    const inc = path.join(findToolchain().sdk, "c/inc/sol/inc");
+    const sdk = readdirSync(inc).flatMap((f) => [...readFileSync(path.join(inc, f), "utf8").matchAll(/@SYSCALL[^(;]*?\b(sol_\w+)\s*\(/g)].map((m) => m[1]!));
+    const header = readFileSync(path.join(ROOT, "runtime/typesol_rt.h"), "utf8");
+    const runtime = [
+      ...header.matchAll(/^(?:extern\s+)?(?:__attribute__\(\([^)]*\)\)\s*)?(?:const\s+)?[A-Za-z_]\w*(?:\s*\*+\s*|\s+)(sol_\w+|abort)\s*\([^;{)]*\)\s*;/gm),
+    ].map((m) => m[1]!);
+    expect(sdk.length).toBeGreaterThan(15);
+    expect([...SYSCALLS].sort()).toEqual([...new Set([...sdk, ...runtime])].sort());
+    expect(isSyscall("sol_log_")).toBe(true);
+    expect(isSyscall("sol_not_a_syscall")).toBe(false);
+
+    // A program object that calls an undefined function: the link fails and leaves no .so behind.
+    const tc = findToolchain();
+    const dir = tmp();
+    for (const name of ["helper_from_nowhere", "sol_not_a_syscall"]) {
+      const c = path.join(dir, `${name}.c`);
+      writeFileSync(c, `extern void ${name}(void);\nunsigned long long entrypoint(const unsigned char *input) { ${name}(); return 0; }\n`);
+      const obj = path.join(dir, `${name}.o`);
+      expect(spawnSync(tc.clang, [...sbfCflags(), "-o", obj, "-c", c]).status).toBe(0);
+      const so = path.join(dir, `${name}.so`);
+      expect(() => linkSharedObject([obj], so, tc)).toThrow(new RegExp(`the program calls ${name}, which neither the runtime nor libc defines`));
+      expect(existsSync(so)).toBe(false);
+    }
+    // With another clang, the error says first that the toolchain is not the tested one.
+    const saved = process.env.TYPESOL_SBF_SDK;
+    process.env.TYPESOL_SBF_SDK = fakeSdk();
+    try {
+      const other = findToolchain();
+      const so = path.join(dir, "other.so");
+      expect(() => linkSharedObject([path.join(dir, "helper_from_nowhere.o")], so, other)).toThrow(
+        /^this toolchain is not the tested one \(clang 99\.1\.0 .*TESTED_TOOLCHAIN is clang 20\.1\.7-rust-dev .* the program calls helper_from_nowhere/,
+      );
+      expect(existsSync(so)).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.TYPESOL_SBF_SDK;
+      else process.env.TYPESOL_SBF_SDK = saved;
+    }
   });
 
   it("describes and compares two builds' toolchains, and finds an ELF's length under the padding", () => {
@@ -194,7 +302,23 @@ describe("the tested toolchain", () => {
     expect(describeToolchain({ clang: FAKE_CLANG, compiler: "0.43.0" })).toBe(
       "clang 99.1.0 (example/llvm-project 01234567), platform-tools unknown, host unknown, TypeSOL 0.43.0",
     );
-    expect(toolchainDifferences(a, { ...a, host: { os: "darwin", arch: "arm64" } })).toEqual([]);
+    // Before 0.45.0 programs linked each platform-tools host package's own compiler-builtins: the host is a difference
+    // then; builds that link the runtime's builtins (listed in their sources) give the same bytes on the hosts measured
+    // (macOS arm64, Linux arm64, Linux x86_64), and another host is "not measured".
+    expect(toolchainDifferences(a, { ...a, host: { os: "darwin", arch: "arm64" } })).toEqual(["host"]);
+    const now = { ...a, sources: { "<runtime>/typesol_rt.h": "x", "<runtime>/typesol_builtins.c": "y" } };
+    expect(MEASURED_HOSTS).toEqual(["darwin-arm64", "linux-arm64", "linux-x64"]);
+    for (const host of [
+      { os: "darwin", arch: "arm64" },
+      { os: "linux", arch: "arm64" },
+    ])
+      expect(toolchainDifferences(now, { ...now, host })).toEqual([]);
+    expect(toolchainDifferences(now, { ...now, host: { os: "darwin", arch: "x64" } })).toEqual(["host (not measured)"]);
+    expect(toolchainDifferences({ ...now, host: { os: "win32", arch: "x64" } }, { ...now, host: { os: "linux", arch: "arm64" } })).toEqual([
+      "host (not measured)",
+    ]);
+    expect(toolchainDifferences(now, { ...a, host: { os: "darwin", arch: "arm64" } })).toEqual(["host"]);
+    expect(toolchainDifferences(a, { ...a, host: undefined })).toEqual([]);
     expect(toolchainDifferences(a, { ...a, clang: FAKE_CLANG, platformTools: "v1.57", compiler: "0.43.0" })).toEqual([
       "TypeSOL version",
       "clang",
@@ -238,7 +362,27 @@ describe("the tested toolchain", () => {
       "  deployed  clang 99.1.0 (example/llvm-project 01234567), platform-tools v9.99, linux-x64, TypeSOL " +
         `${local.compiler} (deployed.build.json, whose binary hash is the deployed one's)`,
     );
-    expect(next.stdout).toMatch(/ {2}differs {3}clang(, platform-tools)?: another clang can compile the same C to other bytes/);
+    expect(next.stdout).toMatch(/ {2}differs {3}clang(, platform-tools)?(, host)?: another clang can compile the same C to other bytes/);
+
+    // Only the host differs: a possible cause for a build of 0.44.1 or earlier (no runtime builtins in its sources), a
+    // host not measured for a later one, and the fix names --docker when the deployed build was a container's.
+    const other = process.platform === "linux" ? { os: "darwin", arch: "arm64" } : { os: "linux", arch: "x64" };
+    const { "<runtime>/typesol_builtins.c": _b, ...oldSources } = local.sources;
+    const hostOnly = (m: object) => {
+      writeFileSync(path.join(dir, "deployed.build.json"), JSON.stringify({ ...local, binary: theirs.binary, ...m }));
+      return run(["verify", "counter.ts", "deployed.so"], dir).stdout;
+    };
+    expect(hostOnly({ host: other, sources: oldSources })).toContain(
+      `  differs   host: the host may be the cause if the program uses 128-bit or signed division: before 0.45.0 those linked platform-tools' ` +
+        `compiler-builtins, laid out differently by each host package; rebuild on a ${other.os}-${other.arch} host, or deploy a --docker build so that anyone can rebuild it`,
+    );
+    expect(hostOnly({ host: other, sources: oldSources, container: { platform: "linux/amd64", dockerfile: "d".repeat(64) } })).toMatch(
+      /differs {3}host: the host may be the cause .*; rebuild with --docker, as the deployed build was/,
+    );
+    expect(hostOnly({ host: { os: "freebsd", arch: "x64" } })).toContain(
+      "  differs   host (not measured): the same bytes on another host were measured only on darwin-arm64, linux-arm64, linux-x64; rebuild on a freebsd-x64 host",
+    );
+    writeFileSync(path.join(dir, "deployed.build.json"), JSON.stringify(theirs));
 
     // The same manifest given by name, from elsewhere.
     mkdirSync(path.join(dir, "records"));

@@ -20,8 +20,16 @@ export interface Toolchain {
   linkerScript: string;
   includes: string[];
   libDir: string;
+  /**
+   * platform-tools' compiler-builtins Rust library for this SBPF version. Not linked (programs link the runtime's own
+   * builtins, runtime/typesol_builtins.c, which build the same on each host measured); its presence tells that the
+   * platform-tools have this SBPF version's libraries, and the builtins tests compare against it.
+   */
   compilerBuiltins: string;
 }
+
+/** The runtime's compiler builtins, compiled with each program and linked in place of compiler-builtins. */
+export const BUILTINS_SOURCE = path.join(RUNTIME_DIR, "typesol_builtins.c");
 
 /** Locate the Solana C SDK that ships with the Agave CLI's platform-tools. */
 export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
@@ -74,9 +82,9 @@ export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
 /** The SBF stack frame of one function. */
 export const STACK_FRAME = 4096;
 
-export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0", tc = findToolchain(sbpf)): void {
-  const obj = outSo.replace(/\.so$/, ".o");
-  const cflags = [
+/** clang's flags for SBF objects (the SDK's sbf.mk for the chosen SBPF version, plus TypeSOL's warnings). */
+export function sbfCflags(sbpf: Sbpf = "v0"): string[] {
+  return [
     "-Werror",
     "-Wno-parentheses-equality",
     // Generated checks may be always true/false (`a === a`, `enumByte >= 256` for a 256-variant enum); that is not an error.
@@ -95,6 +103,17 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     "-fPIC",
     ...(sbpf === "v0" ? [] : [`-mcpu=${sbpf}`]),
   ];
+}
+
+/** The flags runtime/typesol_builtins.c is compiled with: the program's, and the SBPF version (its assembly differs). */
+export function builtinsCflags(sbpf: Sbpf = "v0"): string[] {
+  return [...sbfCflags(sbpf), `-DTS_SBPF_${sbpf.toUpperCase()}`];
+}
+
+export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0", tc = findToolchain(sbpf)): void {
+  const obj = outSo.replace(/\.so$/, ".o");
+  const builtinsObj = outSo.replace(/\.so$/, ".builtins.o");
+  const cflags = sbfCflags(sbpf);
   const incs = tc.includes.flatMap((i, n) => (n < 2 ? ["-isystem", i] : ["-I", i]));
   try {
     run(tc.clang, [...cflags, ...incs, "-o", obj, "-c", cFile]);
@@ -111,6 +130,20 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     rmSync(obj, { force: true });
     throw stackError(message, frameLayouts(res.stderr ?? ""), readFileSync(cFile, "utf8"));
   }
+  try {
+    // The builtins (128-bit multiplication, division and shifts, signed 64-bit division) from the runtime's C, after
+    // the program's object. platform-tools' compiler-builtins library has the same instructions in each host package
+    // but split into other archive members, so the linker laid them out in another order on each host; this does not.
+    run(tc.clang, [...builtinsCflags(sbpf), "-o", builtinsObj, "-c", BUILTINS_SOURCE]);
+    linkSharedObject([obj, builtinsObj], outSo, tc);
+  } finally {
+    rmSync(obj, { force: true }); // the object files are only intermediates
+    rmSync(builtinsObj, { force: true });
+  }
+}
+
+/** Link SBF objects into a program: libc from platform-tools, nothing from its Rust libraries. */
+export function linkSharedObject(objects: string[], outSo: string, tc: Toolchain, extra: string[] = []): void {
   run(tc.lld, [
     "-z",
     "notext",
@@ -123,17 +156,112 @@ export function buildSharedObject(cFile: string, outSo: string, sbpf: Sbpf = "v0
     tc.libDir,
     "-z",
     "max-page-size=4096",
-    // Drop unreachable code (e.g. the parts of compiler-builtins' soft-float objects nothing calls) and the symbol
-    // tables, which the loader never reads: smaller programs cost less rent and upload time.
+    // Drop unreachable code (the builtins a program does not call) and the symbol tables, which the loader never
+    // reads: smaller programs cost less rent and upload time.
     "--gc-sections",
     "--strip-all",
     "-lc",
     "-o",
     outSo,
-    obj,
-    tc.compilerBuiltins,
+    ...objects,
+    ...extra,
   ]);
-  rmSync(obj, { force: true }); // the object file is only an intermediate
+  const missing = unresolvedSymbols(readFileSync(outSo)).filter((s) => !isSyscall(s));
+  if (missing.length) {
+    rmSync(outSo, { force: true });
+    // Another clang may call a builtin the tested one never does: say that first, as it is then the likely cause.
+    let info: ToolchainInfo | undefined;
+    try {
+      info = toolchainInfo(tc);
+    } catch {
+      /* the version cannot be read: no claim about it */
+    }
+    const t = TESTED_TOOLCHAIN;
+    throw new Error(
+      (info && !info.tested
+        ? `this toolchain is not the tested one (${shortClang(info.clang)}${info.platformTools ? `, platform-tools ${info.platformTools}` : ""}; ` +
+          `TESTED_TOOLCHAIN is ${shortClang(t.clang)}, platform-tools ${t.platformTools}), and its clang may call compiler builtins the tested one ` +
+          `does not, which runtime/typesol_builtins.c does not define: build with the tested toolchain (${INSTALL_TESTED_TOOLCHAIN[1]}). `
+        : "") +
+        `the program calls ${missing.join(", ")}, which neither the runtime nor libc defines and the SBF loader cannot resolve as a syscall ` +
+        `(with the tested toolchain, a compiler builtin missing from runtime/typesol_builtins.c is a TypeSOL bug: please report it with the program)`,
+    );
+  }
+}
+
+/**
+ * The syscalls a TypeSOL program may leave to the SBF loader: every one the SDK's headers declare (`@SYSCALL` in
+ * platform-tools-sdk/sbf/c/inc/sol/inc/*.inc) and every one runtime/typesol_rt.h declares itself, with `abort`.
+ * test/cli/toolchain.test.ts checks that this is exactly that set.
+ */
+export const SYSCALLS: readonly string[] = [
+  "abort",
+  "sol_alt_bn128_compression",
+  "sol_alt_bn128_group_op",
+  "sol_big_mod_exp",
+  "sol_blake3",
+  "sol_create_program_address",
+  "sol_curve_validate_point",
+  "sol_get_clock_sysvar",
+  "sol_get_epoch_rewards_sysvar",
+  "sol_get_epoch_schedule_sysvar",
+  "sol_get_last_restart_slot",
+  "sol_get_rent_sysvar",
+  "sol_get_return_data",
+  "sol_get_stack_height",
+  "sol_invoke_signed_c",
+  "sol_keccak256",
+  "sol_log_",
+  "sol_log_64_",
+  "sol_log_compute_units_",
+  "sol_log_data",
+  "sol_log_pubkey",
+  "sol_memcpy_",
+  "sol_memmove_",
+  "sol_memset_",
+  "sol_panic_",
+  "sol_poseidon",
+  "sol_remaining_compute_units",
+  "sol_secp256k1_recover",
+  "sol_set_return_data",
+  "sol_sha256",
+  "sol_try_find_program_address",
+];
+
+/** Whether the SBF loader resolves `name` as a syscall for a TypeSOL program (one of SYSCALLS). */
+export function isSyscall(name: string): boolean {
+  return SYSCALLS.includes(name);
+}
+
+/** The undefined symbols of an SBF shared object's dynamic symbol table (what the loader resolves as syscalls). */
+export function unresolvedSymbols(elf: Buffer): string[] {
+  if (elf.length < 0x40 || elf.readUInt32BE(0) !== 0x7f454c46) throw new Error("not an ELF file");
+  const shoff = Number(elf.readBigUInt64LE(0x28));
+  const shentsize = elf.readUInt16LE(0x3a);
+  const shnum = elf.readUInt16LE(0x3c);
+  const section = (i: number) => {
+    const at = shoff + i * shentsize;
+    return {
+      type: elf.readUInt32LE(at + 4),
+      offset: Number(elf.readBigUInt64LE(at + 0x18)),
+      size: Number(elf.readBigUInt64LE(at + 0x20)),
+      link: elf.readUInt32LE(at + 0x28),
+    };
+  };
+  const out: string[] = [];
+  for (let i = 0; i < shnum; i++) {
+    const s = section(i);
+    if (s.type !== 11) continue; // SHT_DYNSYM
+    const strtab = section(s.link);
+    for (let at = s.offset + 24; at + 24 <= s.offset + s.size; at += 24) {
+      if (elf.readUInt16LE(at + 6) !== 0) continue; // st_shndx: defined
+      const nameAt = strtab.offset + elf.readUInt32LE(at);
+      const end = elf.indexOf(0, nameAt);
+      const name = elf.toString("latin1", nameAt, end);
+      if (name) out.push(name);
+    }
+  }
+  return out;
 }
 
 /**

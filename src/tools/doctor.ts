@@ -8,6 +8,7 @@ import path from "node:path";
 import type { Rpc, SolanaRpcApi } from "@solana/kit";
 import { findToolchain, INSTALL_TESTED_TOOLCHAIN, shortClang, TESTED_TOOLCHAIN, toolchainInfo, toolchainStrict } from "../compiler/toolchain.js";
 import { base58, readKeypair } from "../keys.js";
+import { DOCKER_PLATFORM, dockerStatus, type DockerStatus } from "./docker.js";
 import { findWorkspace } from "../workspace.js";
 
 /** The Agave CLI release TypeSOL is tested with (its platform-tools are the tested ones). */
@@ -71,6 +72,16 @@ export function testedToolchainCheck(): Check | undefined {
     what: "toolchain",
     detail: `untested: ${shortClang(info.clang)}, platform-tools ${info.platformTools ?? "unknown"}; TypeSOL is tested with ${tested} (Agave ${TESTED_TOOLCHAIN.agave}): binaries from another toolchain are not covered by its tests${strict ? " (TYPESOL_TOOLCHAIN=strict refuses it)" : ""}`,
     fix: [`${INSTALL_TESTED_TOOLCHAIN[1]}   # the tested platform-tools`],
+  };
+}
+
+/** Docker for `build --docker` / `verify --docker`: optional, a row either way. */
+export function dockerCheck(status: DockerStatus = dockerStatus()): Check {
+  if (!status.ok) return { ok: false, optional: true, what: "docker", detail: `${status.reason}; needed only for --docker builds`, fix: [status.fix] };
+  return {
+    ok: true,
+    what: "docker",
+    detail: `${status.version} (${status.platform}): --docker builds run in ${DOCKER_PLATFORM}${status.platform === DOCKER_PLATFORM ? "" : ", emulated here"}`,
   };
 }
 
@@ -230,6 +241,7 @@ export async function doctorChecks(opts: { cwd: string; url?: string; config?: s
       ? { ok: true, what: "Solana CLI", detail: solanaVersion }
       : { ok: false, optional: true, what: "Solana CLI", detail: "not on PATH (needed to deploy, not to build or test)", fix: [INSTALL_AGAVE] },
   );
+  checks.push(dockerCheck());
   const cfg = solanaConfig(opts.config);
   const keypair = cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json");
   if (existsSync(keypair)) {

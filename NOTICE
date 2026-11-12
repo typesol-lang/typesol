@@ -4,7 +4,8 @@ Copyright (c) 2026 TypeSOL contributors. Licensed under the MIT License (LICENSE
 Third-party code in the published @typesol/cli package
 --------------------------------------------------------
 
-The package ships this NOTICE and the Apache License 2.0 text (test/programs/LICENSE-Apache-2.0.txt).
+The package ships this NOTICE, the Apache License 2.0 text (test/programs/LICENSE-Apache-2.0.txt) and
+compiler-builtins' licence file (runtime/LICENSE-compiler-builtins.txt).
 
 - runtime/typesol_rt.h, the RedBlackTree section (ts_rbt_*): a statement-for-statement port of the red-black tree and
   node allocator of lib-sokoban 0.3.0 (https://github.com/jarry-xiao/sokoban, src/red_black_tree.rs and
@@ -36,6 +37,18 @@ The package ships this NOTICE and the Apache License 2.0 text (test/programs/LIC
   they follow SPL Stake Pool's big_vec.rs (solana-program/stake-pool, program/src/big_vec.rs; earlier in
   solana-labs/solana-program-library), licensed under the Apache License, Version 2.0. Changes: rewritten in C and
   TypeScript.
+
+- runtime/typesol_builtins.c, the assembly (__multi3 for SBPF v0; __ashlti3, __lshrti3 and __ashrti3): the
+  instructions that the compiler-builtins crate (https://github.com/rust-lang/compiler-builtins), as built in
+  platform-tools v1.52, has for these functions, written out as assembly so that a program links them from the
+  runtime's source. compiler-builtins is licensed "MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)"
+  (its Cargo.toml); its LICENSE.txt, which says the crate is available under both the MIT licence and the
+  Apache-2.0 licence with the LLVM exception and holds both texts, ships verbatim as
+  runtime/LICENSE-compiler-builtins.txt (taken from https://github.com/rust-lang/compiler-builtins at commit
+  8fe310e552c1a24df0bd977e87756168fe396037 of its main branch, on 2026-11-12). Changes: disassembled, labels
+  renamed. The division functions in the same
+  file are TypeSOL's own C, after the algorithms of Knuth (The Art of Computer Programming, vol. 2, algorithm D) and
+  Warren (Hacker's Delight, divlu).
 
 - dist/testing-stake.js (src/testing-stake.ts), stakeActivation: a port of Delegation::stake_activating_and_deactivating_v2
   of solana-stake-interface 4.3.0 (https://github.com/solana-program/stake, interface crate), Copyright Anza

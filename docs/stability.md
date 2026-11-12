@@ -11,9 +11,12 @@ From 1.0 on, within a major version:
 
 - **Sources keep compiling.** A program that compiles with 1.x compiles with every later 1.y, to a program with the same
   account layouts, IDL, instruction and account discriminators and error codes. New releases add; they do not take away.
-- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release and the toolchain it is
-  tested with, a source builds to the same bytes. A release that changes the binary of a program that uses none of
-  its new features says so, with the release manifest's diff (`binary-diff.txt`) as the evidence.
+- **Binaries are reproducible and only change for a reason.** With the same TypeSOL release and the tested
+  toolchain, a source builds to the same bytes in the build container (`--docker`) as on the hosts measured: from
+  0.45.0 on, macOS arm64, Linux arm64 and Linux x86_64, for the programs and SBPF versions listed
+  [below](#what-builds-the-same-bytes-where).
+  A release that changes the binary of a program that uses none of its new features says so, with the release
+  manifest's diff (`typesol-<version>-binary-diff.txt`) as the evidence.
 - **The checks stay.** No check a program gets from its parameter types (owner, discriminator, signer, writability,
   aliasing, checked arithmetic, constraints) is removed or weakened.
 - **The tools keep their interfaces**: `typesol build`, `test` (via `typesol/testing`), `check --json`, `deploy`,
@@ -46,9 +49,65 @@ Meant to stay as they are; a change before 1.0 would be a breaking change listed
 - **A build says what made it.** `<name>.build.json` records the TypeSOL, TypeScript, clang and platform-tools versions,
   the host, the SBPF version and the sha256 of every source and of the binary. `typesol verify` uses it to say, on a
   mismatch, whether the toolchains differ. A program on chain records none of this: keep the file with the deployment.
+- **A deployed program anyone can rebuild.** `typesol build --docker` builds in a container made from
+  `docker/Dockerfile` (in the package), whose inputs are all pinned: base images by digest, the Agave and
+  platform-tools release files by sha256, the TypeSOL tarball by its `releases/<version>.json`. `typesol verify
+  --docker` rebuilds there and says what it verified. The image is built locally from those inputs; no image is
+  published, and the result is not registered with any external verified-build registry
+  ([docs/mainnet.md](mainnet.md#6-verify)).
 - **Fixes come as patches of the latest minor.** From 0.44.0 on, a release that only fixes soundness or security
   defects is a patch (0.44.1, …) with no new language surface, and its notes carry the binary diff against the
   previous release ([SECURITY.md](../SECURITY.md#fix-releases)). Older minors are not maintained.
+
+## What builds the same bytes where
+
+From 0.45.0 on, the programs measured build to the same bytes on each host measured. Measured with this release's
+compiler and platform-tools v1.52 on macOS arm64 (the platform-tools `osx-aarch64` package, native), Linux arm64 and
+Linux x86_64 (the `linux-aarch64` and `linux-x86_64` packages, in containers; x86_64 is the `--docker` image): for
+SBPF v0 (the default), the 76 programs of the sources (`scripts/release-manifest.ts`, every program under `examples/`
+and `showcase/`); for SBPF v1 and v2, the 14 programs of `test/golden/binaries.json` (counter, vault, escrow, multisig
+and the 10 below).
+
+| What | Same on the three hosts? |
+| --- | --- |
+| The generated C and the IDL (all 76) | yes |
+| The binary, SBPF v0 (all 76) | yes |
+| The binary, SBPF v1 and v2 (the 14) | yes |
+| The binary, SBPF v0, against 0.44.1 | 66 programs build to 0.44.1's bytes on each of the three; the 10 below build to new bytes, the same on the three |
+| The binary, SBPF v1 and v2, against 0.44.1 (on macOS arm64) | v1: all 14 build to new bytes; v2: 9 (the 10 below but token-fundraiser) build to new bytes, the other 5 (counter, vault, escrow, multisig, token-fundraiser) to 0.44.1's |
+
+The 10 are the programs that call 128-bit or signed 64-bit division (the Phoenix, Marginfi, Raydium AMM, CLMM and
+CP-Swap, Jito priority-fee and Stake Pool ports, transfer-fee, token-fundraiser, token-swap). With 0.44.1 each of them
+built to three different binaries on the three hosts (token-fundraiser: the two Linux ones agreed). The cause was one
+library: platform-tools' SBF `compiler-builtins` Rust library (`libcompiler_builtins-<hash>.rlib`, a different file in
+each host package). Its functions have the same instructions in the three packages (compared function by function for
+SBPF v0, v1 and v2), but each package splits them into differently numbered archive members, so the linker placed the
+ones a division pulls in (`__udivti3`, its shared `u128_div_rem`, `__ashlti3`, `__lshrti3`, …) in another order, and
+the program's calls into them had other offsets. Programs that called at most `__multi3` linked one member and agreed.
+
+TypeSOL now links none of that library: `runtime/typesol_builtins.c` defines every builtin the tested clang calls for
+C integer code on SBF (`__multi3`, `__udivti3`, `__umodti3`, `__divti3`, `__modti3`, `__ashlti3`, `__lshrti3`, `__ashrti3`, `__divdi3`,
+`__moddi3`) and is compiled with each program, by the same clang, and linked after it. Multiplication and shifts are
+the instructions compiler-builtins has for them, so on SBPF v0 programs that use only those keep their bytes;
+division is new C that costs no more compute units than compiler-builtins' on any input measured, and fewer on most
+(`test/language/builtins.test.ts`). On SBPF v1, `__multi3` (128-bit multiplication, which checked 64-bit
+multiplication uses too) is C as well, cheaper than compiler-builtins' there (175 against 177.5 compute units a call on average in that test),
+so a v1 program that
+multiplies that way builds to other bytes than with 0.44.1 (every one of the 14 measured does); SBPF v2 multiplies
+with its own instructions and calls no `__multi3`, and its signed 64-bit division is an instruction too, which is
+why token-fundraiser keeps its v2 bytes.
+libc's `memcpy` and `memset` still come from platform-tools; the programs that link them build the same on the three
+hosts. Nothing in the emitted C, the paths or the build directory reaches the binary.
+
+The reference environment stays one platform, so that the whole environment is one recipe: the build container is
+`linux/amd64` on every machine (emulated on arm64 hosts). CI checks on every change that a Linux x86_64 runner with
+independently installed platform-tools builds the programs of `test/golden/binaries.json` (the 14 for SBPF v0, and
+counter, escrow, Phoenix and Marginfi for v1 and v2) to the container's bytes; that is the same host package as the
+container's, installed separately. The macOS workflow (on demand) runs the same check on macOS arm64, and anyone can
+run it on another host, binary included. `<name>.build.json` records the host; `typesol verify` counts a host
+difference between builds made before 0.45.0 (which linked compiler-builtins: a possible cause if the program uses
+128-bit or signed division), and between later builds only when one of the hosts is not among the three measured
+(`host (not measured)`).
 
 ## Experimental
 
