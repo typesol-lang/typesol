@@ -84,7 +84,8 @@ TypeSOL now links none of that library: `runtime/typesol_builtins.c` defines eve
 SBF (`__multi3`, `__udivti3`, `__umodti3`, `__divti3`, `__modti3`, `__ashlti3`, `__lshrti3`, `__ashrti3`, `__divdi3`,
 `__moddi3`) and is compiled with each program, by the same clang, and linked after it. Multiplication and shifts are
 the instructions compiler-builtins has for them, so programs that use only those keep their bytes; division is new C
-that costs fewer compute units than compiler-builtins' on every input measured (`test/language/builtins.test.ts`).
+that costs no more compute units than compiler-builtins' on any input measured, and fewer on most
+(`test/language/builtins.test.ts`).
 libc's `memcpy` and `memset` still come from platform-tools; the programs that link them build the same on the three
 hosts. Nothing in the emitted C, the paths or the build directory reaches the binary.
 

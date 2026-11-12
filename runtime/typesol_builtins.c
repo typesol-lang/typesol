@@ -14,8 +14,8 @@
  * Two kinds of definition:
  * - Division (__udivti3, __umodti3, __divti3, __modti3, __divdi3, __moddi3) in C below, taking the shortest route for
  *   the operands' sizes (one 64-bit division when both fit in 64 bits, three for a divisor below 2^32, the 64-bit
- *   division for signed 64-bit values, where compiler-builtins divides bit by bit), so they cost fewer compute units
- *   than compiler-builtins' versions.
+ *   division for signed 64-bit values, where compiler-builtins divides bit by bit), so they cost no more compute units
+ *   than compiler-builtins' versions on any input measured, and fewer on most.
  * - Multiplication and shifts (__multi3, __ashlti3, __lshrti3, __ashrti3) as assembly: the instructions
  *   compiler-builtins' build of them has for that SBPF version (MIT or Apache-2.0,
  *   https://github.com/rust-lang/compiler-builtins), one for one, so a program that calls only these links to the
