@@ -415,8 +415,7 @@ const COMMANDS: Record<string, Command> = {
         try {
           execFileSync("solana", cliArgs, { stdio: "inherit" });
         } catch (e) {
-          if ((e as NodeJS.ErrnoException).code === "ENOENT")
-            throw new Error(solanaNotFound());
+          if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Error(solanaNotFound());
           throw new Error(`solana program deploy failed for ${b.paths.name} (see its output above)`);
         }
       }

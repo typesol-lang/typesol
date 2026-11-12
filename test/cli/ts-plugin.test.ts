@@ -124,7 +124,13 @@ describe("typesol/ts-plugin", () => {
       ['document.title = "x";', "'document' does not exist in a Solana program"],
       ['console.log("x");', "'console' does not exist in a Solana program\nhint: "],
     ]) {
-      p.edit(p.file, p.text().replace(/\n {2}\/\/ probe[^\n]*/, "").replace("counter.count += by;", `counter.count += by;\n  // probe\n  ${code}`));
+      p.edit(
+        p.file,
+        p
+          .text()
+          .replace(/\n {2}\/\/ probe[^\n]*/, "")
+          .replace("counter.count += by;", `counter.count += by;\n  // probe\n  ${code}`),
+      );
       const text = p.ls
         .getSemanticDiagnostics(p.file)
         .map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"))

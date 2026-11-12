@@ -245,7 +245,11 @@ describe("first minutes: doctor, init, deploy preflight", () => {
           const lines = installSteps(from, host);
           const input = [...stubs.map(define), ...lines, 'echo "PATH $PATH"', 'echo "END $TYPESOL_SBF_SDK"', "exit"].join("\n") + "\n";
           const home = tmp();
-          const r = spawnSync(bin!, args, { input, encoding: "utf8", env: { HOME: home, PATH: "/usr/bin:/bin", TERM: "dumb", BASH_SILENCE_DEPRECATION_WARNING: "1" } });
+          const r = spawnSync(bin!, args, {
+            input,
+            encoding: "utf8",
+            env: { HOME: home, PATH: "/usr/bin:/bin", TERM: "dumb", BASH_SILENCE_DEPRECATION_WARNING: "1" },
+          });
           const out = `${r.stdout}${r.stderr}`;
           expect(out, `${shell} ${host.platform} ${from}`).toContain("END");
           // Each command ran, with the arguments as written (the PATH and SDK exports are checked by their effect).
@@ -259,8 +263,7 @@ describe("first minutes: doctor, init, deploy preflight", () => {
             }
           }
           if (lines.includes(AGAVE_PATH)) expect(out).toContain(`PATH ${home}/.local/share/solana/install/active_release/bin:/usr/bin:/bin`);
-          if (lines.some((l) => l.startsWith("export TYPESOL_SBF_SDK=")))
-            expect(out).toContain(`END ${home}/.local/share/typesol-sdk/sbf`);
+          if (lines.some((l) => l.startsWith("export TYPESOL_SBF_SDK="))) expect(out).toContain(`END ${home}/.local/share/typesol-sdk/sbf`);
           // No line failed: zsh answers "command not found: #" for a note and nothing else.
           const errors = out
             .split("\n")

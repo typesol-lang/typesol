@@ -159,7 +159,9 @@ describe("the tested toolchain", () => {
 
     for (const strict of [run(["build", "--toolchain-strict"], dir, env), run(["build"], dir, { ...env, TYPESOL_TOOLCHAIN: "strict" })]) {
       expect(strict.status).toBe(1);
-      expect(strict.stderr).toMatch(/^error: refusing to build with clang 99\.1\.0 .*TYPESOL_TOOLCHAIN=strict\. Install the tested one:\n {4}cargo-build-sbf .* v1\.52\n/m);
+      expect(strict.stderr).toMatch(
+        /^error: refusing to build with clang 99\.1\.0 .*TYPESOL_TOOLCHAIN=strict\. Install the tested one:\n {4}cargo-build-sbf .* v1\.52\n/m,
+      );
     }
     const file = counter();
     const single = run(["build", "counter.ts", "--toolchain-strict"], file, env);

@@ -18,7 +18,9 @@ describe("the Node.js version, checked before anything else loads", () => {
     for (const ok of ["22.12.0", "22.18.1", "23.0.0", "24.22.3", "25.9.0", "22.12.0-nightly20251101abcdef", "23.0.0-pre"])
       expect(nodeVersionProblem(ok), ok).toBeUndefined();
     for (const old of ["22.11.9-rc.1", "22.11.0", "20.20.2", "18.20.8", "18.x", "22.x", "0.0.0"])
-      expect(nodeVersionProblem(old), old).toMatch(new RegExp(`^error: TypeSOL needs Node\\.js 22\\.12 or later, and this is Node\\.js ${old.replace(/\./g, "\\.")}\\.`));
+      expect(nodeVersionProblem(old), old).toMatch(
+        new RegExp(`^error: TypeSOL needs Node\\.js 22\\.12 or later, and this is Node\\.js ${old.replace(/\./g, "\\.")}\\.`),
+      );
     expect(MIN_NODE.join(".")).toBe(JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")).engines.node.replace(/^>=/, ""));
   });
 

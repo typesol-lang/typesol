@@ -1809,7 +1809,8 @@ export abstract class StatementEmitter extends CpiEmitter {
       if (read) return;
       if (ts.isIdentifier(n) && n !== name && this.checker.getSymbolAtLocation(n) === symbol) {
         const p = n.parent;
-        const written = (ts.isVariableDeclaration(p) && p.name === n) || (ts.isBinaryExpression(p) && p.left === n && p.operatorToken.kind === ts.SyntaxKind.EqualsToken);
+        const written =
+          (ts.isVariableDeclaration(p) && p.name === n) || (ts.isBinaryExpression(p) && p.left === n && p.operatorToken.kind === ts.SyntaxKind.EqualsToken);
         if (!written) read = true;
       }
       ts.forEachChild(n, visit);

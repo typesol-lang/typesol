@@ -361,7 +361,8 @@ export async function doctorChecks(opts: { cwd: string; url?: string; config?: s
         optional: true,
         what: "RPC",
         detail: `${rpcHost(url)} does not answer (${errText(e)})`,
-        fix: cluster === "localhost" ? ["# In another terminal:", "solana-test-validator"] : ["pass --url devnet, or fix json_rpc_url in the Solana CLI config"],
+        fix:
+          cluster === "localhost" ? ["# In another terminal:", "solana-test-validator"] : ["pass --url devnet, or fix json_rpc_url in the Solana CLI config"],
       });
     }
   }

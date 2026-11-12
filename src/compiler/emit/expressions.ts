@@ -2,7 +2,25 @@ import ts from "typescript";
 import { base58 } from "../../keys.js";
 import { calleeName, resolveValueType } from "../analyze.js";
 import { INT_INFO, unsignedC, type IntName, type ScalarType, type ValueType, optionKey, sameType, typeName } from "../model.js";
-import { U64, U8, I64, BOOL, PUBKEY, STRING, HASH, F64_TEXT, F64_TO_INT, INT_TO_F64, type Value, cString, intLiteral, scalarStorageC, optC, valueC, vecCount } from "./shared.js";
+import {
+  U64,
+  U8,
+  I64,
+  BOOL,
+  PUBKEY,
+  STRING,
+  HASH,
+  F64_TEXT,
+  F64_TO_INT,
+  INT_TO_F64,
+  type Value,
+  cString,
+  intLiteral,
+  scalarStorageC,
+  optC,
+  valueC,
+  vecCount,
+} from "./shared.js";
 import { StorageEmitter } from "./storage.js";
 import { unsupportedSyntax } from "../hints.js";
 
