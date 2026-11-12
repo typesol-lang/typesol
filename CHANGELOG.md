@@ -71,6 +71,13 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   refused too, since equal bits are not equal numbers (NaN, 0 and -0): "… to compare the bits, write f64Bits(a) ===
   f64Bits(b)". No program of the repository used one (test/language/f64-operators.test.ts; docs/language-types.md
   and the refused-constructs table of docs/language-statements.md).
+- Fixed: signer seeds were limited to 14 seeds and the bump, one fewer than Solana allows: the limit of 15 entries,
+  meant for lists the derivation adds the bump to, was applied to signer seeds and `createProgramAddress` lists too,
+  which end with their bump. They now take 16 entries, 15 seeds and the bump (Solana's `MAX_SEEDS`, checked by
+  `invoke_signed` and `create_program_address`); a 17th is refused with "at most 16 seeds, the bump included
+  (Solana's limit)", and a 16th seed before a derived bump with "at most 15 seeds: the bump the derivation adds makes
+  16, Solana's limit" (was "at most 15 seeds" for both). test/language/signer-seed-limit.test.ts signs a CPI with
+  16 entries in LiteSVM (a seed list and a bound `signer([...])`) and derives with `createProgramAddress`.
 - Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
   playground, opens Quick start with the playground, says that `npm install`'s advisories come from
   `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;

@@ -26,7 +26,8 @@ export function accountLimit(model: Pick<ProgramModel, "constants">): number {
   const c = model.constants.get("MAX_ACCOUNTS");
   return c && typeof c.value === "bigint" && c.value >= 32n && c.value <= 255n ? Number(c.value) : MAX_ACCOUNTS;
 }
-export const MAX_SEEDS = 15; // + bump = 16, the runtime limit
+/** Solana's limit on the seeds of one address, the bump included (MAX_SEEDS of solana-pubkey; each seed at most 32 bytes). */
+export const MAX_SEEDS = 16;
 /** Max instruction data an invoke() may build, and max event payload. */
 export const MAX_CPI_DATA = 1024;
 export const MAX_EVENT = 1024;

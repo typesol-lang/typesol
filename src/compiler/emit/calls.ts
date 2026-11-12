@@ -657,7 +657,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         // Pubkey::create_program_address(seeds, program): the bump is the last seed; null when the seeds give a point
         // on the curve (Rust's Err(PubkeyError::InvalidSeeds)) or are too many / too long.
         if (args.length !== 2) this.fail(node, "createProgramAddress(seeds, program) takes the seeds (bump last) and the program's address");
-        const seeds = this.seeds(args[0]!, 0);
+        const seeds = this.seeds(args[0]!, 0, false, true);
         const program = this.expect(this.expr(args[1], PUBKEY), PUBKEY, args[1]);
         const t = this.tmp("cpa");
         this.model.options.set("pubkey", PUBKEY);
@@ -2884,7 +2884,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     if (ts.isCallExpression(n) && this.exportName(n.expression) === "signer") {
       if (n.arguments.length !== 1) this.fail(n, "signer([...seeds]) takes the seeds (with the bump) as an array; signer([]) signs for nothing");
       // Bound to a name or given to a helper: the list outlives this expression, so its seeds are copied now.
-      return this.seeds(n.arguments[0], 0, true);
+      return this.seeds(n.arguments[0], 0, true, true);
     }
     this.fail(n, "pass signer([...seeds with the bump]) or a SignerSeeds parameter");
   }

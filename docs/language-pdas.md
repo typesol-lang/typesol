@@ -48,9 +48,11 @@ A seed list is an array literal written where the seeds go. Each seed contribute
 | `bigEndian(x)` | an integer's bytes most significant first (`["tick_array", pool.key, bigEndian(start)]`), Rust's `to_be_bytes()` |
 | the bump (a `u8`) | 1 byte, last |
 
-A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). A seed list
-written in the source holds at most 15 entries (`at most 15 seeds`): for `create`, the bump the derivation adds makes
-16, Solana's limit; signer seeds, which include the bump, hold 14 seeds and the bump.
+A seed is at most 32 bytes (`a seed can be at most 32 bytes`, when its length is known at compile time). Solana takes at
+most 16 seeds per address, the bump included. A list the derivation adds the bump to (`create`, `requirePda`,
+`findProgramAddress`) holds at most 15 entries (`at most 15 seeds: the bump the derivation adds makes 16, Solana's
+limit`); a list that ends with its bump (signer seeds, `createProgramAddress`) holds 16: 15 seeds and the bump (`at
+most 16 seeds, the bump included (Solana's limit)`).
 
 ## Creating an account at a PDA
 
