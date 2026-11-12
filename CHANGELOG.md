@@ -125,7 +125,11 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   is now refused, naming the member that follows: "this @code tag is not read: other code comes before it on its line;
   put /** @code … */ on its own line above B" (after the last member: "it follows the last member"). A tag on its own
   line, or first on its member's line, is read as before; no program of the repository changes
-  (test/language/zero-copy-shapes.test.ts).
+  (test/language/zero-copy-shapes.test.ts). The same goes for a tag in a `/* … */` or `//` comment ("this @code tag is
+  not read: only a doc comment (/** … */) is, not a // comment; write /** @code … */ above B") and in a doc comment
+  that another one follows before the member, of which only the last is read ("… another doc comment follows it, and
+  only the last one above B is read; put the tag in that one"). A tag is `@code` first on a line of its comment: a
+  comment that mentions it in a sentence (`/** see the @code docs */`) is not refused.
 - Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
   playground, opens Quick start with the playground, says that `npm install`'s advisories come from
   `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;

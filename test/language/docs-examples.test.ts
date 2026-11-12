@@ -235,6 +235,11 @@ const REFUSED: [example: string, program: string, stable: string][] = [
     "the result of merkleVerify is discarded, so nothing is checked",
   ],
   [
+    'export enum E { A = "a", /* @code 6100 */ B = "b" }',
+    'export enum E { A = "a", /* @code 6100 */ B = "b" }\nexport function f(): void {}\n',
+    "this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment",
+  ],
+  [
     'export enum E { A = "a", /** @code 6100 */ B = "b" }',
     'export enum E { A = "a", /** @code 6100 */ B = "b" }\nexport function f(): void {}\n',
     "this @code tag is not read: other code comes before it on its line",
