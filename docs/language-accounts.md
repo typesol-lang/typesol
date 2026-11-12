@@ -147,6 +147,17 @@ fresh keypair.
 
 ### Migrating an account
 
+Upgrading a program leaves its accounts as they are: each keeps its bytes, and the new code reads them with the new
+struct. The discriminator comes from the struct's name, so it still matches; only the size is checked:
+
+- A field added, anywhere, makes the struct longer than the existing accounts, which then fail with 3003.
+- A field removed from the end leaves bytes the new struct ignores. A field removed from the middle, or fields
+  reordered, make the fields after it read other fields' bytes, with no error.
+- A renamed struct has another discriminator: existing accounts fail with 3002.
+
+So keep the old struct as it is, under a new name with its old discriminator, and rewrite each account as the new one
+with `Migrate<From, To>`, which resizes it and tops up its rent:
+
 ```ts
 import { type Migrate, type Mut, type Pubkey, type Signer, type SystemProgram, type u64 } from "typesol";
 
@@ -177,6 +188,8 @@ Anchor 1.0's `Migration`: an existing `From` account (owner, discriminator, size
   give the new one a name of its own (two structs with one discriminator are refused).
 - Limits: fixed-layout structs without growable Vecs, no constraints yet, and the account cannot be passed to a helper
   (use `acct.to` fields in the instruction).
+- `resizeAccount` on a `Mut<AccountInfo>` ([closing and resizing](#closing-and-resizing)) is the manual way: grow the
+  account with the new field appended at the end, which reads as zero.
 - As written, anyone can migrate a counter and become its `owner`. With no constraints on `Migrate`, check the caller
   in the body before `migrate`, for example against the upgrade authority of a [`ProgramData`](#programdata)
   parameter.
@@ -463,3 +476,5 @@ types have them.
 - A field named like an account member plus `_` (`key_`, `lamports_`) is `key` / `lamports` in the IDL.
 - `/** @discriminator account:Old */` (or `0x` and 8 bytes) replaces an account struct's discriminator.
 - JSDoc on structs and fields becomes `docs` in the IDL.
+
+**Next:** [PDAs](language-pdas.md): seeds, bumps and signing as a PDA.

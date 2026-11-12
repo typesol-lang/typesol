@@ -355,9 +355,9 @@ Explained in [Sysvars, hashes, signatures and oracles: Hashing](language-chain.m
 | --- | --- | --- |
 | `sha256` | `function sha256(...parts: (string \| Pubkey \| Hash \| bigint \| boolean)[]): Hash` | sha256 over the parts concatenated: strings (UTF-8), Pubkeys/Hashes (32 bytes), integers (LE), booleans (1 byte). |
 | `keccak256` | `function keccak256(...parts: (string \| Pubkey \| Hash \| bigint \| boolean)[]): Hash` | keccak256 over the parts concatenated, encoded as for sha256. |
-| `merkleVerify` | `function merkleVerify(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean` | Verify a Merkle proof (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools use). |
-| `verifyEd25519` | `function verifyEd25519(instructions: InstructionsSysvar, signer: Pubkey, message: string \| Hash \| Pubkey): boolean` | True when this transaction contains an Ed25519 precompile instruction that verified `message` signed by `signer` (offsets inside the precompile's own data). |
-| `verifySecp256k1` | `function verifySecp256k1(hash: Hash, recoveryId: u8, r: Hash, s: Hash, ethAddress: Hash): boolean` | Recover the secp256k1 signer of `hash` from (r, s, recoveryId) and compare it with an Ethereum address given left-padded to 32 bytes (12 zero bytes + 20 address bytes). |
+| `merkleVerify` | `function merkleVerify(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean` | Whether `proof` places `leaf` under `root` (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools use). |
+| `verifyEd25519` | `function verifyEd25519(instructions: InstructionsSysvar, signer: Pubkey, message: string \| Hash \| Pubkey): boolean` | Whether this transaction contains an Ed25519 precompile instruction that verified `message` signed by `signer` (offsets inside the precompile's own data). |
+| `verifySecp256k1` | `function verifySecp256k1(hash: Hash, recoveryId: u8, r: Hash, s: Hash, ethAddress: Hash): boolean` | Whether the secp256k1 signer of `hash`, recovered from (r, s, recoveryId), is an Ethereum address given left-padded to 32 bytes (12 zero bytes + 20 address bytes). |
 | `ethMessageHash` | `function ethMessageHash(message: string): Hash` | The hash an Ethereum wallet signs for `personal_sign` (EIP-191): keccak256("\x19Ethereum Signed Message:\n" + length + message). |
 | `InstructionsSysvar` | `interface InstructionsSysvar` | The Instructions sysvar (Sysvar1nstructions…): every instruction of the transaction being executed. |
 | `TransactionInstruction` | `interface TransactionInstruction` | One instruction of the transaction, read from the Instructions sysvar. |
@@ -407,3 +407,5 @@ Explained in [Porting a native program (advanced)](language-native.md).
 | `abort` | `function abort(): never` | Stop the program as Rust's `abort` does on SBF (the allocator's out-of-memory error, `std::process::abort`): the runtime's `abort` syscall, which fails the instruction with ProgramFailedToComplete and logs "SBF program panicked" (no location, nothing else). |
 | `logBase64` | `function logBase64(prefix: string, value: object): void` | Log `prefix` followed by the base64 (standard, padded) of a struct value's bytes, as a native program's `msg!("ray_log: {}", base64(bincode(log)))` does. |
 | `logComputeUnits` | `function logComputeUnits(): void` | Log the compute units left (Rust's `sol_log_compute_units()`): the runtime writes "Program consumption: <N> units remaining", as the original's line, at the same place. |
+
+**Next:** [Glossary](glossary.md): the Solana and TypeSOL terms the guide uses.

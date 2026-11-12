@@ -180,3 +180,5 @@ String) or fixed-size struct, at most 1024 bytes. The IDL lists it as `returns`,
 - `setReturnData(bytes)` sets the raw bytes, as Rust's `set_return_data` (a native port's); an instruction that returns
   a value cannot call it ([return data as the original sets
   it](language-native.md#return-data-as-the-original-sets-it)).
+
+**Next:** [Calling other programs](language-cpi.md).

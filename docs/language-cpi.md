@@ -27,6 +27,11 @@ export function tip(from: Mut<Signer>, to: Mut<SystemAccount>, systemProgram: Sy
 
 ## Tokens
 
+A mint defines a token: its supply, its decimals and the mint authority that may create more. A token account holds an
+amount of one mint for its owner, the authority that may move it; a wallet's usual one is its associated token
+account. For a complete program, see [`examples/escrow.ts`](../examples/escrow.ts), which `typesol init my-app
+--template escrow` scaffolds with its tests.
+
 ```ts
 import { type Mint, type Mut, type Seeds, type Signer, type TokenAccount, type TokenInterface, type u64 } from "typesol";
 
@@ -428,3 +433,5 @@ ExtraAccountMetaList).
 - `updateExtraAccountMetas(...)` rewrites and resizes an existing list.
 - Inside the hook, `isTransferring(source)` says whether Token-2022 is transferring from it.
 - See `test/fixtures/hook.ts` and the transfer-hook ports.
+
+**Next:** [Sysvars, hashes, signatures and oracles](language-chain.md).

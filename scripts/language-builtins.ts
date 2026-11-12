@@ -377,6 +377,7 @@ export function builtinsPage(): string {
     }
     lines.push("");
   }
+  lines.push("**Next:** [Glossary](glossary.md): the Solana and TypeSOL terms the guide uses.", "");
   return lines.join("\n");
 }
 

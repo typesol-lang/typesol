@@ -2,7 +2,8 @@
 
 This page explains what a TypeSOL program is: the file, its imports, its instructions and account data, and what the
 compiler derives from them. It is the first page of the [language guide](language.md). It assumes you know
-TypeScript; it does not assume you know Anchor or Rust.
+TypeScript; it does not assume you know Anchor or Rust, and [Solana in a dozen lines](#solana-in-a-dozen-lines)
+introduces the chain's terms.
 
 ## A program is a TypeScript file
 
@@ -27,6 +28,29 @@ The file is made of:
 
 Every other top-level statement is refused: `class`, `namespace`, `let` and `var`, and expressions with effects (see
 [what is refused](language-statements.md#what-is-refused)).
+
+## Solana in a dozen lines
+
+What the rest of the guide assumes about the chain. Each term is in the [glossary](glossary.md); Solana's own
+documentation is at [solana.com/docs/core](https://solana.com/docs/core).
+
+- An [account](glossary.md#account) holds [lamports](glossary.md#lamports) (1 SOL is 10^9 of them) and bytes of
+  data, and has an [owner](glossary.md#owner) program. Only the owner changes the data or takes lamports out; any
+  program can add lamports to a writable account.
+- A program is an account holding code. It keeps no state of its own: what it remembers is in accounts it owns, and
+  the [checks on its parameters](language-accounts.md) make sure an account is one of them.
+- Every account holds the [rent](glossary.md#rent)-exempt minimum for its size; closing it returns that
+  ([limits and costs](#limits-and-costs)).
+- A [transaction](glossary.md#transaction) holds [instructions](glossary.md#instruction). It lists every account they
+  use, which are [writable](glossary.md#writable) and which [sign](glossary.md#signer); a program can reach no other
+  account. If one instruction fails, the whole transaction fails.
+- A [PDA](language-pdas.md) is an address derived from [seeds](glossary.md#seeds) and a program id, with a
+  [bump](glossary.md#bump) byte; no key can sign for it but that program's own calls.
+- One program calls another with a [CPI](language-cpi.md); the [System Program](glossary.md#system-program) creates
+  accounts and moves SOL, and [sysvars](language-chain.md#sysvars) hold the clock and other cluster state.
+- Work is metered in [compute units](glossary.md#compute-units), with a budget per transaction.
+- A build writes an [IDL](glossary.md#idl), the JSON that clients encode calls from; arguments are
+  [Borsh](glossary.md#borsh)-encoded, the program itself is [SBF](glossary.md#sbf) bytecode.
 
 ## A first program
 
@@ -335,8 +359,28 @@ during an instruction.
 `const HEAP_SIZE_KIB = 64n` (32 to 256) lets the program use a bigger heap; the client must then add a ComputeBudget
 `requestHeapFrame` instruction with that size to the transaction.
 
+## Limits and costs
+
+The cluster sets these; the numbers are those at the time of writing.
+
+- **Rent.** An account holds the rent-exempt minimum for its size, (128 + data bytes) × 6,960 lamports: 1,294,560
+  lamports (about 0.0013 SOL) for the 58-byte poll above. `create` takes it from the payer, `rentExempt(space)` computes
+  it in the program, and `close(account, destination)` moves every lamport, the rent included, to `destination`.
+- **Compute.** A transaction gets 200,000 compute units per instruction by default and at most 1,400,000, which the
+  client asks for with a ComputeBudget `SetComputeUnitLimit` instruction; past its budget the transaction fails. To
+  see where a program spends them, build with `typesol build --profile` and pass the transaction's logs to `typesol
+  profile` ([cli.md](cli.md)), which gives compute units per TypeScript line.
+- **Transaction size.** At most 1,232 bytes: signatures, every account's 32-byte address and the instruction data.
+  It bounds how many accounts and how many bytes of arguments one transaction can carry.
+- **Account size.** At most 10 MiB. `create` allocates at most 10 KiB, and an account grows by at most 10 KiB per
+  instruction (3016): grow a larger one over several instructions.
+- **Accounts.** At most 32 per instruction, unless the program raises it with
+  [`MAX_ACCOUNTS`](language-accounts.md#how-many-accounts) (5113).
+
 ## Next
 
 - [Types](language-types.md): integers, strings, enums, structs, options and lists.
 - [Statements and functions](language-statements.md): which TypeScript is TypeSOL.
 - [Accounts](language-accounts.md): account parameters and the checks they emit.
+- A complete program that moves tokens: [`examples/escrow.ts`](../examples/escrow.ts), which `typesol init my-app
+  --template escrow` scaffolds with its tests ([tokens](language-cpi.md#tokens)).

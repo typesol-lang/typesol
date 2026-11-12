@@ -19,7 +19,8 @@ What differs from TypeScript, in short:
   (on the heap). There are no dynamic objects.
 
 For a tour, start with the [README](../README.md); to port an Anchor program, [migrate from
-Anchor](migrate-from-anchor.md).
+Anchor](migrate-from-anchor.md). New to Solana? [Language basics](language-basics.md#solana-in-a-dozen-lines) starts
+with the terms the guide uses.
 
 ## The guide
 
@@ -38,14 +39,29 @@ is marked as a fragment.
 | [Sysvars, hashes, signatures and oracles](language-chain.md) | the clock and other sysvars, hashing, signature checks, instruction introspection, Pyth, Switchboard, randomness |
 | [Porting a native program](language-native.md) | advanced: the `@fallback` entry, raw account views, Borsh accounts, `BigVec`, the red-black tree, byte builders, Rust's panics and log lines |
 | [Built-ins](language-builtins.md) | every name `"typesol"` exports, one line each, generated from `lib/typesol.d.ts` |
+| [Glossary](glossary.md) | the Solana and TypeSOL terms the guide uses: account, owner, rent, PDA, CPI, IDL, compute units, … |
+
+Then: [test your program](test-your-program.md) in LiteSVM, call it from [the generated client](client.md),
+[deploy it](mainnet.md), and when something fails, [troubleshooting](troubleshooting.md).
 
 The error codes are in [errors.md](errors.md); what a compiled program checks for you and what is left to you, in the
 [security model](security-model.md).
 
-## Reference index
+## Not supported yet
 
-Where each part of the language is described. The headings below are the sections this page held before the guide was
-split into pages, so links to them still land here.
+- A struct holding a FixedVec that is both an argument and account data (its bytes differ there, and the IDL describes
+  a type one way): declare one for each.
+- Growing an account by more than 10 KiB in one instruction (Solana's limit): realloc again in the next instruction.
+- `?.` and `!` on anything but optional accounts, Options and a `find` on struct elements.
+- Functions stored in a struct, chosen from a list by index, or returned from an instruction.
+- A fused `map` to strings: store it, annotated.
+- Floating point (by design).
+
+They are rejected at compile time rather than half-supported.
+
+## Index of the former sections
+
+Where each part of the language is described, under the headings this page used to have.
 
 ### Types and statements
 
@@ -176,15 +192,4 @@ See [Porting a native program](language-native.md): the [fallback entry](languag
 [byte strings](language-native.md#byte-strings-built-by-hand) and
 [return data](language-native.md#return-data-as-the-original-sets-it).
 
-## Not supported yet
-
-- A struct holding a FixedVec that is both an argument and account data (its bytes differ there, and the IDL describes
-  a type one way): declare one for each.
-- Growing an account by more than 10 KiB in one instruction (Solana's limit): realloc again in the next instruction.
-- `?.` and `!` on anything but optional accounts, Options and a `find` on struct elements.
-- Functions stored in a struct, chosen from a list by index, or returned from an instruction.
-- A fused `map` to strings: store it, annotated.
-- Floating point (by design).
-
-They are rejected at compile time rather than half-supported (floating-point arithmetic on an `f64` excepted: see
-[f64](language-types.md#f64)).
+**Next:** [Language basics](language-basics.md).

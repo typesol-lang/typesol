@@ -155,6 +155,10 @@ the cluster in your Solana CLI config, and compares the bytes. `match` means any
 TypeSOL version and toolchain gets exactly the program on chain (from 0.45.0 on, on any of the hosts measured: macOS arm64, Linux arm64 with the platform-tools `linux-aarch64` package as in [troubleshooting.md](troubleshooting.md#linux-arm64-the-agave-installer-fails-with-a-404), Linux x86_64; with 0.44.1 or earlier, a
 program with 128-bit or signed division also needs the same kind of host). It also prints the upgrade authority and checks the IDL you published in step 5.
 
+A match says only that the deployed bytes are what this source and this compiler build. It does not say that the
+program, or the compiler, is correct, and it does not hold after the next upgrade: whoever holds the upgrade authority
+it prints can replace the program at any time.
+
 ### Verifying someone else's program
 
 With the source at the deployed commit, the program id and, ideally, the deployer's `<name>.build.json`:
@@ -187,6 +191,10 @@ registry: the evidence is the command and its output, which anyone can rerun.
 
 ## Later
 
+- **Upgrade it.** `typesol deploy` again replaces the code at the same address; the accounts keep their bytes. If an
+  account struct changed, existing accounts do not match it: a field added fails with 3003, and a field removed from
+  the middle or moved reads other fields' bytes without an error. Migrate the accounts ([migrating an
+  account](language-accounts.md#migrating-an-account)).
 - **Freeze it.** `solana program set-upgrade-authority <program id> --final` makes the program immutable. It cannot
   be undone.
 - **Close it.** `solana program close <program id> --bypass-warning` returns the rent to the authority. The program

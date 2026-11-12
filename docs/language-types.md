@@ -367,6 +367,17 @@ with [ ] is not supported: use .get(i) and .set(i, value), with i a bigint (0n)`
 | `FixedVec<T, N>` | u32 length + room for N | up to N | account data, arguments, locals, events, return data |
 | `Vec<T>` | u32 length + its elements | the account is resized | account data, arguments (read-only), events |
 
+Which one to use in account data:
+
+- **`FixedArray<T, N>`** when there are always N elements (a board, a fixed set of slots). The account's rent covers
+  all N from creation.
+- **`FixedVec<T, N>`** when the count varies up to a known maximum (owners of a multisig, at most N). The account is
+  created at its full size, so its creator pays the rent for N elements up front and nothing grows later; a `push`
+  past N fails with 5104. It also works in locals, nested structs and return data.
+- **`Vec<T>`** when the count has no useful maximum. The account starts small and each `push(v, payer)` resizes it,
+  `payer` paying the extra rent, so the instruction needs a `SystemProgram`; it grows at most 10 KiB per instruction
+  (3016) and 10 MiB in all. A struct with a `Vec` is account data only, not a local or a nested struct.
+
 ### FixedArray
 
 ```ts
@@ -565,3 +576,5 @@ export function collect(n: u8): void {
 `/** @heap */` on an instruction's list or struct local keeps it on the heap instead of the stack: one allocation per
 declaration, reused when a loop declares it again, up to the heap's size, for about 18 CU. Not in helpers, which may
 run many times while the heap is never freed.
+
+**Next:** [Statements and functions](language-statements.md): which TypeScript is TypeSOL.

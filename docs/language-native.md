@@ -458,3 +458,5 @@ void instruction (Phoenix's Borsh `Vec<FIFOOrderId>` of the orders that rested, 
 - More than 1024 bytes fails as the Rust call does: the runtime refuses it ("Return data too large (1025 > 1024)").
 - An instruction that returns a value cannot call it (a compile error: its return value is its return data); a helper
   it calls may, and the instruction's return value, set last, replaces what the helper set.
+
+**Next:** [Built-ins](language-builtins.md): every name `"typesol"` exports.

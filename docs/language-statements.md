@@ -613,3 +613,5 @@ may gain a hint line.
 | `Vec` locals | `const v: Vec<u64> = fixedVec([]);` | local type must be an integer, boolean, Pubkey, enum, option or string |
 | an unused proof or signature check | `merkleVerify(leaf, proof, root);` | the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
 | a `@code` tag after other code on its line | `export enum E { A = "a", /** @code 6100 */ B = "b" }` | this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above B |
+
+**Next:** [Accounts](language-accounts.md): account parameters and the checks they emit.

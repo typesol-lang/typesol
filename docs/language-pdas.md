@@ -185,3 +185,5 @@ When an instruction calls `x.create(payer, seeds)` or `requirePda(x, seeds, bump
 constraint, and every seed is a string literal, an integer literal, a constant, an argument, `acct.key` or a scalar
 field of an account, the IDL entry for `x` gets Anchor's `pda.seeds` (`const` / `arg` / `account`), so Anchor and
 Codama clients derive the address themselves. An associated token account (`Ata<…>`) gets the ATA program's `pda`.
+
+**Next:** [Errors, logs, events and return values](language-errors-events.md).
