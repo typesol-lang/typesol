@@ -6,13 +6,13 @@
   "node": "v24.22.2",
   "typescript": "6.0.3",
   "runtime": "a668bf71b7ac6858162a268b76c89be30a8d122ee48cb96eb780d781ae521e47",
-  "builtins": "0360262020113527a6d92a66b889cccd0271af9109080b9653044530240b542b",
+  "builtins": "039a5b7b93b0658f4fde6f1774ff50aa14b5e2f2ef44ab8b59351eb7ceb8813a",
   "host": "linux-x64",
-  "container": "3e22eb016b182bcc23249333d75b4eac8d74c99da67e20680d60e09b7faa2362"
+  "container": "de9d377f1d814cb9edc7ef663ec4cd9be88ccf1f0a47ca464ec43e1e99700be1"
  },
  "sources": {
   "root": "repo",
-  "commit": "f9cec88174650b4c986f32bb3053e1ab58f8e8dd"
+  "commit": "e63dc4427bfece59da571054864b3a1b23a4ec95"
  },
  "programs": {
   "examples/counter.ts": {
