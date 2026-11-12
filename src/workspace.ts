@@ -338,8 +338,14 @@ export function deployArgs(soPath: string, keypair: string, opts: { url?: string
   return args;
 }
 
-/** Create a project: typesol.json, one program from a template, its LiteSVM test, configs (editor settings included). Refuses to overwrite files. */
-export function scaffold(dir: string, name: string, template: TemplateName = "counter"): string[] {
+/** The files `scaffold` writes for AI coding agents (left out with `agentFiles: false`, `init --no-agent-files`). */
+export const AGENT_FILES = ["AGENTS.md", "CLAUDE.md", ".cursor/rules/typesol.mdc", ".mcp.json", ".cursor/mcp.json"] as const;
+
+/**
+ * Create a project: typesol.json, one program from a template, its LiteSVM test, configs (editor settings included)
+ * and, unless `agentFiles` is false, the AGENT_FILES. Refuses to overwrite files.
+ */
+export function scaffold(dir: string, name: string, template: TemplateName = "counter", opts: { agentFiles?: boolean } = {}): string[] {
   const t = TEMPLATES[template];
   if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error(`program name "${name}" must be snake_case`);
   const files: Record<string, string> = {
@@ -427,6 +433,7 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
         2,
       ) + "\n",
   };
+  if (opts.agentFiles === false) for (const f of AGENT_FILES) delete files[f];
   const existing = Object.keys(files).filter((f) => existsSync(path.join(dir, f)));
   if (existing.length) throw new Error(`refusing to overwrite: ${existing.join(", ")}`);
   for (const [file, text] of Object.entries(files)) {

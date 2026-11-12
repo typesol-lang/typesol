@@ -1,7 +1,7 @@
 // The first minutes: `typesol doctor`, what `init` says when the platform-tools are missing, and the checks `deploy`
 // runs before sending anything (an RPC that does not answer, a payer that cannot pay), against a fake RPC.
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
@@ -9,6 +9,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadOrCreateKeypair } from "../../src/keys.js";
+import { AGAVE_PATH, INSTALL_TESTED_TOOLCHAIN, installCommands, LINUX_ARM64_INSTALL, linuxArm64, TESTED_TOOLCHAIN } from "../../src/compiler/toolchain.js";
+import { doctorSummary, installSteps, solanaCliFix } from "../../src/tools/doctor.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = path.join(ROOT, "dist/cli.js");
@@ -69,14 +71,101 @@ describe("first minutes: doctor, init, deploy preflight", () => {
     const init = await run(["init", "app", "--name", "counter"], dir, env);
     expect(init.status).toBe(0);
     expect(init.stdout).toContain("created app/programs/counter.ts");
-    expect(init.stdout).toMatch(/platform-tools are not installed yet[\s\S]*release\.anza\.xyz[\s\S]*cargo-build-sbf --version/);
+    // The three commands of the README's toolchain block, in its order: the installer, the PATH line it only writes to
+    // ~/.profile, and the one command that installs the platform-tools by themselves.
+    const install = installCommands("agave");
+    if (process.platform === "linux" && process.arch === "arm64") expect(install).toEqual([...LINUX_ARM64_INSTALL]);
+    else {
+      expect(init.stdout).toContain("! The Agave CLI is not installed; npm test compiles with the platform-tools. Install once:");
+      expect(init.stdout).toContain(
+        [
+          `      ${INSTALL_TESTED_TOOLCHAIN[0]}`,
+          `      ${AGAVE_PATH}   # the installer adds this to ~/.profile, for new shells; this one needs it now`,
+          `      cargo-build-sbf --install-only --force-tools-install --tools-version ${TESTED_TOOLCHAIN.platformTools}   # once: downloads the platform-tools`,
+        ].join("\n"),
+      );
+    }
+    expect(init.stdout).not.toMatch(/cargo-build-sbf --version|cargo-build-sbf --force-tools-install(?! --)/);
     expect(init.stdout).toMatch(/next:\n {4}cd app\n {4}npm install\n {4}npm test/);
 
     const doctor = await run(["doctor"], path.join(dir, "app"), env);
     expect(doctor.status).toBe(1); // building is impossible without the platform-tools
-    expect(doctor.stdout).toMatch(/ERR {2}platform-tools/);
+    expect(doctor.stdout).toMatch(/ERR {2}platform-tools +the Agave CLI is not installed \(/);
     expect(doctor.stdout).toMatch(/! {3}keypair .*\n.*solana-keygen new/);
     expect(doctor.stdout).toMatch(/ok {3}project +typesol\.json: counter/);
+    expect(doctor.stdout).toMatch(/\n\n {2}Not ready to build or test: fix the ERR rows \(platform-tools\) first\.\n$/);
+  });
+
+  it("the Agave CLI without its platform-tools: init, doctor and the build name the one command that installs them", async () => {
+    const env = fresh();
+    // What the Agave installer leaves before the platform-tools are installed: the SDK's C files, no clang.
+    const sdk = path.join(env.HOME, ".local/share/solana/install/active_release/bin/platform-tools-sdk/sbf");
+    mkdirSync(path.join(sdk, "c"), { recursive: true });
+    writeFileSync(path.join(sdk, "c/sbf.mk"), "");
+    const dir = tmp();
+    const init = await run(["init", "app", "--name", "counter"], dir, env);
+    expect(init.status).toBe(0);
+    expect(init.stdout).toContain("! The Agave CLI is installed, but not its platform-tools; npm test compiles with the platform-tools. Install once:");
+    expect(init.stdout).toContain(`      ${installSteps("platform-tools").join("\n      ")}\n`);
+    const doctor = await run(["doctor"], path.join(dir, "app"), env);
+    expect(doctor.status).toBe(1);
+    expect(doctor.stdout).toContain(`the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies)`);
+    const build = await run(["build"], path.join(dir, "app"), env);
+    expect(build.status).toBe(1);
+    expect(build.stderr).toContain(`error: the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies). Install them once: `);
+    if (!linuxArm64()) expect(build.stderr).toContain(`Install them once: ${INSTALL_TESTED_TOOLCHAIN[1]}.`);
+  });
+
+  it("install commands per host: the README's on macOS and Linux x86_64, the linux-aarch64 package on Linux arm64", () => {
+    const mac = { platform: "darwin", arch: "arm64" };
+    const x64 = { platform: "linux", arch: "x64" };
+    const arm = { platform: "linux", arch: "arm64" };
+    expect(installCommands("agave", mac)).toEqual([INSTALL_TESTED_TOOLCHAIN[0], AGAVE_PATH, INSTALL_TESTED_TOOLCHAIN[1]]);
+    expect(installCommands("agave", x64)).toEqual(installCommands("agave", mac));
+    expect(installCommands("platform-tools", x64)).toEqual([INSTALL_TESTED_TOOLCHAIN[1]]);
+    expect(installCommands("agave", arm)).toEqual([...LINUX_ARM64_INSTALL]);
+    expect(installCommands("platform-tools", arm)).toEqual([...LINUX_ARM64_INSTALL]);
+    expect(LINUX_ARM64_INSTALL.join("\n")).toContain(
+      `/platform-tools/releases/download/${TESTED_TOOLCHAIN.platformTools}/platform-tools-linux-aarch64.tar.bz2`,
+    );
+    expect(LINUX_ARM64_INSTALL.join("\n")).toContain(`/agave/releases/download/v${TESTED_TOOLCHAIN.agave}/solana-release-x86_64-unknown-linux-gnu.tar.bz2`);
+    expect(installSteps("agave", arm).at(-1)).toMatch(
+      /^export TYPESOL_SBF_SDK=\$HOME\/\.local\/share\/typesol-sdk\/sbf {3}# add this line to ~\/\.profile too/,
+    );
+    expect(solanaCliFix(arm)).toMatch(/^no Agave CLI is published for Linux arm64: deploy from macOS or Linux x86_64/);
+    expect(solanaCliFix(x64)).toBe(INSTALL_TESTED_TOOLCHAIN[0]);
+    // The README and the troubleshooting page print the same commands (as written, so they can be pasted).
+    const readme = readFileSync(path.join(ROOT, "README.md"), "utf8");
+    const quick = /## Quick start[\s\S]*?```sh\n([\s\S]*?)```/.exec(readme)![1]!;
+    expect(quick.split("\n").filter((l) => l && !l.startsWith("#"))).toEqual(installCommands("agave", x64));
+    const requirements = /## Requirements[\s\S]*?```sh\n([\s\S]*?)```/.exec(readme)![1]!;
+    expect(
+      requirements
+        .split("\n")
+        .map((l) => l.trim().replace(/ {3}#.*$/, ""))
+        .filter(Boolean),
+    ).toEqual([...LINUX_ARM64_INSTALL]);
+    const troubleshooting = readFileSync(path.join(ROOT, "docs/troubleshooting.md"), "utf8");
+    for (const c of installCommands("agave", x64)) expect(troubleshooting).toContain(c);
+    const arm64Docs = /## Linux arm64[\s\S]*?```sh\n([\s\S]*?)```/.exec(troubleshooting)![1]!;
+    expect(
+      arm64Docs
+        .split("\n")
+        .map((l) => l.trim().replace(/ {3}#.*$/, ""))
+        .filter(Boolean),
+    ).toEqual([...LINUX_ARM64_INSTALL]);
+  });
+
+  it("doctor ends with what is ready and what the warnings are about", () => {
+    const row = (what: string, ok: boolean, optional = false) => ({ what, ok, optional, detail: "" });
+    const base = [row("Node.js", true), row("platform-tools", true), row("toolchain", true)];
+    expect(doctorSummary([...base, row("Solana CLI", true), row("keypair", true), row("RPC", true)])).toBe("Ready to build, test and deploy.");
+    expect(doctorSummary([...base, row("docker", false, true), row("keypair", false, true), row("RPC", false, true)])).toBe(
+      "Ready to build and test. The ! rows: deploying still needs: keypair, RPC; Docker is only for --docker builds.",
+    );
+    expect(doctorSummary([row("Node.js", false), row("platform-tools", false)])).toBe(
+      "Not ready to build or test: fix the ERR rows (Node.js, platform-tools) first.",
+    );
   });
 
   it("doctor on this machine: everything building needs is there (exit 0), and the RPC's balance is read", async () => {
@@ -140,6 +229,14 @@ describe("first minutes: doctor, init, deploy preflight", () => {
     });
     expect(go.stdout).toMatch(/cluster 127\.0\.0\.1:\d+, payer [1-9A-HJ-NP-Za-km-z]{32,44}\n/);
     expect(go.stderr).toMatch(/`solana` was not found on PATH/);
+
+    // No payer keypair: deploy stops before the RPC and before `solana`, with the command that creates one.
+    const keyless = await run(["deploy", "--url", "devnet"], dir, { HOME: tmp() });
+    expect(keyless.status).toBe(1);
+    expect(keyless.stderr).toBe(
+      "error: no payer keypair at ~/.config/solana/id.json: create one with `solana-keygen new` (or pass --keypair <file>), then fund it with `solana airdrop 2 --url devnet`. Nothing was sent.\n",
+    );
+    expect(keyless.stdout).not.toContain("deploying");
   });
 });
 

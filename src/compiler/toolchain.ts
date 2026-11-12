@@ -31,6 +31,20 @@ export interface Toolchain {
 /** The runtime's compiler builtins, compiled with each program and linked in place of compiler-builtins. */
 export const BUILTINS_SOURCE = path.join(RUNTIME_DIR, "typesol_builtins.c");
 
+/** What is missing when there is no toolchain to build with, so `doctor` and `init` can say which commands to run. */
+export class ToolchainMissing extends Error {
+  constructor(
+    /** "agave": no Agave CLI (no SDK); "platform-tools": the CLI without its platform-tools; "sbpf-libraries": platform-tools without this SBPF version. */
+    readonly kind: "agave" | "platform-tools" | "sbpf-libraries",
+    /** What is missing, in one clause. */
+    readonly summary: string,
+    fix: string,
+  ) {
+    super(`${summary}. ${fix}`);
+    this.name = "ToolchainMissing";
+  }
+}
+
 /** Locate the Solana C SDK that ships with the Agave CLI's platform-tools. */
 export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
   // Where the Agave installer puts it, or next to `cargo-build-sbf` on PATH (custom --data-dir, Homebrew, Docker…).
@@ -50,12 +64,25 @@ export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
   ].filter((p): p is string => !!p);
   const sdk = candidates.find((p) => existsSync(path.join(p, "c/sbf.mk")));
   if (!sdk)
-    throw new Error(
-      "Solana SBF SDK not found. Install the Agave CLI (https://docs.anza.xyz/cli/install) and run `cargo-build-sbf --version` once, or set TYPESOL_SBF_SDK to its platform-tools-sdk/sbf directory.",
-    );
+    throw linuxArm64()
+      ? new ToolchainMissing(
+          "agave",
+          "no Solana SBF SDK: TYPESOL_SBF_SDK is not set, and there is no Agave CLI for Linux arm64",
+          `Install the platform-tools' linux-aarch64 package and the SDK's C files: ${installCommands("agave").join("; ")}.`,
+        )
+      : new ToolchainMissing(
+          "agave",
+          "the Agave CLI is not installed (no Solana SBF SDK under ~/.local/share/solana/install/active_release or next to cargo-build-sbf on PATH)",
+          `Install it and its platform-tools: ${installCommands("agave").join("; ")}. Or set TYPESOL_SBF_SDK to a platform-tools-sdk/sbf directory.`,
+        );
   const llvm = path.join(sdk, "dependencies/platform-tools/llvm");
   const clang = path.join(llvm, "bin", EXE("clang"));
-  if (!existsSync(clang)) throw new Error(`platform-tools missing under ${sdk}/dependencies. Run \`cargo-build-sbf --force-tools-install\` once.`);
+  if (!existsSync(clang))
+    throw new ToolchainMissing(
+      "platform-tools",
+      `the Agave CLI is installed, but not its platform-tools (nothing under ${sdk}/dependencies)`,
+      `Install them once: ${installCommands("platform-tools").join("; ")}.`,
+    );
   // Newest clang resource directory (numeric order: "9" < "19").
   const clangInc = readdirSync(path.join(llvm, "lib/clang"))
     .sort((a, b) => Number.parseFloat(a) - Number.parseFloat(b))
@@ -64,8 +91,10 @@ export function findToolchain(sbpf: Sbpf = "v0"): Toolchain {
   const rustlib = path.join(sdk, `dependencies/platform-tools/rust/lib/rustlib/${target}-solana-solana/lib`);
   const builtins = existsSync(rustlib) ? readdirSync(rustlib).find((f) => f.startsWith("libcompiler_builtins-") && f.endsWith(".rlib")) : undefined;
   if (!builtins)
-    throw new Error(
-      `these platform-tools have no SBPF ${sbpf} libraries (${rustlib}). Update them with \`cargo-build-sbf --force-tools-install\`, or build for another --sbpf.`,
+    throw new ToolchainMissing(
+      "sbpf-libraries",
+      `these platform-tools have no SBPF ${sbpf} libraries (${rustlib})`,
+      `Install the tested ones: ${installCommands("platform-tools").join("; ")}. Or build for another --sbpf.`,
     );
   return {
     sdk,
@@ -281,6 +310,38 @@ export const INSTALL_TESTED_TOOLCHAIN = [
   `sh -c "$(curl -sSfL https://release.anza.xyz/v${TESTED_TOOLCHAIN.agave}/install)"`,
   `cargo-build-sbf --install-only --force-tools-install --tools-version ${TESTED_TOOLCHAIN.platformTools}`,
 ] as const;
+
+/**
+ * The Agave installer adds its bin directory to PATH in ~/.profile only, which the shell that ran it does not read:
+ * without this line the next command is "cargo-build-sbf: command not found".
+ */
+export const AGAVE_PATH = 'export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"';
+
+/**
+ * Linux arm64: Anza publishes no Agave CLI for it (its installer fails with a 404), but platform-tools has a
+ * linux-aarch64 package. The C SDK (headers and linker script, text) comes from the x86_64 Agave release, as in the
+ * --docker image, and TYPESOL_SBF_SDK points the compiler at the result. Building and LiteSVM tests work; deploying
+ * needs a Solana CLI from another host.
+ */
+const ARM64_SDK = "$HOME/.local/share/typesol-sdk";
+export const linuxArm64 = (host: { platform: string; arch: string } = process) => host.platform === "linux" && host.arch === "arm64";
+export const LINUX_ARM64_INSTALL: readonly string[] = [
+  `mkdir -p ${ARM64_SDK}/sbf/dependencies/platform-tools`,
+  `curl -sSfL https://github.com/anza-xyz/agave/releases/download/v${TESTED_TOOLCHAIN.agave}/solana-release-x86_64-unknown-linux-gnu.tar.bz2 | tar -xj -C ${ARM64_SDK} --strip-components=3 solana-release/bin/platform-tools-sdk/sbf/c`,
+  `curl -sSfL https://github.com/anza-xyz/platform-tools/releases/download/${TESTED_TOOLCHAIN.platformTools}/platform-tools-linux-aarch64.tar.bz2 | tar -xj -C ${ARM64_SDK}/sbf/dependencies/platform-tools`,
+  `touch ${ARM64_SDK}/sbf/dependencies/platform-tools-${TESTED_TOOLCHAIN.platformTools}.md`,
+  `export TYPESOL_SBF_SDK=${ARM64_SDK}/sbf`,
+];
+
+/**
+ * What to run to get the tested toolchain on this host: from nothing ("agave"), or when the Agave CLI is there and
+ * its platform-tools are not. `cargo-build-sbf --version` downloads nothing and `cargo-build-sbf --force-tools-install`
+ * alone needs a Cargo project; only `--install-only` installs the platform-tools by themselves.
+ */
+export function installCommands(from: "agave" | "platform-tools", host: { platform: string; arch: string } = process): string[] {
+  if (linuxArm64(host)) return [...LINUX_ARM64_INSTALL];
+  return from === "agave" ? [INSTALL_TESTED_TOOLCHAIN[0], AGAVE_PATH, INSTALL_TESTED_TOOLCHAIN[1]] : [INSTALL_TESTED_TOOLCHAIN[1]];
+}
 
 // One `clang --version` per clang a process uses: up-to-date checks and manifests ask for it on every build.
 const clangVersions = new Map<string, string>();

@@ -10,11 +10,41 @@ First-run fixes, found by following the README in fresh `node:24-bookworm` conta
 No program builds to other bytes: the generated C, IDLs and binaries are those of 0.45.0 (the release manifest's check
 of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0 and by this release, are the same).
 
+- Fixed: the README's toolchain block failed when pasted. The Agave installer adds its `bin` directory to `PATH` in
+  `~/.profile` only, so the next line gave `cargo-build-sbf: command not found`. The block now has the
+  `export PATH=…` line between the two commands, and says that the platform-tools install downloads about 0.5 GB and
+  prints nothing for a minute or two; docs/troubleshooting.md, CONTRIBUTING.md, `init` and `doctor` print the same
+  commands (test/cli/doctor.test.ts compares the README's block with them).
+- Fixed: the commands `init`, `doctor` and the build printed for a missing toolchain did not install it.
+  `cargo-build-sbf --version` downloads nothing, and `cargo-build-sbf --force-tools-install` alone needs Cargo and a
+  Cargo project. Every message now gives `cargo-build-sbf --install-only --force-tools-install --tools-version v1.52`
+  (from `TESTED_TOOLCHAIN`), and says which is missing: "the Agave CLI is not installed" (then the installer, the
+  `PATH` line and that command) or "the Agave CLI is installed, but not its platform-tools" (that command only). The
+  build's errors were "Solana SBF SDK not found …" and "platform-tools missing under … Run
+  `cargo-build-sbf --force-tools-install` once." (test/cli/doctor.test.ts, both cases).
+- Fixed: on Linux arm64 the Agave installer fails with a 404 (Anza publishes no Agave CLI for it) and nothing said so;
+  `doctor` and `init` printed that installer. Building and LiteSVM tests work there with the platform-tools'
+  `linux-aarch64` package and the SDK's C files from the x86_64 release, pointed at with `TYPESOL_SBF_SDK` (checked
+  in a `linux/arm64` container: the three templates build and pass their tests). The README's Requirements give those
+  five commands, `doctor`, `init` and the build print them on Linux arm64, and the Solana CLI row there says that
+  deploying needs another host. The sentences that say builds are the same on Linux arm64 now say how that host was
+  set up (test/cli/doctor.test.ts).
 - Fixed: on Node.js older than 22.12 the CLI ran or crashed without saying why (on 20, `npm install` failed inside
   npm or the tests with `Map.groupBy is not a function`; on 22.11, `init`, `check` and `build` ran although `doctor`
   said 22.12 was needed). The `typesol` command is now `dist/bin.js`, which checks the version before it loads
   anything else and exits 1 with one line naming the version needed, the one running and where to get one
   (test/cli/node-version.test.ts; checked in `node:20-bookworm` and `node:22.11-bookworm` containers).
+- Fixed: `deploy` without a payer keypair printed that the Solana CLI would refuse, built, and went on until
+  `solana program deploy` failed. It now stops before building, exit 1: "no payer keypair at
+  ~/.config/solana/id.json: create one with `solana-keygen new` (or pass --keypair <file>), then fund it with
+  `solana airdrop 2 --url devnet`. Nothing was sent." (test/cli/doctor.test.ts).
+- Fixed: `doctor` ended with its rows only, so three `!` rows after a passing test looked like a problem. It now ends
+  with one line: "Ready to build and test. The ! rows: deploying still needs: keypair, RPC; …", "Ready to build, test
+  and deploy." or "Not ready to build or test: fix the ERR rows (…) first." (test/cli/doctor.test.ts).
+- New flag, `init --no-agent-files`: leaves out the files for AI coding agents (AGENTS.md, CLAUDE.md,
+  `.cursor/rules/typesol.mdc`, `.mcp.json`, `.cursor/mcp.json`), which `init` wrote with no way to opt out; without
+  it, `init` now names them after the files it created (test/cli/ai.test.ts). `.vscode/settings.json` is written
+  either way: it makes the editor show TypeSOL's errors.
 - Hints, text only (test/language/diagnostics.test.ts):
   - an `async` instruction returning `Promise<void>` got "instructions cannot be async or generators" with no hint,
     though the README promised one; it now has one (helper functions too);
@@ -32,6 +62,12 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
     covers its types and interfaces too (`import { type Signer } from "typesol"`, `Mut`, `SystemProgram`, …);
   - a `number` field in account data got the list of allowed field types alone; it now has a hint naming the integer
     types (and a `Date` field, one about Unix seconds and `now()`).
+- Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
+  playground, opens Quick start with the playground, says that `npm install`'s advisories come from
+  `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;
+  nothing of it is in a deployed program), says what npm's `E404 … typesol` outside a project means and what to run,
+  and that the scaffolded counter has one more instruction than the 23-line one shown. docs/troubleshooting.md has a
+  heading per symptom.
 
 ## 0.45.0 — 2026-11-12
 

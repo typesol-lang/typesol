@@ -22,7 +22,7 @@ import {
   type Diagnostic,
   type Sbpf,
 } from "./compiler/index.js";
-import { setToolchainStrict, shortClang } from "./compiler/toolchain.js";
+import { linuxArm64, setToolchainStrict, shortClang } from "./compiler/toolchain.js";
 import { generateCpi, type Idl } from "./tools/cpigen.js";
 import { generatePort, type PortIdl } from "./tools/portgen.js";
 import { generateClient, writeClient, type ClientIdl } from "./tools/clientgen.js";
@@ -32,6 +32,7 @@ import { formatProfile, profileLogs } from "./tools/profile.js";
 import { TEMPLATE_NAMES, type TemplateName } from "./templates.js";
 import {
   addProgram,
+  AGENT_FILES,
   buildWorkspace,
   CONFIG,
   deployArgs,
@@ -59,9 +60,11 @@ import {
   clusterUrl,
   deployPreflight,
   doctorChecks,
+  doctorSummary,
   formatChecks,
-  INSTALL_AGAVE,
+  requirePayer,
   rpcHost,
+  solanaCliFix,
   solanaConfig as readSolanaConfig,
   toolchainCheck,
 } from "./tools/doctor.js";
@@ -135,15 +138,16 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   init: {
-    usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow]",
+    usage: "typesol init [<dir>] [--name <program>] [--template counter|vault|escrow] [--no-agent-files]",
     help: [
       "Create a project: typesol.json, programs/<name>.ts, tests/<name>.test.ts (LiteSVM), package.json, tsconfig.json, .gitignore, .vscode/settings.json (editor errors), AGENTS.md / CLAUDE.md / .cursor/rules (the rules for AI coding agents) and .mcp.json / .cursor/mcp.json (the TypeSOL MCP server).",
       "Refuses to overwrite files. <name> must be snake_case (default: derived from <dir>).",
       "--template counter   a PDA counter per user (default)",
       "--template vault     a SOL vault at a PDA: deposit, withdraw above rent, close",
       "--template escrow    an SPL token escrow: make, take, refund, with the offer PDA signing for its vault",
+      "--no-agent-files     leave out the files for AI coding agents (AGENTS.md, CLAUDE.md, .cursor/, .mcp.json)",
     ].join("\n  "),
-    options: { name: { type: "string" }, template: { type: "string" } },
+    options: { name: { type: "string" }, template: { type: "string" }, "no-agent-files": { type: "boolean" } },
     run(v, args) {
       if (args.length > 1) throw new UsageError("init takes at most one directory");
       if (v.name !== undefined && !/^[a-z][a-z0-9_]*$/.test(v.name as string))
@@ -159,13 +163,17 @@ const COMMANDS: Record<string, Command> = {
         .toLowerCase();
       const name = (v.name as string | undefined) ?? (/^[a-z]/.test(derived) ? derived : `p_${derived || "program"}`);
       const rel = path.relative(process.cwd(), root) || ".";
-      for (const f of scaffold(root, name, template as TemplateName)) log(`  created ${path.join(rel, f)}`);
+      const agentFiles = !v["no-agent-files"];
+      for (const f of scaffold(root, name, template as TemplateName, { agentFiles })) log(`  created ${path.join(rel, f)}`);
+      if (agentFiles) log(`  (${AGENT_FILES.join(", ")}: rules and the TypeSOL MCP server for AI coding agents; --no-agent-files leaves them out)`);
       const tools = toolchainCheck();
-      if (!tools.ok)
+      if (!tools.ok) {
+        const missing = tools.detail.replace(/ \(.*$/, "");
         log(
-          `\n  ! The Solana platform-tools are not installed yet; npm test compiles with them. Install once:\n` +
+          `\n  ! ${missing[0]!.toUpperCase()}${missing.slice(1)}; npm test compiles with the platform-tools. Install once:\n` +
             (tools.fix ?? []).map((f) => `      ${f}`).join("\n"),
         );
+      }
       log(
         `\n  next:\n` +
           (rel === "." ? "" : `    cd ${shellQuote(rel)}\n`) +
@@ -340,7 +348,7 @@ const COMMANDS: Record<string, Command> = {
     async run(v) {
       if (v.config !== undefined) solanaConfig(v.config as string); // a --config that does not exist is a usage error, as elsewhere
       const checks = await doctorChecks({ cwd: process.cwd(), url: v.url as string | undefined, config: v.config as string | undefined });
-      log(formatChecks(checks));
+      log(`${formatChecks(checks)}\n\n  ${doctorSummary(checks)}`);
       return checks.some((c) => !c.ok && !c.optional) ? 1 : 0;
     },
   },
@@ -371,10 +379,12 @@ const COMMANDS: Record<string, Command> = {
         throw new Error(
           "no cluster: pass --url (devnet, mainnet-beta, localhost or an RPC URL), or set json_rpc_url in the Solana CLI config (`solana config set --url devnet`)",
         );
+      const payer = (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json");
+      // A missing payer stops the deploy before the build, with the command that creates one.
+      if (url && !v["dry-run"]) requirePayer(clusterUrl(url), payer);
       const built = buildWorkspace(ws, names(ws, args), { sbpf: sbpfOf(v), needKeypair: true });
       if (url && !v["dry-run"]) {
         // Before any transaction: the RPC answers and the payer can afford it, with what to do if not.
-        const payer = (v.keypair as string | undefined) ?? cfg.keypair ?? path.join(os.homedir(), ".config/solana/id.json");
         await deployPreflight({
           url: clusterUrl(url),
           payer,
@@ -392,7 +402,8 @@ const COMMANDS: Record<string, Command> = {
         try {
           execFileSync("solana", cliArgs, { stdio: "inherit" });
         } catch (e) {
-          if ((e as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`\`solana\` was not found on PATH. Install the Agave CLI: ${INSTALL_AGAVE}`);
+          if ((e as NodeJS.ErrnoException).code === "ENOENT")
+            throw new Error(`\`solana\` was not found on PATH${linuxArm64() ? `: ${solanaCliFix()}` : `. Install the Agave CLI: ${solanaCliFix()}`}`);
           throw new Error(`solana program deploy failed for ${b.paths.name} (see its output above)`);
         }
       }

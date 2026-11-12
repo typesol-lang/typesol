@@ -6,14 +6,27 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Rpc, SolanaRpcApi } from "@solana/kit";
-import { findToolchain, INSTALL_TESTED_TOOLCHAIN, shortClang, TESTED_TOOLCHAIN, toolchainInfo, toolchainStrict } from "../compiler/toolchain.js";
+import {
+  AGAVE_PATH,
+  findToolchain,
+  INSTALL_TESTED_TOOLCHAIN,
+  installCommands,
+  linuxArm64,
+  shortClang,
+  TESTED_TOOLCHAIN,
+  ToolchainMissing,
+  toolchainInfo,
+  toolchainStrict,
+} from "../compiler/toolchain.js";
 import { base58, readKeypair } from "../keys.js";
 import { DOCKER_PLATFORM, dockerStatus, type DockerStatus } from "./docker.js";
 import { findWorkspace } from "../workspace.js";
+import { MIN_NODE } from "../node-version.js";
 
 /** The Agave CLI release TypeSOL is tested with (its platform-tools are the tested ones). */
 export const INSTALL_AGAVE = INSTALL_TESTED_TOOLCHAIN[0];
-const MIN_NODE = [22, 12] as const;
+/** What the platform-tools install does, said where it is printed: it is large and quiet. */
+export const PLATFORM_TOOLS_DOWNLOAD = "downloads the platform-tools (about 0.5 GB, up to 1.6 GB unpacked) and prints nothing for a minute or two";
 
 export interface Check {
   ok: boolean;
@@ -38,13 +51,33 @@ export function toolchainCheck(): Check {
     }
     return { ok: true, what: "platform-tools", detail: version || tc.sdk };
   } catch (e) {
-    return {
-      ok: false,
-      what: "platform-tools",
-      detail: (e as Error).message.split(". ")[0]!,
-      fix: [INSTALL_AGAVE, "cargo-build-sbf --version   # once: downloads the platform-tools TypeSOL compiles with"],
-    };
+    if (!(e instanceof ToolchainMissing)) return { ok: false, what: "platform-tools", detail: (e as Error).message };
+    return { ok: false, what: "platform-tools", detail: e.summary, fix: installSteps(e.kind === "agave" ? "agave" : "platform-tools") };
   }
+}
+
+/** The install commands for this host, each with what it does when that is not obvious. */
+export function installSteps(from: "agave" | "platform-tools", host: { platform: string; arch: string } = process): string[] {
+  return installCommands(from, host).map((c) =>
+    c === AGAVE_PATH
+      ? `${c}   # the installer adds this to ~/.profile, for new shells; this one needs it now`
+      : c === INSTALL_TESTED_TOOLCHAIN[1]
+        ? `${c}   # once: ${PLATFORM_TOOLS_DOWNLOAD}`
+        : c.startsWith("export TYPESOL_SBF_SDK=")
+          ? `${c}   # add this line to ~/.profile too, for new shells`
+          : c.includes("/platform-tools-linux-aarch64.")
+            ? `${c}   # about 515 MB, 1.6 GB unpacked; quiet for a minute or two`
+            : c.includes("/solana-release-")
+              ? `${c}   # about 215 MB, for the SDK's C headers and linker script only`
+              : c,
+  );
+}
+
+/** The Solana CLI (deploying only): the Agave installer, or on Linux arm64, where there is none, what to do instead. */
+export function solanaCliFix(host: { platform: string; arch: string } = process): string {
+  return linuxArm64(host)
+    ? "no Agave CLI is published for Linux arm64: deploy from macOS or Linux x86_64, or build it from source (https://docs.anza.xyz/cli/install)"
+    : INSTALL_AGAVE;
 }
 
 /**
@@ -178,12 +211,24 @@ const sol = (lamports: number) =>
 /** A cost, rounded up so the advice is enough. */
 const solUp = (lamports: number) => `${(Math.ceil(lamports / 1e7) / 100).toFixed(2)} SOL`;
 
+/** A deploy's payer keypair must exist: without it `solana program deploy` refuses only after the build, mid-way. */
+export function requirePayer(url: string, payer: string): void {
+  if (existsSync(payer)) return;
+  const cluster = clusterOf(url);
+  throw new Error(
+    `no payer keypair at ${payer.replace(os.homedir(), "~")}: create one with \`solana-keygen new\` (or pass --keypair <file>)` +
+      (cluster ? `, then fund it with \`solana airdrop 2 --url ${cluster}\`` : "") +
+      ". Nothing was sent.",
+  );
+}
+
 /**
  * Before `solana program deploy`: the RPC answers, and the payer holds enough for the program's rent (a first deploy
  * holds about twice the binary's rent while the buffer exists; an upgrade, the buffer's). Throws with what to do.
  */
 export async function deployPreflight(opts: { url: string; payer?: string; programs: { soPath: string; address: string; name: string }[] }): Promise<void> {
   const host = rpcHost(opts.url);
+  if (opts.payer) requirePayer(opts.url, opts.payer);
   try {
     await rpc(opts.url, "getVersion");
   } catch (e) {
@@ -195,7 +240,7 @@ export async function deployPreflight(opts: { url: string; payer?: string; progr
           : "Check --url (or json_rpc_url in the Solana CLI config); for a test deploy use --url devnet or a local `solana-test-validator`."),
     );
   }
-  if (!opts.payer || !existsSync(opts.payer)) return; // the Solana CLI reports a missing keypair itself
+  if (!opts.payer) return;
   const payer = base58(readKeypair(opts.payer).subarray(32));
   let need = 0;
   for (const p of opts.programs) {
@@ -239,7 +284,7 @@ export async function doctorChecks(opts: { cwd: string; url?: string; config?: s
   checks.push(
     solanaVersion
       ? { ok: true, what: "Solana CLI", detail: solanaVersion }
-      : { ok: false, optional: true, what: "Solana CLI", detail: "not on PATH (needed to deploy, not to build or test)", fix: [INSTALL_AGAVE] },
+      : { ok: false, optional: true, what: "Solana CLI", detail: "not on PATH (needed to deploy, not to build or test)", fix: [solanaCliFix()] },
   );
   checks.push(dockerCheck());
   const cfg = solanaConfig(opts.config);
@@ -304,6 +349,21 @@ export async function doctorChecks(opts: { cwd: string; url?: string; config?: s
       : { ok: true, optional: true, what: "project", detail: "none here (typesol init <dir> creates one)" },
   );
   return checks;
+}
+
+/** The last line of `doctor`: what is ready, and what the warnings are about. */
+export function doctorSummary(checks: Check[]): string {
+  const list = (cs: Check[]) => cs.map((c) => c.what).join(", ");
+  const failed = checks.filter((c) => !c.ok && !c.optional);
+  if (failed.length) return `Not ready to build or test: fix the ERR rows (${list(failed)}) first.`;
+  const warned = checks.filter((c) => !c.ok);
+  const deploy = warned.filter((c) => ["Solana CLI", "keypair", "RPC", "balance"].includes(c.what));
+  const notes: string[] = [];
+  if (deploy.length) notes.push(`deploying still needs: ${list(deploy)}`);
+  if (warned.some((c) => c.what === "docker")) notes.push("Docker is only for --docker builds");
+  if (warned.some((c) => c.what === "toolchain")) notes.push("the toolchain is not the tested one (builds work; their binaries are not covered by the tests)");
+  if (!notes.length) return "Ready to build, test and deploy.";
+  return `Ready to build and test. The ! rows: ${notes.join("; ")}.`;
 }
 
 export function formatChecks(checks: Check[]): string {

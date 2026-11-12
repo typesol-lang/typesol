@@ -147,7 +147,7 @@ npx --no-install typesol verify my_app
 
 `verify` rebuilds the program from `programs/my_app.ts`, reads the deployed one at the address in `typesol.json` from
 the cluster in your Solana CLI config, and compares the bytes. `match` means anyone with your source and the same
-TypeSOL version and toolchain gets exactly the program on chain (from 0.45.0 on, on any of the hosts measured: macOS arm64, Linux arm64, Linux x86_64; with 0.44.1 or earlier, a
+TypeSOL version and toolchain gets exactly the program on chain (from 0.45.0 on, on any of the hosts measured: macOS arm64, Linux arm64 with the platform-tools `linux-aarch64` package as in [troubleshooting.md](troubleshooting.md#linux-arm64-the-agave-installer-fails-with-a-404), Linux x86_64; with 0.44.1 or earlier, a
 program with 128-bit or signed division also needs the same kind of host). It also prints the upgrade authority and checks the IDL you published in step 5.
 
 ### Verifying someone else's program

@@ -39,6 +39,22 @@ describe("for AI coding agents", () => {
       });
   });
 
+  it("init lists the agent files it writes, and --no-agent-files leaves them out", () => {
+    const agentFiles = ["AGENTS.md", "CLAUDE.md", ".cursor/rules/typesol.mdc", ".mcp.json", ".cursor/mcp.json"];
+    const dir = realpathSync(mkdtempSync(path.join(os.tmpdir(), "typesol-ai-")));
+    const withFiles = spawnSync("node", [CLI, "init", "a", "--name", "app"], { cwd: dir, encoding: "utf8" });
+    expect(withFiles.status).toBe(0);
+    expect(withFiles.stdout).toContain(`  (${agentFiles.join(", ")}: rules and the TypeSOL MCP server for AI coding agents; --no-agent-files leaves them out)`);
+    const without = spawnSync("node", [CLI, "init", "b", "--name", "app", "--no-agent-files"], { cwd: dir, encoding: "utf8" });
+    expect(without.status).toBe(0);
+    for (const f of agentFiles) expect(existsSync(path.join(dir, "b", f)), f).toBe(false);
+    expect(existsSync(path.join(dir, "b", ".cursor"))).toBe(false);
+    expect(without.stdout).not.toMatch(/AGENTS\.md|CLAUDE\.md|mcp\.json/);
+    // The rest of the project is the same: the program, its test, the configs and the editor settings.
+    for (const f of ["typesol.json", "programs/app.ts", "tests/app.test.ts", "package.json", "tsconfig.json", ".vscode/settings.json", ".gitignore"])
+      expect(readFileSync(path.join(dir, "b", f), "utf8"), f).toBe(readFileSync(path.join(dir, "a", f), "utf8"));
+  });
+
   it("never tells anyone to run `npx typesol <command>`", () => {
     // "typesol" is not the npm package's name (@typesol/cli): where a project's own copy is missing, `npx typesol`
     // would fetch and run whatever package is published under that name.

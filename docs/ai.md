@@ -15,7 +15,8 @@ integer, `console.log`, `throw`, `xs[i]`) are refused. Four things close that ga
 
 They say what ordinary TypeScript habits break (bigint integers, imports from `"typesol"`, no `throw` / `async` /
 `class`, `Mut<T>` for an account that changes, `.get(i)` / `.set(i, v)` on lists) and how to check and test. Keep your
-own project notes below them in AGENTS.md.
+own project notes below them in AGENTS.md. `typesol init --no-agent-files` leaves these files and the MCP
+configuration below out.
 
 ## llms.txt
 
