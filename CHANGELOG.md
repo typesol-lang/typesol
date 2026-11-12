@@ -10,6 +10,11 @@ First-run fixes, found by following the README in fresh `node:24-bookworm` conta
 No program builds to other bytes: the generated C, IDLs and binaries are those of 0.45.0 (the release manifest's check
 of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0 and by this release, are the same).
 
+- Fixed: on Node.js older than 22.12 the CLI ran or crashed without saying why (on 20, `npm install` failed inside
+  npm or the tests with `Map.groupBy is not a function`; on 22.11, `init`, `check` and `build` ran although `doctor`
+  said 22.12 was needed). The `typesol` command is now `dist/bin.js`, which checks the version before it loads
+  anything else and exits 1 with one line naming the version needed, the one running and where to get one
+  (test/cli/node-version.test.ts; checked in `node:20-bookworm` and `node:22.11-bookworm` containers).
 - Hints, text only (test/language/diagnostics.test.ts):
   - an `async` instruction returning `Promise<void>` got "instructions cannot be async or generators" with no hint,
     though the README promised one; it now has one (helper functions too);

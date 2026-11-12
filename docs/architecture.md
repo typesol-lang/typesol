@@ -70,6 +70,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/tools/profile.ts` | Turns `--profile` logs into compute units per source line. |
 | `src/tools/docker.ts` | `build --docker` / `verify --docker`: the TypeSOL version and its release record (the package's, a file, or fetched from the repository), the image from `docker/Dockerfile` (built when missing), the locked-down container run, the container's identity in the manifest. |
 | `docker/Dockerfile` | The pinned build environment (linux/amd64, platform-tools v1.52, a recorded TypeSOL tarball); shipped in the package with `releases/`. |
+| `src/bin.ts` | The `typesol` command: checks the Node.js version (`src/node-version.ts`, no imports) before it loads `src/cli.ts`. |
 | `src/cli.ts` | Command parsing. Every command has strict options, `--help`, and exit codes 0 (success), 1 (failure), 2 (usage error) and 3 (verify mismatch). |
 
 ## The emitter
