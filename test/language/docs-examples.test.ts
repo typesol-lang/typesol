@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { headings } from "../../scripts/language-builtins.ts";
+import { headings, headingsOf } from "../../scripts/language-builtins.ts";
 import { CompileError, generate } from "../../src/compiler/index.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -73,6 +73,22 @@ describe("the language guide's examples compile", () => {
   it("has pages, each with examples", () => {
     expect(PAGES).toContain("language.md");
     expect(PAGES.length).toBeGreaterThan(5);
+    // Every page of the guide but its entry page and the generated built-ins list has a program compiled here.
+    for (const page of PAGES.filter((p) => p !== "language.md" && p !== "language-builtins.md"))
+      expect(
+        blocks(page).some((b) => b.kind === "program"),
+        `${page} has no complete program`,
+      ).toBe(true);
+  });
+
+  it("reads every TypeScript block: none is fenced with ~~~ or labelled typescript, which would be skipped", () => {
+    const skipped: string[] = [];
+    for (const page of PAGES) {
+      const text = readFileSync(path.join(DOCS, page), "utf8");
+      for (const m of text.matchAll(/^ *(~~~.*|```(?:typescript|tsx|js|javascript)\b.*)$/gm))
+        skipped.push(`${page}:${text.slice(0, m.index).split("\n").length}: ${m[1]}`);
+    }
+    expect(skipped).toEqual([]);
   });
 
   for (const page of PAGES) {
@@ -282,6 +298,11 @@ describe("what docs/language-statements.md says is refused, is", () => {
 });
 
 describe("links into the docs land on a heading", () => {
+  it("anchors as GitHub makes them: a repeated heading's are #name-1, #name-2", () => {
+    const h = headingsOf("# Page\n\n## Notes\n\n```sh\n## not a heading\n```\n\n### Notes\n\n## Notes\n\n## Other\n");
+    expect([...h.keys()]).toEqual(["", "notes", "notes-1", "notes-2", "other"]);
+  });
+
   // Heading anchors as GitHub and the docs site make them (scripts/language-builtins.ts: slug). Every docs page, the
   // README and the declaration file's comments are read.
   const sources = [

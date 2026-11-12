@@ -153,7 +153,9 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   language-errors-events.md, language-cpi.md, language-chain.md (sysvars, hashes, signatures, oracles) and
   language-native.md (porting native programs, marked advanced). Every example on these pages is a complete program,
   and test/language/docs-examples.test.ts compiles each one, checks that every refused construct of the table is
-  refused with the message it quotes, and that links into the docs land on a heading. docs/language-builtins.md lists
+  refused with the message it quotes, that links into the docs land on a heading (a repeated heading's anchor with
+  GitHub's `-1`, `-2` suffix), that every page but the overview and the built-ins list has a compiled program, and
+  that no TypeScript block is fenced so that it would be skipped (`~~~`, `typescript`). docs/language-builtins.md lists
   every name `"typesol"` exports, generated from lib/typesol.d.ts by `scripts/language-builtins.ts` (`--check` in the
   tests and in CI). lib/typesol.d.ts gains doc comments only: the 34 exports that had none have one, the comment of
   `findProgramAddress` sat above `bigEndian` and moves to it, and `isqrt`'s says it takes integers up to `u256` (as the
