@@ -61,8 +61,10 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
     though the README promised one; it now has one (helper functions too);
   - `console` and other globals a program does not have (`process`, `Buffer`, `setTimeout`, `setInterval`, `fetch`,
     `window`, `document`) led with TypeScript's "Cannot find name 'console'. Do you need to change your target
-    library? …"; the message is now "'console' does not exist in a Solana program", with the hint under it (in the
-    editor too, through `typesol/ts-plugin`);
+    library? …"; the message is now "'console' does not exist in a Solana program", with the hint under it where
+    there is one (`window` and `document` have none). The editor shows the same message, hint or not, through
+    `typesol/ts-plugin` and a new export of `typesol/compiler`, `typescriptMessage(diagnostic)`: the message the CLI
+    shows in place of a TypeScript error's, or undefined to keep TypeScript's (test/cli/ts-plugin.test.ts);
   - `Date.now()` where an integer is expected now points to `now()`, the cluster's clock, and
     `Math.floor(Date.now() / 1000)` (which was "unsupported call: Math.floor") says to use `now()`;
     `Math.floor`, `trunc`, `ceil` and `round` on their own point to integer division;

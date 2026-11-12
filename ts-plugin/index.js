@@ -111,19 +111,21 @@ function init({ typescript: ts }) {
         try {
           hint = compiler.typescriptHint(d);
         } catch {
-          return d;
+          hint = undefined;
         }
-        if (!hint) return d;
-        const text = `hint: ${hint}`;
-        // The compiler's message in place of TypeScript's where TypeScript's advice points the wrong way (older
-        // packages have no typescriptMessage: TypeScript's message stays).
+        // The compiler's message in place of TypeScript's where TypeScript's advice points the wrong way, with a hint
+        // or without one (`window`, `document`), as the CLI prints it (older packages have no typescriptMessage:
+        // TypeScript's message stays).
         let own;
         try {
           own = compiler.typescriptMessage && compiler.typescriptMessage(d);
         } catch {
           own = undefined;
         }
+        if (!hint && !own) return d;
         const base = own || d.messageText;
+        if (!hint) return { ...d, messageText: base };
+        const text = `hint: ${hint}`;
         const messageText =
           typeof base === "string"
             ? `${base}\n${text}`
