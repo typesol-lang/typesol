@@ -1,7 +1,7 @@
 // The first minutes: `typesol doctor`, what `init` says when the platform-tools are missing, and the checks `deploy`
 // runs before sending anything (an RPC that does not answer, a payer that cannot pay), against a fake RPC.
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadOrCreateKeypair } from "../../src/keys.js";
 import { AGAVE_PATH, INSTALL_TESTED_TOOLCHAIN, installCommands, LINUX_ARM64_INSTALL, linuxArm64, TESTED_TOOLCHAIN } from "../../src/compiler/toolchain.js";
-import { doctorSummary, installSteps, solanaCliFix } from "../../src/tools/doctor.js";
+import { doctorSummary, installSteps, isSignerUri, solanaCliFix } from "../../src/tools/doctor.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = path.join(ROOT, "dist/cli.js");
@@ -33,6 +33,18 @@ const run = (args: string[], cwd: string, env: Record<string, string> = {}) =>
 const fresh = () => {
   const home = tmp();
   return { HOME: home, PATH: [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter), TYPESOL_SBF_SDK: "" };
+};
+
+/** A `solana` that records its arguments (one call per line) and succeeds; `path` is a PATH with it and Node only. */
+const fakeSolana = () => {
+  const bin = tmp();
+  const log = path.join(bin, "calls.txt");
+  writeFileSync(path.join(bin, "solana"), `#!/bin/sh\necho "$*" >> '${log}'\n`);
+  chmodSync(path.join(bin, "solana"), 0o755);
+  return {
+    path: [bin, path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter),
+    calls: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []),
+  };
 };
 
 /** A JSON-RPC server that answers like a cluster where `balance` lamports sit in every account. */
@@ -222,21 +234,78 @@ describe("first minutes: doctor, init, deploy preflight", () => {
       expect(r.status, args.join(" ")).toBe(2);
       expect(r.stderr, args.join(" ")).toMatch(/nope\.yml does not exist/);
     }
-    // The preflight passes; the cluster and payer are printed before `solana` runs (not on this PATH, so it stops there).
+    // The preflight passes; the cluster and payer are printed before `solana` runs (a fake one here, which records its
+    // arguments).
     balance = 10_000_000_000;
-    const go = await run(["deploy", "--url", rpcUrl, "--keypair", payer], dir, {
-      PATH: [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter),
-    });
+    const solana = fakeSolana();
+    const go = await run(["deploy", "--url", rpcUrl, "--keypair", payer], dir, { PATH: solana.path });
+    expect(go.status, go.stderr).toBe(0);
     expect(go.stdout).toMatch(/cluster 127\.0\.0\.1:\d+, payer [1-9A-HJ-NP-Za-km-z]{32,44}\n/);
-    expect(go.stderr).toMatch(/`solana` was not found on PATH/);
+    expect(solana.calls().at(-1)).toContain(`--keypair ${payer}`);
 
-    // No payer keypair: deploy stops before the RPC and before `solana`, with the command that creates one.
-    const keyless = await run(["deploy", "--url", "devnet"], dir, { HOME: tmp() });
+    // No payer keypair: deploy stops before building, the RPC and `solana`, with the command that creates one.
+    const keyless = await run(["deploy", "--url", "devnet"], dir, { HOME: tmp(), PATH: fakeSolana().path });
     expect(keyless.status).toBe(1);
     expect(keyless.stderr).toBe(
       "error: no payer keypair at ~/.config/solana/id.json: create one with `solana-keygen new` (or pass --keypair <file>), then fund it with `solana airdrop 2 --url devnet`. Nothing was sent.\n",
     );
     expect(keyless.stdout).not.toContain("deploying");
+  });
+
+  it("deploy's payer: a signer URI goes to the Solana CLI as given, a file must exist, and `solana` must be on PATH first", async () => {
+    const dir = tmp();
+    expect((await run(["init", ".", "--name", "counter"], dir)).status).toBe(0);
+    const target = path.join(dir, "target");
+    for (const uri of ["usb://ledger?key=0", "prompt://", "stdin://", "ASK", "-", "file:///x/id.json"]) expect(isSignerUri(uri), uri).toBe(true);
+    for (const file of ["id.json", "./id.json", "/home/u/.config/solana/id.json", "~/.config/solana/id.json", "C:\\keys\\id.json"])
+      expect(isSignerUri(file), file).toBe(false);
+
+    // `solana` missing: that is said first, even with a missing payer, and nothing is built.
+    const noCli = await run(["deploy", "--url", rpcUrl, "--keypair", path.join(dir, "missing.json")], dir, {
+      PATH: [path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter),
+    });
+    expect(noCli.status).toBe(1);
+    expect(noCli.stderr).toMatch(/^error: `solana` was not found on PATH/);
+    expect(existsSync(target)).toBe(false);
+
+    // A missing --keypair file: the message names it, and says nothing about the default keypair or an airdrop.
+    const missing = await run(["deploy", "--url", "devnet", "--keypair", "./missing.json"], dir, { PATH: fakeSolana().path });
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toBe("error: no keypair file at ./missing.json (given with --keypair): check the path. Nothing was sent.\n");
+    expect(existsSync(target)).toBe(false);
+
+    // keypair_path of a --config file, missing: named, with the config it comes from.
+    const config = path.join(dir, "config.yml");
+    const configKey = path.join(dir, "config-payer.json");
+    writeFileSync(config, `json_rpc_url: "${rpcUrl}"\nkeypair_path: ${configKey}\n`);
+    const noConfigKey = await run(["deploy", "--config", config], dir, { PATH: fakeSolana().path });
+    expect(noConfigKey.status).toBe(1);
+    expect(noConfigKey.stderr).toBe(
+      `error: no payer keypair at ${configKey} (keypair_path in ${config}): create it with \`solana-keygen new --outfile ${configKey}\`, or pass --keypair <file>; fund it with \`solana airdrop 2 --keypair ${configKey} --url localhost\`. Nothing was sent.\n`,
+    );
+    expect(existsSync(target)).toBe(false);
+
+    // keypair_path of a --config file, present: the preflight reads it, and `solana` gets the config.
+    writeFileSync(configKey, JSON.stringify(Array.from({ length: 64 }, (_, i) => 64 - i)));
+    balance = 10_000_000_000;
+    const viaConfig = fakeSolana();
+    const fromConfig = await run(["deploy", "--config", config], dir, { PATH: viaConfig.path });
+    expect(fromConfig.status, fromConfig.stderr).toBe(0);
+    expect(fromConfig.stdout).toMatch(/cluster 127\.0\.0\.1:\d+, payer [1-9A-HJ-NP-Za-km-z]{32,44}\n/);
+    expect(viaConfig.calls().at(-1)).toMatch(new RegExp(`^-C ${config} program deploy `));
+
+    // A signer URI: not a file, no balance to read here; it goes to `solana program deploy` as given.
+    balance = 0; // a file payer would be refused for this; a Ledger's balance is the Solana CLI's to check
+    const ledger = fakeSolana();
+    const usb = await run(["deploy", "--url", rpcUrl, "--keypair", "usb://ledger?key=0"], dir, { PATH: ledger.path });
+    expect(usb.status, usb.stderr).toBe(0);
+    expect(usb.stdout).toContain("payer usb://ledger?key=0 (a signer the Solana CLI resolves)");
+    expect(ledger.calls().at(-1)).toMatch(/ --keypair usb:\/\/ledger\?key=0$/);
+    // keypair_path: ASK in a config file, as `solana-keygen` documents for a prompted keypair.
+    writeFileSync(config, `json_rpc_url: "${rpcUrl}"\nkeypair_path: ASK\n`);
+    const ask = await run(["deploy", "--config", config], dir, { PATH: fakeSolana().path });
+    expect(ask.status, ask.stderr).toBe(0);
+    expect(ask.stdout).toContain("payer ASK (a signer the Solana CLI resolves)");
   });
 });
 

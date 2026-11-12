@@ -211,15 +211,53 @@ const sol = (lamports: number) =>
 /** A cost, rounded up so the advice is enough. */
 const solUp = (lamports: number) => `${(Math.ceil(lamports / 1e7) / 100).toFixed(2)} SOL`;
 
-/** A deploy's payer keypair must exist: without it `solana program deploy` refuses only after the build, mid-way. */
-export function requirePayer(url: string, payer: string): void {
-  if (existsSync(payer)) return;
+/**
+ * Whether a `--keypair` / `keypair_path` value is a signer the Solana CLI resolves itself rather than a file: `ASK`,
+ * `-` (stdin) or a URI with a scheme (`usb://ledger?key=0`, `prompt://`, `stdin://`, `file://…`). A one-letter
+ * scheme is a Windows drive (`C:\…`), a file path.
+ */
+export function isSignerUri(source: string): boolean {
+  return source === "ASK" || source === "-" || /^[A-Za-z][A-Za-z0-9+.-]+:/.test(source);
+}
+
+/** Where a deploy's payer comes from, for the message when its file is missing. */
+export type PayerSource = { from: "flag" } | { from: "config"; config: string } | { from: "default" };
+
+/**
+ * A deploy's payer keypair file must exist: without it `solana program deploy` refuses only after the build, mid-way.
+ * A signer URI (a Ledger, a prompt, stdin) is the Solana CLI's to resolve, so it is passed through unchecked.
+ */
+export function requirePayer(url: string, payer: string, source: PayerSource = { from: "default" }): void {
+  if (isSignerUri(payer) || existsSync(payer)) return;
+  const shown = payer.replace(os.homedir(), "~");
+  if (source.from === "flag") throw new Error(`no keypair file at ${shown} (given with --keypair): check the path. Nothing was sent.`);
   const cluster = clusterOf(url);
+  if (source.from === "config")
+    throw new Error(
+      `no payer keypair at ${shown} (keypair_path in ${source.config.replace(os.homedir(), "~")}): create it with \`solana-keygen new --outfile ${shown}\`, or pass --keypair <file>` +
+        (cluster ? `; fund it with \`solana airdrop 2 --keypair ${shown} --url ${cluster}\`` : "") +
+        ". Nothing was sent.",
+    );
   throw new Error(
-    `no payer keypair at ${payer.replace(os.homedir(), "~")}: create one with \`solana-keygen new\` (or pass --keypair <file>)` +
+    `no payer keypair at ${shown}: create one with \`solana-keygen new\` (or pass --keypair <file>)` +
       (cluster ? `, then fund it with \`solana airdrop 2 --url ${cluster}\`` : "") +
       ". Nothing was sent.",
   );
+}
+
+/** `deploy` runs `solana program deploy`: without the Solana CLI on PATH it stops before building. */
+export function requireSolanaCli(): void {
+  try {
+    execFileSync("solana", ["--version"], { stdio: "ignore" });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") return; // there, if unwell: its own run says why
+    throw new Error(solanaNotFound());
+  }
+}
+
+/** The error for a missing `solana`, with how to get it on this host. */
+export function solanaNotFound(host: { platform: string; arch: string } = process): string {
+  return `\`solana\` was not found on PATH${linuxArm64(host) ? `: ${solanaCliFix(host)}` : `. Install the Agave CLI: ${solanaCliFix(host)}`}`;
 }
 
 /**
@@ -228,7 +266,6 @@ export function requirePayer(url: string, payer: string): void {
  */
 export async function deployPreflight(opts: { url: string; payer?: string; programs: { soPath: string; address: string; name: string }[] }): Promise<void> {
   const host = rpcHost(opts.url);
-  if (opts.payer) requirePayer(opts.url, opts.payer);
   try {
     await rpc(opts.url, "getVersion");
   } catch (e) {
@@ -240,7 +277,8 @@ export async function deployPreflight(opts: { url: string; payer?: string; progr
           : "Check --url (or json_rpc_url in the Solana CLI config); for a test deploy use --url devnet or a local `solana-test-validator`."),
     );
   }
-  if (!opts.payer) return;
+  // A signer URI (a Ledger, a prompt) has no address to read here: the Solana CLI resolves it and reports a shortfall.
+  if (!opts.payer || isSignerUri(opts.payer) || !existsSync(opts.payer)) return;
   const payer = base58(readKeypair(opts.payer).subarray(32));
   let need = 0;
   for (const p of opts.programs) {

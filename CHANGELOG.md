@@ -37,7 +37,11 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
 - Fixed: `deploy` without a payer keypair printed that the Solana CLI would refuse, built, and went on until
   `solana program deploy` failed. It now stops before building, exit 1: "no payer keypair at
   ~/.config/solana/id.json: create one with `solana-keygen new` (or pass --keypair <file>), then fund it with
-  `solana airdrop 2 --url devnet`. Nothing was sent." (test/cli/doctor.test.ts).
+  `solana airdrop 2 --url devnet`. Nothing was sent." A `--keypair` file that is not there gets "no keypair file at
+  ./payer.json (given with --keypair): check the path. Nothing was sent.", and a missing `keypair_path` of a Solana CLI
+  config names that config. Only a file path is checked: a signer URI (`usb://ledger?key=0`, `prompt://`, `stdin://`,
+  `ASK`) goes to `solana program deploy` as before, without the balance check. `solana` missing from `PATH` is now said
+  first, also before building (it was said after the build) (test/cli/doctor.test.ts, with a fake `solana`).
 - Fixed: `doctor` ended with its rows only, so three `!` rows after a passing test looked like a problem. It now ends
   with one line: "Ready to build and test. The ! rows: deploying still needs: keypair, RPC; …", "Ready to build, test
   and deploy." or "Not ready to build or test: fix the ERR rows (…) first." (test/cli/doctor.test.ts).
