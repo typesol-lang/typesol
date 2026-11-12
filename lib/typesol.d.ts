@@ -448,7 +448,8 @@ export declare function sha256(...parts: (string | Pubkey | Hash | bigint | bool
 export declare function keccak256(...parts: (string | Pubkey | Hash | bigint | boolean)[]): Hash;
 
 /**
- * Verify a Merkle proof (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools use).
+ * Whether `proof` places `leaf` under `root` (keccak256, sorted pairs: the OpenZeppelin convention most airdrop tools
+ * use). It does not fail by itself: write `require(merkleVerify(…), error)`; a call whose result is unused is refused.
  * `proof` must be a `Vec<Hash>` instruction argument. Leaves and inner nodes hash alike: build the leaf in the program
  * as OpenZeppelin does, `keccak256(keccak256(data))`, never take it from the arguments (an inner node would pass).
  */
@@ -493,15 +494,17 @@ export interface TransactionInstruction {
 export declare function stackHeight(): u64;
 
 /**
- * True when this transaction contains an Ed25519 precompile instruction that verified `message`
- * signed by `signer` (offsets inside the precompile's own data). The client adds that instruction;
+ * Whether this transaction contains an Ed25519 precompile instruction that verified `message`
+ * signed by `signer` (offsets inside the precompile's own data). It does not fail by itself: write
+ * `require(verifyEd25519(…), error)`; a call whose result is unused is refused. The client adds that instruction;
  * the runtime rejects the transaction if the signature is wrong.
  */
 export declare function verifyEd25519(instructions: InstructionsSysvar, signer: Pubkey, message: string | Hash | Pubkey): boolean;
 
 /**
- * Recover the secp256k1 signer of `hash` from (r, s, recoveryId) and compare it with an Ethereum
- * address given left-padded to 32 bytes (12 zero bytes + 20 address bytes). High-s signatures are refused.
+ * Whether the secp256k1 signer of `hash`, recovered from (r, s, recoveryId), is an Ethereum address given
+ * left-padded to 32 bytes (12 zero bytes + 20 address bytes). High-s signatures are refused. It does not fail by
+ * itself: write `require(verifySecp256k1(…), error)`; a call whose result is unused is refused.
  * `hash` must be computed in the program — `keccak256(...)` of the message or `ethMessageHash(message)` — because
  * a signature can be made up for an arbitrary hash; the compiler rejects anything else.
  */

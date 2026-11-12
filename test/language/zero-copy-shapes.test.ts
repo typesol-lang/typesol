@@ -172,6 +172,18 @@ describe("zero-copy shapes", () => {
     expect(compileErrors(`export enum E {\n  A = "a",\n  /** @code 5 */\n  B = "b",\n}\nexport function f(): void {}\n`)).toMatch(
       /@code must be a number from 6001 up/,
     );
+    // A tag after the previous member's comma (or after the brace) on the same line belongs to no member: refused,
+    // not ignored, so B cannot silently take the next code.
+    expect(compileErrors(`export enum E { A = "a", /** @code 6100 */ B = "b" }\nexport function f(): void {}\n`)).toMatch(
+      /this @code tag is not read: other code comes before it on its line; put \/\*\* @code … \*\/ on its own line above B/,
+    );
+    expect(compileErrors(`export enum E {\n  A = "a", /** @code 6100 */\n  B = "b",\n}\nexport function f(): void {}\n`)).toMatch(/on its own line above B/);
+    expect(compileErrors(`export enum E { /** @code 100 */ A = "a" }\nexport function f(): void {}\n`)).toMatch(/on its own line above A/);
+    expect(compileErrors(`export enum E {\n  A = "a",\n  B = "b", /** @code 6100 */\n}\nexport function f(): void {}\n`)).toMatch(
+      /it follows the last member/,
+    );
+    // On its own line, or starting the line of its member, it is read.
+    expect(compileErrors(`export enum E {\n  A = "a",\n  /** @code 6100 */ B = "b",\n}\nexport function f(): void {}\n`)).toBe("");
     expect(
       compileErrors(
         `import { type Account, type Pubkey } from "typesol";\nexport interface S {\n  key: Pubkey;\n}\nexport function f(s: Account<S>): void {}\n`,

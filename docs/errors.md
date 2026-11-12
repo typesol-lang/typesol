@@ -54,7 +54,7 @@ Framework errors use Anchor's numbers where Anchor has the same check, so client
 
 A member's string is its message (the IDL's `msg`); `X = ""` leaves the message out, as an Anchor variant without
 `#[msg]`. `/** @code 6200 */` before a member gives it that code, and the members after it continue from there (Anchor's
-`Variant = 200`); codes only go up. `require(cond, "message")` errors come after the highest code.
+`Variant = 200`); codes only go up. The tag goes on its own line above the member. `require(cond, "message")` errors come after the highest code.
 
 Any of Anchor's own codes can be raised directly: `require(cond, AnchorError.RequireKeysEqViolated)` fails with 2502,
 as `require_keys_eq!` does.

@@ -69,18 +69,51 @@ export function commit(c: Mut<Commit>, owner: Pubkey, text: string, n: u64): voi
   a `Hash`.
 - A `Hash` is a PDA seed too (its 32 bytes), as Marginfi seeds an order with the hash of its bank keys.
 - `a.compare(b)` orders Pubkeys and Hashes as Rust orders their 32 bytes (-1, 0 or 1).
-- `merkleVerify(leaf, proof, root)`, with `proof` a `Vec<Hash>` instruction argument, checks a Merkle proof with
-  sorted-pair keccak (OpenZeppelin's convention). Inner nodes and leaves are hashed alike, so hash leaves as
-  OpenZeppelin does, `keccak256(keccak256(data))`, and never take the leaf itself from the arguments: an inner node
-  would pass as a leaf.
+- `merkleVerify(leaf, proof, root)`, with `proof` a `Vec<Hash>` instruction argument, returns whether the proof
+  places `leaf` under `root`, with sorted-pair keccak (OpenZeppelin's convention). Inner nodes and leaves are hashed
+  alike, so hash leaves as OpenZeppelin does, `keccak256(keccak256(data))`, and never take the leaf itself from the
+  arguments: an inner node would pass as a leaf.
 
 ## Signatures
 
-- `verifyEd25519(instructionsSysvar, signer, message)` checks that the transaction holds an Ed25519 precompile
-  instruction verifying `message` signed by `signer`.
-- `verifySecp256k1(hash, recoveryId, r, s, ethAddress)` recovers an Ethereum signer, where `hash` is
-  `keccak256(...message)` or `ethMessageHash(message)`. The hash must be computed in the program: a passed-in hash could
-  be forged.
+`merkleVerify`, `verifyEd25519` and `verifySecp256k1` return whether the proof or signature holds; they do not fail by
+themselves. Unlike a check such as `HasOne`, nothing happens when the answer is false: wrap them in
+`require(…, error)`. A call whose result is thrown away is refused at compile time.
+
+```ts
+import { type Account, type Hash, type Init, type InstructionsSysvar, type Mut, type Pubkey, type Signer, type SystemProgram, type u8, type u64, type Vec, keccak256, merkleVerify, require, verifyEd25519, verifySecp256k1 } from "typesol";
+
+export interface Drop {
+  root: Hash;
+  issuer: Pubkey;
+  ethIssuer: Hash;
+  claimed: u64;
+}
+
+export interface Receipt {
+  amount: u64;
+}
+
+export function claim(claimer: Mut<Signer>, drop: Mut<Drop>, receipt: Init<Receipt>, systemProgram: SystemProgram, amount: u64, proof: Vec<Hash>): void {
+  require(merkleVerify(keccak256(keccak256(claimer.key, amount)), proof, drop.root), "not in the list");
+  receipt.create(claimer, ["claimed", drop.key, claimer.key]);
+  receipt.amount = amount;
+  drop.claimed += amount;
+}
+
+export function approved(drop: Account<Drop>, ixs: InstructionsSysvar, who: Pubkey, r: Hash, s: Hash, v: u8): void {
+  require(verifyEd25519(ixs, drop.issuer, `allow:${who}`), "not signed by the issuer");
+  require(verifySecp256k1(keccak256(who), v, r, s, drop.ethIssuer), "not signed by the Ethereum issuer");
+}
+```
+
+- The receipt, seeded with the drop and the claimer, makes a second claim fail: its address is already in use.
+- `verifyEd25519(instructionsSysvar, signer, message)` returns whether the transaction holds an Ed25519 precompile
+  instruction verifying `message` signed by `signer`. The client adds that instruction; the runtime rejects the
+  transaction if its signature is wrong.
+- `verifySecp256k1(hash, recoveryId, r, s, ethAddress)` recovers the secp256k1 signer of `hash` and returns whether it
+  is `ethAddress` (an Ethereum address left-padded to 32 bytes), where `hash` is `keccak256(...message)` or
+  `ethMessageHash(message)`. The hash must be computed in the program: a passed-in hash could be forged.
 
 ## Instruction introspection
 

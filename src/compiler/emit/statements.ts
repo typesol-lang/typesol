@@ -1820,6 +1820,17 @@ export abstract class StatementEmitter extends CpiEmitter {
       this.line(place.write(this.arith(op, { c: place.read, type: place.type }, one, e).c) + ";");
       return;
     }
+    let callee = e;
+    while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+    if (ts.isCallExpression(callee)) {
+      // These return whether a proof or signature holds and fail nothing by themselves: a bare call checks nothing.
+      const checker = this.exportName(callee.expression);
+      if (checker === "merkleVerify" || checker === "verifyEd25519" || checker === "verifySecp256k1")
+        this.fail(
+          callee,
+          `the result of ${checker} is discarded, so nothing is checked: it returns whether the ${checker === "merkleVerify" ? "proof" : "signature"} holds; write require(${checker}(…), error)`,
+        );
+    }
     if (ts.isCallExpression(e)) {
       this.call(e, topLevel);
       return;

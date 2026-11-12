@@ -58,7 +58,9 @@ it); a zero code fails with 5100.
   `#[error_code]`. Each member is an error; its string is the message (the IDL's `msg`).
 - Codes start at 6000 and follow declaration order. Error enums of imported files are numbered first.
 - `/** @code 6200 */` before a member gives it that code (Anchor's `Name = 200`), and the members after it continue
-  from there. Codes only go up (`@code must be a number from … up`).
+  from there. Codes only go up (`@code must be a number from … up`). The tag goes on its own line above the member, or
+  first on the member's line; after other code on a line (`A = "a", /** @code 6200 */ B = "b"`) it would belong to no
+  member, so it is refused.
 - `Name = ""` has no message in the IDL, as an Anchor variant without `#[msg]`.
 - An error enum may start at code 0 (`/** @code 0 */`, Rust's `ProgramError::Custom(0)`, returned as Solana's
   CUSTOM_ZERO), for ports of native programs ([native

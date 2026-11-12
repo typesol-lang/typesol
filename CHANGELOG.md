@@ -87,6 +87,18 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
     for template strings ("template strings are not supported …") was never shown and is gone;
   - the test of `FixedString<0>` matched "capacity 1..1024" as a prefix of the message; it now matches the whole
     "FixedString<N> needs a literal capacity 1..10240", and covers 10241 (refused) and 10240 (accepted).
+- Fixed: a call to `merkleVerify`, `verifyEd25519` or `verifySecp256k1` used as a statement compiled and checked
+  nothing. The three return whether the proof or signature holds and fail nothing by themselves, so
+  `merkleVerify(leaf, proof, root);` emitted the hash computation and dropped its result. Such a call is now refused:
+  "the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write
+  require(merkleVerify(…), error)". No program of the repository called one that way (test/language/diagnostics.test.ts;
+  a row in the refused-constructs table of docs/language-statements.md).
+- Fixed: a `/** @code 6100 */` tag written after other code on its line (`A = "a", /** @code 6100 */ B = "b"`) was
+  ignored without a word, because TypeScript attaches it to no member, and `B` took the next code instead of 6100. It
+  is now refused, naming the member that follows: "this @code tag is not read: other code comes before it on its line;
+  put /** @code … */ on its own line above B" (after the last member: "it follows the last member"). A tag on its own
+  line, or first on its member's line, is read as before; no program of the repository changes
+  (test/language/zero-copy-shapes.test.ts).
 - Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
   playground, opens Quick start with the playground, says that `npm install`'s advisories come from
   `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;

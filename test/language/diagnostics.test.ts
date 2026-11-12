@@ -327,6 +327,21 @@ describe("subset enforcement", () => {
       /compute the signed hash here/,
     ],
     [
+      "a merkleVerify result thrown away",
+      `import { type Hash, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { merkleVerify(leaf, proof, root); }`,
+      /the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write require\(merkleVerify\(…\), error\)/,
+    ],
+    [
+      "a verifyEd25519 result thrown away",
+      `import { type InstructionsSysvar, verifyEd25519 } from "typesol";\nexport function f(ixs: InstructionsSysvar, who: Pubkey): void { (verifyEd25519(ixs, who, "hello")); }`,
+      /the result of verifyEd25519 is discarded.*write require\(verifyEd25519\(…\), error\)/,
+    ],
+    [
+      "a verifySecp256k1 result thrown away",
+      `import { type Hash, verifySecp256k1, keccak256 } from "typesol";\nexport function f(who: Pubkey, r: Hash, s: Hash, e: Hash): void { verifySecp256k1(keccak256(who), 0n, r, s, e); }`,
+      /the result of verifySecp256k1 is discarded.*returns whether the signature holds/,
+    ],
+    [
       "a helper that may replace a struct while a reference into it is still used",
       `export interface P { x: u64; }\nexport interface H { p: P; v: u64; }\nfunction reset(h: Mut<H>): void { h.p = { x: 7n }; }\nexport function f(h: Mut<H>): void { const o = h.p; reset(h); h.v = o.x; }`,
       /"o" still refers to data in h, and reset\(\) may replace it/,

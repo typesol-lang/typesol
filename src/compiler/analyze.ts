@@ -495,6 +495,23 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
           if (isError) {
             // String enum: program errors, codes 6000+ in declaration order (imported files first).
             const members = new Map<string, ErrorDef>();
+            // A doc comment belongs to the member that starts on a later line. `A = "a", /** @code 6200 */ B = "b"`
+            // leaves the tag on no member (TypeScript reads it as trailing A's comma), so B would silently take the
+            // next code: refuse it instead.
+            const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, file.text);
+            scanner.resetTokenState(stmt.members.pos);
+            for (let k = scanner.scan(); k !== ts.SyntaxKind.EndOfFileToken && scanner.getTokenStart() < stmt.end; k = scanner.scan()) {
+              if (k !== ts.SyntaxKind.MultiLineCommentTrivia || !/^\/\*\*[\s\S]*@code\b/.test(scanner.getTokenText())) continue;
+              const at = scanner.getTokenStart();
+              const next = stmt.members.find((m) => m.getStart(file) > at);
+              if (next && ts.getJSDocCommentsAndTags(next).some((d) => ts.isJSDoc(d) && d.getStart(file) === at)) continue;
+              reporter.fail(
+                next ?? stmt,
+                next
+                  ? `this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above ${next.name.getText(file)}`
+                  : "this @code tag is not read: it follows the last member; put /** @code … */ on its own line above the member it numbers",
+              );
+            }
             for (const m of stmt.members) {
               if (!m.initializer || !ts.isStringLiteral(m.initializer)) reporter.fail(m, 'error enum members need a string message: Name = "message"');
               // Codes run on from the last one; `/** @code 6200 */` sets a member's (Anchor's `Variant = 200`), and the
