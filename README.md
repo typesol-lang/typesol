@@ -459,7 +459,8 @@ stable already and what is still experimental: [docs/stability.md](docs/stabilit
 
 - Node.js 22.12 or later (the CLI stops with the version it needs on an older one).
 - The Agave CLI with platform-tools (see [Quick start](#quick-start)).
-- macOS or Linux x86_64. On Windows, use WSL2.
+- macOS or Linux x86_64 for everything; Linux arm64 to build and test, set up as below (deploying from it needs the
+  Solana CLI built from source); on Windows, WSL2.
 - Linux arm64: Anza publishes no Agave CLI for it (the installer fails with a 404), but platform-tools has a
   `linux-aarch64` package. With it and the SDK's C files from the x86_64 release (headers and linker script, as the
   `--docker` image takes them), `typesol build` and LiteSVM tests work (needs `curl` and `bzip2`):

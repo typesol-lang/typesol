@@ -48,7 +48,7 @@ export function add(counter: Mut<Counter>, times: u64): void {
 - `const` and `let` declare one plain name with an initializer. `let x: u64;` without one is refused (`declare one
   plain name with an initializer`), and so is `var` (`use const or let, not var`).
 - The type comes from the annotation or the initializer. A local declared from a bare literal (`let total = 0n`) is a
-  `u64`; annotate it for another width (`const step: u8 = 2n`).
+  `u64`; an annotation states the type (`const step: u64 = 2n` above) or picks another width (`const b: u8 = 2n`).
 - A local can be an integer, `boolean`, `Pubkey`, `Hash`, enum, `Option`, `string`, a struct or a `FixedArray` /
   `FixedVec`. A `Vec` cannot be a local: use a `FixedVec`.
 - Block scoping is JavaScript's: a name declared in a block is gone after it, and may shadow an outer one.
@@ -183,7 +183,7 @@ export function tally(book: Mut<Book>, extra: Vec<u64>, n: u64): void {
 - `for (const x of list)` over a `Vec`, `FixedArray`, `FixedVec`, a `Vec` argument, the instruction data, a stored
   `map` / `filter` result or a chain. Each `x` is what `list.get(i)` gives: a value, or a reference into account data
   for structs. The length is read again every step, as in JavaScript.
-- `for (const f of [dbl, inc])` runs a list of named functions in turn (unrolled; `continue` and `break` work).
+- `for (const f of [dbl, inc])` runs a list of named functions in turn ([functions](#arrow-functions-and-closures)).
 - `while`, `do … while`, `break` and `continue`. Inside a `switch`, `break` leaves the switch and `continue` the
   enclosing loop, as in JavaScript.
 - Labels (`outer: for …`) and `for … in` are refused.
@@ -303,13 +303,13 @@ A helper is a function that is not exported (and every function of an imported f
   already checked (`Signer`, `Account<T>`, `Mut<T>`, `AccountInfo`, token accounts, mints, programs). Helpers cannot
   take `Init<…>` accounts or constraint types (`helpers take accounts that exist`; `constraints belong on instruction
   parameters`), and a read-only account cannot be passed where a helper takes `Mut<T>`.
-- **Results**: `void`, a scalar, a `string`, a function, or a fixed-size struct
-  (`function at(x: u64, y: u64): Point { return { x, y }; }`): the caller gets its own copy, to bind, store with
-  `acct.home = at(…)` / `arr.set(i, at(…))` or read as `at(…).x`. The return type is required (`helper functions need
+- **Results**: `void`, a scalar, a `string`, a function, or a fixed-size struct (`function at(numerator: u64): Fee`
+  above): the caller gets its own copy, to bind, store with `vault.rate = at(5n)` / `arr.set(i, at(…))` or read as
+  `at(1n).numerator`. The return type is required (`helper functions need
   an explicit return type`), and a helper with a result must return on every path (TypeScript checks it; a path that
   still ends without one fails with 5114).
 - **Arguments written in place**: a struct, data-enum or `fixedArray<T, N>(fill)` argument may be a literal
-  (`applyFee({ denominator: 100n, numerator: 3n }, amount)`, nested literals and a ternary with a literal branch too),
+  (`applyFee({ numerator: 3n, denominator: 100n }, amount)`, nested literals and a ternary with a literal branch too),
   built in a local of its own as `const fee: Fee = { … }` would be.
 - **No recursion**: a helper cannot call itself, directly or through others (`recursion is not supported: a -> b ->
   a`). Nor can a closure.
@@ -415,8 +415,9 @@ shares an object passed to a function.
   since its elements would move. A reference into the place (`const e = p.items.get(0n)`) that is read after the call
   is refused, since the helper may replace what it points at (copy the fields first, or read them through the place).
 - **Places that may be one account at run time** (two `Dup<…>` accounts, a writable and a read-only account, native
-  views) are compared before the call: 2040 when they overlap ([which places, and the one pair left to run
-  time](language-native.md#inout-places-that-may-be-one-account)).
+  views) are compared before the call: 2040 when they overlap ([which
+  places](language-accounts.md#two-parameters-one-account); native views and the one pair left to run time:
+  [native programs](language-native.md#inout-places-that-may-be-one-account)).
 - **Values are not places.** Integers, Pubkeys, strings and Options are values, which JavaScript copies into a function
   too: return the new value (`x = f(x)`) or keep it in a struct and take `Inout<ThatStruct>` (`Inout<u64>: a u64 is a
   value, which JS copies into a function too, …`). `Vec<T>`, `BigVec<T>`, accounts and data enums are refused with
@@ -524,8 +525,9 @@ export function run(out: Mut<Out>, x: u8, y: u8, first: boolean): void {
 }
 ```
 
-`function max<T extends bigint>(a: T, b: T): T` is compiled once per set of types it is called with (`max(a, b)` with
-`u64` arguments, or `max<u128>(x, 1n)` when only literals tell). A type parameter stands for an integer, boolean,
+`function bigger<T extends bigint>(a: T, b: T): T` is compiled once per set of types it is called with
+(`bigger(out.v, 3n)` with a `u64`, `bigger(x, y)` with `u8` arguments, or `bigger<u128>(1n, 2n)` when only literals
+tell). A type parameter stands for an integer, boolean,
 `Pubkey`, enum or fixed-size struct (`pick<Point>(…)`, or from struct arguments; a struct `T` is copied like any struct
 value). Each instance is checked like any helper; one that is never called is not compiled (TypeScript still
 type-checks it). Arithmetic on `T` is a `bigint` to TypeScript: write `return (a + b) as T` (`as` names a type the

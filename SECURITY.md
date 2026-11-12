@@ -22,6 +22,8 @@ TypeSOL generates programs that hold funds. Treat it accordingly.
   sha256), packed from a clean export of the release tag; `node scripts/release-check.ts <version> --verify --registry`
   compares it with the registry.
 - Only the latest 0.x release receives security fixes, as fix releases (below).
+- What a compiled program can rely on is specified in [docs/security-model.md](docs/security-model.md); the package
+  for an external audit is [docs/audit.md](docs/audit.md).
 
 ## Fix releases
 
@@ -38,8 +40,6 @@ release (0.44.0 → 0.44.1), so a team can take the fix without taking new featu
 Fixes go to the latest minor only; older minors are not maintained. A fix that needs a language or layout change
 comes in the next minor. 0.44.0 itself is a minor release: besides the fixes from the 0.43.0 review it has behaviour
 changes (new compile errors, `deploy` refusing to run without a cluster).
-- What a compiled program can rely on is specified in [docs/security-model.md](docs/security-model.md); the package
-  for an external audit is [docs/audit.md](docs/audit.md).
 
 ## Reporting a vulnerability
 

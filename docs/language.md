@@ -29,7 +29,7 @@ is marked as a fragment.
 
 | Page | What it covers |
 | --- | --- |
-| [Language basics](language-basics.md) | what a program is: the file, imports, instructions, account data, helpers, constants, multiple files, what the compiler derives, stack and heap |
+| [Language basics](language-basics.md) | Solana in a dozen lines, then what a program is: the file, imports, instructions, account data, helpers, constants, multiple files, what the compiler derives, stack and heap, limits and costs (rent, compute, transaction and account sizes) |
 | [Types](language-types.md) | integers and checked arithmetic, casts, `u256`, booleans, `Pubkey`, strings, enums, data enums, structs, `Option`, lists, `f64`, heap values, with their bytes and limits |
 | [Statements and functions](language-statements.md) | which TypeScript is TypeSOL: declarations, copies and references, control flow, destructuring, helpers, `Inout<T>`, closures, generics, and what is refused |
 | [Accounts](language-accounts.md) | account parameters and the checks they emit, creating, closing and resizing accounts, constraints, optional accounts, account groups, remaining accounts, account layouts |

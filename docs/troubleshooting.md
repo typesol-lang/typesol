@@ -26,7 +26,7 @@ cargo-build-sbf --install-only --force-tools-install --tools-version v1.52   # a
 
 TypeSOL looks in `~/.local/share/solana/install/active_release/bin/platform-tools-sdk/sbf` and next to
 `cargo-build-sbf` on PATH; set `TYPESOL_SBF_SDK` to a `platform-tools-sdk/sbf` directory otherwise. On Linux arm64 see
-[the next section](#linux-arm64-the-agave-installer-fails-with-a-404).
+[Linux arm64: the Agave installer fails with a 404](#linux-arm64-the-agave-installer-fails-with-a-404).
 
 ### `cargo-build-sbf: command not found` right after installing
 
@@ -90,6 +90,25 @@ an account you change is a `Mut<T>` parameter; the time is `now()`, not `Date.no
 See [errors.md](errors.md). Failures raised by the compiler's checks log their TypeScript location, e.g. `TypeSOL:
 arithmetic overflow (vault.ts:42)`.
 
+### "exceeded CUs meter" / "Computational budget exceeded"
+
+The transaction ran out of compute units: by default each instruction gets 200,000, and the logs end with `Program
+<id> consumed 200000 of 200000 compute units` and `… failed: exceeded CUs meter at BPF instruction …`. Ask for more,
+up to 1,400,000 per transaction, with a ComputeBudget `SetComputeUnitLimit` instruction placed before the others
+(`getSetComputeUnitLimitInstruction({ units })` from `@solana-program/compute-budget`, or the bytes `[2, units as a
+u32 little-endian]` to `ComputeBudget111111111111111111111111111111`). The generated client's `sendInstructions` and
+the testing library's `t.send(payer, ...ixs)` send the instructions they are given, so pass it first:
+`t.send(alice, setLimit, t.ix(…))`. To spend less, find the costly lines with `typesol build --profile` and `typesol
+profile` ([limits and costs](language-basics.md#limits-and-costs)).
+
+### `Transaction size … exceeds limit of 1232 bytes` / "transaction too large"
+
+A transaction is at most 1,232 bytes, signatures, account addresses and instruction data included. Kit refuses to send
+a larger one (the first message), and an RPC node refuses it too. Split the work into several transactions, pass
+fewer accounts, or send large data in chunks into an account the program reads; with many accounts, a version 0
+transaction with an address lookup table costs one byte per account instead of 32 (kit's
+`compressTransactionMessageUsingAddressLookupTables`) ([limits and costs](language-basics.md#limits-and-costs)).
+
 ### Heap errors (5110) building strings
 
 Strings are allocated on a 32 KiB heap and never freed. Build less text, or declare `const HEAP_SIZE_KIB = 64n` and add
@@ -125,7 +144,10 @@ Install the Agave CLI, or use `typesol deploy --dry-run` and run the printed com
 ### `typesol idl publish` fails on a local validator with "invalid instruction data"
 
 The System Program of `solana-test-validator` (Agave 3.1 included) rejects a System instruction that the current Program
-Metadata program uses. Publishing works on mainnet-beta. The error shows the failing transaction's last log lines.
+Metadata program uses. The error shows the failing transaction's last log lines. No option fixes it locally: the System
+Program is part of the validator. Publish where the Program Metadata program is deployed, mainnet-beta or devnet
+(`npx --no-install typesol idl publish --url devnet`; [publish the IDL](mainnet.md#5-publish-the-idl)); against a local
+validator, clients read the IDL file the build writes (`target/<name>/<name>.json`, [client.md](client.md)).
 
 ## Verify and `--docker`
 
