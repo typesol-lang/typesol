@@ -94,7 +94,17 @@ describe("subset enforcement", () => {
       /only allowed as a local declaration|get/,
     ],
     ["oversized local arrays", `export function f(): void { const xs = fixedArray<u64, 300>(0n); }`, /N must be a literal 1\.\.256/],
-    ["zero-capacity strings", `export interface S { name: FixedString<0>; }\nexport function f(): void {}`, /capacity 1\.\.1024/],
+    [
+      "zero-capacity strings",
+      `export interface S { name: FixedString<0>; }\nexport function f(): void {}`,
+      /^FixedString<N> needs a literal capacity 1\.\.10240$/,
+    ],
+    [
+      "over-capacity strings",
+      `export interface S { name: FixedString<10241>; }\nexport function f(): void {}`,
+      /^FixedString<N> needs a literal capacity 1\.\.10240$/,
+    ],
+    ["a string capacity of 10240 (accepted)", `export interface S { name: FixedString<10240>; }\nexport function f(): void {}`, /^$/],
     ["structs that contain themselves", `export interface Node { next: Node; }\nexport function f(): void {}`, /contains itself/],
     ["variable strings in account data", `export interface S { name: string; }\nexport function f(a: Mut<S>): void {}`, /cannot be account data/],
     [
@@ -375,7 +385,18 @@ describe("subset enforcement", () => {
     [
       "a u256 shift amount",
       `import { u256 as U256 } from "typesol";\nexport function f(a: u64): u64 { const s = U256(1n); return a << s; }`,
-      /shift by a u64 \(or smaller\) amount/,
+      /^a shift amount is a u128 or smaller integer: convert it \(u64\(n\)\)$/,
+    ],
+    [
+      "a u128 shift amount (accepted)",
+      `import { type u128 } from "typesol";\nexport interface W { w: u128 }\nexport function f(a: u64, x: Account<W>): u64 { return a << x.w; }`,
+      /^$/,
+    ],
+    ["a function in parentheses", `export function f(): u64 { const g = ((): u64 => 1n); return g(); }`, /a function cannot be used here: bind it with const/],
+    [
+      "a function expression in parentheses",
+      `export function f(): u64 { const g = (function (): u64 { return 1n; }); return g(); }`,
+      /a function cannot be used here: bind it with const/,
     ],
     [
       "a u256 exponent",

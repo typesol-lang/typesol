@@ -1035,7 +1035,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
         // Checked like the other operators: the amount must be below the width, and `<<` may not lose bits
         // (in JS the bigint would just grow). `>>` on signed types is arithmetic, as in JS.
         if (right.type.kind !== "int") this.fail(node, "shift amounts must be integers");
-        if (right.type.name === "u256") this.fail(node, "shift by a u64 (or smaller) amount");
+        if (right.type.name === "u256") this.fail(node, "a shift amount is a u128 or smaller integer: convert it (u64(n))");
         const bits = INT_INFO[type.name].bytes * 8;
         const sh = this.tmp("sh");
         const rinfo = INT_INFO[right.type.name];
@@ -1082,7 +1082,7 @@ export abstract class ExpressionEmitter extends StorageEmitter {
       case K.LessThanLessThanToken:
       case K.GreaterThanGreaterThanToken: {
         if (right.type.kind !== "int") this.fail(node, "shift amounts must be integers");
-        if (right.type.name === "u256") this.fail(node, "shift by a u64 (or smaller) amount");
+        if (right.type.name === "u256") this.fail(node, "a shift amount is a u128 or smaller integer: convert it (u64(n))");
         const sh = this.tmp("sh");
         this.line(
           `if (${INT_INFO[right.type.name].signed ? `${right.c} < 0 || ` : ""}${right.c} >= 256) TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: shift amount out of range");`,

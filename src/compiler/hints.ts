@@ -115,14 +115,18 @@ export function hintForTypeScript(d: ts.Diagnostic, message: string, libPath: st
   }
 }
 
+/** A function written where the compiler takes a value (in parentheses, say): where functions are allowed instead. */
+const FUNCTION_VALUE =
+  "a function cannot be used here: bind it with const (const f = (…) => …, without parentheses around it) or write it in the call that takes it (xs.map((x) => …), a helper's function parameter)";
+
 /** Plain words for the syntax kinds the compiler refuses, and what to use instead. */
 const SYNTAX: Partial<Record<ts.SyntaxKind, string>> = {
   [ts.SyntaxKind.ClassDeclaration]: "classes are not supported: describe account data with an interface and logic with functions",
   [ts.SyntaxKind.ElementAccessExpression]: "indexing with [ ] is not supported: use .get(i) and .set(i, value) (i is a bigint)",
-  [ts.SyntaxKind.TemplateExpression]: "template strings are not supported: log the parts one by one, or use an error enum member for a message",
   [ts.SyntaxKind.SpreadElement]: "spread (...) is not supported: copy the fields one by one",
   [ts.SyntaxKind.ArrayLiteralExpression]: "array literals are only allowed inline as seeds or CPI lists; declare local arrays with fixedArray<T, N>(fill)",
-  [ts.SyntaxKind.FunctionExpression]: "function expressions are not supported: declare a function at the top level",
+  [ts.SyntaxKind.FunctionExpression]: FUNCTION_VALUE,
+  [ts.SyntaxKind.ArrowFunction]: FUNCTION_VALUE,
   [ts.SyntaxKind.AwaitExpression]: "await is not supported: an instruction runs start to finish within one call",
   [ts.SyntaxKind.TypeOfExpression]: "typeof is not supported at run time: the types are known when the program compiles",
   [ts.SyntaxKind.DeleteExpression]: "delete is not supported: account fields always exist; set the value instead",

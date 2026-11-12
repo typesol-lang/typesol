@@ -114,8 +114,8 @@ operators and comparisons, `min` / `max`, `mulDiv`, `isqrt`, `switch`, and as a 
 
 - `u256(x)` converts from any integer (a negative one fails with 4102); `u128(x)` and `u64(x)` convert back (4102
   when it does not fit).
-- A shift amount or an exponent is a `u128` or smaller (`shift by a u64 (or smaller) amount`; `the exponent of ** is a
-  u128 or smaller integer`).
+- A shift amount or an exponent is a `u128` or smaller (`a shift amount is a u128 or smaller integer`; `the exponent of
+  ** is a u128 or smaller integer`).
 - Never in account data, arguments, events, return data or CPI data: the IDL has no 256-bit integer (`A.v: u256 is for
   computation; store a u128 (or two u128s)`).
 - `log(x)` prints it only when it fits in 128 bits; a larger value fails with 5100.

@@ -78,6 +78,15 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   (Solana's limit)", and a 16th seed before a derived bump with "at most 15 seeds: the bump the derivation adds makes
   16, Solana's limit" (was "at most 15 seeds" for both). test/language/signer-seed-limit.test.ts signs a CPI with
   16 entries in LiteSVM (a seed list and a bound `signer([...])`) and derives with `createProgramAddress`.
+- Fixed, messages only (test/language/diagnostics.test.ts):
+  - a `u256` shift amount got "shift by a u64 (or smaller) amount", while a `u128` amount compiles (its range check
+    runs on all 128 bits); the message is now "a shift amount is a u128 or smaller integer: convert it (u64(n))";
+  - a function in parentheses (`const g = (function (): u64 { … })`) got "function expressions are not supported:
+    declare a function at the top level", though function expressions compile; an arrow there got "this syntax
+    (ArrowFunction) is not supported". Both now get "a function cannot be used here: bind it with const …". The hint
+    for template strings ("template strings are not supported …") was never shown and is gone;
+  - the test of `FixedString<0>` matched "capacity 1..1024" as a prefix of the message; it now matches the whole
+    "FixedString<N> needs a literal capacity 1..10240", and covers 10241 (refused) and 10240 (accepted).
 - Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
   playground, opens Quick start with the playground, says that `npm install`'s advisories come from
   `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;
