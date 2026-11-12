@@ -470,7 +470,7 @@ export function isWritable(k: ParamKind): boolean {
 export function typeName(t: ValueType | FieldType): string {
   switch (t.kind) {
     case "int":
-      return t.name;
+      return t.f64 ? "f64" : t.name;
     case "bool":
       return "boolean";
     case "pubkey":
@@ -527,7 +527,8 @@ export function sameType(a: ValueType | FieldType, b: ValueType | FieldType): bo
   if (a.kind !== b.kind) return false;
   switch (a.kind) {
     case "int":
-      return a.name === (b as { name: IntName }).name;
+      // An f64 is held as a u64 of its bits, but it is not an integer: neither converts to the other implicitly.
+      return a.name === (b as { name: IntName }).name && !a.f64 === !(b as { f64?: boolean }).f64;
     case "array": {
       const o = b as typeof a;
       return a.len === o.len && sameType(a.elem, o.elem);

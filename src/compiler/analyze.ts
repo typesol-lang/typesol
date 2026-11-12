@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { CompileError, Reporter, type Diagnostic, markAliasUse } from "./diagnostics.js";
 import { decodeAddress } from "../keys.js";
 import { borshIdentical } from "./emit/borsh.js";
+import { MAX_SEEDS } from "./emit/shared.js";
 import { ASYNC_HINT, fieldTypeHint, hintForTypeScript, messageForTypeScript, unsupportedSyntax } from "./hints.js";
 import {
   type OptionInner,
@@ -497,19 +498,39 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
             const members = new Map<string, ErrorDef>();
             // A doc comment belongs to the member that starts on a later line. `A = "a", /** @code 6200 */ B = "b"`
             // leaves the tag on no member (TypeScript reads it as trailing A's comma), so B would silently take the
-            // next code: refuse it instead.
+            // next code: refuse it instead, and a tag in a comment that is not a doc comment, or in a doc comment that
+            // another one follows (only the last is read). A tag is `@code` first on a line of the comment: one that
+            // a sentence mentions (`/** see the @code docs */`) is not one.
             const scanner = ts.createScanner(ts.ScriptTarget.Latest, false, ts.LanguageVariant.Standard, file.text);
             scanner.resetTokenState(stmt.members.pos);
+            const tagged = (text: string) => /^\/[*/]\**\s*@code\b/.test(text) || /\n\s*\*?\s*@code\b/.test(text);
             for (let k = scanner.scan(); k !== ts.SyntaxKind.EndOfFileToken && scanner.getTokenStart() < stmt.end; k = scanner.scan()) {
-              if (k !== ts.SyntaxKind.MultiLineCommentTrivia || !/^\/\*\*[\s\S]*@code\b/.test(scanner.getTokenText())) continue;
+              if (k !== ts.SyntaxKind.MultiLineCommentTrivia && k !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
+              const text = scanner.getTokenText();
+              if (!tagged(text)) continue;
               const at = scanner.getTokenStart();
               const next = stmt.members.find((m) => m.getStart(file) > at);
-              if (next && ts.getJSDocCommentsAndTags(next).some((d) => ts.isJSDoc(d) && d.getStart(file) === at)) continue;
+              const above = next ? `above ${next.name.getText(file)}` : "above the member it numbers";
+              const doc = k === ts.SyntaxKind.MultiLineCommentTrivia && text.startsWith("/**") && text !== "/**/";
+              if (!doc) {
+                reporter.fail(
+                  next ?? stmt,
+                  `this @code tag is not read: only a doc comment (/** … */) is, not a ${text.startsWith("//") ? "// comment" : "/* … */ comment"}; write /** @code … */ ${above}`,
+                );
+                continue;
+              }
+              const docs = next ? ts.getJSDocCommentsAndTags(next).filter((d) => ts.isJSDoc(d)) : [];
+              if (docs.some((d) => d.getStart(file) === at)) continue;
+              const lineStart = file.text.lastIndexOf("\n", at - 1) + 1;
               reporter.fail(
                 next ?? stmt,
-                next
-                  ? `this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above ${next.name.getText(file)}`
-                  : "this @code tag is not read: it follows the last member; put /** @code … */ on its own line above the member it numbers",
+                !next
+                  ? "this @code tag is not read: it follows the last member; put /** @code … */ on its own line above the member it numbers"
+                  : file.text.slice(lineStart, at).trim()
+                    ? `this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line ${above}`
+                    : docs.some((d) => d.getStart(file) > at)
+                      ? `this @code tag is not read: another doc comment follows it, and only the last one above ${next.name.getText(file)} is read; put the tag in that one`
+                      : `this @code tag is not read; put /** @code … */ on its own line ${above}`,
               );
             }
             for (const m of stmt.members) {
@@ -2714,6 +2735,10 @@ function unwrapConstraints(node: ts.TypeNode, reporter: Reporter, imports: Map<s
     const program = args[3] ? lit(args[3])[0] : undefined;
     if (program && !program.startsWith("@") && !decodeAddress(program))
       reporter.fail(args[3], `Seeds program: "${program}" is neither "@param" nor a base58 address`);
+    // The same limits as a seed list in code: a stored bump ends the list, a canonical one the derivation adds.
+    if (bump !== undefined && names.length + 1 > MAX_SEEDS) reporter.fail(tuple, `at most ${MAX_SEEDS} seeds, the bump included (Solana's limit)`);
+    if (bump === undefined && names.length > MAX_SEEDS - 1)
+      reporter.fail(tuple, `at most ${MAX_SEEDS - 1} seeds: the bump the derivation adds makes ${MAX_SEEDS}, Solana's limit`);
     out.seeds = { names, bump, program };
   }
   if (!args[0]) reporter.fail(node, `${name}<…> wraps an account type`);

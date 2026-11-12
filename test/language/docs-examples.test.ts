@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { headings } from "../../scripts/language-builtins.ts";
+import { headings, headingsOf } from "../../scripts/language-builtins.ts";
 import { CompileError, generate } from "../../src/compiler/index.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -73,6 +73,22 @@ describe("the language guide's examples compile", () => {
   it("has pages, each with examples", () => {
     expect(PAGES).toContain("language.md");
     expect(PAGES.length).toBeGreaterThan(5);
+    // Every page of the guide but its entry page and the generated built-ins list has a program compiled here.
+    for (const page of PAGES.filter((p) => p !== "language.md" && p !== "language-builtins.md"))
+      expect(
+        blocks(page).some((b) => b.kind === "program"),
+        `${page} has no complete program`,
+      ).toBe(true);
+  });
+
+  it("reads every TypeScript block: none is fenced with ~~~ or labelled typescript, which would be skipped", () => {
+    const skipped: string[] = [];
+    for (const page of PAGES) {
+      const text = readFileSync(path.join(DOCS, page), "utf8");
+      for (const m of text.matchAll(/^ *(~~~.*|```(?:typescript|tsx|js|javascript)\b.*)$/gm))
+        skipped.push(`${page}:${text.slice(0, m.index).split("\n").length}: ${m[1]}`);
+    }
+    expect(skipped).toEqual([]);
   });
 
   for (const page of PAGES) {
@@ -201,6 +217,16 @@ const REFUSED: [example: string, program: string, stable: string][] = [
     "+ on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float arithmetic",
   ],
   [
+    "b.value = r.x;",
+    `${H}export interface R { x: f64; }\nexport function f(b: Mut<Box>, r: Mut<R>): void { b.value = r.x; }`.replace("type u64,", "type u64, type f64,"),
+    "an f64 is not an integer, so it is not converted to u64",
+  ],
+  [
+    "log(`${r.x}`);",
+    `${H}export interface R { x: f64; }\nexport function f(r: Mut<R>): void { log(\`\${r.x}\`); }`.replace("type u64,", "type u64, type f64,"),
+    "an f64 cannot be written as text",
+  ],
+  [
     "if (r.x === r.y) {}",
     `${H}export interface R { x: f64; y: f64; }\nexport function f(r: Mut<R>): void { if (r.x === r.y) {} }`.replace("type u64,", "type u64, type f64,"),
     "to compare the bits, write f64Bits(a) === f64Bits(b)",
@@ -223,6 +249,21 @@ const REFUSED: [example: string, program: string, stable: string][] = [
     "merkleVerify(leaf, proof, root);",
     `import { type Hash, type Vec, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void {\n  merkleVerify(leaf, proof, root);\n}\n`,
     "the result of merkleVerify is discarded, so nothing is checked",
+  ],
+  [
+    "if (merkleVerify(leaf, proof, root)) {}",
+    `import { type Hash, type Vec, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void {\n  if (merkleVerify(leaf, proof, root)) {}\n}\n`,
+    "the result of merkleVerify is not acted on: the if around it has an empty body",
+  ],
+  [
+    "const ok = merkleVerify(leaf, proof, root);",
+    `import { type Hash, type Vec, merkleVerify } from "typesol";\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void {\n  const ok = merkleVerify(leaf, proof, root);\n}\n`,
+    "the result of merkleVerify is never read (ok is not used), so nothing is checked",
+  ],
+  [
+    'export enum E { A = "a", /* @code 6100 */ B = "b" }',
+    'export enum E { A = "a", /* @code 6100 */ B = "b" }\nexport function f(): void {}\n',
+    "this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment",
   ],
   [
     'export enum E { A = "a", /** @code 6100 */ B = "b" }',
@@ -257,6 +298,11 @@ describe("what docs/language-statements.md says is refused, is", () => {
 });
 
 describe("links into the docs land on a heading", () => {
+  it("anchors as GitHub makes them: a repeated heading's are #name-1, #name-2", () => {
+    const h = headingsOf("# Page\n\n## Notes\n\n```sh\n## not a heading\n```\n\n### Notes\n\n## Notes\n\n## Other\n");
+    expect([...h.keys()]).toEqual(["", "notes", "notes-1", "notes-2", "other"]);
+  });
+
   // Heading anchors as GitHub and the docs site make them (scripts/language-builtins.ts: slug). Every docs page, the
   // README and the declaration file's comments are read.
   const sources = [

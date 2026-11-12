@@ -435,7 +435,10 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
   };
   if (opts.agentFiles === false) for (const f of AGENT_FILES) delete files[f];
   const existing = Object.keys(files).filter((f) => existsSync(path.join(dir, f)));
-  if (existing.length) throw new Error(`refusing to overwrite: ${existing.join(", ")}`);
+  // An agent file in the way (a repository with its own AGENTS.md): the flag that leaves them out.
+  const agent = existing.some((f) => (AGENT_FILES as readonly string[]).includes(f));
+  if (existing.length)
+    throw new Error(`refusing to overwrite: ${existing.join(", ")}${agent ? " (--no-agent-files leaves out the files for AI coding agents)" : ""}`);
   for (const [file, text] of Object.entries(files)) {
     mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
     writeFileSync(path.join(dir, file), text);

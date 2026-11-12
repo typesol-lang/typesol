@@ -599,6 +599,8 @@ may gain a hint line.
 | unary minus on unsigned | `b.value = -n;` | unary minus needs a signed integer (i8 … i128) |
 | operators on `f64` | `b.value = r.x + r.x;` (`r.x: f64`) | + on an f64 is not supported: an f64 is held as its IEEE 754 bits and there is no float arithmetic (this would compute on the bits); compute in integers and make the result with f64FromBits(bits), or take an f64's bits with f64Bits(x) |
 | `===` on `f64` | `if (r.x === r.y) {}` (`f64` fields) | === on an f64 is not supported: an f64 is held as its IEEE 754 bits, and equal bits are not equal numbers (NaN would equal itself, 0 would not equal -0); to compare the bits, write f64Bits(a) === f64Bits(b) |
+| an `f64` as an integer | `b.value = r.x;` (`r.x: f64`) | an f64 is not an integer, so it is not converted to u64: it is held as its IEEE 754 bits, and the integer would be those bits; to use the bits, write f64Bits(x) |
+| an `f64` as text | ``log(`${r.x}`);`` (`r.x: f64`) | an f64 cannot be written as text: there is no float formatting, and the digits would be its IEEE 754 bits read as an integer; to show the bits, write f64Bits(x) |
 | `?.` on a non-optional value | `const v = b?.value;` | ?. works on optional accounts and Option<struct> values (other values are never null) |
 | `let` struct references | `let q = b.home;` | bind struct references with const |
 | nested destructuring | `const { home: { x } } = b;` | nested destructuring is not supported; destructure in two steps |
@@ -610,6 +612,9 @@ may gain a hint line.
 | writing a helper's parameter | `function h(p: Point): void { p.x = 1n; }` | helper parameters are read-only: declare p as Inout<T> to change the caller's value in place, or copy it into a local first |
 | `Vec` locals | `const v: Vec<u64> = fixedVec([]);` | local type must be an integer, boolean, Pubkey, enum, option or string |
 | an unused proof or signature check | `merkleVerify(leaf, proof, root);` | the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
+| a proof check in an empty `if` | `if (merkleVerify(leaf, proof, root)) {}` | the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
+| a proof check kept in a local never read | `const ok = merkleVerify(leaf, proof, root);` (`ok` unused) | the result of merkleVerify is never read (ok is not used), so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
+| a `@code` tag outside a doc comment | `export enum E { A = "a", /* @code 6100 */ B = "b" }` | this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment; write /** @code … */ above B |
 | a `@code` tag after other code on its line | `export enum E { A = "a", /** @code 6100 */ B = "b" }` | this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above B |
 
 **Next:** [Accounts](language-accounts.md): account parameters and the checks they emit.

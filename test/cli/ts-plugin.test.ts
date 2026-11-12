@@ -28,6 +28,7 @@ function project() {
     paths: { typesol: [path.join(ROOT, "lib/typesol.d.ts")] },
     noEmit: true,
     types: [],
+    lib: ["lib.es2022.d.ts"], // no DOM: `window` and `document` are unknown names, as in a program
   };
   const versions = new Map<string, number>();
   const host: ts.LanguageServiceHost = {
@@ -113,5 +114,29 @@ describe("typesol/ts-plugin", () => {
     const text = diags.map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n")).join("\n");
     expect(text).toMatch(/cannot be applied[\s\S]*hint: integers .* are bigint in TypeSOL: write 1n/);
     expect(diags.every((d) => d.source !== "typesol")).toBe(true); // still TypeScript's error, with its code
+  });
+
+  it("replaces TypeScript's message as the CLI does, also for a name the CLI gives no hint for", async () => {
+    const p = project();
+    await p.ls.typesolReady();
+    for (const [code, message] of [
+      ['window.alert("x");', "'window' does not exist in a Solana program"],
+      ['document.title = "x";', "'document' does not exist in a Solana program"],
+      ['console.log("x");', "'console' does not exist in a Solana program\nhint: "],
+    ]) {
+      p.edit(
+        p.file,
+        p
+          .text()
+          .replace(/\n {2}\/\/ probe[^\n]*/, "")
+          .replace("counter.count += by;", `counter.count += by;\n  // probe\n  ${code}`),
+      );
+      const text = p.ls
+        .getSemanticDiagnostics(p.file)
+        .map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"))
+        .join("\n");
+      expect(text, code).toContain(message);
+      expect(text, code).not.toMatch(/Cannot find name/);
+    }
   });
 });

@@ -561,6 +561,12 @@ arithmetic …`). Compute in integers and convert at the end. Equality is refuse
 `switch`): equal bits are not equal numbers, as NaN is not equal to itself and `0` equals `-0`. To compare the bits,
 say so: `f64Bits(a) === f64Bits(b)`. Copying an `f64` (to a local, a field, an event) keeps its bits.
 
+An `f64` is not an integer, and an integer is not an `f64`: neither becomes the other by an assignment, an argument,
+a return, an index, an integer cast (`u64(x)`, `u8(x)`, `as u64`) or `??` (`an f64 is not an integer, so it is not
+converted to u64: …`), and an `f64` is not written as text (a template string, `log`), whose digits would be its bits.
+`f64Bits(x)` and `f64FromBits(bits)` are the conversions. As a seed an `f64` gives its 8 bytes, as Rust's
+`to_le_bytes` does (`bigEndian(x)`: `to_be_bytes`).
+
 ## Heap values
 
 Advanced: where memory comes from when the stack is not enough.

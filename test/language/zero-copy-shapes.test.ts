@@ -182,6 +182,22 @@ describe("zero-copy shapes", () => {
     expect(compileErrors(`export enum E {\n  A = "a",\n  B = "b", /** @code 6100 */\n}\nexport function f(): void {}\n`)).toMatch(/it follows the last member/);
     // On its own line, or starting the line of its member, it is read.
     expect(compileErrors(`export enum E {\n  A = "a",\n  /** @code 6100 */ B = "b",\n}\nexport function f(): void {}\n`)).toBe("");
+    // A tag in a comment that is not a doc comment is not read either: refused, naming the member.
+    const two = (between: string) => `export enum E {\n  A = "a",\n${between}\n  B = "b",\n}\nexport function f(): void {}\n`;
+    expect(compileErrors(two("  /* @code 6100 */"))).toBe(
+      "this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment; write /** @code … */ above B",
+    );
+    expect(compileErrors(two("  // @code 6100"))).toBe(
+      "this @code tag is not read: only a doc comment (/** … */) is, not a // comment; write /** @code … */ above B",
+    );
+    // Only the last doc comment above a member is read: a tag in an earlier one is refused, with its own reason.
+    expect(compileErrors(two("  /** @code 6100 */\n  /** Something went wrong. */"))).toBe(
+      "this @code tag is not read: another doc comment follows it, and only the last one above B is read; put the tag in that one",
+    );
+    expect(compileErrors(two("  /** Something went wrong. */\n  /** @code 6100 */"))).toBe("");
+    // A comment that mentions the tag in a sentence is not a tag: no error, and B takes the next code.
+    expect(compileErrors(`export enum E {\n  A = "a", /** see the @code docs */\n  B = "b",\n}\nexport function f(): void {}\n`)).toBe("");
+    expect(compileErrors(two("  // the @code docs say how codes are numbered"))).toBe("");
     expect(
       compileErrors(
         `import { type Account, type Pubkey } from "typesol";\nexport interface S {\n  key: Pubkey;\n}\nexport function f(s: Account<S>): void {}\n`,

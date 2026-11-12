@@ -6,9 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
-First-run fixes, found by following the README in fresh `node:24-bookworm` containers (linux/amd64 and linux/arm64).
-No program builds to other bytes: the generated C, IDLs and binaries are those of 0.45.0 (the release manifest's check
-of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0 and by this release, are the same).
+A minor release: it adds a flag (`init --no-agent-files`), accepts what 0.45.0 refused (16 signer seeds, the bump
+included), and refuses programs 0.45.0 compiled to wrong code (an `f64` used with an operator, as an integer or as text; a proof or
+signature check whose result decides nothing; a `@code` tag that is not read; a `Seeds<…>` list over Solana's limit).
+Programs that use none of these build to the same bytes: the repository's 76 programs build to the same binaries and
+IDLs with 0.45.0 and with this release, and the release manifest's check of test/golden/binaries.json passes.
 
 - Fixed: the README's toolchain block failed when pasted. The Agave installer adds its `bin` directory to `PATH` in
   `~/.profile` only, so the next line gave `cargo-build-sbf: command not found`. The block now has the
@@ -21,13 +23,20 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   (from `TESTED_TOOLCHAIN`), and says which is missing: "the Agave CLI is not installed" (then the installer, the
   `PATH` line and that command) or "the Agave CLI is installed, but not its platform-tools" (that command only). The
   build's errors were "Solana SBF SDK not found …" and "platform-tools missing under … Run
-  `cargo-build-sbf --force-tools-install` once." (test/cli/doctor.test.ts, both cases).
+  `cargo-build-sbf --force-tools-install` once." Each command is printed on a line of its own, with nothing after
+  it: what a command does is a `#` line above it, written without a character a shell acts on (the commands had a
+  trailing `# …` comment, which an interactive zsh, which reads no comments by default as on macOS, passed on as
+  arguments: `zsh: number expected`, `export: not valid in this context`), and no sentence's period follows a command.
+  `TYPESOL_SBF_SDK` set to a directory that is not an SDK makes `init` say so, where it printed "Install once:" and
+  nothing after it (test/cli/doctor.test.ts, both cases; it pastes the printed blocks into an interactive zsh and bash,
+  and fish where installed, with the commands stubbed).
 - Fixed: on Linux arm64 the Agave installer fails with a 404 (Anza publishes no Agave CLI for it) and nothing said so;
   `doctor` and `init` printed that installer. Building and LiteSVM tests work there with the platform-tools'
   `linux-aarch64` package and the SDK's C files from the x86_64 release, pointed at with `TYPESOL_SBF_SDK` (checked
   in a `linux/arm64` container: the three templates build and pass their tests). The README's Requirements give those
-  five commands, `doctor`, `init` and the build print them on Linux arm64, and the Solana CLI row there says that
-  deploying needs another host. The sentences that say builds are the same on Linux arm64 now say how that host was
+  five commands (`$HOME` quoted in each), `doctor`, `init` and the build print them on Linux arm64 (an SDK there
+  without its platform-tools is "the SBF SDK at … has no platform-tools", not an installed Agave CLI), and the Solana
+  CLI row there says that deploying needs another host. The sentences that say builds are the same on Linux arm64 now say how that host was
   set up (test/cli/doctor.test.ts).
 - Fixed: on Node.js older than 22.12 the CLI ran or crashed without saying why (on 20, `npm install` failed inside
   npm or the tests with `Map.groupBy is not a function`; on 22.11, `init`, `check` and `build` ran although `doctor`
@@ -37,21 +46,29 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
 - Fixed: `deploy` without a payer keypair printed that the Solana CLI would refuse, built, and went on until
   `solana program deploy` failed. It now stops before building, exit 1: "no payer keypair at
   ~/.config/solana/id.json: create one with `solana-keygen new` (or pass --keypair <file>), then fund it with
-  `solana airdrop 2 --url devnet`. Nothing was sent." (test/cli/doctor.test.ts).
+  `solana airdrop 2 --url devnet`. Nothing was sent." A `--keypair` file that is not there gets "no keypair file at
+  ./payer.json (given with --keypair): check the path. Nothing was sent.", and a missing `keypair_path` of a Solana CLI
+  config names that config. Only a file path is checked: a signer URI (`usb://ledger?key=0`, `prompt://`, `stdin://`,
+  `ASK`) goes to `solana program deploy` as before, without the balance check. `solana` missing from `PATH` is now said
+  first, also before building (it was said after the build) (test/cli/doctor.test.ts, with a fake `solana`).
 - Fixed: `doctor` ended with its rows only, so three `!` rows after a passing test looked like a problem. It now ends
   with one line: "Ready to build and test. The ! rows: deploying still needs: keypair, RPC; …", "Ready to build, test
   and deploy." or "Not ready to build or test: fix the ERR rows (…) first." (test/cli/doctor.test.ts).
 - New flag, `init --no-agent-files`: leaves out the files for AI coding agents (AGENTS.md, CLAUDE.md,
   `.cursor/rules/typesol.mdc`, `.mcp.json`, `.cursor/mcp.json`), which `init` wrote with no way to opt out; without
-  it, `init` now names them after the files it created (test/cli/ai.test.ts). `.vscode/settings.json` is written
+  it, `init` now names them after the files it created, and where one of them is already there (a repository with
+  its own AGENTS.md), its refusal says so: "refusing to overwrite: AGENTS.md (--no-agent-files leaves out the files
+  for AI coding agents)" (test/cli/ai.test.ts). `.vscode/settings.json` is written
   either way: it makes the editor show TypeSOL's errors.
 - Hints, text only (test/language/diagnostics.test.ts):
   - an `async` instruction returning `Promise<void>` got "instructions cannot be async or generators" with no hint,
     though the README promised one; it now has one (helper functions too);
   - `console` and other globals a program does not have (`process`, `Buffer`, `setTimeout`, `setInterval`, `fetch`,
     `window`, `document`) led with TypeScript's "Cannot find name 'console'. Do you need to change your target
-    library? …"; the message is now "'console' does not exist in a Solana program", with the hint under it (in the
-    editor too, through `typesol/ts-plugin`);
+    library? …"; the message is now "'console' does not exist in a Solana program", with the hint under it where
+    there is one (`window` and `document` have none). The editor shows the same message, hint or not, through
+    `typesol/ts-plugin` and a new export of `typesol/compiler`, `typescriptMessage(diagnostic)`: the message the CLI
+    shows in place of a TypeScript error's, or undefined to keep TypeScript's (test/cli/ts-plugin.test.ts);
   - `Date.now()` where an integer is expected now points to `now()`, the cluster's clock, and
     `Math.floor(Date.now() / 1000)` (which was "unsupported call: Math.floor") says to use `now()`;
     `Math.floor`, `trunc`, `ceil` and `round` on their own point to integer division;
@@ -69,15 +86,31 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   is no float arithmetic (this would compute on the bits); compute in integers and make the result with
   f64FromBits(bits), or take an f64's bits with f64Bits(x)". Equality (`===`, `!==`, `==`, `!=`, `switch`) is
   refused too, since equal bits are not equal numbers (NaN, 0 and -0): "… to compare the bits, write f64Bits(a) ===
-  f64Bits(b)". No program of the repository used one (test/language/f64-operators.test.ts; docs/language-types.md
-  and the refused-constructs table of docs/language-statements.md).
-- Fixed: signer seeds were limited to 14 seeds and the bump, one fewer than Solana allows: the limit of 15 entries,
+  f64Bits(b)". `??` over an `Option<f64>` now gives an `f64` whatever the other side expects, so `(a.o ?? a.x) * 2n`,
+  `a.n < (a.o ?? a.x)`, `min(a.n, a.o ?? a.x)` and `a.n += a.o ?? a.x` are refused too (they computed on the bits).
+- Changed: an `f64` no longer converts to an integer, nor an integer to an `f64`. `a.n = a.x`, `const z: u64 = a.x`,
+  an `f64` passed to a helper's `u64` parameter or returned as a `u64`, `xs.get(a.x)`, `u64(a.x)`, `u8(a.x)`,
+  `u128(a.x)` and `a.x as u64` compiled and used the bits as the integer; `a.n as f64` made an integer's value the
+  bits. They are refused: "an f64 is not an integer, so it is not converted to u64: it is held as its IEEE 754 bits,
+  and the integer would be those bits; to use the bits, write f64Bits(x)" (and "a u64 is not an f64, so it is not
+  converted: an f64 is made from its IEEE 754 bits with f64FromBits(bits)"). An `f64` in a template string or `log`
+  printed its bits as a decimal integer; it is refused: "an f64 cannot be written as text: there is no float
+  formatting, and the digits would be its IEEE 754 bits read as an integer; to show the bits, write f64Bits(x)".
+  Copying an `f64` to an `f64` (fields, locals, structs, events, `Option<f64>`, ternaries, `??`, helper arguments and
+  returns typed `f64`) compiles as before, and so does an `f64` seed (its 8 bytes, as Rust's `to_le_bytes`). No
+  program of the repository used a conversion (test/language/f64-operators.test.ts; docs/language-types.md and the
+  refused-constructs table of docs/language-statements.md).
+- Changed, now accepted: signer seeds were limited to 14 seeds and the bump, one fewer than Solana allows: the limit of 15 entries,
   meant for lists the derivation adds the bump to, was applied to signer seeds and `createProgramAddress` lists too,
   which end with their bump. They now take 16 entries, 15 seeds and the bump (Solana's `MAX_SEEDS`, checked by
   `invoke_signed` and `create_program_address`); a 17th is refused with "at most 16 seeds, the bump included
   (Solana's limit)", and a 16th seed before a derived bump with "at most 15 seeds: the bump the derivation adds makes
   16, Solana's limit" (was "at most 15 seeds" for both). test/language/signer-seed-limit.test.ts signs a CPI with
   16 entries in LiteSVM (a seed list and a bound `signer([...])`) and derives with `createProgramAddress`.
+- Changed, now refused: a `Seeds<…>` constraint had no seed limit, so 16 or more names compiled and failed every call. It now
+  has the same limits and messages: with a bump field, "at most 16 seeds, the bump included (Solana's limit)"; with the
+  canonical bump, "at most 15 seeds: the bump the derivation adds makes 16, Solana's limit"
+  (test/language/signer-seed-limit.test.ts).
 - Fixed, messages only (test/language/diagnostics.test.ts):
   - a `u256` shift amount got "shift by a u64 (or smaller) amount", while a `u128` amount compiles (its range check
     runs on all 128 bits); the message is now "a shift amount is a u128 or smaller integer: convert it (u64(n))";
@@ -91,14 +124,23 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   nothing. The three return whether the proof or signature holds and fail nothing by themselves, so
   `merkleVerify(leaf, proof, root);` emitted the hash computation and dropped its result. Such a call is now refused:
   "the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write
-  require(merkleVerify(…), error)". No program of the repository called one that way (test/language/diagnostics.test.ts;
-  a row in the refused-constructs table of docs/language-statements.md).
+  require(merkleVerify(…), error)". Refused as well: such a call as the condition of an `if` with an empty body and no
+  `else` ("the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: …"),
+  and its result kept in a `const` or `let` (declared or assigned) that the function never reads ("the result of
+  merkleVerify is never read (ok is not used), so nothing is checked: …"). What is caught is these three forms, not
+  every unused result: a helper that returns the result, called as a statement, still compiles. No program of the
+  repository called one these ways (test/language/diagnostics.test.ts; rows in the refused-constructs table of
+  docs/language-statements.md).
 - Fixed: a `/** @code 6100 */` tag written after other code on its line (`A = "a", /** @code 6100 */ B = "b"`) was
   ignored without a word, because TypeScript attaches it to no member, and `B` took the next code instead of 6100. It
   is now refused, naming the member that follows: "this @code tag is not read: other code comes before it on its line;
   put /** @code … */ on its own line above B" (after the last member: "it follows the last member"). A tag on its own
   line, or first on its member's line, is read as before; no program of the repository changes
-  (test/language/zero-copy-shapes.test.ts).
+  (test/language/zero-copy-shapes.test.ts). The same goes for a tag in a `/* … */` or `//` comment ("this @code tag is
+  not read: only a doc comment (/** … */) is, not a // comment; write /** @code … */ above B") and in a doc comment
+  that another one follows before the member, of which only the last is read ("… another doc comment follows it, and
+  only the last one above B is read; put the tag in that one"). A tag is `@code` first on a line of its comment: a
+  comment that mentions it in a sentence (`/** see the @code docs */`) is not refused.
 - Docs: README links Quick start from the top, has three lines under the introduction with the two commands and the
   playground, opens Quick start with the playground, says that `npm install`'s advisories come from
   `@anchor-lang/core` (which `typesol/testing` uses to encode instructions and decode accounts, so the tests need it;
@@ -113,7 +155,9 @@ of test/golden/binaries.json, and the 76 programs of the sources built by 0.45.0
   language-errors-events.md, language-cpi.md, language-chain.md (sysvars, hashes, signatures, oracles) and
   language-native.md (porting native programs, marked advanced). Every example on these pages is a complete program,
   and test/language/docs-examples.test.ts compiles each one, checks that every refused construct of the table is
-  refused with the message it quotes, and that links into the docs land on a heading. docs/language-builtins.md lists
+  refused with the message it quotes, that links into the docs land on a heading (a repeated heading's anchor with
+  GitHub's `-1`, `-2` suffix), that every page but the overview and the built-ins list has a compiled program, and
+  that no TypeScript block is fenced so that it would be skipped (`~~~`, `typescript`). docs/language-builtins.md lists
   every name `"typesol"` exports, generated from lib/typesol.d.ts by `scripts/language-builtins.ts` (`--check` in the
   tests and in CI). lib/typesol.d.ts gains doc comments only: the 34 exports that had none have one, the comment of
   `findProgramAddress` sat above `bigEndian` and moves to it, and `isqrt`'s says it takes integers up to `u256` (as the

@@ -322,11 +322,25 @@ export function slug(heading: string): string {
     .replace(/\s/g, "-");
 }
 
-/** A page's headings by anchor ("" for its title). */
+/**
+ * A page's headings by anchor ("" for its title). A heading whose slug an earlier one has gets GitHub's suffix: the
+ * second "Notes" is #notes-1, the third #notes-2.
+ */
 export function headings(page: string): Map<string, string> {
-  const text = readFileSync(path.join(ROOT, "docs", page), "utf8").replace(/^ *```[\s\S]*?^ *```/gm, "");
+  return headingsOf(readFileSync(path.join(ROOT, "docs", page), "utf8"));
+}
+
+/** headings() of a page's text. */
+export function headingsOf(markdown: string): Map<string, string> {
+  const text = markdown.replace(/^ *```[\s\S]*?^ *```/gm, "");
   const out = new Map<string, string>();
-  for (const m of text.matchAll(/^(#{1,6}) (.+)$/gm)) out.set(m[1] === "#" ? "" : slug(m[2]!), m[2]!.replace(/`/g, ""));
+  const seen = new Map<string, number>();
+  for (const m of text.matchAll(/^(#{1,6}) (.+)$/gm)) {
+    const base = slug(m[2]!);
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    out.set(m[1] === "#" ? "" : n ? `${base}-${n}` : base, m[2]!.replace(/`/g, ""));
+  }
   return out;
 }
 
