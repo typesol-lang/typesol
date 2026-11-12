@@ -16,11 +16,11 @@
 # platform-tools v1.52. Only the C SDK (headers and linker script, text) is taken from the Agave release; the compiler
 # runs clang and ld.lld from platform-tools directly, so cargo-build-sbf and the Solana CLI are not installed.
 #
-# One architecture, linux/amd64, on every machine (emulated on arm64 hosts). The C and the IDL are the same on every
-# host, and so is clang's object code, but each platform-tools host package ships its own build of the SBF
-# compiler-builtins library: a program that links its 128-bit or signed division (u128 math, most DeFi ports) gets
-# different bytes from the macOS, Linux arm64 and Linux x86_64 packages (docs/stability.md has the measurement).
-# Every base image below is therefore pinned by its linux/amd64 manifest digest, not by a multi-platform index.
+# One architecture, linux/amd64, on every machine (emulated on arm64 hosts), so that the environment is one recipe.
+# From TypeSOL 0.45.0 on a program builds to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 too; 0.44.1
+# and earlier linked the platform-tools compiler-builtins library, which each host package lays out differently, so a
+# program with 128-bit or signed division got other bytes from each (docs/stability.md has both measurements). Every
+# base image below is pinned by its linux/amd64 manifest digest, not by a multi-platform index.
 
 # Unpacking: busybox's tar reads .tar.bz2, which the slim Node image cannot without installing bzip2.
 FROM busybox:1.37.0-glibc@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4 AS sdk

@@ -30,7 +30,7 @@ release (0.44.0 → 0.44.1), so a team can take the fix without taking new featu
   no account layout, IDL or error code beyond what the fix itself needs;
 - a program it refuses or builds to another binary is one the defect touches, and the CHANGELOG says which;
 - its release notes carry the binary diff against the previous release (the previous release's sources built by both
-  packages, `binary-diff.txt`; see [docs/testing.md](docs/testing.md#reproducing-a-release)), so a team can see whether
+  packages, `typesol-<version>-binary-diff.txt`; see [docs/testing.md](docs/testing.md#reproducing-a-release)), so a team can see whether
   their program's binary changes.
 
 Fixes go to the latest minor only; older minors are not maintained. A fix that needs a language or layout change

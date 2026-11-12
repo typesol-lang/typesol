@@ -47,12 +47,13 @@ From 0.39.0 on, each release's GitHub Release carries its manifest, `typesol-<ve
 hand after the npm publish (written by `scripts/release-manifest.ts` from the tag's sources; the scripts need Node 22.18
 or later):
 
-- the compiler and toolchain versions (clang, platform-tools, Node, TypeScript, the runtime header's sha256);
+- the compiler and toolchain versions (clang, platform-tools, Node, TypeScript, the sha256 of the runtime header and,
+  from 0.45.0 on, of the runtime's compiler builtins);
 - the sha256 of the SBF binary, IDL and C that every program under `examples/` and `showcase/program-examples/` builds to;
 - the sha256 of the reference binaries the differential tests run against (`test/programs/`);
 - a hash of the test corpus.
 
-It also carries `binary-diff.txt`: the previous release's sources built by the previous package and by this one,
+It also carries `typesol-<version>-binary-diff.txt` (older releases: `binary-diff.txt`): the previous release's sources built by the previous package and by this one,
 compared program by program. That is the check behind a changelog line such as "programs that use none of these compile to the
 same binaries". To redo it, or to compare other versions:
 
@@ -70,25 +71,31 @@ the same binary and IDL with both packages.
 
 ### Across hosts
 
-The C, IDL and object code TypeSOL's builds produce are the same on every host; the linked binary is the same except
-for programs that call compiler-builtins' 128-bit or signed division, whose code differs between the platform-tools
-host packages ([stability.md](stability.md#what-builds-the-same-bytes-where) has the measurement over 76 programs on
-macOS arm64, Linux arm64 and Linux x86_64). The reference environment is the `--docker` build container (linux/amd64).
-`test/golden/binaries.json` holds what five programs (counter, vault, escrow, multisig and Phoenix, which links
-`__udivti3`) build to there with the checkout's compiler, and CI checks on every change that its Linux x86_64 runner,
-with platform-tools installed by `cargo-build-sbf`, gives the same C, IDL and bytes:
+From 0.45.0 on the C, IDL and linked binary TypeSOL's builds produce are the same on the hosts measured
+([stability.md](stability.md#what-builds-the-same-bytes-where) has the measurement over 76 programs on macOS arm64,
+Linux arm64 and Linux x86_64, and why 0.44.1 and earlier differed for programs with 128-bit or signed division). The
+reference environment is the `--docker` build container (linux/amd64). `test/golden/binaries.json` holds what 14
+programs build to there with the checkout's compiler: counter, vault, escrow, multisig, and the 10 that call 128-bit or
+signed division (the Phoenix, Marginfi, Raydium AMM, CLMM and CP-Swap, Jito priority-fee and Stake Pool ports,
+transfer-fee, token-fundraiser, token-swap), the ones whose binary used to depend on the host. CI checks on every change
+that its Linux x86_64 runner, with platform-tools installed by `cargo-build-sbf`, gives the same C, IDL and bytes; on
+another host the check is the same (binary included):
 
 ```sh
-node scripts/release-manifest.ts --check test/golden/binaries.json      # what CI runs (on macOS: Phoenix's binary is reported, not failed)
-node scripts/release-manifest.ts --docker --out test/golden/binaries.json \
-  --programs examples/counter.ts,examples/vault.ts,examples/escrow.ts,showcase/mainnet/multisig/multisig.ts,showcase/mainnet/phoenix/phoenix.ts
+node scripts/release-manifest.ts --check test/golden/binaries.json      # what CI runs; the same result on macOS
+node scripts/release-manifest.ts --docker --out test/golden/binaries.json --programs \
+  examples/counter.ts,examples/vault.ts,examples/escrow.ts,showcase/mainnet/multisig/multisig.ts,showcase/mainnet/phoenix/phoenix.ts,showcase/mainnet/marginfi/marginfi.ts,showcase/mainnet/raydium-amm/raydium_amm.ts,showcase/mainnet/raydium-clmm/raydium_clmm.ts,showcase/mainnet/raydium-cp-swap/raydium_cp_swap.ts,showcase/mainnet/jito-mev/priority_fee_distribution.ts,showcase/mainnet/spl-stake-pool/stake_pool.ts,showcase/program-examples/tokens/token-2022/transfer-fee.ts,showcase/program-examples/tokens/token-fundraiser.ts,showcase/program-examples/tokens/token-swap/lib.ts
 ```
 
 The second regenerates the file in the container (Docker, the checkout built with `pnpm build`; no network once the
 image exists), after a change that alters what those programs compile to. `--check` says `STALE` when the C or IDL
-differ (regenerate) and `DIFFERS` when the same C and IDL give other bytes on the reference's host (a toolchain
-problem). The container itself is tested by `test/cli/docker.test.ts` with `TYPESOL_DOCKER_TESTS=1` (off in CI: the
-first image build downloads about 750 MB).
+differ (regenerate) and `DIFFERS` when the same C and IDL give other bytes (a toolchain problem). The whole set, on more
+hosts: build `scripts/release-manifest.ts` (every program) on each and compare with `--diff`, as for a release. The
+compiler builtins themselves are tested by `test/language/builtins.test.ts`: each against a BigInt reference and
+against platform-tools' compiler-builtins on edge cases and a seeded random set (`FUZZ_SEED`, `BUILTINS_RANDOM`), run as
+SBF in LiteSVM for SBPF v0, v1 and v2, with each call's compute units compared to compiler-builtins' (never more). The
+container itself is tested by `test/cli/docker.test.ts` with `TYPESOL_DOCKER_TESTS=1` (off in CI: the first image
+build downloads about 750 MB).
 
 ### The npm tarball
 

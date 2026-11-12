@@ -72,8 +72,8 @@ compiler:
       `dist.integrity` with the record and exits 1 on a difference. Commit `releases/<version>.json` to `main`
       ("Release record for v<version>"): it is the published package's description, kept with the sources.
    5. Build the release manifest (`node scripts/release-manifest.ts --out typesol-<version>-manifest.json`) and the
-      binary diff against the previous release ([docs/testing.md](docs/testing.md#reproducing-a-release)), and attach
-      both to the GitHub Release by hand.
+      binary diff against the previous release (`--diff`, saved as `typesol-<version>-binary-diff.txt`;
+      [docs/testing.md](docs/testing.md#reproducing-a-release)), and attach both to the GitHub Release by hand.
 
 ## Code style
 

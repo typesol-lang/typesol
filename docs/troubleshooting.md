@@ -29,9 +29,12 @@ A `checksum` error means a downloaded file is not the one the Dockerfile pins (r
 do not use that version until it is explained. On arm64 machines the image is linux/amd64 and runs emulated: Docker
 Desktop provides the x86_64 emulation (QEMU or Rosetta); other Docker installs may need `binfmt` for amd64.
 
-**`no release record for TypeSOL <version>`** — the container installs only versions whose tarball record ships with
-the package. Pass the record from the repository with `--release-record releases/<version>.json`, use a later
-`@typesol/cli`, or choose a recorded version with `--typesol-version`. 0.42.0 and earlier have no record.
+**`no release record for TypeSOL <version>`** / **`could not fetch the release record`** — the container installs only
+versions whose tarball has a record: the package's own, or `releases/<version>.json` on the repository's main branch,
+which `--docker` fetches for a release newer than the package. Offline (or behind a proxy that blocks
+raw.githubusercontent.com), pass the record yourself with `--release-record releases/<version>.json` from a checkout,
+or choose a version the package records with `--typesol-version`. HTTP 404 means the repository has no record for that
+version: check that it is a released version. 0.42.0 and earlier have no record.
 
 **`this project installs typesol X …, but this is typesol Y`** — a `typesol` other than the project's ran `--docker`.
 Run the project's own (`npx --no-install typesol …`), or say which version to use with `--typesol-version`.
@@ -39,9 +42,11 @@ Run the project's own (`npx --no-install typesol …`), or say which version to 
 **`the container build failed … the container sees only <dir>`** — the compiler's error is printed above it. The
 container mounts only the project root (or a single file's directory): an import from outside it is missing there.
 
-**`verify` says `differs   host`** — the same TypeSOL and toolchain built the two sides on different hosts, and the
-program links compiler-builtins code that differs between platform-tools host packages (128-bit or signed division).
-Rebuild on the deployed side's kind of host, or, for programs others should verify, deploy a `--docker` build.
+**`verify` says `differs   host`** — the same TypeSOL (0.44.1 or earlier) and toolchain built the two sides on
+different hosts, and the program has 128-bit or signed division: those versions linked platform-tools'
+compiler-builtins, which each host package lays out differently. Rebuild on the deployed side's kind of host (or with
+`--docker`, if the deployed build was one). From 0.45.0 on the host is not a difference: builds gave the same bytes on
+macOS arm64, Linux arm64 and Linux x86_64.
 
 **Windows** — not tested; use WSL2 with the Linux Agave CLI.
 

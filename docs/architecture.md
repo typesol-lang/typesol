@@ -27,7 +27,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | Path | Contents |
 | --- | --- |
 | `src/` | The compiler (`src/compiler/`); the CLI, projects, init templates and `typesol/testing` at the top; generators and chain tooling in `src/tools/` (client, CPI and port generators, IDL publishing, on-chain reads, profiling, the LiteSVM RPC). Source map below |
-| `runtime/` | `typesol_rt.h`, the C runtime every program includes ([runtime.md](runtime.md)) |
+| `runtime/` | `typesol_rt.h`, the C runtime every program includes ([runtime.md](runtime.md)), and `typesol_builtins.c`, the compiler builtins every program links |
 | `lib/` | `typesol.d.ts`, the language surface programs typecheck against |
 | `ts-plugin/` | The editor plugin (`typesol/ts-plugin`) |
 | `examples/` | Example programs; the `typesol init` templates are copies of three of them |
@@ -50,11 +50,12 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/compiler/model.ts` | The data model shared by every stage (`ProgramModel`, `Instruction`, `ParamKind`, `FieldType`, `ValueType`) and small type utilities. |
 | `src/compiler/emit/` | Code generation (see below). |
 | `src/compiler/idl.ts` | Turns the model into an Anchor IDL: accounts with `pda`, `relations`, `address` and `optional`, plus types, events, errors and docs. |
-| `src/compiler/toolchain.ts` | Finds the Agave SDK and runs clang and lld with the SDK's flags, plus per-function sections, `--gc-sections` and `--strip-all` so unused code and symbol tables stay out of the binary. |
+| `src/compiler/toolchain.ts` | Finds the Agave SDK and runs clang and lld with the SDK's flags, plus per-function sections, `--gc-sections` and `--strip-all` so unused code and symbol tables stay out of the binary. Links the program with the runtime's builtins and platform-tools' libc, nothing from its Rust libraries, and refuses a binary that would leave the loader a symbol that is not a syscall. |
 | `src/compiler/diagnostics.ts` | `Reporter` and `CompileError`: diagnostics with file, line and column. |
 | `src/compiler/anchor-errors.ts` | Anchor's own error codes (`AnchorError.X`), shared by `require` and the generated clients. |
 | `src/compiler/index.ts` | The compiler's API (`generate`, `build`, `verifyBinary`, the build manifest). |
 | `runtime/typesol_rt.h` | The C runtime: error codes, word-wise memory helpers, the entry point's input parser (`ts_deserialize`), account checks, checked math, Borsh helpers, CPIs (System, Token, Token-2022, ATA, Metaplex), oracles and the heap allocator. Header-only and `static inline`, so unused code is dropped. |
+| `runtime/typesol_builtins.c` | The compiler builtins clang calls for 128-bit multiplication, division and shifts and signed 64-bit division, compiled with each program and linked in place of platform-tools' compiler-builtins library (whose build differs between its host packages); a program links the ones it calls. Division in C, multiplication and shifts as the instructions compiler-builtins has for each SBPF version. |
 | `src/workspace.ts` | `typesol.json` projects, program keypairs, `typesol init` templates and deploy arguments. |
 | `src/tools/cpigen.ts` | `typesol cpi`: reads an Anchor IDL and writes typed TypeSOL CPI helpers. |
 | `src/tools/clientgen.ts` | The TypeScript client (`<name>.client.ts`, [client.md](client.md)): reads an IDL, validates it (it may come from anywhere), and writes one `@solana/kit` file. Not part of the compiler core: `workspace.ts` and the CLI write it after `build()`, and `typesol client` writes it for any IDL. |
@@ -67,7 +68,7 @@ program.so + program.build.json (manifest: versions, sha256 of sources and binar
 | `src/testing.ts` | `typesol/testing`: LiteSVM test helpers for projects (accounts by name from the IDL, plain values). |
 | `src/tools/onchain.ts` | `typesol verify --address`: a deployed program's ELF, authority and deploy slot under loader v2, v3 or v4. |
 | `src/tools/profile.ts` | Turns `--profile` logs into compute units per source line. |
-| `src/tools/docker.ts` | `build --docker` / `verify --docker`: the TypeSOL version and its release record, the image from `docker/Dockerfile` (built when missing), the locked-down container run, the container's identity in the manifest. |
+| `src/tools/docker.ts` | `build --docker` / `verify --docker`: the TypeSOL version and its release record (the package's, a file, or fetched from the repository), the image from `docker/Dockerfile` (built when missing), the locked-down container run, the container's identity in the manifest. |
 | `docker/Dockerfile` | The pinned build environment (linux/amd64, platform-tools v1.52, a recorded TypeSOL tarball); shipped in the package with `releases/`. |
 | `src/cli.ts` | Command parsing. Every command has strict options, `--help`, and exit codes 0 (success), 1 (failure), 2 (usage error) and 3 (verify mismatch). |
 
@@ -186,7 +187,7 @@ These invariants are easy to break. Each one has tests.
 
 `test/golden/counter.c` pins the output for the counter example. Run
 `UPDATE_GOLDEN=1 pnpm test test/language/diagnostics.test.ts`, review the diff, and commit it with the change.
-`test/golden/binaries.json` pins what five programs build to in the `--docker` container; when they change,
+`test/golden/binaries.json` pins what 14 programs build to in the `--docker` container; when they change,
 regenerate it as [testing.md](testing.md#across-hosts) says (CI's cross-host check fails with `STALE` until then).
 
 For refactors that should not change behaviour, compare binaries: build every example and fixture before and after

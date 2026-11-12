@@ -6,35 +6,70 @@ codes, and says so here.
 
 ## Unreleased
 
+- New: a program builds to the same bytes on macOS arm64, Linux arm64 and Linux x86_64. Up to 0.44.1 the 10 programs
+  of the sources that call 128-bit or signed 64-bit division linked platform-tools' compiler-builtins Rust library and
+  built to a different binary on each host: its functions have the same instructions in the three host packages, but
+  each package splits them into differently numbered archive members, so the linker placed them in another order and
+  the calls into them had other offsets. Programs now link none of it. `runtime/typesol_builtins.c` defines every
+  builtin C integer code can call on SBF (`__multi3`, `__udivti3`, `__umodti3`, `__divti3`, `__modti3`, `__ashlti3`,
+  `__lshrti3`, `__ashrti3`, `__divdi3`, `__moddi3`; the set clang references for SBPF v0, v1 and v2), compiled with
+  each program by its clang and linked after it. Division is new C that takes the shortest route for the operands'
+  sizes; multiplication and shifts are, per SBPF version, the instructions compiler-builtins has for them, in assembly,
+  so programs that use only those keep their bytes. A link that would leave the loader a symbol that is not a syscall
+  is now an error. `<name>.build.json` lists `<runtime>/typesol_builtins.c` among the sources, and release manifests
+  record its sha256 (`toolchain.builtins`).
+  Programs whose binary changes, the 10 that call division (each now the same on the three hosts): the Phoenix,
+  Marginfi, Raydium AMM, Raydium CLMM, Raydium CP-Swap, Jito priority-fee distribution and SPL Stake Pool ports,
+  transfer-fee, token-fundraiser and token-swap. The other 66 programs build to 0.44.1's bytes on each of the three
+  hosts, and the generated C and IDL of all 76 are unchanged. Division by zero is unchanged: TypeSOL checks every
+  divisor before dividing and fails with 5101 (test/verification/fuzz-arith.test.ts); the builtins are never called
+  with zero, and if one were it would stop with the VM's division-by-zero error (compiler-builtins leaves that case
+  undefined: some of its calls returned a value). Compute units: in the showcase suites, each of the 18,085
+  transactions sent to a program whose binary changes (the ports above and two test programs) was also run against
+  0.44.1's binary on the same state; none costs more and 2,659 cost less (in total: Marginfi −5.1%, Raydium AMM −7.9%,
+  CLMM −5.0%, CP-Swap −2.3%, Jito priority-fee −1.0%, Stake Pool −0.2%, Phoenix −0.004%, token-swap −0.5%,
+  transfer-fee −0.4%, token-fundraiser −0.1%). `test/language/builtins.test.ts` runs every builtin as SBF in LiteSVM for SBPF v0, v1 and
+  v2, against a BigInt reference and against compiler-builtins on the edge cases (0, 1, maxima, the signed minimum,
+  powers of two and their neighbours, values with one half zero, divisors above the dividend) and a seeded random set
+  (about 90,000 calls per function on v0), and requires every call to cost no more compute units than compiler-builtins'.
+- Measured: what builds the same bytes where. With this release's compiler and platform-tools v1.52 on macOS arm64
+  (native), Linux arm64 and Linux x86_64 (in containers; x86_64 is the `--docker` image), all 76 programs of the
+  sources give the same C, IDL and binary on the three hosts. With 0.44.1 (the npm tarball) on the same three, 66 gave
+  the same binary and the 10 above three different ones (token-fundraiser: the two Linux ones agreed), which is what
+  0.44.0 gave too. README, docs/stability.md, docs/security-model.md, docs/audit.md, docs/mainnet.md, docs/testing.md,
+  docs/cli.md and docs/troubleshooting.md say so.
 - New: `typesol build --docker` and `typesol verify --docker` build in a pinned container, so that a third party can
   rebuild a deployed program from its source in the same environment. The container is made locally from
   `docker/Dockerfile`, which ships in the package with `releases/`: linux/amd64 on every machine, the Node 24 and
   busybox base images by digest, the Agave 3.1.10 and platform-tools v1.52 release files by sha256, and the TypeSOL
   version from npm with its tarball checked against `releases/<version>.json` (integrity, shasum, every file) before
   it is installed. Builds run without network, with the sources read-only, as the caller's uid. `<name>.build.json`
-  records the container (platform, Dockerfile sha256, base images, downloads, tarball hashes, local image id). The
-  TypeSOL version is `--typesol-version`, else (verify) the deployed build's manifest's, else the CLI's; a project
-  that installs another typesol than the one running is an error, and versions without a release record (before
-  0.43.0, or a newest release whose record is not shipped yet: `--release-record <file>`) are refused. On a match,
-  `verify --docker` prints what was verified (source and git commit, TypeSOL tarball, toolchain, container inputs)
-  and the command that repeats it. Without Docker, with its daemon stopped or when the image build fails, it is an
-  error: never a local build instead. No image is published, and nothing is registered with an external
-  verified-build registry (docs/mainnet.md).
-- Measured: what builds the same bytes on another host. With 0.44.0 and platform-tools v1.52 on macOS arm64, Linux
-  arm64 and Linux x86_64, all 76 programs of the sources give the same C and IDL, clang the same object code, and 66
-  the same binary; 10 (the Phoenix, Marginfi, Raydium, Jito priority-fee and Stake Pool ports among them) give three
-  different binaries, because each platform-tools host package ships its own build of compiler-builtins and those
-  programs link its 128-bit or signed division. README, docs/stability.md, docs/security-model.md and docs/audit.md
-  now say exactly that instead of "the same sources and toolchain produce the same bytes".
-- `toolchainDifferences` (and so `verify`'s mismatch hint) counts the host as a difference, and says when it is the
-  only one.
-- CI: the programs of `test/golden/binaries.json` (counter, vault, escrow, multisig, Phoenix) must build on the Linux
-  x86_64 runner to the C, IDL and bytes the build container gave (`scripts/release-manifest.ts --check`; `--docker`
-  regenerates the file, `--programs` limits a manifest to a set).
+  records the container (platform, Dockerfile sha256, base images, downloads, tarball hashes, where the release record
+  came from and its sha256, local image id). The TypeSOL version is `--typesol-version`, else (verify) the deployed
+  build's manifest's, else the CLI's; a project that installs another typesol than the one running is an error. The
+  release record is the package's; for a release newer than the package (a release's own record is committed after it
+  is published, so the package of version N never holds `releases/N.json`) it is fetched from the repository's main
+  branch over HTTPS (`raw.githubusercontent.com/typesol-lang/typesol/main/releases/<version>.json`), said on stderr
+  and recorded, so that the npm tarball is checked against a second, independent source; `--release-record <file>`
+  passes one by hand, and offline or for a version without a record it is an error naming that option. Versions before
+  0.43.0 have no record and are refused. On a match, `verify --docker` prints what was verified (source and git commit,
+  TypeSOL tarball and its record's origin, toolchain, container inputs) and the command that repeats it. Without
+  Docker, with its daemon stopped or when the image build fails, it is an error: never a local build instead. No image
+  is published, and nothing is registered with an external verified-build registry (docs/mainnet.md;
+  test/cli/docker.test.ts, the record lookup with an injected fetch).
+- `toolchainDifferences` (and so `verify`'s mismatch hint) counts the host as a difference between builds of 0.44.1
+  or earlier (whose manifests do not list the runtime's builtins), and says when it is the only one; between builds
+  that link the runtime's builtins the host is not a difference.
+- CI: the 14 programs of `test/golden/binaries.json` (counter, vault, escrow, multisig and the 10 that call division)
+  must build on the Linux x86_64 runner to the C, IDL and bytes the build container gave
+  (`scripts/release-manifest.ts --check`, which now fails on another binary on any host; `--docker` regenerates the
+  file, `--programs` limits a manifest to a set).
 - `typesol doctor` has an optional `docker` row.
-- Docs: the README's first page names the eight ports checked against mainnet binaries, with instruction and
-  transaction counts, before the examples; the quick start gives its commands before the toolchain notes; Status says
-  what the November 2026 reviews found and how fix releases and release records work; the licence line matches NOTICE.
+- Docs: the release assets are named with their version, `typesol-<version>-manifest.json` and
+  `typesol-<version>-binary-diff.txt` (SECURITY.md, CONTRIBUTING.md, docs/testing.md, docs/stability.md). The
+  README's first page names the eight ports checked against mainnet binaries, with instruction and transaction
+  counts, before the examples; the quick start gives its commands before the toolchain notes; Status says what the
+  November 2026 reviews found and how fix releases and release records work; the licence line matches NOTICE.
 
 ## 0.44.1 — 2026-11-11
 
