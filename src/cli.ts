@@ -13,6 +13,7 @@ import {
   describeToolchain,
   elfLength,
   generate,
+  MEASURED_HOSTS,
   SBPF_VERSIONS,
   toolchainDifferences,
   verifyBinary,
@@ -42,7 +43,17 @@ import {
   withBuildLock,
   type Workspace,
 } from "./workspace.js";
-import { chooseTypesolVersion, containerBuild, ensureImage, findReleaseRecord, needDocker, sourceRevision, type BuildImage } from "./tools/docker.js";
+import {
+  chooseTypesolVersion,
+  containerBuild,
+  ensureImage,
+  findReleaseRecord,
+  needDocker,
+  repeatCommand,
+  shellQuote,
+  sourceRevision,
+  type BuildImage,
+} from "./tools/docker.js";
 import {
   cliRpc,
   clusterUrl,
@@ -799,10 +810,12 @@ function toolchainHint(rebuilt: BuildManifest, known: ReturnType<typeof buildMan
     const why = diff.includes("clang")
       ? "another clang can compile the same C to other bytes; "
       : diff.includes("host")
-        ? "before 0.45.0 a program with 128-bit or signed division linked platform-tools' compiler-builtins, laid out differently by each host package; "
-        : "";
+        ? "the host may be the cause if the program uses 128-bit or signed division: before 0.45.0 those linked platform-tools' compiler-builtins, laid out differently by each host package; "
+        : diff.includes("host (not measured)")
+          ? `the same bytes on another host were measured only on ${MEASURED_HOSTS.join(", ")}; `
+          : "";
     const fix =
-      diff.length === 1 && diff[0] === "host"
+      diff.length === 1 && diff[0]!.startsWith("host")
         ? other.manifest.container
           ? "rebuild with --docker, as the deployed build was"
           : `rebuild on a ${other.manifest.host!.os}-${other.manifest.host!.arch} host, or deploy a --docker build so that anyone can rebuild it`
@@ -840,26 +853,21 @@ function verifiedLines(o: {
 }): string[] {
   const id = o.image.identity;
   const rev = sourceRevision(o.root);
-  const repeat = [
-    "typesol verify",
-    ...o.args.map(shellQuote),
-    ...(o.v.address ? ["--address", o.v.address as string] : []),
-    ...(o.v.url ? ["--url", shellQuote(o.v.url as string)] : []),
-    ...(o.v.sbpf ? ["--sbpf", o.v.sbpf as string] : []),
-    "--docker",
-    "--typesol-version",
-    id.typesol.version,
-  ].join(" ");
   return [
     `  verified  ${o.what} is what ${relPath(path.resolve(o.entry))} builds to in the pinned build container:`,
     `    source     ${o.root}${rev ? ` (git ${rev.commit}${rev.clean ? "" : ", with uncommitted changes"})` : " (not a git checkout)"}`,
-    `    TypeSOL    ${id.typesol.version}, npm tarball shasum ${id.typesol.shasum} (commit ${id.typesol.commit}), as releases/${id.typesol.version}.json records it`,
+    `    TypeSOL    ${id.typesol.version}, npm tarball shasum ${id.typesol.shasum}, as releases/${id.typesol.version}.json records it (the record names commit ${id.typesol.commit})`,
     `    record     ${recordLine(id.typesol.record) ?? `releases/${id.typesol.version}.json`}`,
+    ...(id.deps
+      ? [
+          `    deps       ${id.deps.path} sha256 ${id.deps.sha256} (${id.deps.source === "package" ? "this package's" : "the checked tarball's"}), installed with npm ci`,
+        ]
+      : []),
     `    toolchain  ${shortClang(o.rebuilt.clang)}, platform-tools ${o.rebuilt.platformTools ?? "unknown"}, TypeScript ${o.rebuilt.typescript}`,
     `    container  ${id.platform}, Dockerfile sha256 ${id.dockerfile}, local image ${id.image}`,
     ...id.base.map((b) => `    base       ${b}`),
     ...id.downloads.map((d) => `    download   ${d.url.split("/").pop()} sha256 ${d.sha256}`),
-    `    repeat     ${repeat}`,
+    `    repeat     ${repeatCommand(o.args, o.v, id.typesol.version)}`,
   ];
 }
 
@@ -898,18 +906,13 @@ async function buildImage(v: Record<string, unknown>, projectRoot: string | unde
 /** The container build's environment in one line, for the build's report. */
 function containerLine(image: BuildImage): string {
   const id = image.identity;
-  return `  built in  ${id.platform} container ${image.tag} (Dockerfile sha256 ${id.dockerfile.slice(0, 16)}…, TypeSOL ${id.typesol.version} tarball ${id.typesol.shasum}); recorded in each .build.json`;
+  return `  built in  ${id.platform} container ${image.tag} (Dockerfile sha256 ${id.dockerfile.slice(0, 16)}…, TypeSOL ${id.typesol.version} tarball ${id.typesol.shasum}${id.deps ? `, dependency lock ${id.deps.sha256.slice(0, 16)}…` : ""}); recorded in each .build.json`;
 }
 
 /** Hold the build lock of every directory while `fn` runs (one container builds them all). */
 function withBuildLocks<T>(dirs: string[], fn: () => T): T {
   const [first, ...rest] = [...new Set(dirs)].sort();
   return first === undefined ? fn() : withBuildLock(first, () => withBuildLocks(rest, fn));
-}
-
-/** Quote a command-line word for a POSIX shell when it needs it. */
-function shellQuote(s: string): string {
-  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 function one(args: string[], what: string): string {

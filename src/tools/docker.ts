@@ -20,6 +20,13 @@ const PACKAGE_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 export const DOCKERFILE = path.join(PACKAGE_ROOT, "docker/Dockerfile");
 /** The release records the package ships (releases/<version>.json): the TypeSOL versions an image can install. */
 export const RELEASES_DIR = path.join(PACKAGE_ROOT, "releases");
+/**
+ * The dependency locks the package ships (docker/deps/<version>.lock.json): for each TypeSOL version, the npm lockfile
+ * of its runtime dependencies, which the image installs with `npm ci` (every package checked against its integrity).
+ * The lock of version N ships in package N (it does not contain N's own tarball); a version newer than the package
+ * carries its own, checked with the rest of its tarball against the release record.
+ */
+export const DEPS_DIR = path.join(PACKAGE_ROOT, "docker/deps");
 const IMAGE = "typesol-build";
 const VERSION = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
 
@@ -91,14 +98,14 @@ export interface RecordSource {
   kind: "package" | "file" | "repository";
   /** `releases/<version>.json` (in the package), the file as given, or the URL it was fetched from. */
   location: string;
-  /** sha256 of the record's bytes. */
+  /** sha256 of the record's bytes, as read or served (what `sha256sum` of the file gives). */
   sha256: string;
 }
 
 /** A release record, its bytes (what the image build checks the tarball against), and where it came from. */
 export interface FoundRecord {
   record: ReleaseRecord;
-  text: string;
+  bytes: Buffer;
   source: RecordSource;
 }
 
@@ -109,7 +116,7 @@ export interface FoundRecord {
 export const RELEASES_URL = "https://raw.githubusercontent.com/typesol-lang/typesol/main/releases";
 
 /** The fetch a record lookup uses (tests pass their own: no network). */
-export type FetchText = (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+export type FetchText = (url: string, init: { signal: AbortSignal }) => Promise<{ ok: boolean; status: number; arrayBuffer(): Promise<ArrayBuffer> }>;
 
 function parseRecord(text: string, version: string, where: string): ReleaseRecord {
   let r: ReleaseRecord;
@@ -118,8 +125,17 @@ function parseRecord(text: string, version: string, where: string): ReleaseRecor
   } catch (e) {
     throw new DockerError(`${where}: not valid JSON (${(e as Error).message})`);
   }
-  if (r?.version !== version || typeof r.tarball?.shasum !== "string" || typeof r.tarball.integrity !== "string" || !Array.isArray(r.files))
-    throw new DockerError(`${where} is not the release record of TypeSOL ${version} (version, tarball.shasum, tarball.integrity and files are required)`);
+  if (
+    r?.version !== version ||
+    typeof r.commit !== "string" ||
+    !r.commit ||
+    typeof r.tarball?.shasum !== "string" ||
+    typeof r.tarball.integrity !== "string" ||
+    !Array.isArray(r.files)
+  )
+    throw new DockerError(
+      `${where} is not the release record of TypeSOL ${version} (version, commit, tarball.shasum, tarball.integrity and files are required)`,
+    );
   return r;
 }
 
@@ -153,7 +169,7 @@ export function releaseRecord(version: string, file?: string, dir = RELEASES_DIR
   const record = parseRecord(text, version, at);
   return {
     record,
-    text,
+    bytes,
     source: file ? { kind: "file", location: file, sha256: sha256(bytes) } : { kind: "package", location: `releases/${version}.json`, sha256: sha256(bytes) },
   };
 }
@@ -177,7 +193,7 @@ export async function findReleaseRecord(
   const instead =
     `pass the record with --release-record <file> (releases/${version}.json from the repository), ` +
     `or build a version this package records (${recordedVersions(dir).join(", ") || "none"}) with --typesol-version`;
-  let text: string;
+  let bytes: Buffer;
   try {
     const res = await fetchText(url, { signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000) });
     if (res.status === 404)
@@ -186,17 +202,18 @@ export async function findReleaseRecord(
           `Is ${version} a released version? Otherwise ${instead}.`,
       );
     if (!res.ok) throw new DockerError(`could not fetch the release record of TypeSOL ${version} from ${url} (HTTP ${res.status}): ${instead}.`);
-    text = await res.text();
+    bytes = Buffer.from(await res.arrayBuffer());
   } catch (e) {
     if (e instanceof DockerError) throw e;
     throw new DockerError(
       `could not fetch the release record of TypeSOL ${version} from ${url} (${(e as Error).message}; offline?). This package does not ship it: ${instead}.`,
     );
   }
+  const text = bytes.toString("utf8");
   const record = parseRecord(text, version, url);
-  const digest = sha256(text);
+  const digest = sha256(bytes);
   (opts.log ?? ((s: string) => console.error(s)))(`  record    releases/${version}.json from ${url} (sha256 ${digest}): this package was published before it`);
-  return { record, text, source: { kind: "repository", location: url, sha256: digest } };
+  return { record, bytes, source: { kind: "repository", location: url, sha256: digest } };
 }
 
 /**
@@ -237,17 +254,68 @@ export interface BuildImage {
 }
 
 /**
+ * The dependency lock of `version`'s image: this package's docker/deps/<version>.lock.json, else the one in that
+ * version's own tarball, whose sha256 the release record lists (the image takes it from the checked tarball). Neither:
+ * a DockerError, as the image would have to resolve the dependencies unpinned.
+ */
+export function dependencyLock(record: ReleaseRecord, dir = DEPS_DIR): { bytes?: Buffer; lock: NonNullable<ContainerIdentity["deps"]> } {
+  const rel = `docker/deps/${record.version}.lock.json`;
+  const at = path.join(dir, `${record.version}.lock.json`);
+  if (existsSync(at)) {
+    const bytes = readFileSync(at);
+    return { bytes, lock: { path: rel, sha256: sha256(bytes), source: "package" } };
+  }
+  const inTarball = record.files.find((f) => f.path === rel);
+  if (inTarball) return { lock: { path: rel, sha256: inTarball.sha256, source: "tarball" } };
+  throw new DockerError(
+    `no dependency lock for TypeSOL ${record.version}: neither this package (${rel}) nor that version's tarball has one, ` +
+      `so its npm dependencies could not be installed pinned. Use a later @typesol/cli, or a version this package locks (${lockedVersions(dir).join(", ") || "none"}).`,
+  );
+}
+
+/** The versions whose dependency locks ship with this package. */
+export function lockedVersions(dir = DEPS_DIR): string[] {
+  try {
+    return readdirSync(dir).flatMap((f) => /^(\d+\.\d+\.\d+(?:-[\w.]+)?)\.lock\.json$/.exec(f)?.[1] ?? []);
+  } catch {
+    return [];
+  }
+}
+
+/** sha256 of a record's file list (path and sha256 of each, in order): one label for "every file as recorded". */
+export function filesDigest(record: ReleaseRecord): string {
+  return sha256(record.files.map((f) => `${f.path}\0${f.sha256}\n`).join(""));
+}
+
+/**
+ * The labels an image is built with: everything the image build checked. A cached image is used only when all of
+ * them are this record's and this lock's.
+ */
+export function imageLabels(dockerfileSha: string, record: ReleaseRecord, lockSha: string): Record<string, string> {
+  return {
+    "org.typesol.dockerfile.sha256": dockerfileSha,
+    "org.typesol.release.integrity": record.tarball.integrity,
+    "org.typesol.release.shasum": record.tarball.shasum,
+    "org.typesol.release.commit": record.commit,
+    "org.typesol.release.files": filesDigest(record),
+    "org.typesol.deps.sha256": lockSha,
+  };
+}
+
+/**
  * The image for `version`, built first when this machine has none (`typesol-build:<version>-<Dockerfile sha256>`).
  * Progress goes to stderr. Building needs the network (base images, release files, npm); running it does not.
  */
 export function ensureImage(version: string, found?: FoundRecord, log: (s: string) => void = (s) => console.error(s)): BuildImage {
   needDocker();
-  const { record, text, source } = found ?? releaseRecord(version);
+  const { record, bytes, source } = found ?? releaseRecord(version);
   if (record.version !== version) throw new DockerError(`the release record is of TypeSOL ${record.version}, not ${version}`);
+  const deps = dependencyLock(record);
   const dockerfile = readFileSync(DOCKERFILE, "utf8");
   const dockerfileSha = sha256(dockerfile);
   const tag = `${IMAGE}:${version}-${dockerfileSha.slice(0, 12)}`;
-  let id = imageId(tag, record);
+  const labels = imageLabels(dockerfileSha, record, deps.lock.sha256);
+  let id = imageId(tag, labels);
   if (!id) {
     const shown = path.relative(process.cwd(), DOCKERFILE);
     log(`  image     building ${tag} (${DOCKER_PLATFORM}) from ${shown.startsWith("..") ? DOCKERFILE : shown}`);
@@ -255,7 +323,9 @@ export function ensureImage(version: string, found?: FoundRecord, log: (s: strin
     const ctx = mkdtempSync(path.join(os.tmpdir(), "typesol-image-"));
     try {
       copyFileSync(DOCKERFILE, path.join(ctx, "Dockerfile"));
-      writeFileSync(path.join(ctx, "release.json"), text);
+      writeFileSync(path.join(ctx, "release.json"), bytes);
+      // Empty when the lock is the one in the version's own tarball: the image takes it from there, once checked.
+      writeFileSync(path.join(ctx, "deps.lock.json"), deps.bytes ?? "");
       const r = spawnSync(
         "docker",
         [
@@ -264,10 +334,7 @@ export function ensureImage(version: string, found?: FoundRecord, log: (s: strin
           DOCKER_PLATFORM,
           "--build-arg",
           `TYPESOL_VERSION=${version}`,
-          "--label",
-          `org.typesol.dockerfile.sha256=${dockerfileSha}`,
-          "--label",
-          `org.typesol.release.integrity=${record.tarball.integrity}`,
+          ...Object.entries(labels).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
           "-t",
           tag,
           ctx,
@@ -282,7 +349,7 @@ export function ensureImage(version: string, found?: FoundRecord, log: (s: strin
     } finally {
       rmSync(ctx, { recursive: true, force: true });
     }
-    id = imageId(tag, record);
+    id = imageId(tag, labels);
     if (!id) throw new DockerError(`docker build reported success, but ${tag} is not there`);
   }
   const { base, downloads } = dockerfileInputs(dockerfile);
@@ -295,20 +362,34 @@ export function ensureImage(version: string, found?: FoundRecord, log: (s: strin
       base,
       downloads,
       typesol: { version, shasum: record.tarball.shasum, integrity: record.tarball.integrity, commit: record.commit, record: source },
+      deps: deps.lock,
     },
   };
 }
 
-/** The local image id of `tag` when it is there, for this platform and built from this record; else undefined. */
-function imageId(tag: string, record: ReleaseRecord): string | undefined {
-  const r = spawnSync(
-    "docker",
-    ["image", "inspect", "--format", '{{.Id}} {{.Os}}/{{.Architecture}} {{index .Config.Labels "org.typesol.release.integrity"}}', tag],
-    { encoding: "utf8" },
-  );
+/**
+ * The local image id of `tag` when it is there, for this platform, with these labels; undefined when there is none.
+ * An image of the tag built from another record or lock (a label differs) is an error, not a silent rebuild: two
+ * records of one version disagree, and one of them is wrong.
+ */
+function imageId(tag: string, labels: Record<string, string>): string | undefined {
+  const r = spawnSync("docker", ["image", "inspect", "--format", "{{.Id}} {{.Os}}/{{.Architecture}} {{json .Config.Labels}}", tag], { encoding: "utf8" });
   if (r.status !== 0) return undefined;
-  const [id, platform, integrity] = r.stdout.trim().split(" ");
-  return platform === DOCKER_PLATFORM && integrity === record.tarball.integrity ? id : undefined;
+  const [id, platform, ...rest] = r.stdout.trim().split(" ");
+  if (platform !== DOCKER_PLATFORM) return undefined;
+  let found: Record<string, string> = {};
+  try {
+    found = (JSON.parse(rest.join(" ")) as Record<string, string> | null) ?? {};
+  } catch {
+    /* no labels */
+  }
+  const differ = Object.entries(labels).filter(([k, v]) => found[k] !== v);
+  if (!differ.length) return id;
+  throw new DockerError(
+    `the local image ${tag} was not built from this release record and dependency lock (${differ
+      .map(([k, v]) => `${k}: the image has ${found[k] ?? "none"}, this record ${v}`)
+      .join("; ")}). If this record is the right one, remove the image (docker image rm ${tag}) and run again: it is then built from this record.`,
+  );
 }
 
 /** One program to build in the container. Paths are the host's. */
@@ -329,7 +410,7 @@ export interface ContainerResult {
 
 /**
  * Build `jobs` in the image: `root` mounted read-only (the only sources the container sees), each output directory
- * writable, no network, a read-only root file system, no capabilities, the caller's uid (never root). The files are
+ * writable, no network, a read-only root file system, no capabilities, the caller's uid and gid (containerUser). The files are
  * the ones `build` writes; each manifest gets the container's identity.
  */
 export function containerBuild(image: BuildImage, root: string, jobs: ContainerJob[]): ContainerResult[] {
@@ -387,11 +468,13 @@ export function containerBuild(image: BuildImage, root: string, jobs: ContainerJ
   });
 }
 
-/** The caller's uid:gid, so that the outputs are the caller's; never root (the image's `node` user instead). */
-export function containerUser(): string {
-  const uid = process.getuid?.();
-  const gid = process.getgid?.();
-  return uid !== undefined && uid !== 0 && gid !== undefined ? `${uid}:${gid}` : "1000:1000";
+/**
+ * The user the container runs as: the caller's uid:gid, so that it can write the output directories the caller made
+ * and the outputs are the caller's. That is root (0:0) for a root caller, still without capabilities, with
+ * no-new-privileges and a read-only root file system. Where there is no uid (Windows), the image's `node` user.
+ */
+export function containerUser(ids: { uid?: number; gid?: number } = { uid: process.getuid?.(), gid: process.getgid?.() }): string {
+  return ids.uid !== undefined && ids.gid !== undefined ? `${ids.uid}:${ids.gid}` : "1000:1000";
 }
 
 /** TYPESOL_DOCKER_CPUS / TYPESOL_DOCKER_MEMORY: limits for the build container on a shared machine. */
@@ -416,4 +499,27 @@ export function sourceRevision(dir: string): { commit: string; clean: boolean } 
   if (head.status !== 0) return undefined;
   const status = spawnSync("git", ["-C", dir, "status", "--porcelain", "--", "."], { encoding: "utf8" });
   return { commit: head.stdout.trim(), clean: status.status === 0 && status.stdout.trim() === "" };
+}
+
+/** The `typesol verify` command that repeats a container verify: the arguments and every option that changes the result. */
+export function repeatCommand(args: string[], v: Record<string, unknown>, version: string): string {
+  const opt = (name: string) => (typeof v[name] === "string" ? [`--${name}`, shellQuote(v[name] as string)] : []);
+  return [
+    "typesol verify",
+    ...args.map(shellQuote),
+    ...opt("address"),
+    ...opt("url"),
+    ...opt("config"),
+    ...opt("sbpf"),
+    ...opt("manifest"),
+    "--docker",
+    "--typesol-version",
+    version,
+    ...opt("release-record"),
+  ].join(" ");
+}
+
+/** Quote a command-line word for a POSIX shell when it needs it. */
+export function shellQuote(s: string): string {
+  return /^[\w@%+=:,./-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
 }

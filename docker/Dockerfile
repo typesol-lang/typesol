@@ -1,12 +1,14 @@
 # The pinned build environment of `typesol build --docker` and `typesol verify --docker` (docs/mainnet.md).
 #
 # Every input is pinned: the base images by digest, the Agave and platform-tools release files by sha256 (BuildKit
-# refuses a download whose checksum differs), and the TypeSOL package by its release record (releases/<version>.json,
+# refuses a download whose checksum differs), the TypeSOL package by its release record (releases/<version>.json,
 # copied into the build context as release.json): the npm tarball's sha512 integrity and sha1 shasum, and every file's
-# sha256. Anyone can build the same environment from this file:
+# sha256; and its npm dependencies by their lock (docker/deps/<version>.lock.json, copied as deps.lock.json, or an empty
+# deps.lock.json to take the one in the version's own tarball), which `npm ci` installs with every package's integrity
+# checked. Anyone can build the same environment from this file (from the package's or the repository's root):
 #
-#   mkdir ctx && cp Dockerfile ctx/ && cp releases/0.44.0.json ctx/release.json
-#   docker build --platform linux/amd64 --build-arg TYPESOL_VERSION=0.44.0 -t typesol-build:0.44.0 ctx
+#   mkdir ctx && cp docker/Dockerfile ctx/ && cp releases/0.44.1.json ctx/release.json && cp docker/deps/0.44.1.lock.json ctx/deps.lock.json
+#   docker build --platform linux/amd64 --build-arg TYPESOL_VERSION=0.44.1 -t typesol-build:0.44.1 ctx
 #
 # The image is not published anywhere: it is built locally from these inputs. Its image id can differ between machines
 # (BuildKit and Docker versions, layer dates), so a build records this file's sha256 and the pinned inputs, which do
@@ -93,19 +95,58 @@ for (const j of JSON.parse(process.argv[2])) {
 console.log(`TYPESOL_RESULT ${JSON.stringify(results)}`);
 EOF
 
+# The dependency install: the npm lockfile of the TypeSOL version's runtime dependencies (docker/deps/<version>.lock.json),
+# from the build context when the running package ships it, else from the version's own tarball, checked above. When
+# both are there they must be the same bytes. The lock must describe exactly the dependencies the tarball's
+# package.json declares, and every package in it must come from the npm registry with an integrity value, which
+# `npm ci` then checks each download against: nothing is resolved at build time.
+COPY <<'EOF' /opt/typesol/install-deps.mjs
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const [given, unpacked, version, out] = process.argv.slice(2);
+const fail = (m) => {
+  console.error(`typesol dependency lock: ${m}`);
+  process.exit(1);
+};
+const rel = `docker/deps/${version}.lock.json`;
+const fromContext = existsSync(given) && readFileSync(given).length ? readFileSync(given) : undefined;
+const fromTarball = existsSync(`${unpacked}/${rel}`) ? readFileSync(`${unpacked}/${rel}`) : undefined;
+if (fromContext && fromTarball && !fromContext.equals(fromTarball)) fail(`the package's ${rel} and the tarball's differ`);
+const bytes = fromContext ?? fromTarball;
+if (!bytes) fail(`no ${rel}, in the build context or in the tarball`);
+const lock = JSON.parse(bytes.toString("utf8"));
+if (lock.lockfileVersion !== 3) fail(`lockfileVersion ${lock.lockfileVersion}, expected 3`);
+const root = lock.packages?.[""];
+const declared = JSON.parse(readFileSync(`${unpacked}/package.json`, "utf8")).dependencies ?? {};
+const canonical = (o) => JSON.stringify(Object.keys(o ?? {}).sort().map((k) => [k, o[k]]));
+if (canonical(root?.dependencies) !== canonical(declared)) fail(`the lock is for ${canonical(root?.dependencies)}, the package declares ${canonical(declared)}`);
+const entries = Object.entries(lock.packages).filter(([p]) => p !== "");
+for (const [p, e] of entries) {
+  if (e.link) fail(`${p} is a link`);
+  if (!/^https:\/\/registry\.npmjs\.org\//.test(e.resolved ?? "")) fail(`${p} resolves to ${e.resolved ?? "nothing"}, not the npm registry`);
+  if (!/^sha512-/.test(e.integrity ?? "")) fail(`${p} has no sha512 integrity`);
+}
+writeFileSync(`${out}/package-lock.json`, bytes);
+writeFileSync(`${out}/package.json`, JSON.stringify({ name: root.name, version: root.version, private: true, dependencies: root.dependencies }, null, 2) + "\n");
+console.log(`typesol dependency lock: ${rel} (${fromContext ? "the package's" : "the tarball's"}), ${entries.length} packages, each with its integrity`);
+EOF
+
 ARG TYPESOL_VERSION
-COPY release.json /opt/typesol/release.json
-# npm resolves the package's dependencies at image build time (the tarball has no lockfile). TypeScript, the only one
-# that decides what compiles, is pinned exactly by the package; the resolved tree is kept in package-lock.json.
+COPY release.json deps.lock.json /opt/typesol/ctx/
+# The TypeSOL tarball, checked against the release record, then its dependencies with `npm ci` from the lock (npm checks
+# every package's integrity; no install scripts run), then the checked files moved to node_modules/@typesol/cli
+# without a second resolution.
 RUN test -n "$TYPESOL_VERSION" || { echo "--build-arg TYPESOL_VERSION=<version> is required" >&2; exit 1; } \
     && mkdir -p /tmp/typesol/unpacked && cd /tmp/typesol \
     && npm pack "@typesol/cli@${TYPESOL_VERSION}" --pack-destination /tmp/typesol --silent \
     && tar -xzf "typesol-cli-${TYPESOL_VERSION}.tgz" -C unpacked --strip-components=1 \
-    && node /opt/typesol/check-tarball.mjs /opt/typesol/release.json "typesol-cli-${TYPESOL_VERSION}.tgz" unpacked "$TYPESOL_VERSION" \
+    && node /opt/typesol/check-tarball.mjs /opt/typesol/ctx/release.json "typesol-cli-${TYPESOL_VERSION}.tgz" unpacked "$TYPESOL_VERSION" \
+    && node /opt/typesol/install-deps.mjs /opt/typesol/ctx/deps.lock.json unpacked "$TYPESOL_VERSION" /opt/typesol \
     && cd /opt/typesol \
-    && npm install --prefix /opt/typesol --omit=peer --omit=optional --ignore-scripts --no-audit --no-fund --silent \
-        "/tmp/typesol/typesol-cli-${TYPESOL_VERSION}.tgz" \
-    && ln -s /opt/typesol/node_modules/.bin/typesol /usr/local/bin/typesol \
+    && npm ci --omit=peer --omit=optional --ignore-scripts --no-audit --no-fund --silent \
+    && mkdir -p /opt/typesol/node_modules/@typesol \
+    && mv /tmp/typesol/unpacked /opt/typesol/node_modules/@typesol/cli \
+    && chmod 755 /opt/typesol/node_modules/@typesol/cli/dist/cli.js \
+    && ln -s /opt/typesol/node_modules/@typesol/cli/dist/cli.js /usr/local/bin/typesol \
     && rm -rf /tmp/typesol /root/.npm \
     && typesol --version
 
@@ -114,8 +155,8 @@ LABEL org.opencontainers.image.title="typesol-build" \
       org.opencontainers.image.source="https://github.com/typesol-lang/typesol" \
       org.typesol.version="${TYPESOL_VERSION}"
 
-# A build runs as a non-root user (the CLI passes the caller's uid, or this one), without network, on a read-only
-# root file system; HOME points at the writable /tmp.
+# A build runs as the caller's uid and gid (passed by the CLI; this user where there is none), without network or
+# capabilities, on a read-only root file system; HOME points at the writable /tmp.
 USER node
 ENV HOME=/tmp
 WORKDIR /src

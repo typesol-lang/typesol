@@ -15,16 +15,22 @@ import { COMPILER_VERSION, TESTED_TOOLCHAIN } from "../../src/compiler/index.ts"
 import { dockerCheck } from "../../src/tools/doctor.ts";
 import {
   chooseTypesolVersion,
+  containerUser,
+  dependencyLock,
   DOCKER_PLATFORM,
   dockerfileInputs,
   dockerStatus,
   ensureImage,
   findReleaseRecord,
   type FetchText,
+  imageLabels,
+  lockedVersions,
   recordedVersions,
   RELEASES_URL,
   releaseRecord,
+  repeatCommand,
 } from "../../src/tools/docker.ts";
+import { lockProblems } from "../../scripts/release-check.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = path.join(ROOT, "dist/cli.js");
@@ -64,9 +70,18 @@ describe("the build container's recipe", () => {
       `https://github.com/anza-xyz/agave/releases/download/v${TESTED_TOOLCHAIN.agave}/solana-release-x86_64-unknown-linux-gnu.tar.bz2`,
       `https://github.com/anza-xyz/platform-tools/releases/download/${TESTED_TOOLCHAIN.platformTools}/platform-tools-linux-x86_64.tar.bz2`,
     ]);
-    // Every download is checksummed, and nothing is fetched unpinned (no package manager, no curl).
+    // Every download is checksummed, and nothing is fetched unpinned: no system package manager or curl, and npm only
+    // as `npm pack` (the tarball, checked against the release record) and `npm ci` (from the lock, which checks every
+    // package's integrity); never `npm install`, `npm i`, `npx` or another package manager.
     expect(DOCKERFILE.match(/^ADD\s/gm)?.length).toBe(downloads.length);
-    expect(DOCKERFILE).not.toMatch(/apt-get|apk add|curl |wget /);
+    const commands = DOCKERFILE.split("\n")
+      .filter((l) => !/^\s*#/.test(l))
+      .join("\n");
+    expect(commands).not.toMatch(/apt-get|apk add|curl |wget /);
+    expect(commands).not.toMatch(/\bnpx\b|\byarn\b|\bpnpm\b|\bcorepack\b/);
+    expect([...new Set([...commands.matchAll(/(?:^RUN\s+|&&\s*)npm\s+([a-z-]+)/gm)].map((m) => m[1]))].sort()).toEqual(["ci", "pack"]);
+    expect(commands).toMatch(/install-deps\.mjs [^\n]*\n\s*&& cd \/opt\/typesol \\\n\s*&& npm ci --omit=peer --omit=optional --ignore-scripts /);
+    expect(commands).toMatch(/^COPY release\.json deps\.lock\.json \/opt\/typesol\/ctx\/$/m);
     expect(DOCKERFILE).toContain(`platform-tools-${TESTED_TOOLCHAIN.platformTools}.md`);
     expect(DOCKER_PLATFORM).toBe("linux/amd64");
     expect(DOCKERFILE).toMatch(/^USER node$/m);
@@ -76,6 +91,22 @@ describe("the build container's recipe", () => {
     const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { files: string[] };
     expect(pkg.files).toEqual(expect.arrayContaining(["docker", "releases"]));
     expect(recordedVersions()).toEqual(expect.arrayContaining(["0.43.0", "0.44.0"]));
+    // Every recorded version has its dependency lock, installable as the image installs it.
+    expect(lockedVersions().sort()).toEqual(expect.arrayContaining(recordedVersions()));
+    for (const v of recordedVersions()) {
+      const text = readFileSync(path.join(ROOT, `docker/deps/${v}.lock.json`), "utf8");
+      const deps = (JSON.parse(text) as { packages: Record<string, { dependencies?: Record<string, string> }> }).packages[""]!.dependencies!;
+      expect(deps.typescript, v).toMatch(/^\d+\.\d+\.\d+$/);
+      expect(lockProblems(text, deps), v).toEqual([]);
+    }
+    const own = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { version: string; dependencies: Record<string, string> };
+    if (lockedVersions().includes(own.version))
+      expect(lockProblems(readFileSync(path.join(ROOT, `docker/deps/${own.version}.lock.json`), "utf8"), own.dependencies)).toEqual([]);
+    // A record needs its commit, as every field the image is labelled with.
+    const noCommit = path.join(tmp(), "nocommit.json");
+    const { commit: _c, ...rest } = JSON.parse(readFileSync(path.join(ROOT, "releases/0.44.0.json"), "utf8"));
+    writeFileSync(noCommit, JSON.stringify(rest));
+    expect(() => releaseRecord("0.44.0", noCommit)).toThrow(/version, commit, tarball\.shasum, tarball\.integrity and files are required/);
     expect(releaseRecord("0.44.0").record.tarball.shasum).toBe("76ad162bd7d31e80ba8ada0a5a712df5420b6bde");
     expect(() => releaseRecord("0.42.0")).toThrow(/no release record for TypeSOL 0\.42\.0[\s\S]*--release-record <file>[\s\S]*before 0\.43\.0 have no record/);
     const wrong = path.join(tmp(), "r.json");
@@ -90,19 +121,27 @@ describe("the build container's recipe", () => {
     const newer = shipped.replaceAll('"version": "0.44.1"', '"version": "9.9.9"');
     const asked: string[] = [];
     const serve =
-      (status: number, body = ""): FetchText =>
+      (status: number, body: string | Buffer = ""): FetchText =>
       async (url) => {
         asked.push(url);
-        return { ok: status === 200, status, text: async () => body };
+        const bytes = Buffer.from(body);
+        return { ok: status === 200, status, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length) as ArrayBuffer };
       };
     const logged: string[] = [];
     const found = await findReleaseRecord("9.9.9", { fetch: serve(200, newer), log: (s) => logged.push(s) });
     expect(asked).toEqual([`${RELEASES_URL}/9.9.9.json`]);
     expect(RELEASES_URL).toBe("https://raw.githubusercontent.com/typesol-lang/typesol/main/releases");
     expect(found.record.version).toBe("9.9.9");
-    expect(found.text).toBe(newer);
+    expect(found.bytes.toString("utf8")).toBe(newer);
     expect(found.source).toEqual({ kind: "repository", location: `${RELEASES_URL}/9.9.9.json`, sha256: createHash("sha256").update(newer).digest("hex") });
     expect(logged.join("\n")).toContain(`releases/9.9.9.json from ${RELEASES_URL}/9.9.9.json (sha256 ${found.source.sha256})`);
+    // The sha256 is of the bytes served (what sha256sum gives), also when they are not valid UTF-8.
+    const marked = Buffer.from(newer.replace('"version": "9.9.9"', '"note": "@@", "version": "9.9.9"'));
+    const at = marked.indexOf("@@");
+    const odd = Buffer.concat([marked.subarray(0, at), Buffer.from([0xff]), marked.subarray(at + 2)]);
+    const raw = await findReleaseRecord("9.9.9", { fetch: serve(200, odd), log: () => {} });
+    expect(raw.source.sha256).toBe(createHash("sha256").update(odd).digest("hex"));
+    expect(raw.source.sha256).not.toBe(createHash("sha256").update(odd.toString("utf8")).digest("hex"));
 
     // The package's own record, or the file given, is used as it is: nothing fetched.
     asked.length = 0;
@@ -130,24 +169,156 @@ describe("the build container's recipe", () => {
     await expect(findReleaseRecord("9.9.9", { fetch: serve(200, "<html>") })).rejects.toThrow(/not valid JSON/);
   });
 
-  it("records where the release record came from in the image's identity", () => {
-    const shipped = readFileSync(path.join(ROOT, "releases/0.44.1.json"), "utf8");
-    const record = JSON.parse(shipped) as { tarball: { integrity: string } };
+  it("records the release record's origin and the dependency lock; a cached image must carry every checked value", () => {
+    const shipped = readFileSync(path.join(ROOT, "releases/0.44.1.json"));
+    const { record } = releaseRecord("0.44.1");
+    const lock = dependencyLock(record).lock;
+    expect(lock).toEqual({
+      path: "docker/deps/0.44.1.lock.json",
+      sha256: sha256(path.join(ROOT, "docker/deps/0.44.1.lock.json")),
+      source: "package",
+    });
+    const labels = imageLabels(createHash("sha256").update(DOCKERFILE).digest("hex"), record, lock.sha256);
     // A docker that has the image already (version, inspect): ensureImage builds nothing and reports the identity.
-    const bin = fakeDocker(
-      `case "$1" in version) echo "29.0.0 linux/amd64";; image) echo "sha256:feed linux/amd64 ${record.tarball.integrity}";; *) exit 9;; esac`,
-    );
+    const cached = (l: Record<string, string>) =>
+      fakeDocker(`case "$1" in version) echo "29.0.0 linux/amd64";; image) echo 'sha256:feed linux/amd64 ${JSON.stringify(l)}';; *) exit 9;; esac`);
     const saved = process.env.PATH;
-    process.env.PATH = `${bin}${path.delimiter}${saved}`;
     try {
+      process.env.PATH = `${cached(labels)}${path.delimiter}${saved}`;
       const source = { kind: "repository" as const, location: `${RELEASES_URL}/0.44.1.json`, sha256: "ab".repeat(32) };
-      const image = ensureImage("0.44.1", { record: releaseRecord("0.44.1").record, text: shipped, source }, () => {});
+      const image = ensureImage("0.44.1", { record, bytes: shipped, source }, () => {});
       expect(image.identity.image).toBe("sha256:feed");
-      expect(image.identity.typesol).toMatchObject({ version: "0.44.1", record: source });
+      expect(image.identity.typesol).toMatchObject({ version: "0.44.1", commit: record.commit, record: source });
+      expect(image.identity.deps).toEqual(lock);
       expect(ensureImage("0.44.1", undefined, () => {}).identity.typesol.record).toMatchObject({ kind: "package", location: "releases/0.44.1.json" });
+      // The same tag built from a record with the same integrity but another shasum, commit or file list, or another
+      // lock: refused, with what differs, instead of reporting this record's values for it.
+      for (const key of ["org.typesol.release.shasum", "org.typesol.release.commit", "org.typesol.release.files", "org.typesol.deps.sha256"]) {
+        process.env.PATH = `${cached({ ...labels, [key]: "other" })}${path.delimiter}${saved}`;
+        expect(() => ensureImage("0.44.1", undefined, () => {}), key).toThrow(
+          new RegExp(`was not built from this release record and dependency lock \\(${key.replaceAll(".", "\\.")}: the image has other, .*docker image rm`),
+        );
+      }
+      // A version newer than this package: the lock is the one its tarball holds, by the record's sha256 of it.
+      const newer = { ...record, version: "9.9.9", files: [...record.files, { path: "docker/deps/9.9.9.lock.json", sha256: "c".repeat(64) }] };
+      expect(dependencyLock(newer).lock).toEqual({ path: "docker/deps/9.9.9.lock.json", sha256: "c".repeat(64), source: "tarball" });
+      expect(() => dependencyLock({ ...record, version: "9.9.9" })).toThrow(/no dependency lock for TypeSOL 9\.9\.9/);
     } finally {
       process.env.PATH = saved;
     }
+  });
+
+  it("checks the TypeSOL tarball and the dependency lock as the image build does (its scripts, without Docker)", () => {
+    const script = (name: string) => {
+      const m = new RegExp(`COPY <<'EOF' /opt/typesol/${name.replace(".", "\\.")}\\n([\\s\\S]*?)\\nEOF\\n`).exec(DOCKERFILE);
+      const file = path.join(tmp(), name);
+      writeFileSync(file, m![1]!);
+      return file;
+    };
+    const check = script("check-tarball.mjs");
+    const install = script("install-deps.mjs");
+    const node = (file: string, args: string[]) => spawnSync(process.execPath, [file, ...args], { encoding: "utf8" });
+    // A package of two files, packed as npm does (package/…), and its record.
+    const work = tmp();
+    mkdirSync(path.join(work, "package/dist"), { recursive: true });
+    const lockText = readFileSync(path.join(ROOT, "docker/deps/0.44.1.lock.json"), "utf8");
+    const deps = (JSON.parse(lockText) as { packages: Record<string, { dependencies: Record<string, string> }> }).packages[""]!.dependencies;
+    writeFileSync(path.join(work, "package/package.json"), JSON.stringify({ name: "@typesol/cli", version: "1.0.0", dependencies: deps }));
+    writeFileSync(path.join(work, "package/dist/cli.js"), "console.log(1)\n");
+    const tgz = path.join(work, "p.tgz");
+    expect(spawnSync("tar", ["-czf", tgz, "-C", work, "package"]).status).toBe(0);
+    const data = readFileSync(tgz);
+    const files = ["dist/cli.js", "package.json"].map((f) => ({ path: f, sha256: sha256(path.join(work, "package", f)) }));
+    const rec = {
+      version: "1.0.0",
+      commit: "a".repeat(40),
+      tarball: { integrity: `sha512-${createHash("sha512").update(data).digest("base64")}`, shasum: createHash("sha1").update(data).digest("hex") },
+      files,
+    };
+    const recFile = path.join(work, "release.json");
+    const unpacked = path.join(work, "package");
+    const checkWith = (r: object, t = tgz) => {
+      writeFileSync(recFile, JSON.stringify(r));
+      return node(check, [recFile, t, unpacked, "1.0.0"]);
+    };
+    const ok = checkWith(rec);
+    expect(ok.stderr).toBe("");
+    expect(ok.stdout).toContain("2 files as recorded");
+    const tampered = path.join(work, "t.tgz");
+    writeFileSync(tampered, Buffer.concat([data, Buffer.from([0])]));
+    expect(checkWith(rec, tampered).stderr).toMatch(/typesol tarball check: integrity sha512-.*, the record has/);
+    expect(checkWith({ ...rec, tarball: { ...rec.tarball, shasum: "0".repeat(40) } }).stderr).toMatch(/shasum [0-9a-f]{40}, the record has 0{40}/);
+    expect(checkWith({ ...rec, files: [{ ...files[0]!, sha256: "0".repeat(64) }, files[1]] }).stderr).toMatch(
+      /dist\/cli\.js: sha256 [0-9a-f]{64}, the record has 0{64}/,
+    );
+    writeFileSync(path.join(unpacked, "extra.js"), "x");
+    expect(checkWith(rec).stderr).toMatch(/the tarball has 3 files, the record 2/);
+    expect(checkWith(rec).status).toBe(1);
+    rmSync(path.join(unpacked, "extra.js"));
+
+    // The lock: from the build context or the tarball (the same bytes when both), for the dependencies the package
+    // declares, every package from the registry with an integrity.
+    const out = tmp();
+    const ctx = path.join(work, "deps.lock.json");
+    const installWith = (context: string, inTarball?: string) => {
+      writeFileSync(ctx, context);
+      rmSync(path.join(unpacked, "docker"), { recursive: true, force: true });
+      if (inTarball !== undefined) {
+        mkdirSync(path.join(unpacked, "docker/deps"), { recursive: true });
+        writeFileSync(path.join(unpacked, "docker/deps/1.0.0.lock.json"), inTarball);
+      }
+      return node(install, [ctx, unpacked, "1.0.0", out]);
+    };
+    const good = installWith(lockText);
+    expect(good.stderr).toBe("");
+    expect(good.stdout).toMatch(/docker\/deps\/1\.0\.0\.lock\.json \(the package's\), \d+ packages, each with its integrity/);
+    expect(readFileSync(path.join(out, "package-lock.json"), "utf8")).toBe(lockText);
+    expect(JSON.parse(readFileSync(path.join(out, "package.json"), "utf8"))).toMatchObject({ name: "typesol-build-deps", dependencies: deps });
+    expect(installWith("", lockText).stdout).toContain("(the tarball's)");
+    expect(installWith("").stderr).toMatch(/no docker\/deps\/1\.0\.0\.lock\.json, in the build context or in the tarball/);
+    expect(installWith(lockText, lockText.replace("6.0.3", "6.0.4")).stderr).toMatch(/the package's .* and the tarball's differ/);
+    const lock = JSON.parse(lockText) as { packages: Record<string, Record<string, unknown>> };
+    const edit = (f: (l: typeof lock) => void) => {
+      const copy = JSON.parse(lockText) as typeof lock;
+      f(copy);
+      return JSON.stringify(copy);
+    };
+    expect(installWith(edit((l) => (l.packages[""]!.dependencies = { typescript: "6.0.3" }))).stderr).toMatch(/the lock is for .*, the package declares/);
+    expect(installWith(edit((l) => delete l.packages["node_modules/typescript"]!.integrity)).stderr).toMatch(
+      /node_modules\/typescript has no sha512 integrity/,
+    );
+    expect(installWith(edit((l) => (l.packages["node_modules/typescript"]!.resolved = "https://example.com/t.tgz"))).stderr).toMatch(/not the npm registry/);
+    expect(
+      lockProblems(
+        edit((l) => delete l.packages["node_modules/typescript"]!.integrity),
+        deps,
+      ),
+    ).toEqual(["node_modules/typescript has no sha512 integrity"]);
+  });
+
+  it("runs the container as the caller's uid and gid, root included; repeats a verify with every option that changes it", () => {
+    expect(containerUser({ uid: 501, gid: 20 })).toBe("501:20");
+    expect(containerUser({ uid: 0, gid: 0 })).toBe("0:0"); // a root caller's output directories are root's: the container must write them
+    expect(containerUser({})).toBe("1000:1000"); // no uid (Windows): the image's node user
+    expect(containerUser()).toBe(process.getuid ? `${process.getuid()}:${process.getgid!()}` : "1000:1000");
+    expect(repeatCommand(["counter.ts"], { docker: true }, "0.44.1")).toBe("typesol verify counter.ts --docker --typesol-version 0.44.1");
+    expect(
+      repeatCommand(
+        ["app"],
+        {
+          address: "Prog111",
+          url: "https://rpc.example/x?a=1",
+          config: "my config.yml",
+          sbpf: "v1",
+          manifest: "app.build.json",
+          "release-record": "r.json",
+          docker: true,
+        },
+        "0.45.0",
+      ),
+    ).toBe(
+      "typesol verify app --address Prog111 --url 'https://rpc.example/x?a=1' --config 'my config.yml' --sbpf v1 --manifest app.build.json --docker --typesol-version 0.45.0 --release-record r.json",
+    );
   });
 
   it("chooses the TypeSOL version: --typesol-version, the deployed build's, this one; a project that installs another is an error", () => {
@@ -233,7 +404,11 @@ describe.skipIf(!!reason)(`with Docker${reason ? ` (skipped: ${reason})` : ""}`,
       clang: TESTED_TOOLCHAIN.clang,
       platformTools: TESTED_TOOLCHAIN.platformTools,
       host: { os: "linux", arch: "x64" },
-      container: { platform: "linux/amd64", typesol: { version, shasum: releaseRecord(version).record.tarball.shasum } },
+      container: {
+        platform: "linux/amd64",
+        typesol: { version, shasum: releaseRecord(version).record.tarball.shasum },
+        deps: { path: `docker/deps/${version}.lock.json`, sha256: sha256(path.join(ROOT, `docker/deps/${version}.lock.json`)), source: "package" },
+      },
     });
     expect(manifest.container.dockerfile).toBe(createHash("sha256").update(DOCKERFILE).digest("hex"));
     expect(manifest.binary).toBe(sha256(path.join(dir, "docker/counter.so")));
@@ -257,7 +432,13 @@ describe.skipIf(!!reason)(`with Docker${reason ? ` (skipped: ${reason})` : ""}`,
       / {2}match {5}[0-9a-f]{64} \(sbpf v0\)\n {2}verified {2}deployed\.so is what counter\.ts builds to in the pinned build container:/,
     );
     expect(ok.stdout).toMatch(/ {4}container {2}linux\/amd64, Dockerfile sha256 [0-9a-f]{64}, local image sha256:/);
+    expect(ok.stdout).toContain(
+      `    deps       docker/deps/${version}.lock.json sha256 ${sha256(path.join(ROOT, `docker/deps/${version}.lock.json`))} (this package's), installed with npm ci`,
+    );
+    expect(ok.stdout).toContain(`(the record names commit ${releaseRecord(version).record.commit})`);
     expect(ok.stdout).toContain(`    repeat     typesol verify counter.ts deployed.so --docker --typesol-version ${version}`);
+    const named = run(["verify", "counter.ts", "deployed.so", "--docker", "--manifest", "deployed.build.json"], dir);
+    expect(named.stdout).toContain(`    repeat     typesol verify counter.ts deployed.so --manifest deployed.build.json --docker --typesol-version ${version}`);
 
     const so = readFileSync(path.join(dir, "deployed.so"));
     so[0x200] ^= 0xff;

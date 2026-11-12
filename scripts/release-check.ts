@@ -7,6 +7,15 @@
  *   node scripts/release-check.ts 0.44.0 --verify --registry   compare the record with `npm view … dist`
  *   node scripts/release-check.ts 0.44.0 --verify --shasum <sha1> [--integrity <sha512-…>]
  *   node scripts/release-check.ts 0.44.0 --verify --tarball <file.tgz> [--write]
+ *   node scripts/release-check.ts 0.45.0 --lock                     write docker/deps/0.45.0.lock.json
+ *
+ * --lock writes the dependency lock of a version for the build container (docker/Dockerfile installs a version's npm
+ * dependencies with `npm ci` from it, every package checked against its integrity): an npm lockfile (v3) of the
+ * package's runtime dependencies only, resolved from the npm registry now. The dependencies are package.json's when it
+ * has that version (the release being prepared: run it before the release commit, which includes the file), else the
+ * published package's (`npm view`). The lock of version N ships in package N, as it does not contain N's own tarball.
+ * The check below refuses a tag without the lock, or with one that is not the package.json's dependencies, and installs
+ * it with `npm ci` in a temporary directory, which checks every package's integrity against the registry.
  *
  * The check exports the tag with `git archive` into a temporary directory (never the working tree, so nothing
  * uncommitted or ignored can reach the package), runs `pnpm install --frozen-lockfile`, `pnpm build` and `pnpm lint`
@@ -189,6 +198,101 @@ export function parseRecord(text: string, version: string): ReleaseRecord {
 }
 
 const recordPath = (version: string) => path.join(ROOT, "releases", `${version}.json`);
+const lockPath = (version: string, root = ROOT) => path.join(root, "docker/deps", `${version}.lock.json`);
+
+/** The name of a dependency lock's root package (what the container's package.json is called). */
+export const LOCK_ROOT = "typesol-build-deps";
+
+/** The same object with its keys in order, as one string: two dependency maps compare as values. */
+const canonical = (o: Record<string, string> | undefined) => JSON.stringify(Object.entries(o ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+
+/**
+ * Why a dependency lock cannot be installed as the container installs it, or [] when it can: lockfile v3, its root
+ * the given dependencies (the package's), and every package from the npm registry with a sha512 integrity (what
+ * docker/Dockerfile's install-deps.mjs requires).
+ */
+export function lockProblems(text: string, dependencies: Record<string, string>): string[] {
+  let lock: {
+    lockfileVersion?: number;
+    packages?: Record<string, { resolved?: string; integrity?: string; link?: boolean; dependencies?: Record<string, string> }>;
+  };
+  try {
+    lock = JSON.parse(text);
+  } catch (e) {
+    return [`not valid JSON (${(e as Error).message})`];
+  }
+  const problems: string[] = [];
+  if (lock.lockfileVersion !== 3) problems.push(`lockfileVersion ${lock.lockfileVersion}, expected 3`);
+  const root = lock.packages?.[""];
+  if (canonical(root?.dependencies) !== canonical(dependencies))
+    problems.push(`the lock is for ${canonical(root?.dependencies)}, the package declares ${canonical(dependencies)}`);
+  for (const [p, e] of Object.entries(lock.packages ?? {})) {
+    if (p === "") continue;
+    if (e.link) problems.push(`${p} is a link`);
+    else if (!/^https:\/\/registry\.npmjs\.org\//.test(e.resolved ?? "")) problems.push(`${p} resolves to ${e.resolved ?? "nothing"}, not the npm registry`);
+    else if (!/^sha512-/.test(e.integrity ?? "")) problems.push(`${p} has no sha512 integrity`);
+  }
+  return problems;
+}
+
+/** The dependency lock of `dependencies`, resolved from the npm registry now (`npm install --package-lock-only`). */
+export function generateLock(version: string, dependencies: Record<string, string>): string {
+  const dir = mkdtempSync(path.join(os.tmpdir(), `typesol-lock-${version}-`));
+  try {
+    writeFileSync(path.join(dir, "package.json"), `${JSON.stringify({ name: LOCK_ROOT, version, private: true, dependencies }, null, 2)}\n`);
+    run("npm", ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", "--registry=https://registry.npmjs.org/"], dir);
+    const text = readFileSync(path.join(dir, "package-lock.json"), "utf8");
+    const problems = lockProblems(text, dependencies);
+    if (problems.length) throw new Error(`the generated lock cannot be used: ${problems.join("; ")}`);
+    return text;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** `--lock`: write docker/deps/<version>.lock.json from package.json (when it is that version) or the published package. */
+function writeLock(version: string): void {
+  const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8")) as { version: string; dependencies?: Record<string, string> };
+  const fromHere = pkg.version === version;
+  const dependencies = fromHere
+    ? (pkg.dependencies ?? {})
+    : (JSON.parse(output("npm", ["view", `${PACKAGE}@${version}`, "dependencies", "--json"]) || "{}") as Record<string, string>);
+  const text = generateLock(version, dependencies);
+  mkdirSync(path.dirname(lockPath(version)), { recursive: true });
+  writeFileSync(lockPath(version), text);
+  const count = Object.keys((JSON.parse(text) as { packages: object }).packages).length - 1;
+  console.log(
+    `${path.relative(process.cwd(), lockPath(version))}: ${count} packages for the dependencies of ${fromHere ? "package.json" : `${PACKAGE}@${version} on npm`}, ` +
+      `sha256 ${createHash("sha256").update(text).digest("hex")}`,
+  );
+}
+
+/** The release's dependency lock in the tag's tree: there, its package.json's dependencies, and installable with integrity. */
+function checkLock(src: string, version: string): void {
+  const file = lockPath(version, src);
+  if (!existsSync(file))
+    throw new Error(
+      `docker/deps/${version}.lock.json is not in the tag: run \`node scripts/release-check.ts ${version} --lock\` and commit it with the release`,
+    );
+  const text = readFileSync(file, "utf8");
+  const deps = (JSON.parse(readFileSync(path.join(src, "package.json"), "utf8")) as { dependencies?: Record<string, string> }).dependencies ?? {};
+  const problems = lockProblems(text, deps);
+  if (problems.length) throw new Error(`docker/deps/${version}.lock.json: ${problems.join("; ")}`);
+  // What the container does: npm ci from the lock, which checks every package against its integrity.
+  const dir = mkdtempSync(path.join(os.tmpdir(), `typesol-lock-check-${version}-`));
+  try {
+    const root = (JSON.parse(text) as { packages: Record<string, { name?: string; version?: string }> }).packages[""]!;
+    writeFileSync(path.join(dir, "package-lock.json"), text);
+    writeFileSync(
+      path.join(dir, "package.json"),
+      `${JSON.stringify({ name: root.name, version: root.version, private: true, dependencies: deps }, null, 2)}\n`,
+    );
+    run("npm", ["ci", "--omit=peer", "--omit=optional", "--ignore-scripts", "--no-audit", "--no-fund"], dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  console.log(`\ndocker/deps/${version}.lock.json: the package's dependencies, installed with every integrity checked`);
+}
 const run = (cmd: string, args: string[], cwd: string) => {
   console.log(`\n$ ${cmd} ${args.join(" ")}`);
   const r = spawnSync(cmd, args, { cwd, stdio: "inherit" });
@@ -213,6 +317,7 @@ function check(version: string, opts: { tests: boolean; out?: string }): void {
     run("pnpm", ["install", "--frozen-lockfile"], src);
     run("pnpm", ["build"], src);
     run("pnpm", ["lint"], src);
+    checkLock(src, version);
     if (opts.tests) run("pnpm", ["test"], src);
     else console.log("\n(tests not run: the release steps run `pnpm test` before tagging; --tests runs them here too)");
     // prepack would only run `pnpm build` again (and print into the --json output); dist/ was just built from the tag.
@@ -314,8 +419,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const version = args[0];
   try {
     if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version))
-      throw new Error("usage: node scripts/release-check.ts <version> [--tests] [--out <dir>] | <version> --verify (--registry | --shasum … | --tarball …)");
-    if (args.includes("--verify"))
+      throw new Error(
+        "usage: node scripts/release-check.ts <version> [--tests] [--out <dir>] | <version> --verify (--registry | --shasum … | --tarball …) | <version> --lock",
+      );
+    if (args.includes("--lock")) writeLock(version);
+    else if (args.includes("--verify"))
       process.exitCode = verify(version, {
         registry: args.includes("--registry"),
         shasum: opt("--shasum"),
