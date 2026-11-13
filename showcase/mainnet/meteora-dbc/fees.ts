@@ -4,14 +4,15 @@
 // FeeMode), the trading fee splits (state/config.rs PoolFeesConfig) and the DAMM v2 helpers that config validation
 // uses (utils/damm_v2_utils.rs).
 //
-// The original's `Box<dyn BaseFeeHandler>` is a switch on the base fee mode here. The rate limiter (deprecated for new
-// configs: config creation refuses it before reaching it) is not ported in this stage: getBaseFeeHandler fails where
-// the original would build one, which only a pool created before 0.2.1 can reach (stage 2).
-import { type Inout, type u8, type u16, require, u32, u64, u128 } from "typesol";
+// The original's `Box<dyn BaseFeeHandler>` is a switch on the base fee mode here. The rate limiter
+// (base_fee/fee_rate_limiter.rs) is deprecated for new configs (config creation refuses it) but configs made before
+// 0.2.1 still swap with it.
+import { type Inout, type u8, type u16, isqrt, require, u32, u64, u128, u256 } from "typesol";
 import { PoolError } from "./errors";
 import {
   type U64Pair,
   ONE_Q64,
+  U256_MAX,
   addU128,
   addU64,
   divU128,
@@ -123,13 +124,8 @@ export function validateScheduler(s: FeeScheduler): void {
   require(minFeeNumerator >= MIN_FEE_NUMERATOR && maxFeeNumerator <= MAX_FEE_NUMERATOR, PoolError.ExceedMaxFeeBps);
 }
 
-/**
- * get_base_fee_handler for the fee scheduler modes: InvalidBaseFeeMode for a mode past the enum. The rate limiter
- * (mode 2) is not ported in this stage: it fails with RateLimiterNotSupported here, where the original builds one.
- */
+/** The fee scheduler of the modes 0 and 1 (callers have dispatched the rate limiter and refused other modes). */
 export function schedulerOf(cliffFeeNumerator: u64, firstFactor: u16, secondFactor: u64, thirdFactor: u64, baseFeeMode: u8): FeeScheduler {
-  require(baseFeeMode <= BASE_FEE_RATE_LIMITER, PoolError.InvalidBaseFeeMode);
-  require(baseFeeMode !== BASE_FEE_RATE_LIMITER, PoolError.RateLimiterNotSupported);
   return {
     cliff_fee_numerator: cliffFeeNumerator,
     number_of_period: firstFactor,
@@ -184,15 +180,180 @@ export function writePoolFeesConfig(out: Inout<PoolFeesConfig>, p: PoolFeeParame
 
 // ---- state/config.rs: BaseFeeConfig, DynamicFeeConfig, PoolFeesConfig -------------------------------------------
 
-/** BaseFeeConfig::get_base_fee_handler as a fee scheduler. */
+// ---- base_fee/fee_rate_limiter.rs -------------------------------------------------------------------------------
+
+/**
+ * FeeRateLimiter: fee_increment_bps = first_factor, max_limiter_duration = second_factor, reference_amount =
+ * third_factor. The original computes in U256 with ruint's bare (wrapping) operators. With the fee bounds (numerators
+ * at most 1e9, amounts u64) the products stay far below 2^256, so only its two subtractions in the exact-out inverse
+ * can wrap; they wrap here too (wrappingSub). The other operators are checked and cannot fail.
+ */
+export interface FeeRateLimiter {
+  cliff_fee_numerator: u64;
+  fee_increment_bps: u16;
+  max_limiter_duration: u64;
+  reference_amount: u64;
+}
+
+/** a - b modulo 2^256, as ruint's `-`. */
+function wrappingSub(a: u256, b: u256): u256 {
+  return a >= b ? a - b : U256_MAX - (b - a) + 1n;
+}
+
+function rateLimiterOf(b: BaseFeeConfig): FeeRateLimiter {
+  return { cliff_fee_numerator: b.cliff_fee_numerator, fee_increment_bps: b.first_factor, max_limiter_duration: b.second_factor, reference_amount: b.third_factor };
+}
+
+function isZeroRateLimiter(r: FeeRateLimiter): boolean {
+  return r.reference_amount === 0n && r.max_limiter_duration === 0n && r.fee_increment_bps === 0n;
+}
+
+/** FeeRateLimiter::is_rate_limiter_applied: only quote to base, until activation + max_limiter_duration. */
+export function isRateLimiterApplied(r: FeeRateLimiter, currentPoint: u64, activationPoint: u64, quoteToBase: boolean): boolean {
+  if (isZeroRateLimiter(r)) return false;
+  if (!quoteToBase) return false;
+  const last = u128(activationPoint) + u128(r.max_limiter_duration);
+  return !(u128(currentPoint) > last);
+}
+
+/** BaseFeeConfig::get_fee_rate_limiter's Ok case: whether the config's base fee is a rate limiter. */
+export function isRateLimiterConfig(b: BaseFeeConfig): boolean {
+  return b.base_fee_mode === BASE_FEE_RATE_LIMITER;
+}
+
+export function rateLimiterApplied(b: BaseFeeConfig, currentPoint: u64, activationPoint: u64, quoteToBase: boolean): boolean {
+  return isRateLimiterApplied(rateLimiterOf(b), currentPoint, activationPoint, quoteToBase);
+}
+
+function rateLimiterMaxIndex(r: FeeRateLimiter): u64 {
+  const delta = subU64(MAX_FEE_NUMERATOR, r.cliff_fee_numerator);
+  const increment = toNumerator(u128(r.fee_increment_bps), u128(FEE_DENOMINATOR));
+  return divU64(delta, increment);
+}
+
+/** FeeRateLimiter::get_fee_numerator_from_included_fee_amount */
+function rateLimiterFeeFromIncluded(r: FeeRateLimiter, inputAmount: u64): u64 {
+  if (inputAmount <= r.reference_amount) return r.cliff_fee_numerator;
+  const c = u256(r.cliff_fee_numerator);
+  // div_rem by the reference amount (a zero one panics, as num's div_rem does)
+  const rest = subU64(inputAmount, r.reference_amount);
+  const a = u256(rest / r.reference_amount);
+  const b = u256(rest % r.reference_amount);
+  const maxIndex = u256(rateLimiterMaxIndex(r));
+  const i = u256(toNumerator(u128(r.fee_increment_bps), u128(FEE_DENOMINATOR)));
+  const x0 = u256(r.reference_amount);
+  let tradingFeeNumerator: u256 = 0n;
+  if (a < maxIndex) {
+    const numerator1 = c + c * a + (i * a * (a + 1n)) / 2n;
+    const numerator2 = c + i * (a + 1n);
+    tradingFeeNumerator = x0 * numerator1 + b * numerator2;
+  } else {
+    const numerator1 = c + c * maxIndex + (i * maxIndex * (maxIndex + 1n)) / 2n;
+    const numerator2 = u256(MAX_FEE_NUMERATOR);
+    const leftAmount = (a - maxIndex) * x0 + b;
+    tradingFeeNumerator = x0 * numerator1 + leftAmount * numerator2;
+  }
+  const d = u256(FEE_DENOMINATOR);
+  const tradingFee = (tradingFeeNumerator + d - 1n) / d;
+  require(tradingFee <= u256(18446744073709551615n), PoolError.TypeCastFailed);
+  return safeMulDivCastU64(u64(tradingFee), FEE_DENOMINATOR, inputAmount, true);
+}
+
+function rateLimiterExcludedFeeAmount(r: FeeRateLimiter, includedAmount: u64): u64 {
+  const numerator = rateLimiterFeeFromIncluded(r, includedAmount);
+  return excludedFeeAmount(numerator, includedAmount).a;
+}
+
+/** FeeRateLimiter::get_fee_numerator_from_excluded_fee_amount */
+function rateLimiterFeeFromExcluded(r: FeeRateLimiter, excludedAmount: u64): u64 {
+  const excludedReference = rateLimiterExcludedFeeAmount(r, r.reference_amount);
+  if (excludedAmount <= excludedReference) return r.cliff_fee_numerator;
+  // get_checked_amounts
+  const maxIndex = rateLimiterMaxIndex(r);
+  const maxIndexInput = (u256(maxIndex) + 1n) * u256(r.reference_amount);
+  let checkedIncluded: u64 = 18446744073709551615n;
+  let isOverflow = true;
+  if (maxIndexInput <= u256(18446744073709551615n)) {
+    checkedIncluded = u64(maxIndexInput);
+    isOverflow = false;
+  }
+  const checkedExcluded = rateLimiterExcludedFeeAmount(r, checkedIncluded);
+  if (excludedAmount === checkedExcluded) return rateLimiterFeeFromIncluded(r, checkedIncluded);
+  let inFee: u64 = 0n;
+  if (excludedAmount < checkedExcluded) {
+    const i = u256(toNumerator(u128(r.fee_increment_bps), u128(FEE_DENOMINATOR)));
+    const x0 = u256(r.reference_amount);
+    const d = u256(FEE_DENOMINATOR);
+    const c = u256(r.cliff_fee_numerator);
+    const ex = u256(excludedAmount);
+    const x = i;
+    const y = wrappingSub(2n * d * x0 + i * x0, 2n * c * x0);
+    const z = 2n * ex * d * x0;
+    const root = isqrt(wrappingSub(y * y, 4n * x * z));
+    const included = wrappingSub(y, root) / (2n * x);
+    require(x0 !== 0n, PoolError.MathOverflow);
+    const aPlusOne = included / x0;
+    require(included <= u256(18446744073709551615n), PoolError.TypeCastFailed);
+    const firstExcluded = rateLimiterExcludedFeeAmount(r, u64(included));
+    const excludedRemaining = subU64(excludedAmount, firstExcluded);
+    const remainingNumerator = c + i * aPlusOne;
+    require(remainingNumerator <= u256(18446744073709551615n), PoolError.TypeCastFailed);
+    const includedRemaining = includedFeeAmount(u64(remainingNumerator), excludedRemaining).a;
+    const total = included + u256(includedRemaining);
+    require(total <= U256_MAX, PoolError.MathOverflow);
+    require(total <= u256(18446744073709551615n), PoolError.TypeCastFailed);
+    inFee = u64(total);
+  } else {
+    require(!isOverflow, PoolError.MathOverflow);
+    const excludedRemaining = subU64(excludedAmount, checkedExcluded);
+    const includedRemaining = includedFeeAmount(MAX_FEE_NUMERATOR, excludedRemaining).a;
+    inFee = addU64(includedRemaining, checkedIncluded);
+  }
+  const tradingFee = subU64(inFee, excludedAmount);
+  const feeNumerator = safeMulDivCastU64(tradingFee, FEE_DENOMINATOR, inFee, true);
+  require(feeNumerator >= r.cliff_fee_numerator, PoolError.UndeterminedError);
+  return feeNumerator;
+}
+
+// ---- base_fee/mod.rs: the base fee handler of a config -----------------------------------------------------------
+
+/** BaseFeeConfig::get_base_fee_handler as a fee scheduler (modes 0 and 1). */
 export function schedulerOfConfig(b: BaseFeeConfig): FeeScheduler {
   return schedulerOf(b.cliff_fee_numerator, b.first_factor, b.second_factor, b.third_factor, b.base_fee_mode);
 }
 
-/** BaseFeeConfig::validate_min_base_fee (fee scheduler): InvalidMinBaseFee below the minimum. */
+/** BaseFeeHandler::get_base_fee_numerator_from_included_fee_amount of the config's handler. */
+export function baseFeeNumeratorFromIncluded(b: BaseFeeConfig, currentPoint: u64, activationPoint: u64, quoteToBase: boolean, amount: u64): u64 {
+  require(b.base_fee_mode <= BASE_FEE_RATE_LIMITER, PoolError.InvalidBaseFeeMode);
+  if (b.base_fee_mode === BASE_FEE_RATE_LIMITER) {
+    const r = rateLimiterOf(b);
+    if (isRateLimiterApplied(r, currentPoint, activationPoint, quoteToBase)) return rateLimiterFeeFromIncluded(r, amount);
+    return r.cliff_fee_numerator;
+  }
+  return schedulerBaseFeeNumerator(schedulerOfConfig(b), currentPoint, activationPoint);
+}
+
+/** BaseFeeHandler::get_base_fee_numerator_from_excluded_fee_amount of the config's handler. */
+export function baseFeeNumeratorFromExcluded(b: BaseFeeConfig, currentPoint: u64, activationPoint: u64, quoteToBase: boolean, amount: u64): u64 {
+  require(b.base_fee_mode <= BASE_FEE_RATE_LIMITER, PoolError.InvalidBaseFeeMode);
+  if (b.base_fee_mode === BASE_FEE_RATE_LIMITER) {
+    const r = rateLimiterOf(b);
+    if (isRateLimiterApplied(r, currentPoint, activationPoint, quoteToBase)) return rateLimiterFeeFromExcluded(r, amount);
+    return r.cliff_fee_numerator;
+  }
+  return schedulerBaseFeeNumerator(schedulerOfConfig(b), currentPoint, activationPoint);
+}
+
+/** BaseFeeHandler::get_min_base_fee_numerator of the config's handler. */
+export function minBaseFeeNumerator(b: BaseFeeConfig): u64 {
+  require(b.base_fee_mode <= BASE_FEE_RATE_LIMITER, PoolError.InvalidBaseFeeMode);
+  if (b.base_fee_mode === BASE_FEE_RATE_LIMITER) return b.cliff_fee_numerator;
+  return schedulerMinBaseFeeNumerator(schedulerOfConfig(b));
+}
+
+/** BaseFeeConfig::validate_min_base_fee: InvalidMinBaseFee below the minimum. */
 export function validateMinBaseFee(b: BaseFeeConfig): void {
-  const s = schedulerOfConfig(b);
-  require(schedulerMinBaseFeeNumerator(s) >= MIN_FEE_NUMERATOR, PoolError.InvalidMinBaseFee);
+  require(minBaseFeeNumerator(b) >= MIN_FEE_NUMERATOR, PoolError.InvalidMinBaseFee);
 }
 
 /** DynamicFeeConfig::get_variable_fee_numerator: ((volatility * bin_step)^2 * control + 1e11 - 1) / 1e11. */

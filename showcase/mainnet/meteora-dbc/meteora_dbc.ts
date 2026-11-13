@@ -13,6 +13,11 @@
 import {
   type Account,
   type AccountInfo,
+  type Address,
+  type Dup,
+  type TokenAccount,
+  type TokenInterface,
+  type TokenOf,
   type CloseTo,
   type EventAuthority,
   type Executable,
@@ -25,7 +30,10 @@ import {
   type SelfProgram,
   type Signer,
   type SystemProgram,
+  AnchorError,
   byteLength,
+  loadRawAt,
+  loadRawMutAt,
   emitCpi,
   instructionData,
   now,
@@ -33,13 +41,15 @@ import {
   pubkey,
   remainingAccounts,
   require,
+  u8,
   u64,
   u128,
 } from "typesol";
 import { DEFAULT_PUBKEY, processCreateConfig, validateConfigParameters, validateTransferFeeParameters } from "./config";
 import { PoolError } from "./errors";
-import { type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
+import { type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
 import { U64_MAX } from "./math";
+import { POOL_AUTHORITY_BUMP, checkConfigAccount, checkPoolAccount, finishSwap, processSwap, requireNoTransferHook } from "./process_swap";
 import {
   type ClaimFeeOperator,
   type ConfigParameters,
@@ -47,8 +57,12 @@ import {
   type CreatePartnerMetadataParameters,
   type Operator,
   type PartnerMetadata,
+  type PoolConfig,
   type PoolConfigAccount,
+  type PoolState,
   type TokenBadge,
+  type SwapParameters,
+  type SwapParameters2,
   type TransferFeeParameters,
   OPERATOR_CLOSE_TOKEN_BADGE,
   OPERATOR_CREATE_TOKEN_BADGE,
@@ -461,4 +475,284 @@ export function createConfigWithTransferHook(
     eventAuthority,
     program,
   );
+}
+
+// ---- swaps (instructions/swap/ix_swap.rs) -----------------------------------------------------------------------
+
+/** swap (ExactIn with the legacy parameters) and swap2 share their accounts; the pool must be a VirtualPool. */
+export function swap(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  inputTokenAccount: Mut<TokenAccount>,
+  outputTokenAccount: Mut<TokenAccount>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  baseMint: Mint,
+  quoteMint: Mint,
+  payer: Signer,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  referralTokenAccount: Dup<Mut<TokenAccount>> | null,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  params: SwapParameters,
+): void {
+  require(!checkPoolAccount(pool), PoolError.PoolTypeMismatch);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  const o = processSwap(
+    p,
+    c,
+    pool.key,
+    poolAuthority,
+    inputTokenAccount,
+    outputTokenAccount,
+    baseVault,
+    quoteVault,
+    baseMint,
+    quoteMint,
+    payer,
+    tokenBaseProgram,
+    tokenQuoteProgram,
+    referralTokenAccount !== null,
+    remainingAccounts(),
+    params.amount_in,
+    params.minimum_amount_out,
+    0n,
+  );
+  // the referral's share, from the vault of the token the fee was taken in
+  if (referralTokenAccount !== null && o.result.referral_fee > 0n) {
+    if (o.fee_on_base_token) {
+      requireNoTransferHook(baseMint);
+      tokenBaseProgram.transferChecked(baseVault, baseMint, referralTokenAccount, poolAuthority, o.result.referral_fee, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    } else {
+      requireNoTransferHook(quoteMint);
+      tokenQuoteProgram.transferChecked(quoteVault, quoteMint, referralTokenAccount, poolAuthority, o.result.referral_fee, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    }
+  }
+  finishSwap(p, c, baseVault, o);
+  const direction: u8 = o.quote_to_base ? 1n : 0n;
+  {
+    emitCpi<EvtSwap>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        has_referral: o.has_referral,
+        params: { amount_in: o.in_amount_in, minimum_amount_out: o.in_minimum_amount_out },
+        swap_result: {
+          actual_input_amount: o.result.excluded_fee_input_amount,
+          output_amount: o.result.output_amount,
+          next_sqrt_price: o.result.next_sqrt_price,
+          trading_fee: o.result.trading_fee,
+          protocol_fee: o.result.protocol_fee,
+          referral_fee: o.result.referral_fee,
+        },
+        amount_in: o.result.included_fee_input_amount,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  {
+    emitCpi<EvtSwap2>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        has_referral: o.has_referral,
+        swap_parameters: { amount_0: params.amount_in, amount_1: params.minimum_amount_out, swap_mode: 0n },
+        swap_result: {
+          included_fee_input_amount: o.result.included_fee_input_amount,
+          excluded_fee_input_amount: o.result.excluded_fee_input_amount,
+          amount_left: o.result.amount_left,
+          output_amount: o.result.output_amount,
+          next_sqrt_price: o.result.next_sqrt_price,
+          trading_fee: o.result.trading_fee,
+          protocol_fee: o.result.protocol_fee,
+          referral_fee: o.result.referral_fee,
+        },
+        quote_reserve_amount: o.quote_reserve_amount,
+        migration_threshold: o.migration_threshold,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  {
+    emitCpi<EvtSwap3>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        swap_mode: 0n,
+        has_referral: o.has_referral,
+        fee_on_base_token: o.fee_on_base_token,
+        included_transfer_fee_amount_in: o.in_amount_in,
+        excluded_transfer_fee_amount_in: o.result.included_fee_input_amount,
+        included_transfer_fee_amount_out: o.result.output_amount,
+        excluded_transfer_fee_amount_out: o.excluded_transfer_fee_amount_out,
+        trading_fee: o.result.trading_fee,
+        protocol_fee: o.result.protocol_fee,
+        referral_fee: o.result.referral_fee,
+        next_sqrt_price: o.result.next_sqrt_price,
+        quote_reserve: o.quote_reserve_amount,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  if (o.curve_complete)
+    emitCpi<EvtCurveComplete>(
+      { pool: pool.key, config: config.key, base_reserve: o.base_reserve, quote_reserve: o.quote_reserve_amount },
+      eventAuthority,
+      program,
+    );
+}
+
+/** swap2: ExactIn (0), PartialFill (1) or ExactOut (2); a VirtualPool. */
+export function swap2(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  inputTokenAccount: Mut<TokenAccount>,
+  outputTokenAccount: Mut<TokenAccount>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  baseMint: Mint,
+  quoteMint: Mint,
+  payer: Signer,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  referralTokenAccount: Dup<Mut<TokenAccount>> | null,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  params: SwapParameters2,
+): void {
+  require(!checkPoolAccount(pool), PoolError.PoolTypeMismatch);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  const o = processSwap(
+    p,
+    c,
+    pool.key,
+    poolAuthority,
+    inputTokenAccount,
+    outputTokenAccount,
+    baseVault,
+    quoteVault,
+    baseMint,
+    quoteMint,
+    payer,
+    tokenBaseProgram,
+    tokenQuoteProgram,
+    referralTokenAccount !== null,
+    remainingAccounts(),
+    params.amount_0,
+    params.amount_1,
+    u64(params.swap_mode),
+  );
+  // the referral's share, from the vault of the token the fee was taken in
+  if (referralTokenAccount !== null && o.result.referral_fee > 0n) {
+    if (o.fee_on_base_token) {
+      requireNoTransferHook(baseMint);
+      tokenBaseProgram.transferChecked(baseVault, baseMint, referralTokenAccount, poolAuthority, o.result.referral_fee, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    } else {
+      requireNoTransferHook(quoteMint);
+      tokenQuoteProgram.transferChecked(quoteVault, quoteMint, referralTokenAccount, poolAuthority, o.result.referral_fee, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    }
+  }
+  finishSwap(p, c, baseVault, o);
+  const direction: u8 = o.quote_to_base ? 1n : 0n;
+  {
+    emitCpi<EvtSwap>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        has_referral: o.has_referral,
+        params: { amount_in: o.in_amount_in, minimum_amount_out: o.in_minimum_amount_out },
+        swap_result: {
+          actual_input_amount: o.result.excluded_fee_input_amount,
+          output_amount: o.result.output_amount,
+          next_sqrt_price: o.result.next_sqrt_price,
+          trading_fee: o.result.trading_fee,
+          protocol_fee: o.result.protocol_fee,
+          referral_fee: o.result.referral_fee,
+        },
+        amount_in: o.result.included_fee_input_amount,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  {
+    emitCpi<EvtSwap2>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        has_referral: o.has_referral,
+        swap_parameters: { amount_0: params.amount_0, amount_1: params.amount_1, swap_mode: params.swap_mode },
+        swap_result: {
+          included_fee_input_amount: o.result.included_fee_input_amount,
+          excluded_fee_input_amount: o.result.excluded_fee_input_amount,
+          amount_left: o.result.amount_left,
+          output_amount: o.result.output_amount,
+          next_sqrt_price: o.result.next_sqrt_price,
+          trading_fee: o.result.trading_fee,
+          protocol_fee: o.result.protocol_fee,
+          referral_fee: o.result.referral_fee,
+        },
+        quote_reserve_amount: o.quote_reserve_amount,
+        migration_threshold: o.migration_threshold,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  {
+    emitCpi<EvtSwap3>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        swap_mode: params.swap_mode,
+        has_referral: o.has_referral,
+        fee_on_base_token: o.fee_on_base_token,
+        included_transfer_fee_amount_in: o.in_amount_in,
+        excluded_transfer_fee_amount_in: o.result.included_fee_input_amount,
+        included_transfer_fee_amount_out: o.result.output_amount,
+        excluded_transfer_fee_amount_out: o.excluded_transfer_fee_amount_out,
+        trading_fee: o.result.trading_fee,
+        protocol_fee: o.result.protocol_fee,
+        referral_fee: o.result.referral_fee,
+        next_sqrt_price: o.result.next_sqrt_price,
+        quote_reserve: o.quote_reserve_amount,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  if (o.curve_complete)
+    emitCpi<EvtCurveComplete>(
+      { pool: pool.key, config: config.key, base_reserve: o.base_reserve, quote_reserve: o.quote_reserve_amount },
+      eventAuthority,
+      program,
+    );
 }

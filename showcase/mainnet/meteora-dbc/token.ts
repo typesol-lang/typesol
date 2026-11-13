@@ -139,3 +139,57 @@ export function quoteTransferFeeExcludedAmount(mint: Mint, includedAmount: u64):
   const fee = currentEpoch() >= readData<u64>(mint, cfg + 90n) ? cfg + 90n : cfg + 72n;
   return transferFeeExcludedAmount(true, u64(readData<u16>(mint, fee + 16n)), readData<u64>(mint, fee + 8n), includedAmount);
 }
+
+// ---- transfer fees on swaps (utils/token.rs) ----------------------------------------------------------------------
+
+/** A mint's TransferFee for the current epoch (get_epoch_transfer_fee): `has` false for none. */
+export interface EpochFee {
+  has: boolean;
+  bps: u64;
+  max: u64;
+}
+
+/** get_epoch_transfer_fee */
+export function epochFee(mint: Mint): EpochFee {
+  if (mint.tokenProgram === TOKEN_PROGRAM_ID) return { has: false, bps: 0n, max: 0n };
+  const cfg = extensionOffset(mint, EXT_TRANSFER_FEE_CONFIG);
+  if (cfg === 0n) return { has: false, bps: 0n, max: 0n };
+  const fee = currentEpoch() >= readData<u64>(mint, cfg + 90n) ? cfg + 90n : cfg + 72n;
+  return { has: true, bps: u64(readData<u16>(mint, fee + 16n)), max: readData<u64>(mint, fee + 8n) };
+}
+
+/** calculate_transfer_fee_excluded_amount */
+export function excludedTransferFee(f: EpochFee, includedAmount: u64): u64 {
+  return transferFeeExcludedAmount(f.has, f.bps, f.max, includedAmount);
+}
+
+/**
+ * calculate_transfer_fee_included_amount: the amount to send for `excludedAmount` to arrive, with spl-token-2022's
+ * calculate_inverse_fee (MathOverflow where it has no answer) and the original's check that the fee of the result is
+ * that fee (FeeInverseIsIncorrect).
+ */
+export function includedTransferFee(f: EpochFee, excludedAmount: u64): u64 {
+  if (excludedAmount === 0n) return 0n;
+  if (!f.has) return excludedAmount;
+  // calculate_pre_fee_amount
+  let pre: u64 = excludedAmount;
+  if (f.bps === 0n) pre = excludedAmount;
+  else if (f.bps === 10000n) {
+    require(f.max <= 18446744073709551615n - excludedAmount, PoolError.MathOverflow);
+    pre = f.max + excludedAmount;
+  } else {
+    const raw = (u128(excludedAmount) * 10000n + (10000n - u128(f.bps)) - 1n) / (10000n - u128(f.bps));
+    if (raw - u128(excludedAmount) >= u128(f.max)) {
+      require(f.max <= 18446744073709551615n - excludedAmount, PoolError.MathOverflow);
+      pre = excludedAmount + f.max;
+    } else {
+      require(raw <= 18446744073709551615n, PoolError.MathOverflow);
+      pre = u64(raw);
+    }
+  }
+  const fee = calculateFee(f.bps, f.max, pre);
+  require(excludedAmount <= 18446744073709551615n - fee, PoolError.MathOverflow);
+  const included = excludedAmount + fee;
+  require(fee === calculateFee(f.bps, f.max, included), PoolError.FeeInverseIsIncorrect);
+  return included;
+}

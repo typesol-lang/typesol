@@ -142,7 +142,14 @@ export async function pair(): Promise<Pair> {
       stats.compared++;
       const logs = (r: Result) => meta(r).logs().join("\n");
       expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nport:\n${logs(b)}`).toBe(outcome(a));
-      for (const w of watch) expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
+      const events = (r: Result) =>
+        r instanceof FailedTransactionMetadata
+          ? []
+          : inner(r)
+              .flat()
+              .filter((x) => x.startsWith("2 "));
+      for (const w of watch)
+        expect(bytes(d.svm, w), `${label}: ${w}\noriginal's events: ${events(a).join("\n")}\nport's events: ${events(b).join("\n")}`).toBe(bytes(original, w));
       if (!(a instanceof FailedTransactionMetadata)) {
         expect(inner(b), `${label}: inner instructions (events)`).toEqual(inner(a));
         stats.innerCompared += inner(a).flat().length;
