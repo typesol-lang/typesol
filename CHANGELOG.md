@@ -13,6 +13,25 @@ codes, and says so here.
   its accounts, as Anchor's does). Programs without the constant build to the same bytes: the 76 programs of
   `scripts/release-manifest.ts` other than the new port build identically with and without this change
   (test/language/event-authority-check.test.ts; docs/language-errors-events.md).
+- Showcase: the first stage of a port of Meteora's Dynamic Bonding Curve 0.2.2 (MeteoraAg/dynamic-bonding-curve @
+  91e696e), `showcase/mainnet/meteora-dbc/`. It is subject to Meteora's Non-commercial Licence, not to this
+  repository's MIT licence (LICENSE.md and README.md there, and NOTICE), and is not in the published package. This
+  stage has 9 of the program's 35 instructions (operator accounts, the legacy claim fee operator, token badges, partner
+  metadata, `create_config`, `create_config2`, `create_config_with_transfer_hook`), all 87 errors, the account layouts,
+  the 29 events, and the curve, fee scheduler, dynamic fee, vesting and migration-handler math that config creation
+  uses. Checked against the program deployed on mainnet at `dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN` (deployed in
+  slot 457,502,600; the dump cut at the ELF's end has sha256
+  `c9f45da65b0c87ca76c1ed5ad0d1ef2ead7c3392e8e41f194d50296820a22bb9`; fetched by `scripts/fetch-programs.sh`, not
+  kept here), with its two admin keys patched to test keys in both: `showcase/test/meteora-dbc.test.ts` sends 163
+  transactions (57 succeed, the others are refused with 47 distinct errors) and `meteora-dbc-fuzz.test.ts` 200 random
+  config parameter sets per run, each to both programs, which must give the same outcome and error code, the same
+  account bytes, the same events (the self-CPIs' instruction data, all inner instructions compared) and the same return
+  data. Not checked or different: log lines (Anchor's error messages, the original's "Math error thrown at …" lines),
+  compute units, the IDL (the config events' ConfigParameters is described field by field, the metadata Strings as
+  bytes), a read-only `payer` (ConstraintMut 2000 here, PrivilegeEscalation in the original), and a `curve` argument of
+  more than 24 points (102 here; a transaction carries at most 23). The remaining 26 instructions, the rate limiter and
+  the swap math are not ported yet. The binary is identified as 0.2.2 by its instruction names, error messages and
+  source paths; it was not rebuilt.
 
 ## 0.47.0 — 2026-11-13
 
