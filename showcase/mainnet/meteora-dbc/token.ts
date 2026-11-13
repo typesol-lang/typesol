@@ -193,3 +193,27 @@ export function includedTransferFee(f: EpochFee, excludedAmount: u64): u64 {
   require(fee === calculateFee(f.bps, f.max, included), PoolError.FeeInverseIsIncorrect);
   return included;
 }
+
+/**
+ * The size of a token account of `mint`, computed from the mint as Anchor 1.0's `init` of a token account computes it
+ * (no GetAccountDataSize call): 165 under SPL Token or for a Token-2022 mint whose extensions need no account
+ * extension; otherwise 165, the account type byte, and each required account extension (TransferFeeConfig needs
+ * TransferFeeAmount, NonTransferable needs NonTransferableAccount and ImmutableOwner, TransferHook needs
+ * TransferHookAccount, Pausable needs PausableAccount), each with its 4-byte TLV header. Other account extensions
+ * (confidential transfers) are not covered.
+ */
+export function tokenAccountSpace(mint: Mint): u64 {
+  if (mint.tokenProgram === TOKEN_PROGRAM_ID || mint.dataLen <= TLV_START) return 165n;
+  let extra: u64 = 0n;
+  let off = TLV_START;
+  while (off + 4n <= mint.dataLen) {
+    const t = u64(readData<u16>(mint, off));
+    if (t === 0n) break;
+    if (t === 1n) extra = extra + 12n;
+    else if (t === 9n) extra = extra + 8n;
+    else if (t === 14n) extra = extra + 5n;
+    else if (t === 26n) extra = extra + 4n;
+    off = off + 4n + u64(readData<u16>(mint, off + 2n));
+  }
+  return extra === 0n ? 165n : 166n + extra;
+}

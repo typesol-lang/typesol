@@ -356,7 +356,7 @@ function validateTransferFeeRestrictions(c: PoolConfig): void {
 }
 
 /** PoolConfig::get_total_liquidity_locked_bps_at_n_seconds */
-function totalLiquidityLockedBpsAtNSeconds(c: PoolConfig, nSeconds: u64): u16 {
+export function totalLiquidityLockedBpsAtNSeconds(c: PoolConfig, nSeconds: u64): u16 {
   const partnerVested = liquidityLockedBpsAtNSeconds(c.partner_liquidity_vesting_info, nSeconds);
   const creatorVested = liquidityLockedBpsAtNSeconds(c.creator_liquidity_vesting_info, nSeconds);
   const partnerPermanent = mulU16(u16(c.partner_permanent_locked_liquidity_percentage), 100n);
@@ -479,4 +479,40 @@ export function processCreateConfig(
 
   if (hasTransferFee || hasTransferFeeOrConfigAuthority(quoteMint)) validateTransferFeeRestrictions(config);
   require(totalLiquidityLockedBpsAtNSeconds(config, SECONDS_PER_DAY) >= MIN_LOCKED_LIQUIDITY_BPS, PoolError.InvalidMigrationLockedLiquidity);
+}
+
+// ---- PoolConfig::get_initial_base_supply (pool creation) ---------------------------------------------------------
+
+/** get_base_token_for_swap over a stored config's curve (its points up to the first with no liquidity). */
+function storedBaseTokenForSwap(c: PoolConfig, sqrtMigrationPrice: u128): u256 {
+  let total: u256 = 0n;
+  for (let i = 0n; i < MAX_CURVE_POINT_CONFIG; i++) {
+    const point = c.curve.get(i);
+    if (point.liquidity === 0n) break;
+    const lower = i === 0n ? c.sqrt_start_price : c.curve.get(i - 1n).sqrt_price;
+    if (point.sqrt_price > sqrtMigrationPrice) {
+      total = addU256(total, getDeltaAmountBaseUnsigned256(lower, sqrtMigrationPrice, point.liquidity, true));
+      break;
+    }
+    total = addU256(total, getDeltaAmountBaseUnsigned256(lower, point.sqrt_price, point.liquidity, true));
+  }
+  return total;
+}
+
+/** PoolConfig::get_initial_base_supply: the fixed supply, or the swap amount with its buffer, the migration base and the locked vesting. */
+export function initialBaseSupply(c: PoolConfig): u64 {
+  if (c.fixed_token_supply_flag === 1n) return c.pre_migration_token_supply;
+  const buffer = divU128(mulU128(u128(c.swap_base_amount), SWAP_BUFFER_PERCENTAGE), 100n) + u128(c.swap_base_amount);
+  const maxBaseAmountOnCurve = storedBaseTokenForSwap(c, MAX_SQRT_PRICE);
+  let withBuffer: u64 = 0n;
+  if (u256(buffer) < maxBaseAmountOnCurve) {
+    require(buffer <= u128(U64_MAX), PoolError.MathOverflow);
+    withBuffer = u64(buffer);
+  } else {
+    require(maxBaseAmountOnCurve <= u256(U64_MAX), PoolError.MathOverflow);
+    withBuffer = u64(maxBaseAmountOnCurve);
+  }
+  const v = c.locked_vesting_config;
+  const vesting = addU64(v.cliff_unlock_amount, mulU64(v.amount_per_period, v.number_of_period));
+  return addU64(addU64(withBuffer, c.migration_base_threshold), vesting);
 }

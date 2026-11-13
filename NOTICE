@@ -81,7 +81,8 @@ Third-party material in this repository only (not in the published package)
   and AMM v4, Jito's MEV programs, marginfi v2, coral-xyz/multisig and SPL Stake Pool (Apache-2.0), and Phoenix v1
   (MIT, Copyright Ellipsis Labs). Every file says which program it ports and under which licence in its first line.
 - showcase/mainnet/meteora-dbc/: a TypeSOL port of Meteora's Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve,
-  release 0.2.2, commit 91e696e), with its tests showcase/test/meteora-dbc*.ts. It is not under this repository's MIT
+  release 0.2.2, commit 91e696e), with its tests showcase/test/meteora-dbc*.ts and the mainnet accounts of two of its
+  pools those tests read (showcase/test/fixtures/meteora-dbc/). It is not under this repository's MIT
   licence: it is subject to Meteora's Non-commercial Licence, whose text is showcase/mainnet/meteora-dbc/LICENSE.md.
   Required Notice: All underlying software code is subject to the licence set out at https://github.com/MeteoraAg/dynamic-bonding-curve
   The program's mainnet binary is not kept here either: scripts/fetch-programs.sh downloads it (test/programs/SOURCES.md).

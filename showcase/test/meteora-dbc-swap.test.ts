@@ -7,9 +7,13 @@
 // runs to the migration threshold. Reproduce with FUZZ_SEED=<seed>; lengthen with FUZZ_RUNS=<n> (pools per run).
 import * as t22 from "@solana-program/token-2022";
 import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
 import { BN, pda } from "../../test/harness.js";
 const pdaOf = (seeds: (string | Address)[]) => pda("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN" as Address, seeds);
+const MPL = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s" as Address;
+const MPL_SO = fileURLToPath(new URL("../../test/programs/mpl_token_metadata.so", import.meta.url));
 import { present } from "../../test/binaries.js";
 import { Rng } from "./fuzz-rng.js";
 import {
@@ -55,10 +59,12 @@ const u64le = (n: bigint) => {
 };
 const u128le = (n: bigint) => Buffer.concat([u64le(n & ((1n << 64n) - 1n)), u64le(n >> 64n)]);
 
-describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against Meteora DBC 0.2.2 on mainnet", () => {
+describe.skipIf(!present(ORIGINAL, MPL_SO))("showcase/mainnet/meteora-dbc swaps against Meteora DBC 0.2.2 on mainnet", () => {
   let p: Pair;
   beforeAll(async () => {
     p = await pair();
+    const so = new Uint8Array(readFileSync(MPL_SO));
+    for (const vm of p.vms()) vm.addProgram(MPL, so);
   }, 300_000);
 
   const ata = async (owner: Address, m: Address, program: Address) => (await t22.findAssociatedTokenPda({ owner, mint: m, tokenProgram: program }))[0];
@@ -115,10 +121,56 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     quoteProgram: Address;
     baseVault: Address;
     quoteVault: Address;
+    /** made by the pool creation instruction (else written) */
+    made: boolean;
   }
   /** A pool written in both as initialize leaves it: price at the start, the base supply in its vault. */
-  async function pool(cfg: Address, params: Params, quoteMint: Address, quoteProgram: Address, baseExts: Ext[] = [], hook = false): Promise<PoolInfo> {
+  /**
+   * A pool of `cfg`. An SPL-base pool is made by initialize_virtual_pool_with_spl_token in both (compared like every
+   * other transaction). Written into both instead, as that instruction leaves a pool, only where the instruction cannot
+   * make it: a Token-2022 base (its creation is not ported yet), a TransferHookPool, or a config rewritten to a rate
+   * limiter (pool creation refuses that mode, so only pools made before 0.2.1 have it).
+   */
+  async function pool(
+    cfg: Address,
+    params: Params,
+    quoteMint: Address,
+    quoteProgram: Address,
+    baseExts: Ext[] = [],
+    hook = false,
+    written = false,
+  ): Promise<PoolInfo> {
     const baseProgram = params.token_type === 1 ? TOKEN_2022 : TOKEN;
+    if (baseProgram === TOKEN && !hook && !written) {
+      const creator = await p.funded();
+      const baseMint = await generateKeyPairSigner();
+      const [hi, lo] = Buffer.compare(key(baseMint.address), key(quoteMint)) > 0 ? [baseMint.address, quoteMint] : [quoteMint, baseMint.address];
+      const [poolKey] = await pdaOf(["pool", cfg, hi, lo]);
+      const [baseVault] = await pdaOf(["token_vault", baseMint.address, poolKey]);
+      const [quoteVault] = await pdaOf(["token_vault", quoteMint, poolKey]);
+      const [metadata] = await pda(MPL, ["metadata", MPL, baseMint.address]);
+      const ix = p.ix("initialize_virtual_pool_with_spl_token", { params: { name: "Token", symbol: "TKN", uri: "" } }, [
+        { address: cfg },
+        { address: POOL_AUTHORITY },
+        { address: creator.address, signer: creator },
+        { address: baseMint.address, signer: baseMint, writable: true },
+        { address: quoteMint },
+        { address: poolKey, writable: true },
+        { address: baseVault, writable: true },
+        { address: quoteVault, writable: true },
+        { address: metadata, writable: true },
+        { address: MPL },
+        { address: creator.address, signer: creator, writable: true },
+        { address: quoteProgram },
+        { address: TOKEN },
+        { address: SYSTEM },
+        { address: p.eventAuthority },
+        { address: PROGRAM },
+      ]);
+      expect(await p.both("create the pool", creator, [ix], [poolKey, baseMint.address, baseVault, quoteVault, metadata])).toBe("ok");
+      creators.set(poolKey, creator);
+      return { pool: poolKey, config: cfg, baseMint: baseMint.address, quoteMint, baseProgram, quoteProgram, baseVault, quoteVault, made: true };
+    }
     const baseMint = await mint(p, baseProgram, params.token_decimal, baseProgram === TOKEN_2022 ? baseExts : []);
     const supply = 10n ** 17n;
     const baseVault = await account(POOL_AUTHORITY, baseMint, baseProgram, supply);
@@ -140,7 +192,7 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     state.writeUInt16LE(20, 368);
     p.write(poolKey, Buffer.concat([disc(hook ? "TransferHookPool" : "VirtualPool"), state]));
     creators.set(poolKey, creatorSigner);
-    return { pool: poolKey, config: cfg, baseMint, quoteMint, baseProgram, quoteProgram, baseVault, quoteVault };
+    return { pool: poolKey, config: cfg, baseMint, quoteMint, baseProgram, quoteProgram, baseVault, quoteVault, made: false };
   }
 
   interface Trader {
@@ -257,12 +309,13 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     const params = { ...baseParams(), creator_trading_fee_percentage: 30, pool_creation_fee: 1_000_000_000n, collect_fee_mode: 1 };
     const cfg = await config(params, quoteSpl);
     const pi = await pool(cfg, params, quoteSpl, TOKEN);
-    // the creation fee the pool holds beyond its rent
-    for (const vm of p.vms()) {
-      const a = vm.getAccount(pi.pool);
-      if (!a.exists) throw new Error("no pool");
-      vm.setAccount({ ...a, lamports: lamports(a.lamports + 1_000_000_000n) });
-    }
+    // the creation fee the pool holds beyond its rent (a pool made by the instruction was charged it there)
+    if (!pi.made)
+      for (const vm of p.vms()) {
+        const a = vm.getAccount(pi.pool);
+        if (!a.exists) throw new Error("no pool");
+        vm.setAccount({ ...a, lamports: lamports(a.lamports + 1_000_000_000n) });
+      }
     const t = await trader(pi);
     expect(await doSwap("fees in base", pi, t, true, 20_000_000_000n, 0n, 0)).toBe("ok");
     expect(await doSwap("fees in quote", pi, t, false, 10n ** 12n, 0n, 0)).toBe("ok");
@@ -518,7 +571,7 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
       d.writeUInt16LE(10, 128);
       d[130] = 2;
     });
-    const pi = await pool(cfg, params, quoteSpl, TOKEN);
+    const pi = await pool(cfg, params, quoteSpl, TOKEN, [], false, true);
     const t = await trader(pi);
     expect(await doSwap("rate limited without the sysvar", pi, t, true, 5_000_000_000n, 0n, 0)).toBe(custom(E.FailToValidateSingleSwapInstruction));
     expect(await doSwap("rate limited, exact in", pi, t, true, 5_000_000_000n, 0n, 0, { rest: [INSTRUCTIONS] })).toBe("ok");
@@ -609,14 +662,16 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
             }
           : undefined,
       );
-      if (t22quote) raiseQuoteFee();
       const pi = await pool(
         cfg,
         params,
         quoteMint,
         quoteProgram,
         t22base ? [{ kind: "transferFee", bps: rng.pick([0, 50, 1000]), max: 10n ** 15n, authority: false }] : [],
+        false,
+        limiter,
       );
+      if (t22quote) raiseQuoteFee();
       const t = await trader(pi, 10n ** 15n, 0n);
       const referral = await account((await generateKeyPairSigner()).address, pi.quoteMint, quoteProgram, 0n);
       const referralBase = await account((await generateKeyPairSigner()).address, pi.baseMint, pi.baseProgram, 0n);

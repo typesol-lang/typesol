@@ -38,7 +38,13 @@ codes, and says so here.
   pool creation leaves them (pool creation is not ported yet): every mode in both directions, referrals, slippage,
   account refusals, the rate limiter's single-swap guard, and a random swap sequence per pool (fee schedulers, dynamic
   fee, rate limiter, Token-2022 transfer fees on either mint) to the migration threshold (1,900+ swaps over three
-  seeds, all the same). Not ported yet: the 3 pool creation instructions, the 3 transfer-hook instructions and the
+  seeds, all the same). `initialize_virtual_pool_with_spl_token` follows (its Metaplex CPIs checked against Token
+  Metadata as deployed on mainnet, sha256 `31f0a627dba051a938de650464e55cc5397a4be0fd496929c1f9cf02fe5e9011`):
+  `meteora-dbc-pool.test.ts` makes pools with each token authority option, a creation fee, a fixed supply and slot
+  activation, and the first swap at the minimum fee in the pool's creation transaction; the swap tests and fuzz now
+  swap on pools made by it (pools are written only for a Token-2022 base, a TransferHookPool or a rate limiter).
+  `meteora-dbc-mainnet.test.ts` swaps on two pools read from mainnet (an SPL and a Token-2022 base) to the end of
+  their curves. Not ported yet: the 2 Token-2022 pool creation instructions, the 3 transfer-hook instructions and the
   migration stages; a swap by CPI under an active rate limiter, which the original checks against the processed
   sibling instructions, is refused here (not tested). The binary is identified as 0.2.2 by its instruction names, error messages and
   source paths; it was not rebuilt.
