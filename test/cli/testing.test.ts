@@ -1,7 +1,8 @@
 // typesol/testing: accounts by name with the IDL's flags and fixed addresses, plain argument and result values.
 import { findAssociatedTokenPda } from "@solana-program/token-2022";
-import type { Address } from "@solana/kit";
+import { type Address, address } from "@solana/kit";
 import { spawn, spawnSync } from "node:child_process";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -211,6 +212,44 @@ export function quiet(payer: Signer): void {}
     // A failed transaction's events did not happen: events() throws as ok() does.
     const failed = await t.send(payer, t.ix("run", { amount: 2n ** 64n - 1n }, { payer }));
     expect(() => t.events(failed)).toThrow(/transaction failed/);
+  });
+
+  it("finds emitCpi events after a precompile instruction, which logs no invoke line", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-testing-"));
+    const file = path.join(dir, "signed.ts");
+    writeFileSync(
+      file,
+      `import { type EventAuthority, type SelfProgram, type Signer, type u8, type u64, emit, emitCpi } from "typesol";
+export interface Opened { amount: u64 }
+export interface Noted { step: u8 }
+export function run(payer: Signer, amount: u64, eventAuthority: EventAuthority, self: SelfProgram): void {
+  emit<Opened>({ amount });
+  emitCpi<Noted>({ step: 2n }, eventAuthority, self);
+}
+`,
+    );
+    const d = await deployFile(file);
+    const t = programHarness(d.svm, d.programId, d.idl as never);
+    const payer = await t.wallet();
+    // An Ed25519 precompile instruction: one signature, with the key, signature and message in its own data.
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const pub = publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+    const msg = Buffer.from("hello");
+    const header = Buffer.alloc(16);
+    header[0] = 1;
+    [48, 0xffff, 16, 0xffff, 112, msg.length, 0xffff].forEach((v, i) => header.writeUInt16LE(v, 2 + i * 2));
+    const precompile = {
+      programAddress: address("Ed25519SigVerify111111111111111111111111111"),
+      accounts: [],
+      data: new Uint8Array(Buffer.concat([header, pub, sign(null, msg, privateKey), msg])),
+    };
+    const run = (amount: bigint) => t.ix("run", { amount }, { payer });
+    expect(t.events(await t.send(payer, precompile as never, run(7n), precompile as never, run(9n)))).toEqual([
+      { name: "Opened", data: { amount: 7n } },
+      { name: "Noted", data: { step: 2 } },
+      { name: "Opened", data: { amount: 9n } },
+      { name: "Noted", data: { step: 2 } },
+    ]);
   });
 
   // docs/test-your-program.md, "Events": the program and the assertion there are these lines.

@@ -604,26 +604,23 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: TestIdl): 
     },
     events<T>(res: Result) {
       const done = harness.ok(res);
-      const inner = done.innerInstructions();
+      // Every inner instruction of the transaction, in order. Not looked up by the top-level instruction's index:
+      // a precompile (Ed25519, Secp256k1) is an instruction that logs no invoke line.
+      const inner = done.innerInstructions().flat();
       const found: { name: string; data: T }[] = [];
       const add = (bytes: Uint8Array) => {
         const e = coder.decodeEvent(bytes);
         if (e) found.push({ name: e.name, data: plain(e.data) as T });
       };
-      // The logs name every program invoked, in order: an `invoke [1]` line starts the next instruction, a deeper one
-      // its next inner instruction (where an emitCpi event is). A data line is this program's while it runs innermost.
+      // The logs name every program invoked, in order: an `invoke` line deeper than [1] is the next inner instruction
+      // (where an emitCpi event is). A data line is this program's while it runs innermost.
       const running: string[] = [];
-      let top = -1;
       let next = 0;
       for (const line of done.logs()) {
         const invoke = /^Program (\S+) invoke \[(\d+)\]$/.exec(line);
         if (invoke) {
-          if (invoke[2] === "1") {
-            top++;
-            next = 0;
-          } else {
-            const call = inner[top]?.[next++];
-            const data = call?.instruction().data();
+          if (invoke[2] !== "1") {
+            const data = inner[next++]?.instruction().data();
             if (invoke[1] === programId && data && data.length >= 8 && EVENT_IX_TAG.equals(data.subarray(0, 8))) add(data.subarray(8));
           }
           running.push(invoke[1]!);
