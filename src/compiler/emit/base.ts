@@ -34,6 +34,14 @@ import {
 export abstract class EmitterBase {
   protected readonly reporter: Reporter;
   protected readonly model: ProgramModel;
+  /**
+   * `const EVENT_AUTHORITY_CHECK = "address"`: Anchor 1.x's #[event_cpi] accounts. The event authority is checked by
+   * address among the constraints (ConstraintAddress, 2012) instead of by seeds when the accounts load (2006), and the
+   * program account is not checked: the event's self-CPI names this program's id, as Anchor's emit_cpi! does.
+   */
+  protected get eventAuthorityByAddress(): boolean {
+    return this.model.constants.get("EVENT_AUTHORITY_CHECK")?.value === "address";
+  }
   protected readonly imports: Map<string, string>;
   protected readonly accounts = new Map<string, AccountParam>();
   protected readonly args = new Map<string, Local>();

@@ -68,6 +68,14 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
       );
     else if (panicFlag?.value === true) out.push(`#define TS_PANIC_ABORT 1`);
   }
+  // `const EVENT_AUTHORITY_CHECK = "address"`: the emitCpi accounts are checked as Anchor 1.x's #[event_cpi] checks
+  // them (read by the emitter; nothing to define in C).
+  const eventCheck = model.constants.get("EVENT_AUTHORITY_CHECK");
+  if (eventCheck && eventCheck.value !== "address")
+    reporter.error(
+      analysis.sourceFile,
+      'EVENT_AUTHORITY_CHECK must be "address" (the event authority checked as Anchor 1.x\'s `address = EVENT_AUTHORITY` constraint, 2012 among the constraints, and the program account left unchecked); leave it out for the default',
+    );
   // `const NATIVE_ACCOUNT_WRITES = true`: loadRawMut / storeBorsh / BigVec writes leave writability and aliasing to the
   // runtime, as a native program does (read by the emitter; nothing to define in C).
   const nativeWrites = model.constants.get("NATIVE_ACCOUNT_WRITES");

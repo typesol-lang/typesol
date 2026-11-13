@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+- Added: `export const EVENT_AUTHORITY_CHECK = "address"` checks `emitCpi`'s accounts as Anchor 1.x's `#[event_cpi]`
+  does: the event authority by address among the constraints (ConstraintAddress, 2012, after the accounts load and the
+  creates run) instead of by seeds when it loads (2006), and the `SelfProgram` account not at all (the self-CPI names
+  this program's id; an instruction that emits then fails in the runtime, MissingAccount, when this program is not among
+  its accounts, as Anchor's does). Programs without the constant build to the same bytes: the 76 programs of
+  `scripts/release-manifest.ts` other than the new port build identically with and without this change
+  (test/language/event-authority-check.test.ts; docs/language-errors-events.md).
+
 ## 0.47.0 — 2026-11-13
 
 A minor release: it removes an optional peer dependency (`@anchor-lang/core`) and changes what `t.coder` of

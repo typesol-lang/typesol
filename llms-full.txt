@@ -598,7 +598,8 @@ export function setup(config: Mut<Config>): void {
   other than its accounts.
 - A few names configure the compiler: `HEAP_SIZE_KIB` ([below](#memory-stack-and-heap)), `MAX_ACCOUNTS`
   ([accounts](language-accounts.md#how-many-accounts)), `NATIVE_ACCOUNT_WRITES`, `PANIC_ON_OVERFLOW`, `PANIC_STYLE`,
-  `ERROR_LOG_PREFIX`, `PROGRAM_ERROR_LOG_PREFIX` ([native programs](language-native.md)).
+  `ERROR_LOG_PREFIX`, `PROGRAM_ERROR_LOG_PREFIX` ([native programs](language-native.md)), `EVENT_AUTHORITY_CHECK`
+  ([events through CPI](language-errors-events.md#events-through-cpi)).
 
 ## Type aliases
 
@@ -2789,6 +2790,18 @@ export function pay(ledger: Mut<Ledger>, eventAuthority: EventAuthority, self: S
 instruction) instead of the logs. The instruction takes `eventAuthority:
 EventAuthority` (Anchor's `["__event_authority"]` PDA) and `self: SelfProgram` parameters, and the program accepts
 Anchor's event instruction (2002 when the event authority did not sign it, 2006 when it is not that PDA).
+
+By default the two accounts are checked when the instruction's accounts load: the event authority by its seeds (2006)
+and `self` against this program's address (3008). Anchor 1.x's `#[event_cpi]` checks them differently, and
+`export const EVENT_AUTHORITY_CHECK = "address"` does as it does, for ports of Anchor 1.x programs:
+
+- the event authority is compared with the PDA's address among the constraints, in account order after the accounts
+  load and the `create`s run (ConstraintAddress, 2012);
+- the `self` account is not checked: the self-CPI names this program's id whatever account was passed there. An
+  instruction that emits nothing then accepts any account in that slot; one that emits fails in the runtime
+  (MissingAccount) when this program is not among its accounts, as Anchor's `emit_cpi!` does.
+
+Programs without the constant build as before.
 
 ## Return values
 
