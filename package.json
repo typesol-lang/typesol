@@ -88,13 +88,9 @@
     "typescript": "6.0.3"
   },
   "peerDependencies": {
-    "@anchor-lang/core": "^1.2.1",
     "litesvm": "^1.6.1"
   },
   "peerDependenciesMeta": {
-    "@anchor-lang/core": {
-      "optional": true
-    },
     "litesvm": {
       "optional": true
     }

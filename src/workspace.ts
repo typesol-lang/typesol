@@ -392,7 +392,6 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
             typesol: `npm:@typesol/cli@^${COMPILER_VERSION}`,
             "@types/node": "^22.0.0",
             typescript: "^6.0.3",
-            "@anchor-lang/core": "^1.2.1",
             "@solana/kit": "^8.5.0",
             litesvm: "^1.6.1",
             vitest: "^5.0.5",
