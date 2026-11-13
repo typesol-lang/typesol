@@ -104,12 +104,14 @@ To test against accounts that exist on mainnet (a mint, an oracle, another progr
 written to `tests/accounts/`, which `testProgram` loads into its LiteSVM before your first test; commit the directory so
 the tests run offline. `loadClonedAccounts(svm, dir)` does the same for a LiteSVM of your own.
 
-`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
+`t.svm`, `t.programId` and `t.idl` are there for anything else, and `t.coder` is Anchor's `BorshCoder` for the IDL
+(loaded from `@anchor-lang/core` the first time it is read: `npm install -D @anchor-lang/core` to use it). `programHarness(svm, programId, idl)` gives the same helpers for a
 program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
 program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
 transactions named, plus any you `track(...)`.
 
-The module needs `litesvm` and `@anchor-lang/core`, which `typesol init` adds to `devDependencies`.
+The module needs `litesvm`, which `typesol init` adds to `devDependencies`. It encodes arguments and decodes accounts
+and return data from the IDL with its own Borsh coder, so Anchor's TypeScript package is not needed.
 
 ## Epochs and staking
 

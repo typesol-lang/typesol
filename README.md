@@ -207,9 +207,8 @@ and runs it in LiteSVM, an in-process Solana runtime. `build` writes `target/cou
 IDL), `counter.client.ts` and `counter.build.json`.
 
 `init` also writes rules and an MCP server config for AI coding agents (AGENTS.md, CLAUDE.md, `.cursor/`, `.mcp.json`)
-and lists them; `--no-agent-files` leaves them out. `npm install` reports advisories (moderate and high) and packages
-with install scripts: they come from `@anchor-lang/core` and the Solana web3.js it depends on, which `typesol/testing`
-uses to encode instructions and decode accounts, so the tests need it; none of it is in the program you deploy.
+and lists them; `--no-agent-files` leaves them out. `typesol/testing` encodes instructions and decodes accounts from
+the IDL itself, so a new project installs neither Anchor's TypeScript package nor Solana web3.js 1.x.
 
 Other versions work, but their binaries are not covered by the project's tests: `typesol build` warns once when the
 clang is another one (`--toolchain-strict` or `TYPESOL_TOOLCHAIN=strict` makes that an error), and every build records
