@@ -6,10 +6,10 @@
 // and the same events. A random sequence of swaps per pool (every mode, both directions, referrals, slippage limits)
 // runs to the migration threshold. Reproduce with FUZZ_SEED=<seed>; lengthen with FUZZ_RUNS=<n> (pools per run).
 import * as t22 from "@solana-program/token-2022";
-import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner, getAddressEncoder } from "@solana/kit";
-import { FailedTransactionMetadata } from "litesvm";
+import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, send } from "../../test/harness.js";
+import { BN, pda } from "../../test/harness.js";
+const pdaOf = (seeds: (string | Address)[]) => pda("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN" as Address, seeds);
 import { present } from "../../test/binaries.js";
 import { Rng } from "./fuzz-rng.js";
 import {
@@ -77,6 +77,7 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     return at;
   }
 
+  const claimers = new Map<Address, KeyPairSigner>();
   /** A config made by create_config in both; `patch` rewrites its bytes after (a rate limiter: what pre-0.2.1 configs hold). */
   async function config(params: Params, quoteMint: Address, patch?: (data: Buffer) => void) {
     const payer = await p.funded();
@@ -92,6 +93,7 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
       { address: PROGRAM },
     ]);
     expect(await p.both("create the config", payer, [ix], [cfg.address])).toBe("ok");
+    claimers.set(cfg.address, payer);
     if (patch)
       for (const vm of p.vms()) {
         const a = vm.getAccount(cfg.address);
@@ -103,6 +105,7 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     return cfg.address;
   }
 
+  const creators = new Map<Address, KeyPairSigner>();
   interface PoolInfo {
     pool: Address;
     config: Address;
@@ -120,7 +123,8 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     const supply = 10n ** 17n;
     const baseVault = await account(POOL_AUTHORITY, baseMint, baseProgram, supply);
     const quoteVault = await account(POOL_AUTHORITY, quoteMint, quoteProgram, 0n);
-    const creator = (await generateKeyPairSigner()).address;
+    const creatorSigner = await p.funded();
+    const creator = creatorSigner.address;
     const poolKey = (await generateKeyPairSigner()).address;
     const state = Buffer.alloc(416);
     key(cfg).copy(state, 64);
@@ -135,6 +139,7 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     state[296] = params.token_type;
     state.writeUInt16LE(20, 368);
     p.write(poolKey, Buffer.concat([disc(hook ? "TransferHookPool" : "VirtualPool"), state]));
+    creators.set(poolKey, creatorSigner);
     return { pool: poolKey, config: cfg, baseMint, quoteMint, baseProgram, quoteProgram, baseVault, quoteVault };
   }
 
@@ -246,6 +251,261 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
       ["the instructions sysvar", { rest: [INSTRUCTIONS] }, "ok"],
     ];
     for (const [label, opts, want] of cases) expect(await doSwap(label, pi, t, true, 1_000_000_000n, 0n, 0, opts), label).toBe(want);
+  });
+
+  it("fee claims, creation fees and the creator role", async () => {
+    const params = { ...baseParams(), creator_trading_fee_percentage: 30, pool_creation_fee: 1_000_000_000n, collect_fee_mode: 1 };
+    const cfg = await config(params, quoteSpl);
+    const pi = await pool(cfg, params, quoteSpl, TOKEN);
+    // the creation fee the pool holds beyond its rent
+    for (const vm of p.vms()) {
+      const a = vm.getAccount(pi.pool);
+      if (!a.exists) throw new Error("no pool");
+      vm.setAccount({ ...a, lamports: lamports(a.lamports + 1_000_000_000n) });
+    }
+    const t = await trader(pi);
+    expect(await doSwap("fees in base", pi, t, true, 20_000_000_000n, 0n, 0)).toBe("ok");
+    expect(await doSwap("fees in quote", pi, t, false, 10n ** 12n, 0n, 0)).toBe("ok");
+    const claimer = claimers.get(cfg)!;
+    const creator = creators.get(pi.pool)!;
+    const dstA = await account(claimer.address, pi.baseMint, TOKEN, 0n);
+    const dstB = await account(claimer.address, pi.quoteMint, TOKEN, 0n);
+    const cA = await account(creator.address, pi.baseMint, TOKEN, 0n);
+    const cB = await account(creator.address, pi.quoteMint, TOKEN, 0n);
+    const tradingAccounts = (who: KeyPairSigner, a: Address, b: Address, over: Partial<Record<string, Address>> = {}, withConfig = true): Meta[] => [
+      { address: POOL_AUTHORITY },
+      ...(withConfig ? [{ address: over.config ?? cfg }] : []),
+      { address: over.pool ?? pi.pool, writable: true },
+      { address: a, writable: true },
+      { address: b, writable: true },
+      { address: over.baseVault ?? pi.baseVault, writable: true },
+      { address: pi.quoteVault, writable: true },
+      { address: pi.baseMint },
+      { address: over.quoteMint ?? pi.quoteMint },
+      { address: who.address, signer: who },
+      { address: TOKEN },
+      { address: TOKEN },
+      { address: p.eventAuthority },
+      { address: PROGRAM },
+    ];
+    const big = (n: bigint) => new BN(n.toString());
+    const partner = (who: KeyPairSigner, a: bigint, b: bigint, over = {}) =>
+      p.both(
+        "claim_trading_fee",
+        who,
+        [p.ix("claim_trading_fee", { max_amount_a: big(a), max_amount_b: big(b) }, tradingAccounts(who, dstA, dstB, over))],
+        [pi.pool, pi.baseVault, pi.quoteVault, dstA, dstB],
+      );
+    const creatorClaim = (who: KeyPairSigner, a: bigint, b: bigint, over = {}) =>
+      p.both(
+        "claim_creator_trading_fee",
+        who,
+        [p.ix("claim_creator_trading_fee", { max_base_amount: big(a), max_quote_amount: big(b) }, tradingAccounts(who, cA, cB, over, false))],
+        [pi.pool, pi.baseVault, pi.quoteVault, cA, cB],
+      );
+    expect(await partner(t.who, 1n, 1n)).toBe(custom(6053));
+    expect(await partner(claimer, 1n, 1n, { quoteMint: pi.baseMint })).not.toBe("ok");
+    expect(await partner(claimer, 1000n, 0n)).toBe("ok");
+    expect(await partner(claimer, 10n ** 18n, 10n ** 18n)).toBe("ok");
+    expect(await partner(claimer, 10n ** 18n, 10n ** 18n)).toBe("ok");
+    expect(await creatorClaim(t.who, 1n, 1n)).toBe(custom(6053));
+    expect(await creatorClaim(creator, 10n ** 18n, 5n)).toBe("ok");
+    expect(await creatorClaim(creator, 10n ** 18n, 10n ** 18n)).toBe("ok");
+    expect(await creatorClaim(creator, 1n, 1n, { pool: cfg })).toBe(custom(E.InvalidPoolAccount));
+
+    const receiver = (await generateKeyPairSigner()).address;
+    const partnerCreation = (who: KeyPairSigner) =>
+      p.both(
+        "claim_partner_pool_creation_fee",
+        who,
+        [
+          p.ix("claim_partner_pool_creation_fee", {}, [
+            { address: cfg },
+            { address: pi.pool, writable: true },
+            { address: who.address, signer: who },
+            { address: receiver, writable: true },
+            { address: p.eventAuthority },
+            { address: PROGRAM },
+          ]),
+        ],
+        [pi.pool, receiver],
+      );
+    expect(await partnerCreation(t.who)).toBe(custom(6053));
+    expect(await partnerCreation(claimer)).toBe("ok");
+    expect(await partnerCreation(claimer)).toBe(custom(6052));
+    const noFee = await config(baseParams(), quoteSpl);
+    expect(
+      await p.both(
+        "no creation fee",
+        claimers.get(noFee)!,
+        [
+          p.ix("claim_partner_pool_creation_fee", {}, [
+            { address: noFee },
+            { address: pi.pool, writable: true },
+            { address: claimers.get(noFee)!.address, signer: claimers.get(noFee)! },
+            { address: receiver, writable: true },
+            { address: p.eventAuthority },
+            { address: PROGRAM },
+          ]),
+        ],
+        [pi.pool, receiver],
+      ),
+    ).toBe(custom(6054));
+
+    // the protocol's share goes to the treasury, for an operator with ClaimProtocolFee (bit 0)
+    const treasury = "6aYhxiNGmG8AyU25rh2R7iFu4pBrqnQHpNUGhmsEXRcm" as Address;
+    const op = await p.funded();
+    const [operator] = await pdaOf(["operator", op.address]);
+    expect(
+      await p.both(
+        "an operator",
+        p.admins[0]!,
+        [
+          p.ix("create_operator_account", { permission: new BN(1) }, [
+            { address: operator, writable: true },
+            { address: op.address },
+            { address: p.admins[0]!.address, signer: p.admins[0]! },
+            { address: p.admins[0]!.address, signer: p.admins[0]!, writable: true },
+            { address: SYSTEM },
+            { address: p.eventAuthority },
+            { address: PROGRAM },
+          ]),
+        ],
+        [operator],
+      ),
+    ).toBe("ok");
+    const protocolCreation = (who: KeyPairSigner, to = treasury) =>
+      p.both(
+        "claim_protocol_pool_creation_fee",
+        who,
+        [
+          p.ix("claim_protocol_pool_creation_fee", {}, [
+            { address: cfg },
+            { address: pi.pool, writable: true },
+            { address: operator },
+            { address: who.address, signer: who },
+            { address: to, writable: true },
+            { address: p.eventAuthority },
+            { address: PROGRAM },
+          ]),
+        ],
+        [pi.pool, to],
+      );
+    expect(await protocolCreation(t.who)).toBe(custom(6060));
+    expect(await protocolCreation(op, receiver)).toBe(custom(2012));
+    expect(await protocolCreation(op)).toBe("ok");
+    expect(await protocolCreation(op)).toBe("ok");
+
+    // transfer_pool_creator
+    const newCreator = (await generateKeyPairSigner()).address;
+    const transfer = (who: KeyPairSigner, to: Address, poolKey = pi.pool, rest: Address[] = []) =>
+      p.both(
+        "transfer_pool_creator",
+        who,
+        [
+          p.ix("transfer_pool_creator", {}, [
+            { address: poolKey, writable: true },
+            { address: cfg },
+            { address: who.address, signer: who },
+            { address: to },
+            { address: p.eventAuthority },
+            { address: PROGRAM },
+            ...rest.map((address) => ({ address })),
+          ]),
+        ],
+        [poolKey],
+      );
+    expect(await transfer(creator, creator.address)).toBe(custom(6036));
+    expect(await transfer(t.who, newCreator)).toBe(custom(6053));
+    expect(await transfer(creator, newCreator)).toBe("ok");
+    expect(await transfer(creator, t.who.address)).toBe(custom(6053));
+    // a completed curve (LockedVesting) cannot move it; a migrated pool (CreatedPool) can
+    const done = await pool(cfg, params, quoteSpl, TOKEN);
+    const doneCreator = creators.get(done.pool)!;
+    for (const [progress, want] of [
+      [2, custom(6022)],
+      [4, custom(E.TypeCastFailed)],
+      [3, "ok"],
+    ] as const) {
+      for (const vm of p.vms()) {
+        const a = vm.getAccount(done.pool);
+        if (!a.exists) throw new Error("no pool");
+        const data = Buffer.from(a.data);
+        data[8 + 300] = progress;
+        vm.setAccount({ ...a, data: new Uint8Array(data) });
+      }
+      expect(await transfer(doneCreator, (await generateKeyPairSigner()).address, done.pool), `progress ${progress}`).toBe(want);
+    }
+  });
+
+  it("claim_protocol_fee2 (its signer the protocol fee program's authority) and create_virtual_pool_metadata", async () => {
+    const params = { ...baseParams(), collect_fee_mode: 1 };
+    const cfg = await config(params, quoteSpl);
+    const pi = await pool(cfg, params, quoteSpl, TOKEN);
+    const t = await trader(pi);
+    expect(await doSwap("fees in base", pi, t, true, 20_000_000_000n, 0n, 0)).toBe("ok");
+    expect(await doSwap("fees in quote", pi, t, false, 10n ** 12n, 0n, 0)).toBe("ok");
+    const auth = p.protocolFeeAuthority;
+    const rb = await account(auth.address, pi.baseMint, TOKEN, 0n);
+    const rq = await account(auth.address, pi.quoteMint, TOKEN, 0n);
+    const claim = (receiver: Address, max: bigint, who: KeyPairSigner = auth, over: Partial<Record<string, Address>> = {}) =>
+      p.both(
+        "claim_protocol_fee2",
+        who,
+        [
+          p.ix("claim_protocol_fee2", { max_amount: new BN(max.toString()) }, [
+            { address: receiver, writable: true },
+            { address: pi.baseMint },
+            { address: over.quoteMint ?? pi.quoteMint },
+            { address: TOKEN },
+            { address: over.quoteProgram ?? TOKEN },
+            { address: cfg },
+            { address: pi.pool, writable: true },
+            { address: pi.baseVault, writable: true },
+            { address: pi.quoteVault, writable: true },
+            { address: POOL_AUTHORITY },
+            { address: who.address, signer: who },
+          ]),
+        ],
+        [pi.pool, pi.baseVault, pi.quoteVault, receiver],
+      );
+    expect(await claim(rb, 1n, t.who)).toBe(custom(2012));
+    expect(await claim(rb, 1000n)).toBe("ok");
+    expect(await claim(rb, 10n ** 18n)).toBe("ok");
+    expect(await claim(rb, 10n ** 18n)).toBe("ok");
+    expect(await claim(rq, 10n ** 18n)).toBe("ok");
+    expect(await claim(rq, 10n ** 18n, auth, { quoteProgram: TOKEN_2022 })).toBe(custom(6068));
+    expect(await claim(t.base, 1n, auth, { quoteMint: pi.baseMint })).toBe(custom(2001));
+    const stranger = await account(auth.address, quoteSpl === pi.quoteMint ? await mint(p, TOKEN, 6) : quoteSpl, TOKEN, 0n);
+    expect(await claim(stranger, 1n)).toBe(custom(6068));
+    // the quote surplus share once the curve completes
+    expect(await doSwap("to the threshold", pi, t, true, 10n ** 14n, 0n, 1)).toBe("ok");
+    expect(await claim(rq, 0n)).toBe("ok");
+    expect(await claim(rq, 0n)).toBe("ok");
+
+    const creator = creators.get(pi.pool)!;
+    const payer = await p.funded();
+    const [md] = await pdaOf(["virtual_pool_metadata", pi.pool]);
+    const make = (who: KeyPairSigner, name: string, poolKey = pi.pool) =>
+      p.both(
+        `metadata ${name}`,
+        payer,
+        [
+          p.ix("create_virtual_pool_metadata", { metadata: { padding: new Array(96).fill(0), name, website: "https://example.com", logo: "" } }, [
+            { address: poolKey },
+            { address: md, writable: true },
+            { address: who.address, signer: who },
+            { address: payer.address, signer: payer, writable: true },
+            { address: SYSTEM },
+            { address: p.eventAuthority },
+            { address: PROGRAM },
+          ]),
+        ],
+        [md, payer.address],
+      );
+    expect(await make(t.who, "not the creator")).toBe(custom(6053));
+    expect(await make(creator, "Pool")).toBe("ok");
+    expect(await make(creator, "again")).toBe(custom(0));
   });
 
   it("a rate limiter (a config made before 0.2.1): fees by size, and one swap per pool and transaction", async () => {
@@ -398,8 +658,5 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/meteora-dbc swaps against 
     }
     console.log(`meteora-dbc swaps (seed ${SEED}): ${p.stats.compared} transactions, outcomes ${JSON.stringify(p.stats.byOutcome)}`);
     expect(p.stats.byOutcome.ok ?? 0).toBeGreaterThan(0);
-    void FailedTransactionMetadata;
-    void send;
-    void getAddressEncoder;
   }, 3_600_000);
 });

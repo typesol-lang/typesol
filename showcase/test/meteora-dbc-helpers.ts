@@ -25,6 +25,8 @@ export const SYSTEM = address("11111111111111111111111111111111");
 export const T22_NATIVE_MINT = address("9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP");
 /** DBC's two admins (instructions/admin/auth.rs), each loaded by one lddw per 8-byte word. */
 const ADMINS = [address("5unTfT2kssBuNvHPY6LbJfJpLqEcdMxGYLWHwShaeTLi"), address("DHLXnJdACTY83yKwnUkeoDjqi4QBbsYGa1v8tJL76ViX")] as const;
+/** The protocol fee program's authority PDA (constants.rs, const_pda.rs), the only signer of claim_protocol_fee2: two lddw per word. */
+const PROTOCOL_FEE_AUTHORITY = address("FkU5rQCWQM131skHCpcEbK8P1JrQGsBgqXe55w525SSF");
 
 export type Result = TransactionMetadata | FailedTransactionMetadata;
 export type Meta = { address: Address; signer?: KeyPairSigner; writable?: boolean };
@@ -58,6 +60,8 @@ export interface Pair {
   d: Deployed;
   original: LiteSVM;
   admins: KeyPairSigner[];
+  /** A test key in place of the protocol fee authority PDA. */
+  protocolFeeAuthority: KeyPairSigner;
   eventAuthority: Address;
   vms(): readonly [LiteSVM, LiteSVM];
   funded(): Promise<KeyPairSigner>;
@@ -77,9 +81,10 @@ export async function pair(): Promise<Pair> {
   const source = mkdtempSync(path.join(os.tmpdir(), "meteora-dbc-port-"));
   cpSync(path.dirname(PORT), source, { recursive: true });
   const admins: KeyPairSigner[] = [];
-  for (const admin of ADMINS) {
-    const signer = await generateKeyPairSigner();
-    admins.push(signer);
+  const protocolFeeAuthority = await generateKeyPairSigner();
+  for (const admin of [...ADMINS, PROTOCOL_FEE_AUTHORITY]) {
+    const signer = admin === PROTOCOL_FEE_AUTHORITY ? protocolFeeAuthority : await generateKeyPairSigner();
+    if (admin !== PROTOCOL_FEE_AUTHORITY) admins.push(signer);
     const [from, to] = [key(admin), key(signer.address)];
     for (let c = 0; c < 4; c++) {
       const [was, now] = [from.readBigUInt64LE(c * 8), to.readBigUInt64LE(c * 8)];
@@ -90,7 +95,7 @@ export async function pair(): Promise<Pair> {
           so.writeUInt32LE(Number(now >> 32n), i + 12);
           patched++;
         }
-      expect(patched, `admin ${admin}, word ${c}`).toBe(1);
+      expect(patched, `key ${admin}, word ${c}`).toBe(admin === PROTOCOL_FEE_AUTHORITY ? 2 : 1);
     }
     for (const f of readdirSync(source))
       if (f.endsWith(".ts")) writeFileSync(path.join(source, f), readFileSync(path.join(source, f), "utf8").replaceAll(admin, signer.address));
@@ -104,7 +109,7 @@ export async function pair(): Promise<Pair> {
     clock.epoch = 900n;
     clock.slot = 470_000_000n;
     vm.setClock(clock);
-    for (const s of admins) vm.airdrop(s.address, lamports(100_000_000_000n));
+    for (const s of [...admins, protocolFeeAuthority]) vm.airdrop(s.address, lamports(100_000_000_000n));
   }
   const [eventAuthority] = await pda(PROGRAM, ["__event_authority"]);
   const stats = { compared: 0, innerCompared: 0, byOutcome: {} as Record<string, number> };
@@ -117,6 +122,7 @@ export async function pair(): Promise<Pair> {
     d,
     original,
     admins,
+    protocolFeeAuthority,
     eventAuthority,
     vms,
     stats,
@@ -154,6 +160,11 @@ export async function pair(): Promise<Pair> {
         expect(inner(b), `${label}: inner instructions (events)`).toEqual(inner(a));
         stats.innerCompared += inner(a).flat().length;
         expect(returned(b), `${label}: return data`).toBe(returned(a));
+        const logged = (r: Result) =>
+          meta(r)
+            .logs()
+            .filter((l) => l.startsWith("Program data:"));
+        expect(logged(b), `${label}: events in the logs (emit!)`).toEqual(logged(a));
       }
       const o = outcome(a);
       const short =

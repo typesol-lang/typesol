@@ -29,8 +29,18 @@ codes, and says so here.
   data. Not checked or different: log lines (Anchor's error messages, the original's "Math error thrown at …" lines),
   compute units, the IDL (the config events' ConfigParameters is described field by field, the metadata Strings as
   bytes), a read-only `payer` (ConstraintMut 2000 here, PrivilegeEscalation in the original), and a `curve` argument of
-  more than 24 points (102 here; a transaction carries at most 23). The remaining 26 instructions, the rate limiter and
-  the swap math are not ported yet. The binary is identified as 0.2.2 by its instruction names, error messages and
+  more than 24 points (102 here; a transaction carries at most 23).
+  The second stage adds 9 more: `swap` and `swap2` (ExactIn, PartialFill, ExactOut) with the swap math, the dynamic
+  fee's volatility tracker and the rate limiter of configs made before 0.2.1, the partner's and creator's trading fee
+  claims, both pool creation fee claims, `claim_protocol_fee2` (its signer, the protocol fee program's authority PDA,
+  patched to a test key in both), `transfer_pool_creator` and `create_virtual_pool_metadata`.
+  `showcase/test/meteora-dbc-swap.test.ts` checks them against the same binary on pools written into both ledgers as
+  pool creation leaves them (pool creation is not ported yet): every mode in both directions, referrals, slippage,
+  account refusals, the rate limiter's single-swap guard, and a random swap sequence per pool (fee schedulers, dynamic
+  fee, rate limiter, Token-2022 transfer fees on either mint) to the migration threshold (1,900+ swaps over three
+  seeds, all the same). Not ported yet: the 3 pool creation instructions, the 3 transfer-hook instructions and the
+  migration stages; a swap by CPI under an active rate limiter, which the original checks against the processed
+  sibling instructions, is refused here (not tested). The binary is identified as 0.2.2 by its instruction names, error messages and
   source paths; it was not rebuilt.
 
 ## 0.47.0 — 2026-11-13

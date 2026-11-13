@@ -31,9 +31,14 @@ import {
   type Signer,
   type SystemProgram,
   AnchorError,
+  ProgramError,
   byteLength,
+  constraint,
+  loadAccount,
+  rentExempt,
   loadRawAt,
   loadRawMutAt,
+  emit,
   emitCpi,
   instructionData,
   now,
@@ -47,14 +52,17 @@ import {
 } from "typesol";
 import { DEFAULT_PUBKEY, processCreateConfig, validateConfigParameters, validateTransferFeeParameters } from "./config";
 import { PoolError } from "./errors";
-import { type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
-import { U64_MAX } from "./math";
+import { type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
+import { U64_MAX, addU64, safeMulDivCastU64, subU64 } from "./math";
 import { POOL_AUTHORITY_BUMP, checkConfigAccount, checkPoolAccount, finishSwap, processSwap, requireNoTransferHook } from "./process_swap";
 import {
   type ClaimFeeOperator,
+  type MeteoraDammMigrationMetadata,
   type ConfigParameters,
   type ConfigWithTransferHook,
   type CreatePartnerMetadataParameters,
+  type CreateVirtualPoolMetadataParameters,
+  type VirtualPoolMetadata,
   type Operator,
   type PartnerMetadata,
   type PoolConfig,
@@ -64,6 +72,8 @@ import {
   type SwapParameters,
   type SwapParameters2,
   type TransferFeeParameters,
+  MIGRATION_PROGRESS_CREATED_POOL,
+  OPERATOR_CLAIM_PROTOCOL_FEE,
   OPERATOR_CLOSE_TOKEN_BADGE,
   OPERATOR_CREATE_TOKEN_BADGE,
   OPERATOR_PERMISSION_COUNT,
@@ -755,4 +765,303 @@ export function swap2(
       eventAuthority,
       program,
     );
+}
+
+// ---- fee claims and the pool creator (instructions/partner, creator, operator) ---------------------------------
+
+/** utils/accounts.rs transfer_lamports_from_pool_account: lamports out of the pool, which must stay rent-exempt. */
+function lamportsFromPool(pool: Mut<AccountInfo>, to: Mut<AccountInfo>, lamports: u64): void {
+  require(pool.lamports >= lamports, ProgramError.ArithmeticOverflow);
+  pool.lamports = pool.lamports - lamports;
+  require(to.lamports <= U64_MAX - lamports, ProgramError.ArithmeticOverflow);
+  to.lamports = to.lamports + lamports;
+  require(pool.lamports >= rentExempt(424n), PoolError.InsufficientPoolLamports);
+}
+
+/** PoolConfig::split_pool_creation_fee: the protocol's 10%, rounded down. */
+function protocolCreationFee(poolCreationFee: u64): u64 {
+  return safeMulDivCastU64(poolCreationFee, 10n, 100n, false);
+}
+
+/** claim_trading_fee: the partner's base and quote trading fees, up to the maximums. A VirtualPool only. */
+export function claimTradingFee(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  tokenAAccount: Mut<TokenAccount>,
+  tokenBAccount: Mut<TokenAccount>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  baseMint: Mint,
+  quoteMint: Mint,
+  feeClaimer: Signer,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  maxAmountA: u64,
+  maxAmountB: u64,
+): void {
+  // access control: is_partner_fee_claimer
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.fee_claimer === feeClaimer.key, PoolError.Unauthorized);
+  require(c.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  require(!checkPoolAccount(pool), PoolError.PoolTypeMismatch);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.base_mint === baseMint.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(remainingAccounts().length === 0n, PoolError.InvalidRemainingAccountsLength);
+  const baseAmount = p.partner_base_fee < maxAmountA ? p.partner_base_fee : maxAmountA;
+  const quoteAmount = p.partner_quote_fee < maxAmountB ? p.partner_quote_fee : maxAmountB;
+  p.partner_base_fee = p.partner_base_fee - baseAmount;
+  p.partner_quote_fee = p.partner_quote_fee - quoteAmount;
+  if (baseAmount > 0n) {
+    requireNoTransferHook(baseMint);
+    tokenBaseProgram.transferChecked(baseVault, baseMint, tokenAAccount, poolAuthority, baseAmount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  }
+  if (quoteAmount > 0n) {
+    requireNoTransferHook(quoteMint);
+    tokenQuoteProgram.transferChecked(quoteVault, quoteMint, tokenBAccount, poolAuthority, quoteAmount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  }
+  emitCpi<EvtClaimTradingFee>({ pool: pool.key, token_base_amount: baseAmount, token_quote_amount: quoteAmount }, eventAuthority, program);
+}
+
+/** claim_creator_trading_fee: the creator's share of the trading fees, up to the maximums. A VirtualPool only. */
+export function claimCreatorTradingFee(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  pool: Mut<AccountInfo>,
+  tokenAAccount: Mut<TokenAccount>,
+  tokenBAccount: Mut<TokenAccount>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  baseMint: Mint,
+  quoteMint: Mint,
+  creator: Signer,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  maxBaseAmount: u64,
+  maxQuoteAmount: u64,
+): void {
+  // access control: is_pool_creator
+  const hook = checkPoolAccount(pool);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.creator === creator.key, PoolError.Unauthorized);
+  require(!hook, PoolError.PoolTypeMismatch);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.base_mint === baseMint.key, AnchorError.ConstraintHasOne);
+  require(remainingAccounts().length === 0n, PoolError.InvalidRemainingAccountsLength);
+  const baseAmount = p.creator_base_fee < maxBaseAmount ? p.creator_base_fee : maxBaseAmount;
+  const quoteAmount = p.creator_quote_fee < maxQuoteAmount ? p.creator_quote_fee : maxQuoteAmount;
+  p.creator_base_fee = p.creator_base_fee - baseAmount;
+  p.creator_quote_fee = p.creator_quote_fee - quoteAmount;
+  if (baseAmount > 0n) {
+    requireNoTransferHook(baseMint);
+    tokenBaseProgram.transferChecked(baseVault, baseMint, tokenAAccount, poolAuthority, baseAmount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  }
+  if (quoteAmount > 0n) {
+    requireNoTransferHook(quoteMint);
+    tokenQuoteProgram.transferChecked(quoteVault, quoteMint, tokenBAccount, poolAuthority, quoteAmount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  }
+  emitCpi<EvtClaimCreatorTradingFee>({ pool: pool.key, token_base_amount: baseAmount, token_quote_amount: quoteAmount }, eventAuthority, program);
+}
+
+/** claim_partner_pool_creation_fee: the partner's 90% of the pool creation fee, in lamports, once. */
+export function claimPartnerPoolCreationFee(
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  feeClaimer: Signer,
+  feeReceiver: Mut<AccountInfo>,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.fee_claimer === feeClaimer.key, PoolError.Unauthorized);
+  const partnerFee = c.pool_creation_fee - protocolCreationFee(c.pool_creation_fee);
+  require(partnerFee > 0n, PoolError.ZeroPoolCreationFee);
+  checkPoolAccount(pool);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  // PARTNER_CREATION_FEE_CLAIMED_MASK = 0b10
+  require((p.creation_fee_bits & 2n) === 0n, PoolError.PoolCreationFeeHasBeenClaimed);
+  p.creation_fee_bits = p.creation_fee_bits ^ 2n;
+  lamportsFromPool(pool, feeReceiver, partnerFee);
+  emitCpi<EvtPartnerClaimPoolCreationFee>(
+    { pool: pool.key, partner: feeClaimer.key, creation_fee: partnerFee, fee_receiver: feeReceiver.key },
+    eventAuthority,
+    program,
+  );
+}
+
+/** claim_protocol_pool_creation_fee: the protocol's 10% (and a legacy Token-2022 fee) to the treasury. Operators with ClaimProtocolFee. */
+export function claimProtocolPoolCreationFee(
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  operator: Account<Operator>,
+  signer: Signer,
+  treasury: Address<Mut<AccountInfo>, "6aYhxiNGmG8AyU25rh2R7iFu4pBrqnQHpNUGhmsEXRcm">,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {
+  isValidOperatorRole(operator, signer.key, OPERATOR_CLAIM_PROTOCOL_FEE);
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  checkPoolAccount(pool);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  let protocolFee: u64 = 0n;
+  // PROTOCOL_CREATION_FEE_CLAIMED_MASK = 0b01
+  if ((p.creation_fee_bits & 1n) === 0n) {
+    p.creation_fee_bits = p.creation_fee_bits ^ 1n;
+    protocolFee = protocolCreationFee(c.pool_creation_fee);
+  }
+  // the legacy creation fee: charged (0b01) and not yet claimed (0b10)
+  if ((p.legacy_creation_fee_bits & 1n) !== 0n && (p.legacy_creation_fee_bits & 2n) === 0n) {
+    p.legacy_creation_fee_bits = p.legacy_creation_fee_bits ^ 2n;
+    protocolFee = addU64(protocolFee, 10_000_000n);
+  }
+  if (protocolFee > 0n) lamportsFromPool(pool, treasury, protocolFee);
+  emitCpi<EvtClaimPoolCreationFee>({ pool: pool.key, receiver: treasury.key, creation_fee: protocolFee }, eventAuthority, program);
+}
+
+/** transfer_pool_creator: hand the pool's creator role to another key, before the curve completes or after migration. */
+export function transferPoolCreator(
+  virtualPool: Mut<AccountInfo>,
+  config: AccountInfo,
+  creator: Signer,
+  newCreator: AccountInfo,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {
+  constraint(newCreator, newCreator.key !== creator.key, PoolError.InvalidNewCreator);
+  // access control: is_pool_creator
+  checkPoolAccount(virtualPool);
+  const p = loadRawMutAt<PoolState>(virtualPool, 8n);
+  require(p.creator === creator.key, PoolError.Unauthorized);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(p.migration_progress <= MIGRATION_PROGRESS_CREATED_POOL, PoolError.TypeCastFailed);
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  if (p.migration_progress === MIGRATION_PROGRESS_CREATED_POOL) {
+    require(c.migration_option <= 1n, PoolError.InvalidMigrationOption);
+    if (c.migration_option === 0n) checkDammV1Claimed(virtualPool.key, remainingAccounts());
+  } else {
+    require(p.migration_progress === 0n, PoolError.NotPermitToDoThisAction);
+  }
+  p.creator = newCreator.key;
+  emitCpi<EvtUpdatePoolCreator>({ pool: virtualPool.key, creator: creator.key, new_creator: newCreator.key }, eventAuthority, program);
+}
+
+/** A DAMM v1 migration's LP tokens, claimed and locked, before the creator role moves (its metadata: remaining account 0). */
+function checkDammV1Claimed(pool: Pubkey, rest: RemainingAccounts): void {
+  require(rest.length > 0n, PoolError.InvalidAccount);
+  const m = loadAccount<MeteoraDammMigrationMetadata>(rest.get(0n));
+  require(m.virtual_pool === pool, PoolError.InvalidAccount);
+  require(m.partner_locked_liquidity === 0n || m.partner_locked_status === 1n, PoolError.NotPermitToDoThisAction);
+  require(m.creator_locked_liquidity === 0n || m.creator_locked_status === 1n, PoolError.NotPermitToDoThisAction);
+  require(m.creator_liquidity === 0n || m.creator_claim_status === 1n, PoolError.NotPermitToDoThisAction);
+  require(m.partner_liquidity === 0n || m.partner_claim_status === 1n, PoolError.NotPermitToDoThisAction);
+}
+
+/** create_virtual_pool_metadata: a pool's name, website and logo (PDA ["virtual_pool_metadata", pool]). Its creator only. */
+export function createVirtualPoolMetadata(
+  virtualPool: AccountInfo,
+  virtualPoolMetadata: Init<VirtualPoolMetadata>,
+  creator: Signer,
+  payer: Mut<Signer>,
+  systemProgram: SystemProgram,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  metadata: CreateVirtualPoolMetadataParameters,
+): void {
+  virtualPoolMetadata.create(
+    payer,
+    ["virtual_pool_metadata", virtualPool.key],
+    8n + 32n + 96n + 4n + byteLength(metadata.name) + 4n + byteLength(metadata.website) + 4n + byteLength(metadata.logo),
+  );
+  // access control: is_pool_creator
+  checkPoolAccount(virtualPool);
+  const p = loadRawAt<PoolState>(virtualPool, 8n);
+  require(p.creator === creator.key, PoolError.Unauthorized);
+  virtualPoolMetadata.virtual_pool = virtualPool.key;
+  const data = instructionData();
+  const nameAt = 8n + 96n;
+  const websiteAt = nameAt + 4n + byteLength(metadata.name);
+  const logoAt = websiteAt + 4n + byteLength(metadata.website);
+  for (const b of data.slice(nameAt + 4n, websiteAt)) virtualPoolMetadata.name.push(b);
+  for (const b of data.slice(websiteAt + 4n, logoAt)) virtualPoolMetadata.website.push(b);
+  for (const b of data.slice(logoAt + 4n, logoAt + 4n + byteLength(metadata.logo))) virtualPoolMetadata.logo.push(b);
+  emitCpi<EvtVirtualPoolMetadata>({ virtual_pool_metadata: virtualPoolMetadata.key, virtual_pool: virtualPool.key }, eventAuthority, program);
+}
+
+/**
+ * claim_protocol_fee2: the protocol's trading and migration fees (and its 20% of the surplus, in quote) to a receiver,
+ * signed by the protocol fee program's authority PDA (so only by CPI from that program). Either pool type.
+ */
+export function claimProtocolFee2(
+  receiverTokenAccount: Mut<TokenAccount>,
+  baseMint: Mint,
+  quoteMint: Mint,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  baseVault: Mut<TokenAccount>,
+  quoteVault: Mut<TokenAccount>,
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  signer: Address<Signer, "FkU5rQCWQM131skHCpcEbK8P1JrQGsBgqXe55w525SSF">,
+  maxAmount: u64,
+): void {
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  const hook = checkPoolAccount(pool);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.base_mint === baseMint.key, AnchorError.ConstraintHasOne);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  // get_claim_direction_and_validate_accounts
+  const claimingBase = receiverTokenAccount.mint === p.base_mint;
+  require(claimingBase || receiverTokenAccount.mint === c.quote_mint, PoolError.InvalidClaimProtocolFeeAccounts);
+  require(receiverTokenAccount.tokenProgram === (claimingBase ? tokenBaseProgram.key : tokenQuoteProgram.key), PoolError.InvalidClaimProtocolFeeAccounts);
+  let amount: u64 = 0n;
+  if (claimingBase) {
+    if (hook) require(p.quote_reserve >= c.migration_quote_threshold, PoolError.PoolIsIncompleted);
+    // claim_protocol_base_fee: the trading fee first, then the migration fee, up to max_amount
+    const trading = p.protocol_base_fee < maxAmount ? p.protocol_base_fee : maxAmount;
+    p.protocol_base_fee = p.protocol_base_fee - trading;
+    const rest = maxAmount - trading;
+    const migration = p.protocol_migration_base_fee_amount < rest ? p.protocol_migration_base_fee_amount : rest;
+    p.protocol_migration_base_fee_amount = p.protocol_migration_base_fee_amount - migration;
+    amount = addU64(trading, migration);
+  } else {
+    const trading = p.protocol_quote_fee < maxAmount ? p.protocol_quote_fee : maxAmount;
+    p.protocol_quote_fee = p.protocol_quote_fee - trading;
+    const rest = maxAmount - trading;
+    const migration = p.protocol_migration_quote_fee_amount < rest ? p.protocol_migration_quote_fee_amount : rest;
+    p.protocol_migration_quote_fee_amount = p.protocol_migration_quote_fee_amount - migration;
+    amount = addU64(trading, migration);
+    // claim_protocol_quote_fee_and_surplus: the protocol's share of the surplus, once the curve is complete
+    if (p.is_protocol_withdraw_surplus === 0n && p.quote_reserve >= c.migration_quote_threshold) {
+      p.is_protocol_withdraw_surplus = 1n;
+      const total = subU64(p.quote_reserve, c.migration_quote_threshold);
+      const partnerAndCreator = safeMulDivCastU64(total, 80n, 100n, false);
+      amount = addU64(amount, subU64(total, partnerAndCreator));
+    }
+  }
+  if (amount === 0n) return;
+  if (claimingBase) {
+    tokenBaseProgram.transferChecked(baseVault, baseMint, receiverTokenAccount, poolAuthority, amount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    emit<EvtClaimProtocolFee2>({ pool: pool.key, receiver_token_account: receiverTokenAccount.key, token_mint: baseMint.key, amount });
+  } else {
+    tokenQuoteProgram.transferChecked(quoteVault, quoteMint, receiverTokenAccount, poolAuthority, amount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    emit<EvtClaimProtocolFee2>({ pool: pool.key, receiver_token_account: receiverTokenAccount.key, token_mint: quoteMint.key, amount });
+  }
 }
