@@ -20,7 +20,7 @@ const run = (args: string[], cwd: string) => spawnSync("node", [CLI, ...args], {
 function runGeneratedTest(dir: string) {
   mkdirSync(path.join(dir, "node_modules"), { recursive: true });
   symlinkSync(ROOT, path.join(dir, "node_modules/typesol"), "dir");
-  for (const dep of ["@anchor-lang", "@solana", "@solana-program", "litesvm", "vitest", "@types", "typescript"])
+  for (const dep of ["@solana", "@solana-program", "litesvm", "vitest", "@types", "typescript"])
     symlinkSync(path.join(ROOT, "node_modules", dep), path.join(dir, "node_modules", dep), "dir");
   execFileSync("node", [path.join(ROOT, "node_modules/typescript/bin/tsc"), "-p", "tsconfig.json"], { cwd: dir, stdio: "pipe" });
   execFileSync("node", [path.join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", dir], { cwd: dir, stdio: "pipe" });

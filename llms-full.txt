@@ -57,9 +57,8 @@ and runs it in LiteSVM, an in-process Solana runtime. `build` writes `target/cou
 IDL), `counter.client.ts` and `counter.build.json`.
 
 `init` also writes rules and an MCP server config for AI coding agents (AGENTS.md, CLAUDE.md, `.cursor/`, `.mcp.json`)
-and lists them; `--no-agent-files` leaves them out. `npm install` reports advisories (moderate and high) and packages
-with install scripts: they come from `@anchor-lang/core` and the Solana web3.js it depends on, which `typesol/testing`
-uses to encode instructions and decode accounts, so the tests need it; none of it is in the program you deploy.
+and lists them; `--no-agent-files` leaves them out. `typesol/testing` encodes instructions and decodes accounts from
+the IDL itself, so a new project installs neither Anchor's TypeScript package nor Solana web3.js 1.x.
 
 Other versions work, but their binaries are not covered by the project's tests: `typesol build` warns once when the
 clang is another one (`--toolchain-strict` or `TYPESOL_TOOLCHAIN=strict` makes that an error), and every build records
@@ -4837,12 +4836,14 @@ To test against accounts that exist on mainnet (a mint, an oracle, another progr
 written to `tests/accounts/`, which `testProgram` loads into its LiteSVM before your first test; commit the directory so
 the tests run offline. `loadClonedAccounts(svm, dir)` does the same for a LiteSVM of your own.
 
-`t.svm`, `t.programId`, `t.idl` and `t.coder` are there for anything else. `programHarness(svm, programId, idl)` gives the same helpers for a
+`t.svm`, `t.programId` and `t.idl` are there for anything else, and `t.coder` is Anchor's `BorshCoder` for the IDL
+(loaded from `@anchor-lang/core` the first time it is read: `npm install -D @anchor-lang/core` to use it). `programHarness(svm, programId, idl)` gives the same helpers for a
 program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for any LiteSVM, e.g. one with an Anchor
 program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
 transactions named, plus any you `track(...)`.
 
-The module needs `litesvm` and `@anchor-lang/core`, which `typesol init` adds to `devDependencies`.
+The module needs `litesvm`, which `typesol init` adds to `devDependencies`. It encodes arguments and decodes accounts
+and return data from the IDL with its own Borsh coder, so Anchor's TypeScript package is not needed.
 
 ## Epochs and staking
 

@@ -6,6 +6,24 @@ codes, and says so here.
 
 ## Unreleased
 
+- Changed: `typesol init` no longer adds `@anchor-lang/core` to a project's `devDependencies`, and `@typesol/cli` no
+  longer lists it as an optional peer dependency. `typesol/testing` used that package (and through it Solana web3.js
+  1.x) only to encode instruction arguments and decode accounts and return data; it now does both with its own Borsh
+  coder, read from the IDL as Anchor's `BorshCoder` reads it (test/client/idl-coder.test.ts compares the two on random
+  values for every example, template and shape program). A new project's `npm install` adds 96 packages instead of 156
+  and reports 0 vulnerabilities instead of 7 (4 moderate, 3 high). Existing projects can remove `@anchor-lang/core`
+  from `devDependencies` after upgrading, unless their tests import it or read `t.coder`. Compiled programs and IDLs
+  do not change.
+- Changed: `t.coder` is still Anchor's `BorshCoder`, now loaded from `@anchor-lang/core` the first time it is read; it
+  throws an error saying to install the package when it is missing. `TestProgram.idl` and `programHarness`'s `idl`
+  parameter are typed with `TestIdl`, a structural type an Anchor `Idl` satisfies, and `t.coder` with
+  `AnchorBorshCoder`.
+- Changed: an integer of 64 bits or more outside its type's range now fails with an error naming the argument; Anchor's
+  coder wrote it wrong (a negative `u64` as its absolute value, `2n ** 63n` as an `i64` as that type's minimum). A
+  missing argument of variable size (a string, a Vec) fails with an error naming it instead of a buffer offset error.
+  `bytes` arguments also take a `Uint8Array` or a `number[]` (Anchor's coder took only a Buffer), and instruction data
+  is no longer limited to 1,000 bytes.
+
 ## 0.46.0 — 2026-11-13
 
 A minor release: it adds a flag (`init --no-agent-files`) and an export of `typesol/compiler` (`typescriptMessage`),
