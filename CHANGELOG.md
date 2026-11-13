@@ -6,6 +6,26 @@ codes, and says so here.
 
 ## Unreleased
 
+- Changed: `typesol/testing`'s `t.ix` refuses an argument left out or misspelt. An argument missing from the arguments
+  object was encoded as zeros when its size is fixed (as Anchor's coder does), so a misspelt argument name sent
+  zeros and a misspelt `Option` argument sent None; the same for a field left out of a struct argument or of a data
+  enum variant, at any depth, and for a variant that has fields named without them (`{ Box: {} }`). Each is now an
+  error naming the instruction and the argument and listing the instruction's arguments (`set: argument "amount" is
+  missing (it takes amount, cap, frame, shape; only an Option may be left out)`), or naming the field's path and the
+  struct's fields (`set(frame).origin.y is missing (Point has x, y; only an Option may be left out)`). An `Option`
+  may still be left out (None). A key that names no argument or field, in its IDL (snake_case) or camelCase
+  spelling, was ignored and is now an error too (`set has no argument "amonut" (it takes amount, cap, frame, shape)`,
+  `set(frame) has no field "scael" (Frame has origin, scale)`). `null` for an argument or field that is not an
+  `Option` was encoded as 0 for an integer of up to 32 bits and as false for a bool; it is now an error
+  (`set(amount) is null, but it is a u64, not an Option`). No test of the repository passed a missing or unknown key.
+- Added: `t.events(res)` in `typesol/testing`: the events a successful transaction emitted, decoded from the IDL, in
+  the order the program emitted them (`[{ name, data }]`, values as `t.account` gives them): `emit`'s `Program data:`
+  log lines while this program runs, and `emitCpi`'s self-CPIs, which it finds in the transaction's inner
+  instructions. It needs no other package; decoding events in a test took `t.coder.events.decode(…)` on each log line,
+  which needs `@anchor-lang/core`, and did not see `emitCpi` events. `t.coder` does not change. TypeSOL's Borsh coder
+  decodes events as Anchor's `coder.events.decode` does (test/client/idl-coder.test.ts compares the two on random
+  values for every program with events, and on a wrong discriminator, which both decode as null).
+
 ## 0.47.0 — 2026-11-13
 
 A minor release: it removes an optional peer dependency (`@anchor-lang/core`) and changes what `t.coder` of

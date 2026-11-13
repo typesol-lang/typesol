@@ -1,7 +1,8 @@
 // typesol/testing's own IDL coder (src/idl-coder.ts) against Anchor's BorshCoder: for the IDLs of the examples, the
 // `typesol init` templates, the Borsh / Option / zero-copy shape programs of test/language and a hand-written IDL with
 // the shapes TypeSOL does not emit (tuples, aliases, generics, 256-bit integers, f32, recursion), seeded random values
-// are encoded by both (same bytes) and decoded by both (same values): instructions, accounts and defined types.
+// are encoded by both (same bytes) and decoded by both (same values): instructions, accounts and defined types; events
+// (which Anchor's coder only decodes) are decoded by both from the same bytes.
 import anchor from "@anchor-lang/core";
 import { getAddressDecoder } from "@solana/kit";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -16,7 +17,12 @@ import { IdlCoder, type IdlTypeDefSpec, type IdlTypeSpec } from "../../src/idl-c
 import { TEMPLATES, TEMPLATE_NAMES } from "../../src/templates.js";
 
 const { BN, BorshCoder, web3 } = anchor;
-type AnyIdl = { instructions: { name: string; args: { name: string; type: IdlTypeSpec }[] }[]; accounts?: { name: string }[]; types?: IdlTypeDefSpec[] };
+type AnyIdl = {
+  instructions: { name: string; args: { name: string; type: IdlTypeSpec }[] }[];
+  accounts?: { name: string }[];
+  events?: { name: string; discriminator: number[] }[];
+  types?: IdlTypeDefSpec[];
+};
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const ADDRESS = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS";
@@ -243,6 +249,7 @@ const SHAPES_IDL = {
     { name: "nothing", discriminator: [9], accounts: [], args: [] },
   ],
   accounts: [{ name: "Holder", discriminator: [7, 7] }],
+  events: [{ name: "Tree", discriminator: [5, 5, 5, 5, 5, 5, 5, 5] }],
   types: [
     { name: "Pair", type: { kind: "struct", fields: ["u8", "pubkey"] } },
     { name: "Amounts", type: { kind: "type", alias: { vec: "u64" } } },
@@ -321,6 +328,8 @@ const programs: [string, () => AnyIdl][] = [
 ];
 
 const CASES = 200;
+/** Event cases compared across all programs (checked after them). */
+let eventCases = 0;
 
 describe("typesol/testing's IDL coder matches Anchor's BorshCoder", () => {
   it("finds the shape programs in the test files", () => {
@@ -372,6 +381,29 @@ describe("typesol/testing's IDL coder matches Anchor's BorshCoder", () => {
         }
       }
 
+      // Events: the discriminator, then the fields, as `emit` writes them; Anchor's coder takes them in base64.
+      for (const ev of idl.events ?? []) {
+        for (let i = 0; i < CASES; i++) {
+          const g = gen({ defined: { name: ev.name } }, new Map(), 0);
+          const bytes = Buffer.concat([Buffer.from(ev.discriminator), mine.encodeType(ev.name, g.mine)]);
+          const anchors = theirs.events.decode(bytes.toString("base64"))!;
+          expect(mine.decodeEvent(bytes), `${ev.name} #${i}`).toEqual({ name: anchors.name, data: fromAnchor(anchors.data) });
+          expect(mine.decodeEvent(bytes)).toEqual({ name: ev.name, data: g.mine });
+          // Another discriminator (the first byte changed), or too few bytes for one: not an event, null from both.
+          const wrong = Buffer.from(bytes);
+          wrong[0] = (wrong[0]! + 1) % 256;
+          if (!(idl.events ?? []).some((e) => Buffer.from(e.discriminator).equals(wrong.subarray(0, e.discriminator.length)))) {
+            expect(mine.decodeEvent(wrong)).toBeNull();
+            expect(theirs.events.decode(wrong.toString("base64"))).toBeNull();
+          }
+          const short = bytes.subarray(0, ev.discriminator.length - 1);
+          expect(mine.decodeEvent(short)).toBeNull();
+          expect(theirs.events.decode(short.toString("base64"))).toBeNull();
+          compared++;
+          eventCases++;
+        }
+      }
+
       for (const t of types) {
         if (t.generics?.length) continue;
         const cases = JSON.stringify(t).length > 4000 ? 10 : CASES;
@@ -393,6 +425,10 @@ describe("typesol/testing's IDL coder matches Anchor's BorshCoder", () => {
       }
       expect(compared).toBeGreaterThan(0);
     });
+
+  it("compared events of several programs", () => {
+    expect(eventCases).toBeGreaterThan(CASES * 5);
+  });
 
   it("random bytes: both decoders give the same value or both refuse", () => {
     const coders = programs.map(([, load]) => load()).map((idl) => ({ idl, mine: new IdlCoder(idl as never), theirs: new BorshCoder(idl as never) }));
@@ -477,6 +513,37 @@ export function set(payer: Signer, holder: Mut<Holder>, small: u8, wide: u16, fl
     expect(() => mine.decodeAccount("Nope", data)).toThrow("Account not found: Nope");
     expect(() => mine.encodeInstruction("nope", {})).toThrow("Unknown method: nope");
     expect(() => mine.decodeType("Nope", data)).toThrow("Unknown type: Nope");
+  });
+
+  it("strict: a missing field or argument that is not an Option, or a key that names none, is an error", () => {
+    const idl = idlOfSource(
+      "strict",
+      `import { type FixedArray, type Option, type Signer, type u8, type u16 } from "typesol";
+export interface Point { x: u16; y: u16 }
+export type Shape = { kind: "Dot"; at: Point } | { kind: "None" };
+export function set(payer: Signer, small: u8, at: Point, cap: Option<u16>, shape: Shape, three: FixedArray<u8, 3>): void {}
+`,
+    );
+    const loose = new IdlCoder(idl as never);
+    const strict = new IdlCoder(idl as never, { strict: true });
+    const theirs = new BorshCoder(idl as never);
+    const full = { small: 1, at: { x: 1, y: 2 }, cap: 5, shape: { Dot: { at: { x: 3, y: 4 } } }, three: [1, 2, 3] };
+    // The same bytes as Anchor's for complete arguments, an Option left out included.
+    const { cap: _, ...noCap } = full;
+    for (const args of [full, noCap]) expect(strict.encodeInstruction("set", args).equals(Buffer.from(theirs.instruction.encode("set", args)))).toBe(true);
+    // What the loose coder writes as zeros (as Anchor's does) or ignores, the strict one refuses, naming it.
+    const cases: [Record<string, unknown>, string][] = [
+      [{ ...full, small: undefined }, "set.small: missing (only an Option may be left out)"],
+      [{ ...full, at: { x: 1 } }, "set.at.y: missing (only an Option may be left out)"],
+      [{ ...full, shape: { Dot: { at: { y: 4 } } } }, "set.shape.Dot.at.x: missing"],
+      [{ ...full, at: { x: 1, y: 2, z: 3 } }, 'set.at: no field "z" (the fields are x, y)'],
+      [{ ...full, shape: { Dot: { at: { x: 3, y: 4 }, extra: 1 } } }, 'set.shape.Dot: no field "extra" (the fields are at)'],
+      [{ ...full, capp: 5 }, 'Invalid arguments for instruction "set": no argument `capp` (it takes small, at, cap, shape, three)'],
+    ];
+    for (const [args, message] of cases) {
+      expect(loose.encodeInstruction("set", args).equals(Buffer.from(theirs.instruction.encode("set", args)))).toBe(true);
+      expect(() => strict.encodeInstruction("set", args)).toThrow(message);
+    }
   });
 
   it("refuses at construction an IDL type it does not read, naming it", () => {

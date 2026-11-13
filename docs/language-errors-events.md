@@ -124,6 +124,9 @@ export function deposit(owner: Signer, pool: Mut<Pool>, amount: u64, tags: Vec<u
   when empty.
 - An event is at most 1024 bytes (5107).
 
+In a test, `t.events(res)` gives a transaction's events decoded, `emitCpi`'s too
+([asserting events](test-your-program.md#events)).
+
 ### Events through CPI
 
 ```ts
