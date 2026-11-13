@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.47.0 — 2026-11-13
+
+A minor release: it removes an optional peer dependency (`@anchor-lang/core`) and changes what `t.coder` of
+`typesol/testing` needs. Compiled programs do not change: every program builds to the same bytes as with 0.46.0.
+
 - Changed: `typesol init` no longer adds `@anchor-lang/core` to a project's `devDependencies`, and `@typesol/cli` no
   longer lists it as an optional peer dependency. `typesol/testing` used that package (and through it Solana web3.js
   1.x) only to encode instruction arguments and decode accounts and return data; it now does both with its own Borsh
