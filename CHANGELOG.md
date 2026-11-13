@@ -26,6 +26,24 @@ codes, and says so here.
   decodes events as Anchor's `coder.events.decode` does (test/client/idl-coder.test.ts compares the two on random
   values for every program with events, and on a wrong discriminator, which both decode as null).
 
+- Changed, now refused: a call of a helper that returns the result of `merkleVerify`, `verifyEd25519` or
+  `verifySecp256k1` whose result decides nothing. 0.46.0 refused such a call of the three themselves (as a statement,
+  as the condition of an `if` with an empty body, kept in a local never read) but compiled the same through a helper,
+  which dropped the result and checked nothing. A helper (a function, a const arrow or function expression, a generic
+  one, a closure) returns a check when one of its `return`s gives the result of one of the three or of another such
+  helper, directly, in parentheses or under `as`, combined with `&&`, `||`, `!` or `?:`, or through a local of the
+  helper that nothing but its returns reads. Its call is held to the same three rules, the message naming the helper
+  and the built-in: "the result of checkProof is discarded, so nothing is checked: it returns the result of
+  merkleVerify; write require(checkProof(…), error)", "the result of signed is not acted on: the if around it has an
+  empty body, so nothing is checked: it returns the result of verifyEd25519; …", "the result of checkProof is never
+  read (ok is not used), so nothing is checked: …". A helper that requires the result itself, or reads it anywhere
+  but in a `return`, does not return a check, and neither does one returning an unrelated boolean. Still not caught: a
+  result stored in an account field, a struct or an Option, compared (`=== true`) or passed to a function that ignores
+  it; a helper that branches on the result and returns literals (`if (!ok) { return false; } return true;`); and a
+  helper that returns what a function passed to it returns. No program of the repository is refused: the 76 build to
+  the same binaries and IDLs as with 0.47.0 (test/language/diagnostics.test.ts; a row in the refused-constructs table
+  of docs/language-statements.md; docs/language-chain.md).
+
 ## 0.47.0 — 2026-11-13
 
 A minor release: it removes an optional peer dependency (`@anchor-lang/core`) and changes what `t.coder` of

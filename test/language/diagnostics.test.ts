@@ -654,8 +654,8 @@ describe("codegen is stable", () => {
 });
 
 describe("a proof or signature check whose result decides something compiles", () => {
-  // What is caught is a result used as a statement, in an if with an empty body and no else, or kept in a local the
-  // function never reads; a wrapper helper whose boolean is dropped is not.
+  // What is caught is a result (a helper's that returns one too) used as a statement, in an if with an empty body and
+  // no else, or kept in a local the function never reads.
   const uses = [
     "require(merkleVerify(leaf, proof, root), 1n);",
     "const ok = merkleVerify(leaf, proof, root); require(ok, 1n);",
@@ -672,4 +672,109 @@ describe("a proof or signature check whose result decides something compiles", (
         ),
       ).toEqual([]);
     });
+});
+
+describe("a helper that returns a proof or signature check is held to the same rules", () => {
+  const H = `import { type Hash, type InstructionsSysvar, keccak256, merkleVerify, verifyEd25519, verifySecp256k1 } from "typesol";
+export enum E { Bad = "bad" }
+function checkProof(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean { return merkleVerify(leaf, proof, root); }
+const signed = (ixs: InstructionsSysvar, who: Pubkey): boolean => verifyEd25519(ixs, who, "hello");
+`;
+  const refused: [string, string, string][] = [
+    [
+      "called as a statement",
+      `export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { checkProof(leaf, proof, root); }`,
+      "the result of checkProof is discarded, so nothing is checked: it returns the result of merkleVerify; write require(checkProof(…), error)",
+    ],
+    [
+      "a const arrow function, deciding an empty if, negated",
+      `export function f(ixs: InstructionsSysvar, who: Pubkey): void { if (!signed(ixs, who)) {} }`,
+      "the result of signed is not acted on: the if around it has an empty body, so nothing is checked: it returns the result of verifyEd25519; write require(signed(…), error)",
+    ],
+    [
+      "kept in a local never read",
+      `export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { const ok = checkProof(leaf, proof, root); }`,
+      "the result of checkProof is never read (ok is not used), so nothing is checked: it returns the result of merkleVerify; write require(checkProof(…), error)",
+    ],
+    [
+      "through another helper, a local and &&",
+      `function both(leaf: Hash, proof: Vec<Hash>, root: Hash, n: u64): boolean { const ok = n > 0n && checkProof(leaf, proof, root); return ok; }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash, n: u64): void { both(leaf, proof, root, n); }`,
+      "the result of both is discarded, so nothing is checked: it returns the result of merkleVerify; write require(both(…), error)",
+    ],
+    [
+      "under ! and as, in parentheses",
+      `function bad(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean { return !(checkProof(leaf, proof, root) as boolean); }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { bad(leaf, proof, root); }`,
+      "the result of bad is discarded",
+    ],
+    [
+      "deciding a ?: it returns",
+      `function score(who: Pubkey, r: Hash, s: Hash, e: Hash): u64 { return verifySecp256k1(keccak256(who), 0n, r, s, e) ? 1n : 0n; }
+export function f(who: Pubkey, r: Hash, s: Hash, e: Hash): void { score(who, r, s, e); }`,
+      "the result of score is discarded, so nothing is checked: it returns the result of verifySecp256k1",
+    ],
+    [
+      "one of several returns, through a let assigned later",
+      `function pick(leaf: Hash, proof: Vec<Hash>, root: Hash, n: u64): boolean { let ok = false; if (n > 1n) { return true; } ok = checkProof(leaf, proof, root); return ok || n === 0n; }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash, n: u64): void { let r = pick(leaf, proof, root, n); r = pick(leaf, proof, root, n); }`,
+      "the result of pick is never read (r is not used)",
+    ],
+    [
+      "a closure, and a closure that returns a helper's",
+      `export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { const c = (): boolean => merkleVerify(leaf, proof, root); const d = (): boolean => checkProof(leaf, proof, root); require(c(), E.Bad); d(); }`,
+      "the result of d is discarded, so nothing is checked: it returns the result of merkleVerify; write require(d(…), error)",
+    ],
+    [
+      "a generic helper",
+      `function check<T>(x: T, leaf: Hash, proof: Vec<Hash>, root: Hash): boolean { return checkProof(leaf, proof, root); }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { check<u64>(1n, leaf, proof, root); }`,
+      "the result of check is discarded, so nothing is checked: it returns the result of merkleVerify",
+    ],
+  ];
+  for (const [what, body, message] of refused)
+    it(`refuses its result ${what}`, () => {
+      expect(errorsFor(H + body, "wrapper").join("\n")).toContain(message);
+    });
+
+  const accepted: [string, string][] = [
+    ["required", `export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { require(checkProof(leaf, proof, root), E.Bad); }`],
+    ["deciding an if that acts", `export function f(b: Mut<Box>, ixs: InstructionsSysvar, who: Pubkey): void { if (signed(ixs, who)) { b.value = 1n; } }`],
+    [
+      "from a helper that requires the result and returns something else",
+      `function claim(leaf: Hash, proof: Vec<Hash>, root: Hash): u64 { require(checkProof(leaf, proof, root), E.Bad); return 1n; }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { claim(leaf, proof, root); }`,
+    ],
+    [
+      "from a helper that requires the result and returns it too",
+      `function claim(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean { const ok = checkProof(leaf, proof, root); require(ok, E.Bad); return ok; }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { claim(leaf, proof, root); }`,
+    ],
+    [
+      "from a helper that branches on the result and returns literals",
+      `function verified(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean { if (!checkProof(leaf, proof, root)) { return false; } return true; }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { verified(leaf, proof, root); }`,
+    ],
+    [
+      "from a void helper that requires it",
+      `function gate(leaf: Hash, proof: Vec<Hash>, root: Hash): void { require(checkProof(leaf, proof, root), E.Bad); }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { gate(leaf, proof, root); }`,
+    ],
+    ["of an unrelated boolean helper", `function big(n: u64): boolean { return n > 10n; }\nexport function f(n: u64): void { big(n); }`],
+  ];
+  for (const [what, body] of accepted)
+    it(`accepts its result ${what}`, () => {
+      expect(errorsFor(H + body, "wrapper")).toEqual([]);
+    });
+
+  it("looks at recursive helpers without looping (recursion is refused on its own)", () => {
+    const errs = errorsFor(
+      H +
+        `function a(leaf: Hash, proof: Vec<Hash>, root: Hash, n: u64): boolean { return n === 0n ? checkProof(leaf, proof, root) : b(leaf, proof, root, n - 1n); }
+function b(leaf: Hash, proof: Vec<Hash>, root: Hash, n: u64): boolean { return a(leaf, proof, root, n); }
+export function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void { b(leaf, proof, root, 3n); }`,
+      "wrapper",
+    );
+    expect(errs.join("\n")).toMatch(/recursion is not supported/);
+  });
 });

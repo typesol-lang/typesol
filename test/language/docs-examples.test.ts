@@ -274,6 +274,11 @@ const REFUSED: [example: string, program: string, stable: string][] = [
     "the result of merkleVerify is never read (ok is not used), so nothing is checked",
   ],
   [
+    "checkProof(leaf, proof, root);",
+    `import { type Hash, type Vec, merkleVerify } from "typesol";\nfunction checkProof(leaf: Hash, proof: Vec<Hash>, root: Hash): boolean {\n  return merkleVerify(leaf, proof, root);\n}\nexport function f(leaf: Hash, proof: Vec<Hash>, root: Hash): void {\n  checkProof(leaf, proof, root);\n}\n`,
+    "the result of checkProof is discarded, so nothing is checked: it returns the result of merkleVerify; write require(checkProof(…), error)",
+  ],
+  [
     'export enum E { A = "a", /* @code 6100 */ B = "b" }',
     'export enum E { A = "a", /* @code 6100 */ B = "b" }\nexport function f(): void {}\n',
     "this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment",

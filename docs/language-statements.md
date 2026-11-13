@@ -614,6 +614,7 @@ may gain a hint line.
 | an unused proof or signature check | `merkleVerify(leaf, proof, root);` | the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
 | a proof check in an empty `if` | `if (merkleVerify(leaf, proof, root)) {}` | the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
 | a proof check kept in a local never read | `const ok = merkleVerify(leaf, proof, root);` (`ok` unused) | the result of merkleVerify is never read (ok is not used), so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
+| an unused helper that returns a check | `checkProof(leaf, proof, root);` (`checkProof` returns `merkleVerify(…)`) | the result of checkProof is discarded, so nothing is checked: it returns the result of merkleVerify; write require(checkProof(…), error) |
 | a `@code` tag outside a doc comment | `export enum E { A = "a", /* @code 6100 */ B = "b" }` | this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment; write /** @code … */ above B |
 | a `@code` tag after other code on its line | `export enum E { A = "a", /** @code 6100 */ B = "b" }` | this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above B |
 
