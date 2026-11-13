@@ -14,9 +14,9 @@
  * integers, address strings for Pubkeys, null for an empty Option. Decoded accounts and return data come back the
  * same way (bigints, address strings).
  *
- * Needs `litesvm` and `@anchor-lang/core`, which `typesol init` projects have.
+ * Needs `litesvm`, which `typesol init` projects have. Instruction data, accounts and return data are encoded and
+ * decoded from the IDL by TypeSOL's own Borsh coder (src/idl-coder.ts).
  */
-import anchor, { type Idl } from "@anchor-lang/core";
 import {
   type Address,
   type Instruction,
@@ -37,8 +37,10 @@ import {
 } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, TransactionMetadata } from "litesvm";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { IdlCoder } from "./idl-coder.js";
 import { TYPESOL_ERRORS } from "./tools/clientgen.js";
 import { loadClonedAccounts } from "./tools/clone.js";
 import { type SvmConnection, svmConnection } from "./tools/svmrpc.js";
@@ -49,10 +51,50 @@ export * from "./testing-stake.js";
 /** Load what `typesol clone` wrote (a directory of `<address>.json` accounts and `<address>.so` programs) into a LiteSVM. */
 export { loadClonedAccounts };
 
-// @anchor-lang/core is CommonJS: Node 22 cannot import its classes by name from an installed ES module.
-const { BN, BorshCoder } = anchor;
-type BN = InstanceType<typeof BN>;
-type BorshCoder = InstanceType<typeof BorshCoder>;
+/** An Anchor IDL (spec 0.1.0), as `typesol build` writes it and Anchor's `Idl` type describes it. */
+export interface TestIdl {
+  address: string;
+  metadata?: unknown;
+  instructions: readonly {
+    name: string;
+    discriminator: readonly number[];
+    accounts: readonly unknown[];
+    args: readonly { name: string; type: unknown }[];
+    returns?: unknown;
+  }[];
+  accounts?: readonly { name: string; discriminator: readonly number[] }[];
+  events?: readonly unknown[];
+  errors?: readonly { code: number; name: string; msg?: string }[];
+  types?: readonly unknown[];
+  constants?: readonly unknown[];
+}
+
+/**
+ * Anchor's `BorshCoder` for the program's IDL (`instruction`, `accounts`, `events`, `types`), which works with BN and
+ * PublicKey values. `@anchor-lang/core` is loaded the first time `t.coder` is read: install it to use `t.coder`.
+ * The other helpers do not need it.
+ */
+export interface AnchorBorshCoder {
+  instruction: any;
+  accounts: any;
+  events: any;
+  types: any;
+}
+
+/** `new BorshCoder(idl)` from `@anchor-lang/core`, found next to typesol or in the project being tested. */
+function anchorCoder(idl: TestIdl): AnchorBorshCoder {
+  for (const from of [import.meta.url, path.join(process.cwd(), "package.json")]) {
+    let anchor: { BorshCoder: new (idl: unknown) => AnchorBorshCoder };
+    try {
+      // CommonJS: loaded with require, as Node cannot import its classes by name from an ES module.
+      anchor = createRequire(from)("@anchor-lang/core");
+    } catch {
+      continue;
+    }
+    return new anchor.BorshCoder(idl);
+  }
+  throw new Error("t.coder is Anchor's BorshCoder: install @anchor-lang/core (npm install -D @anchor-lang/core) to use it");
+}
 
 export type Result = TransactionMetadata | FailedTransactionMetadata;
 /** An account for an instruction: an address, a keypair (which then signs), or null to leave an optional one out. */
@@ -102,7 +144,6 @@ interface ProgramIdl {
   errors?: { code: number; name: string }[];
 }
 
-const BIG = new Set(["u64", "i64", "u128", "i128"]);
 const snake = (s: string) => s.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
 const camel = (s: string) => s.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
 const isSigner = (v: unknown): v is KeyPairSigner => typeof v === "object" && v !== null && "address" in v && "signTransactions" in v;
@@ -110,8 +151,9 @@ const isSigner = (v: unknown): v is KeyPairSigner => typeof v === "object" && v 
 export interface TestProgram {
   svm: LiteSVM;
   programId: Address;
-  idl: Idl;
-  coder: BorshCoder;
+  idl: TestIdl;
+  /** Anchor's BorshCoder for this IDL; needs `@anchor-lang/core` installed (loaded on first use). */
+  readonly coder: AnchorBorshCoder;
   /** A new keypair funded with `sol` SOL (default 10). */
   wallet(sol?: number): Promise<KeyPairSigner>;
   /** The program's PDA for these seeds. */
@@ -177,26 +219,26 @@ export async function testProgram(program: string, from: string | URL): Promise<
   svm.addProgramFromFile(programId, built.soPath);
   // Accounts and programs `typesol clone` copied from a cluster (tests/accounts), in place before the first test.
   loadClonedAccounts(svm as never, ws.accounts);
-  return programHarness(svm, programId, built.idl as unknown as Idl);
+  return programHarness(svm, programId, built.idl as unknown as TestIdl);
 }
 
 /** The same helpers for a program already loaded into `svm` at `programId` with this IDL. */
-export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): TestProgram {
-  const coder = new BorshCoder(idl);
+export function programHarness(svm: LiteSVM, programId: Address, idl: TestIdl): TestProgram {
+  const coder = new IdlCoder(idl);
+  let anchor: AnchorBorshCoder | undefined;
   const source = idl as unknown as ProgramIdl;
   const pidl: ProgramIdl = { ...source, instructions: source.instructions.map((ix) => ({ ...ix, accounts: flattenAccounts(ix.accounts) })) };
   const types = new Map((pidl.types ?? []).map((t) => [t.name, t]));
   const enc = getAddressEncoder();
 
-  /** A plain value → what the Anchor coder expects for `type`. */
+  /** A plain value → what the coder expects for `type` (integers of 64 bits and more it parses itself). */
   const toCoder = (v: unknown, type: IdlType, where: string): unknown => {
     if (typeof type === "string") {
-      if (BIG.has(type)) return new BN(String(v));
       if (/^[ui](8|16|32)$/.test(type)) return Number(v);
       if (type === "pubkey") {
         const a = isSigner(v) ? v.address : (v as string);
         if (typeof a !== "string" || !isAddress(a)) throw new Error(`${where}: expected an address`);
-        return { toBuffer: () => Buffer.from(enc.encode(a)) };
+        return a;
       }
       return v;
     }
@@ -240,11 +282,9 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
     return v;
   };
 
-  /** What the coder decodes → plain values (bigints, address strings), recursively. */
+  /** What the coder decodes (bigints, address strings) with TypeSOL's fixed-layout Options and strings unwrapped. */
   const plain = (v: unknown): unknown => {
     if (v === null || v === undefined) return v;
-    if (BN.isBN(v)) return BigInt((v as BN).toString());
-    if (typeof v === "object" && typeof (v as { toBase58?: unknown }).toBase58 === "function") return (v as { toBase58(): string }).toBase58();
     if (Array.isArray(v)) return v.map(plain);
     if (v instanceof Uint8Array) return v;
     if (typeof v === "object") {
@@ -316,7 +356,9 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
     svm,
     programId,
     idl,
-    coder,
+    get coder() {
+      return (anchor ??= anchorCoder(idl));
+    },
     async wallet(sol = 10) {
       const k = await generateKeyPairSigner();
       svm.airdrop(k.address, lamports(BigInt(Math.round(sol * 1e9))));
@@ -396,7 +438,7 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
         });
       const a = args as Record<string, unknown>;
       const encoded = Object.fromEntries(def.args.map((x) => [x.name, toCoder(a[x.name] ?? a[camel(x.name)], x.type, `${def.name}(${camel(x.name)})`)]));
-      return { programAddress: programId, accounts: metas, data: new Uint8Array(coder.instruction.encode(def.name, encoded)) } as unknown as Instruction;
+      return { programAddress: programId, accounts: metas, data: new Uint8Array(coder.encodeInstruction(def.name, encoded)) } as unknown as Instruction;
     },
     async send(payer, ...ixs) {
       const tx = await pipe(
@@ -481,7 +523,7 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
     async account<T>(type: string, address: Address) {
       const a = svm.getAccount(address);
       if (!a.exists) return null;
-      return plain(coder.accounts.decode(type, Buffer.from(a.data))) as T;
+      return plain(coder.decodeAccount(type, Buffer.from(a.data))) as T;
     },
     returned<T>(instruction: string, res: Result) {
       const def = pidl.instructions.find((i) => i.name === instruction || i.name === snake(instruction));
@@ -514,7 +556,7 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: Idl): Test
         if (signed && n >= 1n << BigInt(bytes * 8 - 1)) n -= 1n << BigInt(bytes * 8);
         return (bytes <= 4 ? Number(n) : n) as T;
       }
-      if ("defined" in t) return plain(coder.types.decode(t.defined.name, data)) as T;
+      if ("defined" in t) return plain(coder.decodeType(t.defined.name, data)) as T;
       throw new Error(`decode ${instruction}'s return data yourself (${JSON.stringify(t)})`);
     },
     balance(address) {
