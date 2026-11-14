@@ -7,7 +7,7 @@ with TypeSOL are out of scope; their authors audit them.
 
 ## Scope
 
-In order of priority. Line counts at 0.47.0 (November 2026).
+In order of priority. Line counts at 0.48.0 (November 2026).
 
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |

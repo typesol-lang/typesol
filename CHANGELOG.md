@@ -6,6 +6,13 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.48.0 — 2026-11-14
+
+A minor release: it adds three built-ins (`transferCheckedWithHook`, the processed sibling instructions,
+`EVENT_AUTHORITY_CHECK`), refuses an unused result of a helper that returns a proof or signature check, and makes
+`typesol/testing` refuse missing and misspelt arguments and decode events itself. Programs that compiled with 0.47.0
+and still compile build to the same bytes.
+
 - Added: `export const EVENT_AUTHORITY_CHECK = "address"` checks `emitCpi`'s accounts as Anchor 1.x's `#[event_cpi]`
   does: the event authority by address among the constraints (ConstraintAddress, 2012, after the accounts load and the
   creates run) instead of by seeds when it loads (2006), and the `SelfProgram` account not at all (the self-CPI names
