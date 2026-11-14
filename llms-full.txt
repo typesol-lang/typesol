@@ -3872,7 +3872,7 @@ direct mapping), one that was only read (or written with the bytes it held) is f
 `AccountInfo`s over one buffer.
 
 - **By default** `loadRawMut` and `storeBorsh` check writability up front (3006), `loadRawMut` claims the account once
-  and `storeBorsh` refuses an account passed more than once (2040, as a write to a remaining account's lamports). So a
+  and `storeBorsh` refuses an account passed more than once (2040, as a write to a remaining account's lamports does without the flag). So a
   port fails where the original succeeds (a read-only validator list that is only read; the list passed again as a
   stake account, which the original skips by its address checks).
 - **With the flag**, `loadRawMut`, `storeBorsh` and the BigVec writes through a `loadRawMut` view skip both, and both
@@ -3886,8 +3886,14 @@ direct mapping), one that was only read (or written with the bytes it held) is f
   `loadRaw` of an account also loaded with `loadRawMut` (or written with `storeBorsh`) reads what was written, BigVec
   pushes included. The flag only lifts the up-front checks (a second `loadRawMut` of one account, at the same position
   or another, is 2040 without it).
-- `.lamports` on remaining accounts, `loadAccountMut`, CPI account metas and the checks of `Mut<…>` parameters stay as
-  they are, and programs without the flag compile exactly as before.
+- A write to a remaining account's `.lamports` (`a.lamports = v`, `+=`, `-=`) is `**a.lamports.borrow_mut() = v`
+  under the flag: no writability check (3006) and no refusal of an account passed more than once (2040). An account
+  passed twice is one record, as Rust's two `AccountInfo`s share one `RefCell`, so a write through either position is
+  read through the other; the runtime refuses a read-only account's change, or lamports created or destroyed, when the
+  instruction ends (`ReadonlyLamportChange`, `UnbalancedInstruction`). Percolator's CloseSlab moves the slab's
+  lamports to the admin this way while the admin (or the slab) is also named in an unused position.
+- `loadAccountMut`, CPI account metas and the checks of `Mut<…>` parameters stay as they are, and programs without the
+  flag compile exactly as before.
 
 ### Inout places that may be one account
 

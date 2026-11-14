@@ -851,9 +851,14 @@ export abstract class StorageEmitter extends AliasEmitter {
       const h = this.handle(node.expression);
       if (h) {
         // Remaining accounts carry no static guarantees: check writability where it is written, and that it is not
-        // also another (declared or remaining) account, which would let one balance be counted twice.
-        this.line(`TS_TRY(ts_check_writable(${h}));`);
-        this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+        // also another (declared or remaining) account, which would let one balance be counted twice. Under
+        // NATIVE_ACCOUNT_WRITES the write is a native program's `**a.lamports.borrow_mut() = v`: an account passed twice
+        // shares one record (as Rust's duplicate AccountInfos share one RefCell), and the runtime judges writability
+        // when the instruction ends (ReadonlyLamportChange / UnbalancedInstruction).
+        if (!this.nativeAccountWrites()) {
+          this.line(`TS_TRY(ts_check_writable(${h}));`);
+          this.line(`TS_TRY(ts_check_unaliased(params, ${h}));`);
+        }
         return { type: U64, read: `${h}->lamports`, write: (c) => `${h}->lamports = ${c}` };
       }
     }

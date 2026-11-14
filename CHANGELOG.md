@@ -6,6 +6,11 @@ codes, and says so here.
 
 ## Unreleased
 
+- Changed: under `NATIVE_ACCOUNT_WRITES`, a write to a remaining account's `.lamports` is a native program's
+  `**a.lamports.borrow_mut() = v`: no writability check (3006) and no refusal of an account passed more than once
+  (2040); an account passed twice is one record, and the runtime judges the change when the instruction ends. Programs
+  without the flag build as before, and so does every program in the golden manifest
+  (test/language/native-lamports.test.ts; docs/language-native.md).
 - Changed: an account of another type passed where a remaining account or an `AccountInfo` is taken (`programAt`,
   `sysvarAt`, `zeroData`) is now refused by TypeScript (a `RemainingAccount` has `executable`), with the hint "pass a
   remaining account (remainingAccounts().get(i)) or an AccountInfo parameter; a declared parameter of a program or
