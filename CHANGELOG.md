@@ -6,6 +6,72 @@ codes, and says so here.
 
 ## Unreleased
 
+- Changed: an account of another type passed where a remaining account or an `AccountInfo` is taken (`programAt`,
+  `sysvarAt`, `zeroData`) is now refused by TypeScript (a `RemainingAccount` has `executable`), with the hint "pass a
+  remaining account (remainingAccounts().get(i)) or an AccountInfo parameter; a declared parameter of a program or
+  sysvar type is used as it is"; the compiler's own message said the same before.
+- Added: `log64(a, b, c, d, e)`, Rust's `sol_log_64` (the runtime writes the five u64s as lowercase hex on one line);
+  `zeroData(account, offset, length)`, a memset of account data by the syscall, as a native program's
+  `for b in data.iter_mut() { *b = 0 }` compiles (about constant compute units for 1.5 MB); and
+  `PANIC_STYLE = "solana-1.18"`, panics logged as solana-program 1.18's handler logs them since rustc 1.73
+  (`panicked at <file>:<line>:<col>:` and the message on the next line, then abort). The lines are checked against
+  Percolator v12.20's mainnet binary (test/language/native-log64-zero.test.ts; docs/language-native.md). Existing
+  programs build to the same bytes.
+- Showcase: the first stage of a port of Percolator v12.20, `showcase/mainnet/percolator/` (Apache-2.0; educational,
+  not audited, not for real funds, as the original says), the immutable mainnet program
+  `BCGNFw6vDinWTF9AybAbi8vr69gx5nk5w8o2vEWgpsiw` built from aeyakovenko/percolator-prog `06f86fb` and the engine
+  aeyakovenko/percolator `3f55f87` (sha256 `502088e9…cc93`, 395,368 bytes; fetched by `scripts/fetch-programs.sh`, not
+  kept here). This stage has 15 of its 27 instructions (market creation and configuration, the authorities, account
+  creation, deposits, withdrawals, settles, closes on live markets, reclaims, insurance top-ups, fee credits, CloseSlab)
+  and the foundation the rest builds on: the 1,525,624-byte slab byte for byte (u128 aligned to 8, as the SBF binary
+  lays it out), the engine's 256-bit arithmetic, the oracle readers, accrual, warm-up and fees. Each transaction goes to
+  the port and to the mainnet binary, which must agree on outcome, error code, log lines, inner instructions, return
+  data and every account's bytes, in five test files and a seeded fuzz of account sequences (README there).
+- Added: `executable` on a remaining account (`rest.get(i).executable`, Rust's `AccountInfo::executable`), as a native
+  program checks a program passed among its accounts before calling it (test/language/remaining-executable.test.ts;
+  docs/language-accounts.md). Existing programs build to the same bytes.
+- Showcase: the second stage of the Percolator v12.20 port: TradeNoCpi, TradeCpi and ConvertReleasedPnl (18 of 27
+  instructions), with the engine's trade (trade PnL, positions attached at the side's indices, the open-interest
+  decomposition, trading fees, the margin rules, warm-up of trade profit) and the conversion of released PnL with its
+  haircut. TradeCpi calls a matcher: no build of the author's is deployed for v12.20, so the tests run a TypeSOL port of
+  aeyakovenko/percolator-match 199b139 (Apache-2.0, a test fixture) under both the mainnet binary and the port. Tests
+  that wrote positions into the slab now trade; a fuzz of trade sequences between many users and LPs runs against the
+  binary. The port spends fewer compute units than the original on every successful transaction measured, SettleAccount
+  included (it no longer copies the 400-byte config twice where nothing reads it in between, and zeroes its instruction
+  context with the memset syscall). verify_token_program now checks the token program is executable, as the original
+  does.
+- Showcase: the third stage of the Percolator v12.20 port: KeeperCrank, LiquidateAtOracle and CatchupAccrue (21 of 27
+  instructions), with the engine's liquidation (full close and the crank's exact partial, the liquidation fee, bad
+  debt), `enqueue_adl` (insurance first, then the loss written into the opposite side's K, A shrunk pro rata, drain-only
+  sides, side resets with stale accounts settled at the frozen indices), the crank's candidate handling and hint
+  validation, the maintenance-fee sweep with its cursor and dust reclaim, the crank reward and the risk buffer's upkeep,
+  and complete and partial catch-ups of the market clock. Tests that wrote drain-only and reset-pending sides, a flat
+  account with a loss past its capital and the sweep's fee debt into the slab now reach them with liquidations and
+  cranks; a second fuzz walk (leveraged trades, crashes, liquidations, cranks) socialises losses and runs side resets
+  to their end against the binary. KeeperCrank's compute units are measured at 2 to 4,096 accounts: the port completes
+  every crank the original does within the same limit, and 64 liquidations in one crank, which exceed the original's
+  1.4M units, in about 660,000. The port spends fewer compute units than the original on every successful transaction
+  measured (18,713 in the two fuzz walks).
+- Showcase: the fourth stage completes the Percolator v12.20 port (27 of 27 instructions): ResolveMarket,
+  ResolvePermissionless, ForceCloseResolved, AdminForceCloseAccount, CloseAccount's resolved arm, WithdrawInsurance and
+  WithdrawInsuranceLimited, with the engine's resolution (the ordinary arm with its catch-up and deviation band, the
+  degenerate arm at the last price for a dead oracle, a silent Hyperp mark or the hard timeout, terminal K deltas kept
+  apart from K, every position stale under a new epoch), the reconciliation of resolved accounts, terminal readiness,
+  the payout haircut snapshot and the terminal close (fee debt forgiven, the surplus swept into insurance), and the
+  bounded insurance withdrawals (bps cap, 10-unit floor, cooldown). Tests that wrote a resolved market into the slab
+  now resolve it, and CloseSlab's insurance and stranded-token cases come from real instructions; only states no
+  instruction can make are still written in (README there). Both fuzz walks now end each market's life: resolution by
+  the admin or by anyone, every account closed out in random order, the insurance withdrawn, the slab closed, and the
+  vault and every token account compared at the end (80 full life cycles in a 40-seed run of each walk). The port spends fewer compute units than
+  the original on every successful transaction measured (20,225 in the two fuzz walks) and its binary is
+  359,896 bytes against 395,368.
+- Showcase: the Percolator author's own LiteSVM test suite (aeyakovenko/percolator-prog `06f86fb`, engine `3f55f87`)
+  run unchanged against the mainnet binary and against the TypeSOL port: 660 tests pass and 11 are ignored under both,
+  with the same outcome for every test (609 of them run the program; the rest test the Rust crates on the host); the
+  11 ignored ones, run too, also agree (4 pass, 7 fail at the same assertions). The TradeCpi tests use the TypeSOL
+  matcher fixture under both. `scripts/percolator-author-suite.sh` reproduces it (host build only, downloads nothing);
+  counts per file and the author's compute-unit benchmark in the port README.
+
 ## 0.48.0 — 2026-11-14
 
 A minor release: it adds three built-ins (`transferCheckedWithHook`, the processed sibling instructions,
