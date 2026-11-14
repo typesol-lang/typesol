@@ -297,6 +297,10 @@ export function closeSlab(rest: RemainingAccounts, programId: Pubkey): void {
     require(aVaultAuth.key === auth, ProgramError.InvalidSeeds);
     withdrawCollateral(token, aVault, aDestAta, aVaultAuth, stranded, aSlab.key, bump);
   }
+  // The original still holds the slab's mutable borrow here, and its `invoke` borrows every account it passes: the
+  // slab as the destination (an admin who is the slab) or as the vault authority (not checked when nothing was
+  // drained) fails the call with AccountBorrowFailed. The vault and the token program cannot be the slab (checked).
+  require(aDest.key !== aSlab.key && aVaultAuth.key !== aSlab.key, ProgramError.AccountBorrowFailed);
   token.closeAccount(aVault, aDest, aVaultAuth, ["vault", aSlab.key, bump]);
   zeroData(aSlab, 0n, SLAB_LEN);
   const lamports = aSlab.lamports;

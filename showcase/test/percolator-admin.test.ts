@@ -1,5 +1,6 @@
 // Percolator v12.20 (showcase/mainnet/percolator) against the mainnet binary: the admin and authority instructions,
 // UpdateConfig, SetOraclePriceCap, PushHyperpMark, UpdateAuthority and CloseSlab, success paths and refusals.
+import { generateKeyPairSigner } from "@solana/kit";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   C,
@@ -10,7 +11,9 @@ import {
   SOL,
   SYSTEM,
   builtin,
+  computeUnits,
   cuSummary,
+  defaultInitArgs,
   instruction,
   ix,
   key,
@@ -192,5 +195,50 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: admin instructions", () => {
     const m2 = await d.market();
     await d.ok("ResolveMarket (m2)", m2.admin, [ix.resolveMarket(m2, m2.admin)]);
     await d.ok("CloseSlab, empty vault", m2.admin, [ix.closeSlab(m2, adminAta)], [m2.vault, m2.slab]);
+  });
+
+  it("the slab passed again where the original holds its borrow across a CPI", async () => {
+    // The original keeps `slab.try_borrow_mut_data()` across the SPL Token calls of InitUser, InitLP,
+    // DepositCollateral, TopUpInsurance and CloseSlab. solana-program's `invoke` borrows every account it passes (data
+    // and lamports, mutably for a writable one) before the call, so the slab named again among the accounts of the call
+    // fails it with AccountBorrowFailed. That needs the slab's keypair (the user, the admin) or an account the original
+    // does not check before the call (CloseSlab's vault authority while no stranded tokens are drained). The tests sign
+    // with the slab's keypair, as whoever created the slab account can. Every other aliasing of the slab with a
+    // token account, the vault, the vault PDA, the clock or the oracle is refused by an owner or key check first.
+    const slabKey = await generateKeyPairSigner();
+    const payer = await d.funded();
+    const m0 = await d.newMarket({ slab: slabKey });
+    const m = { ...m0, admin: slabKey };
+    await d.ok("InitMarket: the slab its own admin", payer, [computeUnits(1_400_000), ix.initMarket(m, defaultInitArgs(slabKey.address, m.mint))]);
+    expect(Buffer.from(d.data(m.slab).subarray(H.admin, H.admin + 32))).toEqual(key(slabKey.address));
+    const asSlab = { key: slabKey, ata: await d.tokenAccount(m.mint, slabKey.address, 1_000n * SOL) };
+    await d.fails("InitUser: the slab as the user", payer, [ix.initUser(m, asSlab, SOL)], builtin("AccountBorrowFailed"));
+    await d.fails("InitLP: the slab as the user", payer, [ix.initLp(m, asSlab, SYSTEM, SYSTEM, SOL)], builtin("AccountBorrowFailed"));
+    await d.fails("TopUpInsurance: the slab as the payer of the tokens", payer, [ix.topUpInsurance(m, asSlab, SOL)], builtin("AccountBorrowFailed"));
+    // No transfer, no borrow: the refusal of a zero amount is the original's own.
+    const zero = await d.both("TopUpInsurance: the slab, nothing", payer, [ix.topUpInsurance(m, asSlab, 0n)]);
+    expect(zero).not.toBe(builtin("AccountBorrowFailed"));
+    // DepositCollateral transfers before the engine looks for the account: the call fails first, though the slab owns
+    // no account (InitUser and InitLP refuse it one above).
+    await d.fails("DepositCollateral: the slab, owning nothing", payer, [ix.deposit(m, asSlab, 0, SOL)], builtin("AccountBorrowFailed"));
+    // Where no CPI names it, the slab as a signer is only a key: the crank, the authorities.
+    const ins = await d.user(m);
+    await d.ok("TopUpInsurance", ins.key, [ix.topUpInsurance(m, ins, 5n * SOL)]);
+    await d.ok("KeeperCrank: the slab as the caller", payer, [ix.crank(m, slabKey, 65535)]);
+    await d.ok("ResolveMarket by the slab", payer, [ix.resolveMarket(m, slabKey)]);
+    await d.ok("WithdrawInsurance by the slab", payer, [ix.withdrawInsurance(m, slabKey, asSlab.ata)]);
+    const adminAta = await d.tokenAccount(m.mint, m0.admin.address);
+    // CloseSlab with the admin (the lamports' destination) the slab: the vault's close names it.
+    await d.fails("CloseSlab: the slab its own destination", payer, [ix.closeSlab(m, asSlab.ata)], builtin("AccountBorrowFailed"));
+    await d.ok("UpdateAuthority: admin from the slab", payer, [ix.updateAuthority(m, slabKey, 0, m0.admin.address, m0.admin)]);
+    // The vault authority is checked only before a drain: with nothing stranded the slab there reaches the call.
+    await d.fails("CloseSlab: the slab as the vault authority", m0.admin, [replace(ix.closeSlab(m0, adminAta), 3, m.slab)], builtin("AccountBorrowFailed"));
+    await d.ok("SPL Token transfer into the vault", ins.key, [tokenTransfer(ins.ata, m.vault, ins.key, 9n)]);
+    await d.fails("CloseSlab: the slab as the vault authority, a drain", m0.admin, [replace(ix.closeSlab(m0, adminAta), 3, m.slab)], builtin("InvalidSeeds"));
+    await d.ok("UpdateAuthority: admin back to the slab", payer, [ix.updateAuthority(m, m0.admin, 0, slabKey.address, slabKey)]);
+    await d.fails("CloseSlab: the slab its own destination, a drain", payer, [ix.closeSlab(m, asSlab.ata)], builtin("AccountBorrowFailed"));
+    await d.ok("UpdateAuthority: admin from the slab again", payer, [ix.updateAuthority(m, slabKey, 0, m0.admin.address, m0.admin)]);
+    await d.ok("CloseSlab", m0.admin, [ix.closeSlab(m0, adminAta)], [m.vault, m.slab]);
+    expect(d.amount(adminAta)).toBe(9n);
   });
 });

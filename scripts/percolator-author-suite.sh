@@ -13,6 +13,10 @@
 # tests then build offline), fetch the mainnet binary (scripts/fetch-programs.sh), and build the compiler (`pnpm build`).
 # Only host builds run (`cargo test`, two jobs); nothing is built for SBF. The matcher TradeCpi calls is the TypeSOL
 # matcher fixture (showcase/mainnet/percolator/matcher), under both programs. Outcomes go to <dir>/results-<label>/.
+#
+# Strict: a test file that does not build or run under a binary fails the script, and so does a run whose totals are
+# not the ones recorded below for the pinned commits (the default features, `cargo test` without `--ignored`). With
+# `both`, the two runs must list the same test names, each with the same outcome.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="$(cd "${1:?usage: $0 <dir> [original|port|both]}" && pwd)"
@@ -21,6 +25,11 @@ PROG="$DIR/percolator-prog"
 ORIGINAL="$ROOT/test/programs/percolator_v12.so"
 ORIGINAL_SHA=502088e9cf5e1b38cccd31bbab2df18d4958712fb9456d48669241aaddf4cc93
 TESTS="i128_alignment unit test_admin test_oracle test_risk_buffer test_conservation test_insurance test_resolution test_basic test_tradecpi test_security cu_benchmark"
+# The totals of a run at the pinned commits, the same under the mainnet binary and the port.
+EXPECTED_TESTS=671
+EXPECTED_PASSED=660
+EXPECTED_FAILED=0
+EXPECTED_IGNORED=11
 
 check_commit() {
   local got
@@ -41,17 +50,36 @@ mkdir -p "$DIR/percolator-match/target/deploy" "$PROG/target/deploy"
 cp "$BIN/matcher/matcher.so" "$DIR/percolator-match/target/deploy/percolator_match.so"
 
 run() { # <label> <program .so>
-  local out="$DIR/results-$1"
+  local out="$DIR/results-$1" t
   rm -rf "$out" && mkdir -p "$out"
   cp "$2" "$PROG/target/deploy/percolator_prog.so"
   shasum -a 256 "$PROG/target/deploy/percolator_prog.so" "$DIR/percolator-match/target/deploy/percolator_match.so" >"$out/binaries.txt"
-  for t in $TESTS; do
-    (cd "$PROG" && cargo test --locked --offline -j 2 --test "$t" -- --test-threads=2 >"$out/$t.log" 2>&1) || true
-    echo "$1 $t: $(grep '^test result' "$out/$t.log" || echo 'did not run (see the log)')"
+  # A test file that fails to build, or a test that fails, makes `cargo test` exit nonzero: recorded, then the run fails.
+  local broken=""
+  for t in $TESTS lib; do
+    local args=(--test "$t")
+    [[ "$t" == lib ]] && args=(--lib)
+    if ! (cd "$PROG" && cargo test --locked --offline -j 2 "${args[@]}" -- --test-threads=2 >"$out/$t.log" 2>&1); then broken="$broken $t"; fi
+    local result
+    result="$(grep '^test result' "$out/$t.log" || true)"
+    [[ -n "$result" ]] || broken="$broken $t(no-result)"
+    echo "$1 $t: ${result:-did not run (see $out/$t.log)}"
   done
-  (cd "$PROG" && cargo test --locked --offline -j 2 --lib -- --test-threads=2 >"$out/lib.log" 2>&1) || true
-  echo "$1 lib: $(grep '^test result' "$out/lib.log" || echo 'did not run (see the log)')"
   grep -hE '^test .* \.\.\. ' "$out"/*.log | sort >"$out/outcomes.txt"
+  local total passed failed ignored
+  total=$(wc -l <"$out/outcomes.txt" | tr -d ' ')
+  passed=$(grep -c ' \.\.\. ok$' "$out/outcomes.txt" || true)
+  failed=$(grep -c ' \.\.\. FAILED$' "$out/outcomes.txt" || true)
+  ignored=$(grep -c ' \.\.\. ignored' "$out/outcomes.txt" || true)
+  echo "$1: $total tests, $passed passed, $failed failed, $ignored ignored"
+  if [[ -n "$broken" ]]; then
+    echo "$1: did not build or did not pass:$broken" >&2
+    exit 1
+  fi
+  if [[ "$total/$passed/$failed/$ignored" != "$EXPECTED_TESTS/$EXPECTED_PASSED/$EXPECTED_FAILED/$EXPECTED_IGNORED" ]]; then
+    echo "$1: expected $EXPECTED_TESTS tests, $EXPECTED_PASSED passed, $EXPECTED_FAILED failed, $EXPECTED_IGNORED ignored" >&2
+    exit 1
+  fi
 }
 
 if [[ "$WHICH" == original || "$WHICH" == both ]]; then run original "$ORIGINAL"; fi
@@ -60,10 +88,15 @@ if [[ "$WHICH" == port || "$WHICH" == both ]]; then
   run port "$BIN/port/percolator.so"
 fi
 if [[ "$WHICH" == both ]]; then
-  if diff "$DIR/results-original/outcomes.txt" "$DIR/results-port/outcomes.txt"; then
-    echo "every test has the same outcome under both ($(grep -c ' ok$' "$DIR/results-port/outcomes.txt") passed)"
-  else
-    echo "the outcomes differ (above: < original, > port)"
+  # The same test names under both (the outcome stripped), then the same outcome for each.
+  names() { sed -E 's/^test (.*) \.\.\. .*$/\1/' "$1" | sort; }
+  if ! diff <(names "$DIR/results-original/outcomes.txt") <(names "$DIR/results-port/outcomes.txt"); then
+    echo "the two runs list different tests (above: < original, > port)" >&2
     exit 1
   fi
+  if ! diff "$DIR/results-original/outcomes.txt" "$DIR/results-port/outcomes.txt"; then
+    echo "the outcomes differ (above: < original, > port)" >&2
+    exit 1
+  fi
+  echo "every test has the same outcome under both: $EXPECTED_TESTS tests, $EXPECTED_PASSED passed, $EXPECTED_FAILED failed, $EXPECTED_IGNORED ignored"
 fi

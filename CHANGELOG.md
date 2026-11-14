@@ -64,13 +64,27 @@ codes, and says so here.
   the admin or by anyone, every account closed out in random order, the insurance withdrawn, the slab closed, and the
   vault and every token account compared at the end (80 full life cycles in a 40-seed run of each walk). The port spends fewer compute units than
   the original on every successful transaction measured (20,225 in the two fuzz walks) and its binary is
-  359,896 bytes against 395,368.
+  360,248 bytes against 395,368.
 - Showcase: the Percolator author's own LiteSVM test suite (aeyakovenko/percolator-prog `06f86fb`, engine `3f55f87`)
   run unchanged against the mainnet binary and against the TypeSOL port: 660 tests pass and 11 are ignored under both,
   with the same outcome for every test (609 of them run the program; the rest test the Rust crates on the host); the
   11 ignored ones, run too, also agree (4 pass, 7 fail at the same assertions). The TradeCpi tests use the TypeSOL
   matcher fixture under both. `scripts/percolator-author-suite.sh` reproduces it (host build only, downloads nothing);
   counts per file and the author's compute-unit benchmark in the port README.
+- Showcase: the Percolator port's checks made stricter, and what they found. Every test now fails a successful
+  transaction with a Percolator instruction at the top level unless the port used fewer compute units than the
+  original (the differential harness asserts it for every test file, the keeper-crank measurements included; only the
+  matcher's own Init and SPL Token transfers, identified by program id, are exempt). A new fuzz walk runs whole market
+  life cycles on Chainlink feeds, inverted markets, Pyth feeds at other exponents with the confidence at its limit, and
+  Hyperp markets (40 life cycles in a 10-seed run, no divergence). A test matcher logs the slab as it stands during
+  TradeCpi's call (the same in both). Two
+  divergences found and fixed in the port: the slab passed again where the original holds its mutable borrow across an
+  SPL Token call (a user or admin signing with the slab's keypair, or the slab as CloseSlab's vault authority) failed
+  the original with AccountBorrowFailed and succeeded in the port; and the trade's per-side position cap, which the
+  original counts in i64, gave another error for counts of 2^63 and more (a patched slab only). One difference on a
+  patched slab remains and is pinned in a test (a free-list index past the 4,096 slots: Rust's bounds-check panic
+  against TypeSOL's). `scripts/percolator-author-suite.sh` now fails on a test file that does not build or run, on
+  totals other than the recorded 671 / 660 / 0 / 11, and on test names that differ between the two runs.
 
 ## 0.48.0 — 2026-11-14
 

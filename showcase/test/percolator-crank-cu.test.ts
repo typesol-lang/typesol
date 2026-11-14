@@ -3,16 +3,16 @@
 // crank with no candidates (the fee sweep of min(N, 128) accounts and the risk buffer's four) and a crank touching up
 // to 64 candidates, both under the default 200,000 and under the 1.4M limit, and after a crash cranks liquidating
 // batches of up to 64 of them (each with its ADL step) under the 1.4M limit; on a market of its own, 4 liquidations
-// under the default limit. Where both programs complete, everything is compared as in `Diff.both`. A crank the original
-// cannot complete within a limit is recorded (the port's outcome beside it) and that market is left there, since the
-// two VMs no longer hold the same state.
+// under the default limit. Where both outcomes match, the crank goes through `Diff.compare` (everything `Diff.both`
+// compares, and fewer units in the port on a success). A crank the original cannot complete within a limit is recorded
+// (the port's outcome beside it) and that market is left there, since the two VMs no longer hold the same state.
 //
 // PERCOLATOR_CRANK_COUNTS=1,16,64,256,1024,4096 sets the counts (the default 1,16,64,256); the table prints with
 // PERCOLATOR_CU=1.
 import { type Instruction } from "@solana/kit";
 import { afterAll, describe, expect, it } from "vitest";
 import { send } from "../../test/harness.js";
-import { Diff, HAVE_ORIGINAL, SOL, computeUnits, ix, inner, lines, meta, outcome } from "./percolator-helpers.js";
+import { Diff, HAVE_ORIGINAL, SOL, computeUnits, ix, meta, outcome } from "./percolator-helpers.js";
 
 const COUNTS = (process.env.PERCOLATOR_CRANK_COUNTS ?? "1,16,64,256").split(",").map(Number);
 
@@ -60,10 +60,9 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: KeeperCrank compute units by
         };
         table.push(row);
         if (outcome(a) === outcome(b)) {
-          expect(lines(b), name).toEqual(lines(a));
-          expect(inner(b), name).toEqual(inner(a));
-          d.expectSame(m.slab, name);
-          if (outcome(a) === "ok") expect(meta(b).computeUnitsConsumed() < meta(a).computeUnitsConsumed(), name).toBe(true);
+          // The whole comparison of `Diff.both`: logs, inner instructions, return data, every named account (the
+          // keeper's lamports, the slab), and fewer units in the port when both succeed.
+          d.compare(`${n + 1} accounts: ${name}`, keeper, all, a, b);
           return;
         }
         // Only a budget the original exhausts may part the two: the port must then have completed.

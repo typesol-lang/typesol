@@ -717,9 +717,10 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: resolution and the end of a 
   });
 
   it("the port used fewer compute units than the original on every successful transaction", () => {
-    // SPL Token's own transfer and the matcher's Init (the same program on both sides) aside.
-    const above = d.rows.filter((r) => r.ok && r.port >= r.original && !r.label.startsWith("SPL Token") && !r.label.includes("matcher"));
+    // Diff.both asserts it transaction by transaction; this checks the rows once more. Transactions without a
+    // top-level Percolator instruction (an SPL Token transfer, the matcher's Init: the same program on both sides) aside.
+    const above = d.rows.filter((r) => r.ok && r.percolator && r.port >= r.original);
     expect(above.map((r) => `${r.label}: ${r.original} / ${r.port}`)).toEqual([]);
-    expect(d.rows.filter((r) => r.ok).length).toBeGreaterThan(150);
+    expect(d.rows.filter((r) => r.ok && r.percolator).length).toBeGreaterThan(150);
   });
 });

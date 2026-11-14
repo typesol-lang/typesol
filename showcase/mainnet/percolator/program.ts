@@ -236,6 +236,18 @@ export function depositCollateral(token: TokenProgram, source: RemainingAccount,
   token.transfer(source, dest, authority, amount);
 }
 
+/**
+ * collateral::deposit where the original still holds the slab's mutable borrow (InitUser, InitLP, DepositCollateral,
+ * TopUpInsurance): its `invoke` borrows each account it passes first, so a user who is the slab itself (signed with the
+ * slab's keypair) fails the call with AccountBorrowFailed. The source and the vault are token accounts (owner-checked)
+ * and the token program is key-checked, so the authority is the only one of the four that can be the slab.
+ */
+export function depositCollateralHeld(token: TokenProgram, source: RemainingAccount, dest: RemainingAccount, authority: RemainingAccount, amount: u64, slab: RemainingAccount): void {
+  if (amount === 0n) return;
+  require(authority.key !== slab.key, ProgramError.AccountBorrowFailed);
+  token.transfer(source, dest, authority, amount);
+}
+
 /** collateral::withdraw: a Transfer from the vault signed by the vault PDA ["vault", slab, bump]. */
 export function withdrawCollateral(token: TokenProgram, vault: RemainingAccount, dest: RemainingAccount, authority: RemainingAccount, amount: u64, slab: Pubkey, bump: u8): void {
   if (amount === 0n) return;

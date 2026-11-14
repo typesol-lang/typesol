@@ -565,6 +565,13 @@ export function setCapital(e: Inout<RiskEngine>, idx: u64, newCapital: u128): vo
   a.capital = newCapital;
 }
 
+const I64_SIGN = 0x8000000000000000n;
+
+/** `(count as i64) + after - before` in wrapping i64 arithmetic, as its u64 bit pattern (I64_SIGN and up: negative). */
+function wrapNetCount(count: u64, after: u64, before: u64): u64 {
+  return toU64((toU128(count) + toU128(after) + 0x10000000000000000n - toU128(before)) & 0xffffffffffffffffn);
+}
+
 /** set_position_basis_q (engine lines 1612-1648). */
 export function setPositionBasisQ(e: Inout<RiskEngine>, idx: u64, newBasis: i128): void {
   const a = e.accounts.get(idx);
@@ -788,7 +795,9 @@ export function accrueMarketTo(e: Inout<RiskEngine>, nowSlot: u64, oraclePrice: 
   if (deltaP !== 0n) {
     const dpNeg = deltaP < 0n;
     const dpMag = u256(absI128(deltaP));
-    // A_side · delta_p in I256 (|A| < 2^128, |dp| < 2^64: the checked_mul_i256 cannot fail).
+    // A_side · delta_p in I256. The original's checked_mul_i256 refuses a negative product above 2^127 (its bound is
+    // `1u128 << 127`, not 2^255: wide_math.rs), but none is reached: A <= ADL_ONE (1e15: set to it, then only shrunk) and
+    // |delta_p| <= MAX_ORACLE_PRICE (1e12, both prices checked against it), so |A · delta_p| <= 1e27 < 2^127.
     if (longLive) kLong = addWideToI128(kLong, dpNeg, u256(e.adl_mult_long) * dpMag);
     if (shortLive) kShort = addWideToI128(kShort, !dpNeg, u256(e.adl_mult_short) * dpMag);
   }
@@ -798,7 +807,12 @@ export function accrueMarketTo(e: Inout<RiskEngine>, nowSlot: u64, oraclePrice: 
   if (fundingRateE9 !== 0n && totalDt > 0n && longLive && shortLive) {
     const px0 = e.fund_px_last;
     if (px0 > 0n) {
-      // fund_num_total = px · rate · dt in I256 (|px · rate · dt| < 2^256: these products cannot fail).
+      // fund_num_total = px · rate · dt in I256, then A · fund_num_total. The original's checked_mul_i256 refuses a
+      // negative product above 2^127 (see above); none is reached: px <= MAX_ORACLE_PRICE, |rate| <=
+      // max_abs_funding_e9_per_slot (checked on entry), dt <= max_accrual_dt_slots (funding is active here, checked
+      // above) and A <= ADL_ONE, and InitMarket's envelope bounds ADL_ONE · MAX_ORACLE_PRICE · max_abs_funding ·
+      // max_accrual_dt by i128::MAX < 2^127, so every product here is below 2^127. Past that bound (a patched slab
+      // only) the original fails with EngineOverflow where mulI256Mag multiplies exactly (README, "Differences").
       const rNeg = fundingRateE9 < 0n;
       const fundMag = mulI256Mag(rNeg, mulI256Mag(false, u256(px0), rNeg, u256(absI128(fundingRateE9))), false, u256(totalDt));
       // F_long -= A_long · fund_num_total; F_short += A_short · fund_num_total.
@@ -1753,16 +1767,19 @@ export function executeTradeNotAtomic(
   if ((e.side_mode_long === DRAIN_ONLY || e.side_mode_long === RESET_PENDING) && oiLongAfter > e.oi_eff_long_q) require(false, PercolatorError.EngineRiskReductionOnlyMode);
   if ((e.side_mode_short === DRAIN_ONLY || e.side_mode_short === RESET_PENDING) && oiShortAfter > e.oi_eff_short_q)
     require(false, PercolatorError.EngineRiskReductionOnlyMode);
-  // The per-side active-position cap on the net change of both legs (the original counts in i64; the stored counts
-  // never exceed max_accounts, so u64 sums cannot wrap).
+  // The per-side active-position cap on the net change of both legs, counted as the original counts: `count as i64 +
+  // after - before` in i64, wrapping (no overflow checks), negative is CorruptState, then above `cap as i64` is
+  // Overflow. The stored counts never exceed max_accounts, so only a patched slab (a count of 2^63 or more) can tell
+  // this from plain u64 arithmetic.
   const longBefore = (oldEffA > 0n ? 1n : 0n) + (oldEffB > 0n ? 1n : 0n);
   const longAfter = (newEffA > 0n ? 1n : 0n) + (newEffB > 0n ? 1n : 0n);
   const shortBefore = (oldEffA < 0n ? 1n : 0n) + (oldEffB < 0n ? 1n : 0n);
   const shortAfter = (newEffA < 0n ? 1n : 0n) + (newEffB < 0n ? 1n : 0n);
-  if (e.stored_pos_count_long + longAfter < longBefore || e.stored_pos_count_short + shortAfter < shortBefore) failCorrupt();
-  const finalLong = e.stored_pos_count_long + longAfter - longBefore;
-  const finalShort = e.stored_pos_count_short + shortAfter - shortBefore;
-  if (finalLong > e.params.max_active_positions_per_side || finalShort > e.params.max_active_positions_per_side) failOverflow();
+  const finalLong = wrapNetCount(e.stored_pos_count_long, longAfter, longBefore);
+  const finalShort = wrapNetCount(e.stored_pos_count_short, shortAfter, shortBefore);
+  if (finalLong >= I64_SIGN || finalShort >= I64_SIGN) failCorrupt();
+  const cap = e.params.max_active_positions_per_side;
+  if (cap >= I64_SIGN || finalLong > cap || finalShort > cap) failOverflow();
 
   const tradePnlA = computeTradePnl(sizeQ, toI128(oraclePrice) - toI128(execPrice));
   const tradePnlB = -tradePnlA;

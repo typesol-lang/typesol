@@ -11,7 +11,7 @@ In order of priority. Line counts at 0.48.0 (November 2026).
 
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |
-| 1 | C runtime | `runtime/typesol_rt.h` | 3,272 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
+| 1 | C runtime | `runtime/typesol_rt.h` | 3,273 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
 | 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 886 | Which checks each account parameter gets, and their order |
 | 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 4,022 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
 | 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,781 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |

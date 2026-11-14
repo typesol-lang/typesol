@@ -744,6 +744,8 @@ export interface CuRow {
   original: bigint;
   port: bigint;
   ok: boolean;
+  /** Whether the transaction has a top-level instruction of the program (the compute-unit rule applies to it). */
+  percolator: boolean;
 }
 
 /** The original alone, for tests that read the binary's own behaviour (the layout test). */
@@ -860,9 +862,22 @@ export class Diff {
     expect(this.bytes(this.port, at), message).toBe(this.bytes(this.original, at));
   }
 
-  /** Send to both: the same outcome, log lines, inner instructions, return data and account bytes. */
+  /**
+   * Send to both: the same outcome, log lines, inner instructions, return data and account bytes, and, when the
+   * transaction succeeds and names Percolator at the top level, fewer compute units in the port (see `compare`).
+   */
   async both(label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[] = []): Promise<string> {
     const [a, b] = [await send(this.original, payer, ixs), await send(this.port, payer, ixs)];
+    return this.compare(label, payer, ixs, a, b, watch);
+  }
+
+  /**
+   * The comparison `both` makes, of a transaction already sent to each VM (`a` the original's result, `b` the port's).
+   * Compute units: a transaction that succeeds and has a top-level instruction of the program (PROGRAM) must cost the
+   * port fewer units than the original. A transaction with none (the matcher's Init, an SPL Token transfer: the same
+   * program on both sides) is not a Percolator instruction and is exempt, by program id.
+   */
+  compare(label: string, payer: KeyPairSigner, ixs: Instruction[], a: Result, b: Result, watch: Address[] = []): string {
     this.compared++;
     const logs = (res: Result) => meta(res).logs().join("\n");
     const why = `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`;
@@ -879,7 +894,13 @@ export class Diff {
       this.expectSame(at, `${label}: ${at}`);
     }
     this.cu[label] = [meta(a).computeUnitsConsumed(), meta(b).computeUnitsConsumed()];
-    this.rows.push({ label, original: meta(a).computeUnitsConsumed(), port: meta(b).computeUnitsConsumed(), ok: outcome(a) === "ok" });
+    const percolator = ixs.some((i) => i.programAddress === PROGRAM);
+    const [cuOriginal, cuPort] = [meta(a).computeUnitsConsumed(), meta(b).computeUnitsConsumed()];
+    if (outcome(a) === "ok" && percolator)
+      expect(`${cuPort} < ${cuOriginal}: ${cuPort < cuOriginal}`, `${label}: the port's compute units (left) below the original's (right)`).toBe(
+        `${cuPort} < ${cuOriginal}: true`,
+      );
+    this.rows.push({ label, original: meta(a).computeUnitsConsumed(), port: meta(b).computeUnitsConsumed(), ok: outcome(a) === "ok", percolator });
     this.lastLogs = logs(a);
     this.last = a;
     // PERCOLATOR_TRACE=1 prints each compared transaction's outcome and compute units.
@@ -930,12 +951,14 @@ export class Diff {
 
   /**
    * A market's accounts: a zeroed slab of SLAB_LEN bytes owned by the program, a mint, the vault (a token account of
-   * the vault PDA, empty) and a Pyth account at `price` (expo -6, published now); not initialized yet.
+   * the vault PDA, empty) and a Pyth account at `price` (expo -6, published now); not initialized yet. `slab` gives the
+   * slab's keypair, for a test that signs with it.
    */
-  async newMarket(o: { price?: bigint; slabLen?: number; feedId?: Buffer; decimals?: number } = {}): Promise<Market> {
+  async newMarket(o: { price?: bigint; slabLen?: number; feedId?: Buffer; decimals?: number; slab?: KeyPairSigner } = {}): Promise<Market> {
     const admin = await this.funded(100n);
     const mint = await this.mint(o.decimals ?? 9);
-    const slab = await this.address();
+    // A test that signs with the slab's keypair passes it (`slab`); otherwise the keypair is not kept.
+    const slab = o.slab?.address ?? (await this.address());
     this.write(slab, PROGRAM, Buffer.alloc(o.slabLen ?? SLAB_LEN));
     const [vaultPda, bump] = await pda(PROGRAM, ["vault", slab]);
     const vault = await this.tokenAccount(mint, vaultPda);
@@ -944,11 +967,15 @@ export class Diff {
     return { slab, admin, mint, vault, vaultPda, bump, oracle, feedId };
   }
 
-  /** A new market initialized through both(), with `edit` applied to the default arguments. */
-  async market(o: { edit?: (a: InitMarketArgs) => void; price?: bigint; label?: string } = {}): Promise<Market> {
+  /** A new market initialized through both(), with `edit` (then `prepare`) applied to the default arguments. */
+  async market(
+    o: { edit?: (a: InitMarketArgs) => void; price?: bigint; label?: string; prepare?: (m: Market, a: InitMarketArgs) => void } = {},
+  ): Promise<Market> {
     const m = await this.newMarket({ price: o.price });
     const args = defaultInitArgs(m.admin.address, m.mint);
     o.edit?.(args);
+    // `prepare` sees the market's accounts before InitMarket (another oracle written at m.oracle, say).
+    o.prepare?.(m, args);
     await this.ok(o.label ?? "InitMarket", m.admin, [computeUnits(1_400_000), ix.initMarket(m, args)]);
     return m;
   }
@@ -1000,13 +1027,14 @@ export function describe(at: number): string {
 }
 
 /**
- * Compute units by instruction (the first word of each label after its last ": "), over the successful transactions:
- * count, and the original's and the port's mean and largest. PERCOLATOR_CU=1 prints it after each test file.
+ * Compute units by instruction (the first word of each label after its last ": "), over the successful transactions
+ * with a top-level Percolator instruction: count, and the original's and the port's mean and largest. PERCOLATOR_CU=1
+ * prints it after each test file.
  */
 export function cuSummary(rows: readonly CuRow[]): Record<string, { n: number; originalMean: number; portMean: number; originalMax: number; portMax: number }> {
   const out: Record<string, { n: number; originalMean: number; portMean: number; originalMax: number; portMax: number }> = {};
   for (const r of rows) {
-    if (!r.ok) continue;
+    if (!r.ok || !r.percolator) continue;
     const name = r.label.split(": ").at(-1)!.split(" ")[0]!;
     const e = (out[name] ??= { n: 0, originalMean: 0, portMean: 0, originalMax: 0, portMax: 0 });
     e.originalMean = (e.originalMean * e.n + Number(r.original)) / (e.n + 1);

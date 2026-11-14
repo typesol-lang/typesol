@@ -66,7 +66,8 @@ Node.js and the Solana toolchain are in place ([Quick start](#quick-start), [Req
 
 Each port is the whole program, written in TypeSOL from the original's source. Its tests send every transaction to
 the port and to the binary deployed on mainnet, both in LiteSVM, and require the same outcome, error, log lines,
-events, return data and bytes in every account; the port must also use fewer compute units on every transaction that
+events, return data and bytes in every account (one exception: a Percolator keeper crank that exceeds the compute
+budget in the original completes in the port); the port must also use fewer compute units on every transaction that
 succeeds. A case study for each (for Percolator, the port's README) says what was compared and what was not.
 
 | Program | Kind | Instructions | Transactions compared |
@@ -78,7 +79,7 @@ succeeds. A case study for each (for Percolator, the port's README) says what wa
 | [Raydium CP-Swap](docs/case-study-raydium-cp-swap.md) | Anchor, constant product | 21 | 136 |
 | [Raydium AMM v4](docs/case-study-raydium-amm.md) | native, constant product | all | 484 |
 | [Jito MEV](docs/case-study-jito-mev.md) | Anchor, three programs | 24 | 150 |
-| [Percolator v12.20](showcase/mainnet/percolator) | native, perpetuals risk engine | 27 | 20,225 |
+| [Percolator v12.20](showcase/mainnet/percolator) | native, perpetuals risk engine | 27 | 6,028 |
 | [coral-xyz/multisig](docs/case-study-multisig.md) | Anchor | all | 52 |
 
 A tenth port is held to a narrower comparison and is not counted above:
@@ -86,10 +87,6 @@ A tenth port is held to a narrower comparison and is not counted above:
 migrations into DAMM v1 and DAMM v2). Outcomes, error codes, account bytes, events and return data are the same as the
 mainnet binary's; log text and compute units are not compared. That directory is under Meteora's Non-commercial
 Licence, not this repository's (see its README).
-
-A tenth is in progress: [Percolator v12.20](showcase/mainnet/percolator), Anatoly Yakovenko's perpetual-futures risk
-engine as deployed immutable on mainnet (native, one 1.5 MB zero-copy account), 15 of its 27 instructions so far, held
-to the same comparison as the eight above (logs and account bytes included).
 
 Random walks with fixed or printed seeds run on top of these counts ([docs/testing.md](docs/testing.md)). The
 sources are in [`showcase/mainnet`](showcase/mainnet), and where each original binary comes from is recorded in
@@ -448,7 +445,6 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Phoenix v1](docs/case
 | [`spl-stake-pool/`](showcase/mainnet/spl-stake-pool) | SPL Stake Pool in full, all 27 instructions, a native program and the one behind most liquid staking tokens: pools of stake across up to 20,000 validators, SOL and stake deposits and withdrawals, rebalancing over epochs, fees and authorities, token metadata |
 | [`raydium-amm/`](showcase/mainnet/raydium-amm) | Raydium AMM v4, the original constant-product AMM and a native (non-Anchor) program, in full: pool creation, deposits and withdrawals, the v1 and v2 swaps, P&L and administration, down to its log records and panics |
 | [`meteora-dbc/`](showcase/mainnet/meteora-dbc) | Meteora Dynamic Bonding Curve 0.2.2 in full, all 35 instructions: configs, pool creation on SPL Token and Token-2022 (transfer fees and hooks), the three swap modes, fee schedulers and the rate limiter, fee claims, the locker, and the migrations into DAMM v1 and DAMM v2. Under Meteora's Non-commercial Licence (its own `LICENSE.md`); log text and compute units are not compared |
-| [`percolator/`](showcase/mainnet/percolator) | Percolator v12.20, a perpetual-futures risk engine and a native program, in progress (15 of 27 instructions): one 1.5 MB zero-copy slab byte for byte, 256-bit wide arithmetic, Pyth / Chainlink / Hyperp prices, accrual of the A/K/F indices, two-bucket warm-up, maintenance fees. Educational, not audited, not for real funds, as the original says |
 | [`percolator/`](showcase/mainnet/percolator) | Percolator v12.20, Anatoly Yakovenko's perpetuals risk engine and its native program, in full, all 27 instructions, against the immutable mainnet build: one 1.5 MB slab of 4,096 accounts, U256 and U512 arithmetic, trades through matcher programs, funding, liquidation, the keeper crank with pro-rata loss socialisation and side resets, resolution and teardown. The author's own suite gives the same outcome on every test under both binaries (660 passed). Upstream is educational and not audited |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 

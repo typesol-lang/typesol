@@ -44,6 +44,7 @@ import {
   boundedNow,
   checkIdx,
   depositCollateral,
+  depositCollateralHeld,
   engineIsResolved,
   ensureMarketAccruedToNow,
   expectKey,
@@ -129,7 +130,7 @@ export function initAccount(rest: RemainingAccounts, data: InstructionBytes, pro
   const feeBase = toU64(prefix.config.new_account_fee);
   require(feePayment > feeBase, PercolatorError.EngineInsufficientBalance);
   const capitalBase = feePayment - feeBase;
-  depositCollateral(programAt<TokenProgram>(rest.get(4n)), rest.get(2n), rest.get(3n), aUser, feePayment);
+  depositCollateralHeld(programAt<TokenProgram>(rest.get(4n)), rest.get(2n), rest.get(3n), aUser, feePayment, rest.get(1n));
   const capitalUnits = baseToUnits(capitalBase, prefix.config.unit_scale);
   const feeUnits = baseToUnits(feeBase, prefix.config.unit_scale);
   require(capitalUnits !== 0n, PercolatorError.EngineInsufficientBalance);
@@ -166,7 +167,7 @@ export function deposit(rest: RemainingAccounts, data: InstructionBytes, program
   require(baseDust(amount, prefix.config.unit_scale) === 0n, ProgramError.InvalidArgument);
   const e = loadRawMutAt<RiskEngine>(aSlab, ENGINE_OFF);
   checkDepositCap(e, prefix.config, amount);
-  depositCollateral(programAt<TokenProgram>(rest.get(4n)), rest.get(2n), rest.get(3n), aUser, amount);
+  depositCollateralHeld(programAt<TokenProgram>(rest.get(4n)), rest.get(2n), rest.get(3n), aUser, amount, rest.get(1n));
   const units = baseToUnits(amount, prefix.config.unit_scale);
   checkIdx(e, userIdx);
   require(e.accounts.get(toU64(userIdx)).owner === aUser.key, PercolatorError.EngineUnauthorized);
@@ -294,7 +295,7 @@ export function topUpInsurance(rest: RemainingAccounts, data: InstructionBytes, 
   const clock = readClock(rest.get(5n));
   require(!permissionlessStaleMatured(prefix.config, clock.slot), PercolatorError.OracleStale);
   require(baseDust(amount, prefix.config.unit_scale) === 0n, ProgramError.InvalidArgument);
-  depositCollateral(programAt<TokenProgram>(rest.get(4n)), rest.get(2n), rest.get(3n), aUser, amount);
+  depositCollateralHeld(programAt<TokenProgram>(rest.get(4n)), rest.get(2n), rest.get(3n), aUser, amount, rest.get(1n));
   const units = baseToUnits(amount, prefix.config.unit_scale);
   const e = loadRawMutAt<RiskEngine>(aSlab, ENGINE_OFF);
   topUpInsuranceFund(e, toU128(units), boundedNow(e, clock.slot));

@@ -3916,8 +3916,10 @@ On remaining accounts and `AccountInfo` parameters:
 - `zeroData(account, offset, length)` zeroes that range of the data, as a native program's `for b in
   data.iter_mut() { *b = 0; }`, which compiles to a memset: the memset syscall, about constant compute units whatever
   the length (Percolator clears its 1.5 MB slab this way at InitMarket and CloseSlab). Past the end of the data fails
-  with 3003 and writes nothing; without `NATIVE_ACCOUNT_WRITES` the account must be writable (3006). The length does
-  not change, so views made before stay valid and read the zeros.
+  with 3003 and writes nothing; without `NATIVE_ACCOUNT_WRITES` the account must be writable (3006). It does not check
+  the account's owner: check that it is this program's first (the runtime would fail the instruction after it returns,
+  having changed another program's account). The length does not change, so views made before stay valid and read the
+  zeros.
 - `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, at most
   10 KiB past the size it had when the instruction started, 3016). That size is the one the entrypoint records in the
   account's record, as solana_program 1.14's does, only in programs that resize a remaining account.

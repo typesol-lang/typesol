@@ -7,6 +7,7 @@
 // One state no instruction can make is written into both slabs: a position basis whose arithmetic overflows (for the
 // panic).
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
+import { send } from "../../test/harness.js";
 import {
   A,
   C,
@@ -23,6 +24,8 @@ import {
   builtin,
   cuSummary,
   ix,
+  meta,
+  outcome,
   passiveMatcher,
   pe,
   pythBytes,
@@ -270,6 +273,27 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: withdraw, close, settle, rec
     d.patch(m.slab, (b) => writeU128(b, accountAt(0) + A.positionBasisQ, 1n << 120n));
     await d.fails("Withdraw: mul_div_floor_u128 overflow", alice.key, [ix.withdraw(m, alice, 0, 1n)], builtin("ProgramFailedToComplete"));
     expect(d.lastLogs).toContain("Program log: panicked at src/wide_math.rs:1554:30:\nmul_div_floor_u128: a*b overflow");
+  });
+
+  it("a patched freelist index past the 4,096 slots: a difference, pinned", async () => {
+    // free_slot pushes the freed slot onto the free list: `self.prev_free[self.free_head as usize] = idx`. A free head of
+    // 4,096 to 65,534 (no instruction writes one: the head is always a slot or u16::MAX) is past the array: the original
+    // panics there (Rust's bounds check, "index out of bounds: the len is 4096 but the index is <n>", a message with the
+    // index in it); the port's fixed-array write fails TypeSOL's bounds check instead. Both fail the instruction and
+    // leave every account as it was; the outcome and the log lines differ. Written into both slabs the same way.
+    const m = await d.market();
+    const alice = await funded(m, SOL, "alice");
+    d.patch(m.slab, (b) => b.writeUInt16LE(5000, E.freeHead));
+    const before = d.bytes(d.original, m.slab);
+    const close = ix.closeAccount(m, alice, 0);
+    const [a, b] = [await send(d.original, alice.key, [close]), await send(d.port, alice.key, [close])];
+    expect(outcome(a)).toBe(builtin("ProgramFailedToComplete"));
+    expect(meta(a).logs().join("\n")).toContain("panicked at src/percolator.rs:1127:13:\nindex out of bounds: the len is 4096 but the index is 5000");
+    // TypeSOL's bounds check: error 5104, "TypeSOL: array index out of bounds" with the port's line.
+    expect(outcome(b)).toBe("error: TransactionErrorInstructionError { index: 0, error: InstructionErrorCustom { code: 5104 } }");
+    expect(meta(b).logs().join("\n")).toContain("TypeSOL: array index out of bounds");
+    expect(d.bytes(d.port, m.slab)).toBe(before);
+    expect(d.bytes(d.original, m.slab)).toBe(before);
   });
 
   it("a Hyperp market: the index follows the mark", async () => {

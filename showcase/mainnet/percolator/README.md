@@ -162,7 +162,16 @@ same way, and each test says where: a position basis whose arithmetic overflows 
 request nonce at u64::MAX, corrupt enum tags and a TradeCpi in progress (for the slab checks), a resolved market whose
 resolved price is 0 (KeeperCrank's refusal of it: resolution refuses a zero price) and a Hyperp mark EWMA of 0
 (UpdateAuthority's refusal to burn the Hyperp authority before the EWMA: InitMarket seeds it with the initial mark and
-no update brings it back to 0).
+no update brings it back to 0), per-side position counts and caps of 2^63 and more (the i64 arithmetic of the trade's
+position cap) and a free-list head past the 4,096 slots (a difference, pinned: below). Some tests sign with the slab's
+own keypair, as whoever created the slab account can, to pass the slab again as the user, the admin or the vault
+authority (below).
+
+Compute units: `both()` fails any transaction that succeeds under both programs, has a top-level instruction of the
+program (identified by program id) and does not cost the port fewer units than the original. That covers every
+Percolator instruction in every test file; the transactions it exempts are those with no Percolator instruction at the
+top level (the matcher's own Init, an SPL Token transfer), the same program on both sides. KeeperCrank's compute-unit
+test goes through the same comparison wherever the two outcomes match.
 
 **The matcher.** TradeCpi calls the LP's matcher program. No build of the author's matcher is deployed for v12.20 (the
 deploy manifest says "NOT DEPLOYED — third parties provision their own"; the author's devnet markets name matcher
@@ -176,21 +185,21 @@ writes what its context account says.
 | --- | --- |
 | `percolator-layout.test.ts` | the slab layout, read from slabs the mainnet binary initialised (every header, config and engine field, an account, the generation table) |
 | `percolator.test.ts` | InitMarket in 14 shapes (Pyth, inverted, scaled, Hyperp, fees, funding), 22 oracle readings at init, Chainlink feeds, every InitMarket refusal in order; InitUser, InitLP, deposits, top-ups, the TVL cap, the unit scale, fee credits, and the shared refusals of the five token instructions (accounts, signer, writability, token program, slab owner and length, uninitialized, vault and token-account checks, clock, corrupt enum tags, CPI in progress, matured staleness, a resolved market) |
-| `percolator-accounts.test.ts` | withdraw and close (oracle errors, price clamp, unit scale), positions from trades with mark-to-market, warm-up buckets, margin and funding, losses past capital absorbed by insurance, released-PnL conversion, the close refused while profit warms, maintenance fees and fee debt, a Hyperp market, a panic line |
-| `percolator-admin.test.ts` | UpdateConfig (ordinary and degenerate arms, accrual with funding from traded positions), SetOraclePriceCap, PushHyperpMark, UpdateAuthority (all kinds, burns, consent), CloseSlab (live, insurance left, stranded tokens, an empty vault) |
-| `percolator-trade.test.ts` | TradeNoCpi: fills, flips, closes, fees, the EWMA, the risk buffer past four entries, and every refusal (accounts, signers, owners, sizes, self-trade, margin, the flat-close guard, oracle staleness, the hard timeout, the circuit breaker, Hyperp, a drain-only side, a resolved market). TradeCpi through the Passive and vAMM matcher (partial, inventory-capped and zero fills, the limit on normal and inverted markets, Hyperp marks and zero fills) and every refusal of its accounts, the LP binding and the answer. ConvertReleasedPnl: warm-up, partial and whole conversions, the haircut, the flat-account cap, refusals |
+| `percolator-accounts.test.ts` | withdraw and close (oracle errors, price clamp, unit scale), positions from trades with mark-to-market, warm-up buckets, margin and funding, losses past capital absorbed by insurance, released-PnL conversion, the close refused while profit warms, maintenance fees and fee debt, a Hyperp market, a panic line, a free-list head past the slots (pinned difference) |
+| `percolator-admin.test.ts` | UpdateConfig (ordinary and degenerate arms, accrual with funding from traded positions), SetOraclePriceCap, PushHyperpMark, UpdateAuthority (all kinds, burns, consent), CloseSlab (live, insurance left, stranded tokens, an empty vault); the slab passed again where the original holds its borrow across a CPI (below) |
+| `percolator-trade.test.ts` | TradeNoCpi: fills, flips, closes, fees, the EWMA, the risk buffer past four entries, and every refusal (accounts, signers, owners, sizes, self-trade, margin, the flat-close guard, oracle staleness, the hard timeout, the circuit breaker, Hyperp, a drain-only side, a resolved market); per-side position counts and caps past i64 (a patched slab). TradeCpi through the Passive and vAMM matcher (partial, inventory-capped and zero fills, the limit on normal and inverted markets, Hyperp marks and zero fills) and every refusal of its accounts, the LP binding and the answer; the slab as the matcher sees it during the call (below). ConvertReleasedPnl: warm-up, partial and whole conversions, the haircut, the flat-account cap, refusals |
 | `percolator-liquidate.test.ts` | LiquidateAtOracle: healthy and flat accounts (nothing), full closes within the capital and past it (bad debt paid by insurance), past insurance (the loss written into the shorts' K, A shrunk, the dust bound), a second liquidation emptying the longs (the shorts reset, stale; a reset-pending side refusing new shorts; a stale account settling a loss past its capital, absorbed; the last stale account settled inside a trade, the side reopening), drain-only (A below MIN_A_SIDE, refusals, the side emptied and reset), maintenance fees synced first, a Hyperp market, every refusal; CatchupAccrue: nothing to do, funding past the envelope (CatchupRequired for Settle, Liquidate and the crank), partial and complete catch-ups, refusals |
 | `percolator-crank.test.ts` | KeeperCrank: permissionless and self cranks, every refusal (accounts, signer, owner, the data's format, tags, leftovers, 128 and 129 candidates, the slab checks for all three keeper instructions, the oracle, resolved with and without a price), liquidations from the risk buffer and from hints (FullClose, a valid and a too-small partial, touch only, missing slots, duplicates), the 64-attempt budget, 150 accounts cranked over many slots (the sweep cursor stopping inside a word, dust accounts reclaimed, the keeper's reward, funding, warm-up maturing), fee debt left by the sweep on an open position |
 | `percolator-resolve.test.ts` | ResolveMarket: every refusal (accounts, signer, admin, oracle owner and feed, slab checks, already resolved, the burned admin), the ordinary arm at a fresh price, an observation no newer than the last, the catch-up inline and CatchupRequired past 20 envelopes, the degenerate arm for a stale and a too-wide oracle and past the hard timeout, Hyperp at the mark (a terminal delta), past the deviation band, with a silent mark (degenerate). ResolvePermissionless: early, a slot short, turned off, then by anyone; after a cluster restart (LiteSVM's LastRestartSlot moved past the one InitMarket recorded) the market frozen and resolvable by anyone with staleness turned off. The close-out: winners reconciled only (ProgressOnly by each of the three closes) until the losers are gone, a loss past insurance and the payout haircut below 1, pending warm-up buckets cleared, fee debt forgiven, LPs, a side drain-only and a side mid-reset (stale accounts, no terminal delta) at resolution; every refusal of the three closes (delay, no delay configured, accounts, vault, PDA, owner, token accounts, free slots). Every live instruction on a resolved market, the crank's nothing, UpdateAuthority's transfer and burns there. WithdrawInsuranceLimited (the bps cap, the 10-unit floor, the cooldown over time, another operator, dust, the hard timeout, resolved) and WithdrawInsurance (accounts left, another authority, the terminal surplus); the teardown to CloseSlab with stranded tokens; fewer compute units than the original on every successful transaction |
-| `percolator-crank-cu.test.ts` | KeeperCrank's compute units at 2 to 4,096 accounts (below), under the default 200,000 and the 1.4M limits |
-| `percolator-fuzz.test.ts` | two seeded random walks, each ending in the end of the market. The account walk: markets of random shape (fees, margins, warm-up bounds, caps, Pyth or Hyperp, with or without permissionless resolution, with or without bounded insurance withdrawals) and sequences of opens (users, LPs bound to the matcher or not), deposits, withdrawals, closes, settles, reclaims, top-ups, fee payments, trades (TradeNoCpi and TradeCpi, random or near the margin), conversions, config updates, liquidations, cranks with random candidates and hints, catch-ups, price moves (crashes and spikes included) and clock moves (past the accrual envelope where nothing resolves the market). The liquidation walk: leveraged traders against a few counterparties with little insurance, and leveraged trades, price moves up to crashes, liquidations, cranks, catch-ups, settlements, deposits, withdrawals, conversions, new accounts, closes and top-ups. Then the end (`endOfLife`): bounded insurance withdrawals, resolution by the admin (the oracle moved, older, stale or too wide; catch-ups and retries where the original refuses) or permissionless after the hard timeout (an early try first), the three resolved closes in random order (before and after the delay), insurance withdrawals and CloseSlab tried too early, live instructions refused, cranks; every account closed out, WithdrawInsurance, CloseSlab, and the vault, the slab and every token account compared once more. 6 seeds of each by default; `PERCOLATOR_FUZZ_VERBOSE=1` prints what a run reached, how often each ADL event occurred and how many full life cycles ran (below) |
+| `percolator-crank-cu.test.ts` | KeeperCrank's compute units at 2 to 4,096 accounts (below), under the default 200,000 and the 1.4M limits; every crank whose outcome is the same under both compared as `both()` compares |
+| `percolator-fuzz.test.ts` | two seeded random walks, each ending in the end of the market. The account walk: markets of random shape (fees, margins, warm-up bounds, caps, Pyth or Hyperp, with or without permissionless resolution, with or without bounded insurance withdrawals) and sequences of opens (users, LPs bound to the matcher or not), deposits, withdrawals, closes, settles, reclaims, top-ups, fee payments, trades (TradeNoCpi and TradeCpi, random or near the margin), conversions, config updates, liquidations, cranks with random candidates and hints, catch-ups, price moves (crashes and spikes included) and clock moves (past the accrual envelope where nothing resolves the market). The liquidation walk: leveraged traders against a few counterparties with little insurance, and leveraged trades, price moves up to crashes, liquidations, cranks, catch-ups, settlements, deposits, withdrawals, conversions, new accounts, closes and top-ups. Then the end (`endOfLife`): bounded insurance withdrawals, resolution by the admin (the oracle moved, older, stale or too wide; catch-ups and retries where the original refuses) or permissionless after the hard timeout (an early try first), the three resolved closes in random order (before and after the delay), insurance withdrawals and CloseSlab tried too early, live instructions refused, cranks; every account closed out, WithdrawInsurance, CloseSlab, and the vault, the slab and every token account compared once more. 6 seeds of each by default. The oracle walk: the account walk, from four opened accounts, on markets of one oracle shape each (a Chainlink OCR2 feed with 8, 9 or 18 decimals; an inverted Pyth market; a Pyth feed at exponent -8, -10 or -5 with its confidence exactly at the market's limit of 50, 200 or 500 bps, one past it for a wide reading; a Hyperp market), each to its end, each with at least one successful trade and crank; 2 seeds of each shape by default (`PERCOLATOR_ORACLE_RUNS`, `PERCOLATOR_ORACLE_STEPS`). `PERCOLATOR_FUZZ_VERBOSE=1` prints what a run reached, how often each ADL event occurred and how many full life cycles ran, by market shape (below) |
 | `test/language/native-log64-zero.test.ts`, `remaining-executable.test.ts` | the compiler additions this port needed, with their lines checked against the binary's |
 
 ## Compute units and size
 
 | | Original | Port |
 | --- | ---: | ---: |
-| Binary | 395,368 bytes | 359,896 bytes (SBPF v0) |
+| Binary | 395,368 bytes | 360,248 bytes (SBPF v0) |
 
 Successful transactions, mean / largest: those of the two fuzz walks with their ends (the account walk 40 seeds × 400
 steps, the liquidation walk 40 seeds × 600 steps, 80 full life cycles), and for UpdateAuthority, which they do not
@@ -199,17 +208,17 @@ send, those of percolator-admin.test.ts. Every instruction is in the table.
 | Instruction | Transactions | Original | Port |
 | --- | ---: | ---: | ---: |
 | InitMarket | 80 | 237,575 / 248,070 | 232,720 / 235,031 |
-| InitUser | 1,445 | 6,926 / 7,225 | 2,901 / 3,234 |
-| InitLP | 230 | 7,071 / 7,301 | 3,000 / 3,256 |
-| DepositCollateral | 1,314 | 6,792 / 7,821 | 2,710 / 3,483 |
+| InitUser | 1,445 | 6,926 / 7,225 | 2,917 / 3,250 |
+| InitLP | 230 | 7,071 / 7,301 | 3,016 / 3,272 |
+| DepositCollateral | 1,314 | 6,792 / 7,821 | 2,725 / 3,498 |
 | WithdrawCollateral | 786 | 14,475 / 45,269 | 6,403 / 16,194 |
 | KeeperCrank | 4,324 | 52,853 / 387,752 | 29,294 / 213,966 |
-| TradeNoCpi | 1,790 | 27,367 / 88,586 | 14,386 / 33,933 |
+| TradeNoCpi | 1,790 | 27,367 / 88,586 | 14,379 / 33,927 |
 | LiquidateAtOracle | 2,310 | 10,441 / 66,218 | 5,537 / 19,302 |
 | CloseAccount (live and resolved) | 883 | 9,808 / 28,989 | 4,445 / 10,422 |
-| TopUpInsurance | 1,383 | 6,387 / 6,450 | 2,366 / 2,405 |
-| TradeCpi | 83 | 21,531 / 44,910 | 13,567 / 24,965 |
-| CloseSlab | 80 | 12,270 / 12,270 | 8,354 / 8,354 |
+| TopUpInsurance | 1,383 | 6,387 / 6,450 | 2,381 / 2,420 |
+| TradeCpi | 83 | 21,531 / 44,910 | 13,563 / 24,957 |
+| CloseSlab | 80 | 12,270 / 12,270 | 8,362 / 8,362 |
 | UpdateConfig | 433 | 3,024 / 9,318 | 1,360 / 3,315 |
 | PushHyperpMark | 774 | 3,177 / 9,269 | 2,796 / 4,539 |
 | SetOraclePriceCap | 601 | 1,934 / 8,484 | 1,696 / 4,146 |
@@ -226,10 +235,12 @@ send, those of percolator-admin.test.ts. Every instruction is in the table.
 | CatchupAccrue | 1,405 | 4,373 / 75,542 | 1,812 / 33,637 |
 | UpdateAuthority | 7 | 1,496 / 1,697 | 439 / 589 |
 
-TradeCpi's figures include the matcher's call (about 1,000 units, the same TypeSOL matcher under both). The port used
-fewer units than the original on every one of the 20,225 successful transactions of those runs (the matcher's own
-aside), and on every successful transaction of the other test files; both fuzz walks and percolator-resolve.test.ts
-assert it. `PERCOLATOR_CU=1` prints these tables, `PERCOLATOR_TRACE=1` each compared transaction's outcome and units.
+TradeCpi's figures include the matcher's call (about 1,000 units, the same TypeSOL matcher under both). Every test
+asserts the rule through `both()` (see "How it is checked"): a successful transaction with a Percolator instruction at
+the top level fails the test unless the port used fewer units than the original, in every test file, the fuzz walks
+included; the matcher's own Init and SPL Token transfers, which carry no Percolator instruction, are the only
+transactions exempt. `PERCOLATOR_CU=1` prints these tables, `PERCOLATOR_TRACE=1` each compared transaction's outcome
+and units.
 
 **KeeperCrank by account count** (percolator-crank-cu.test.ts; N - 1 traders long against one LP, a maintenance fee of
 1 per slot, every account touched by a fee sync; the liquidation batches after a 10% fall, each batch on traders not
@@ -291,6 +302,15 @@ refused); 4 with a terminal K delta (Hyperp), 99 sides with stale positions at r
 only reconciled a winner (ProgressOnly), 110 payouts at a haircut below 1; all 80 reached CloseSlab (2 inside the
 random part, the rest after the final close-out) with the vault and every token account the same in both VMs.
 
+**Oracle and market shapes** (the oracle walk, `PERCOLATOR_ORACLE_RUNS=10 PERCOLATOR_ORACLE_STEPS=400`): 40 full life
+cycles, 10 on each of a Chainlink feed, an inverted Pyth market, a Pyth feed at exponent -8, -10 or -5 with its
+confidence at the market's limit, and a Hyperp market, every one from InitMarket to CloseSlab with the same outcome,
+logs and bytes in both programs: 350 successful trades (235 TradeCpi, 115 TradeNoCpi), 1,249 cranks, 33 side resets
+begun on each side, losses socialised into K 9 times, sides turned drain-only 12 times. No divergence was found.
+
+**The default run** of all ten test files (`vitest run showcase/test/percolator*`, the default seeds) compares 6,028
+transactions through `both()`, 3,896 of them successful under both.
+
 ## The author's test suite
 
 aeyakovenko/percolator-prog ships its own LiteSVM tests (`tests/*.rs`, Apache-2.0). They load whatever is at
@@ -304,7 +324,7 @@ mainnet binary there and once with the port, and every test has the same outcome
 | Engine (path dependency `../percolator`) | aeyakovenko/percolator `3f55f871a3aa29d7b582fc2641d2106cbac0c32e` |
 | Matcher (`../percolator-match`) | the TypeSOL matcher fixture (`matcher/matcher.ts`, a port of aeyakovenko/percolator-match `199b1396`), under both programs: no build of the author's matcher is deployed, and the tests' matcher calls (Init tag 2, 66 bytes; the call tag 0, 67 bytes; the 320-byte context) are the ABI it speaks |
 | Original | `test/programs/percolator_v12.so`, sha256 `502088e9…cc93` |
-| Port | `showcase/mainnet/percolator/percolator.ts` built by this repository's compiler (359,896 bytes) |
+| Port | `showcase/mainnet/percolator/percolator.ts` built by this repository's compiler (360,248 bytes) |
 | Harness | the suite's own `Cargo.lock`: litesvm 0.1.0, solana-sdk / solana-program-runtime 1.18.26, spl-token 4.0.0; host build with rustc 1.96.0 (`cargo test`, nothing built for SBF) |
 
 The port has no program id built in: `programId()` is the id the runtime passes, so the vault PDA
@@ -349,11 +369,11 @@ the figures include the SPL Token transfers these instructions make):
 
 | Instruction | Original | Port |
 | --- | ---: | ---: |
-| TradeNoCpi | 14,033 | 7,772 |
-| DepositCollateral | 11,424 | 7,371 |
+| TradeNoCpi | 14,033 | 7,765 |
+| DepositCollateral | 11,424 | 7,386 |
 | WithdrawCollateral | 18,095 | 11,740 |
 | KeeperCrank | 42,411 | 27,409 |
-| TopUpInsurance | 11,170 | 7,151 |
+| TopUpInsurance | 11,170 | 7,166 |
 | UpdateConfig | 3,619 | 1,921 |
 | SetOraclePriceCap | 2,507 | 2,046 |
 | LiquidateAtOracle | 12,226 | 7,216 |
@@ -363,7 +383,7 @@ the figures include the SPL Token transfers these instructions make):
 | KeeperCrank (resolved) | 6,274 | 4,764 |
 | AdminForceCloseAccount | 12,218 | 8,018 |
 | WithdrawInsurance | 11,108 | 7,015 |
-| CloseSlab | 15,370 | 11,455 |
+| CloseSlab | 15,370 | 11,463 |
 
 **To reproduce.** Check out the three repositories side by side at the commits above (`<dir>/percolator-prog`,
 `<dir>/percolator`, `<dir>/percolator-match`), fetch the mainnet binary (`scripts/fetch-programs.sh`), then:
@@ -377,7 +397,9 @@ scripts/percolator-author-suite.sh <dir>            # original, then port; compa
 The script builds the matcher fixture and the port into a temporary directory, copies each program to
 `target/deploy/percolator_prog.so` in turn, runs every test file one at a time (`cargo test --locked --offline -j 2
 --test <file> -- --test-threads=2`), keeps each run's logs in `<dir>/results-original/` and `<dir>/results-port/`,
-and fails if any test's outcome differs. A whole run takes about 6 minutes per binary on a laptop, most of it
+and fails if a test file does not build or run, if a test fails, if the totals are not those recorded in the script for
+the pinned commits (671 tests: 660 passed, 0 failed, 11 ignored), if the two runs list different test names, or if
+any test's outcome differs. A whole run takes about 6 minutes per binary on a laptop, most of it
 `cu_benchmark.rs`'s worst-case crank scenarios. The ignored tests: `cargo test --locked --offline -j 2 --test <file> --
 --ignored --test-threads=2` with either binary in place.
 
@@ -390,8 +412,23 @@ and fails if any test's outcome differs. A whole run takes about 6 minutes per b
 - **TradeCpi's matcher call** is made by the entrypoint between two halves of the handler (TypeSOL forwards the
   remaining accounts into a CPI only from the instruction itself); the statements run in the original's order.
 - **Reentrancy**: a matcher that calls back into Percolator is stopped by the runtime (ReentrancyNotAllowed) under both
-  programs before Percolator's own FLAG_CPI_IN_PROGRESS check could run, so no test reaches that check; the flag's
-  bytes are compared on every TradeCpi (set before the call, cleared after).
+  programs before Percolator's own FLAG_CPI_IN_PROGRESS check could run, so no test reaches that check. What the
+  matcher sees is compared: given the slab in its tail (writable or read-only; both programs pass it), the test matcher
+  logs during the call the flags byte, the request nonce, the slab's length, fingerprints of the header, the config, the
+  engine before its accounts and the LP's entry, and the config's 400 bytes word by word, on a Pyth and a Hyperp market,
+  a fill, a zero fill and a refused answer; `both()` compares those lines, and the test checks that the flag is set,
+  the nonce not yet advanced and the config still the one from before the price read (the original writes its copy back
+  only after the call). The flag cleared after the call is in the slab bytes compared after every TradeCpi.
+- **The slab passed again where the original holds its borrow**: the original keeps `slab.try_borrow_mut_data()` across
+  the SPL Token calls of InitUser, InitLP, DepositCollateral, TopUpInsurance and CloseSlab, and solana-program's
+  `invoke` borrows every account it passes first, so the slab named again in that call fails it with
+  AccountBorrowFailed: the user signing with the slab's keypair (the four deposits), an admin who is the slab (CloseSlab's
+  rent destination) or the slab as CloseSlab's vault authority when nothing is drained (that key is checked only before
+  a drain). TypeSOL has no borrow flags, so the port checks those keys explicitly at the same point and returns the same
+  error (`depositCollateralHeld` in program.ts, CloseSlab in market.ts); percolator-admin.test.ts compares each case.
+  Every other aliasing of the slab (a token account, the vault, the vault PDA, the clock, the oracle, the matcher
+  context) is refused first by an owner or key check in both; the slab in TradeCpi's tail is passed by both (the
+  original drops its borrow before the call).
 - **The config in place**: see "Compute units" (the same bytes; fewer copies).
 - **`LastRestartSlot::get()`**: the original treats a failing syscall as slot 0 (`unwrap_or(0)`, `Err(_) => false`);
   the port's `lastRestartSlot()` fails the instruction (5103) instead. The sysvar is available on mainnet and in LiteSVM,
@@ -412,8 +449,25 @@ and fails if any test's outcome differs. A whole run takes about 6 minutes per b
   `checked_sub` on a stale count just checked to be nonzero.
 - **`ResolvedCloseResult`** is a payout in units, or `PROGRESS_ONLY` (u128::MAX, more than any vault can hold) for
   ProgressOnly.
-- **Compute units** differ (not compared; tabled above): where the original exceeds a compute budget on a crank the
-  port completes (above), the outcomes differ.
+- **Compute units** differ (the port uses fewer on every successful transaction, asserted; tabled above): where the
+  original exceeds a compute budget on a crank the port completes (above), the outcomes differ.
+- **Three engine paths only a patched slab reaches**, read on both sides:
+  - `I256::checked_mul_i256` in the original (`src/wide_math.rs`, about line 855) bounds a negative product by
+    `U256::from_u128(1u128 << 127)`, that is 2^127, where its comment says 2^255: a negative product above 2^127 fails
+    with EngineOverflow (exactly 2^127 gives I256::MIN). The port's `mulI256Mag` (wide.ts) multiplies exactly up to
+    2^255. accrue_market_to's products never reach 2^127: A <= ADL_ONE (1e15) and |delta_p| <= MAX_ORACLE_PRICE (1e12)
+    give at most 1e27, and InitMarket's funding envelope bounds ADL_ONE · MAX_ORACLE_PRICE · max_abs_funding ·
+    max_accrual_dt (each factor checked on entry) by i128::MAX < 2^127 (engine.ts, accrueMarketTo). Upstream fixed the
+    bound after v12.20 (aeyakovenko/percolator 2532878, "Fix I256 negative multiplication bound").
+  - The trade's per-side position cap counts in i64 in the original (`count as i64 + after - before`, wrapping, then
+    negative is EngineCorruptState and above `cap as i64` EngineOverflow). The port now counts the same way (it used
+    u64 before, which gave EngineOverflow for a count of 2^63); percolator-trade.test.ts compares counts and caps of
+    2^63 and more.
+  - A free-list index of 4,096 to 65,534 (the head, or a slot's next / prev link) is past the arrays: the original
+    panics with Rust's bounds check ("index out of bounds: the len is 4096 but the index is 5000", at
+    src/percolator.rs:1127:13 for the head in free_slot), the port fails TypeSOL's bounds check (5104, "array index out
+    of bounds"). The panic message carries the index, which a TypeSOL `panic` (a fixed message) cannot reproduce; both
+    fail and change nothing. percolator-accounts.test.ts pins both outcomes.
 
 ## What is not verified
 

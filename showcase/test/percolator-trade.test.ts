@@ -22,6 +22,7 @@ import {
   MATCHER,
   MATCHER_CTX_LEN,
   type Market,
+  P,
   PROGRAM,
   ROGUE,
   SOL,
@@ -65,6 +66,7 @@ const FILL = 8n;
 const PRICED = 16n;
 const REENTER = 32n;
 const HALF = 64n;
+const OBSERVE = 128n;
 
 describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: trading", () => {
   let d: Diff;
@@ -456,6 +458,123 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: trading", () => {
     // The nonce at u64::MAX refuses the trade (written in: 2^64 trades are out of reach).
     d.patch(m.slab, (b) => b.writeBigUInt64LE(0xffffffffffffffffn, H.nonce));
     await d.fails("TradeCpi: the nonce exhausted", alice.key, [tr()], pe("EngineOverflow"));
+  });
+
+  it("a patched slab: per-side position counts past i64", async () => {
+    // The original adds the trade's net change to each side's position count as i64 (`count as i64 + after - before`,
+    // wrapping: no overflow checks), refuses a negative result (EngineCorruptState), then compares it with `cap as
+    // i64` (EngineOverflow). No instruction makes a count past max_accounts; these counts are written into both slabs.
+    const m = await d.market();
+    const lpUser = await funded(m, 100n * SOL, "lp");
+    const alice = await funded(m, 10n * SOL, "alice");
+    const long = () => ix.tradeNoCpi(m, alice.key, lpUser.key, 0, 1, 1_000_000n);
+    const counts = (l: bigint, sh: bigint, cap?: bigint) =>
+      d.patch(m.slab, (b) => {
+        b.writeBigUInt64LE(l, E.storedPosCountLong);
+        b.writeBigUInt64LE(sh, E.storedPosCountShort);
+        if (cap !== undefined) b.writeBigUInt64LE(cap, E.params + P.maxActivePositionsPerSide);
+      });
+    for (const [label, l, sh, cap, err] of [
+      ["long count 2^63 (i64::MIN)", 1n << 63n, 0n, undefined, pe("EngineCorruptState")],
+      ["long count i64::MAX (wraps to MIN)", (1n << 63n) - 1n, 0n, undefined, pe("EngineCorruptState")],
+      ["short count 2^64 - 1 (-1, then 0 net: the cap passes, the increment overflows)", 0n, (1n << 64n) - 1n, undefined, pe("EngineCorruptState")],
+      ["long count 2^64 - 1 (-1 + 1 = 0: the cap passes, the increment overflows)", (1n << 64n) - 1n, 0n, undefined, pe("EngineCorruptState")],
+      ["cap 2^63 (negative as i64)", 0n, 0n, 1n << 63n, pe("EngineOverflow")],
+      ["cap u64::MAX", 0n, 0n, (1n << 64n) - 1n, pe("EngineOverflow")],
+    ] as [string, bigint, bigint, bigint | undefined, string][]) {
+      const before = Buffer.from(d.data(m.slab));
+      counts(l, sh, cap);
+      await d.fails(`TradeNoCpi: ${label}`, alice.key, [long()], err);
+      d.patch(m.slab, (b) => before.copy(b));
+    }
+    await d.ok("TradeNoCpi: the counts as they were", alice.key, [long()]);
+  });
+
+  it("TradeCpi: the slab as the matcher sees it during the call", async () => {
+    // The rogue matcher, given the slab as the first tail account, logs what it reads there during the call: the flags
+    // byte, the nonce, fingerprints of the header, the config, the engine's state before its accounts and the LP's
+    // entry, and the config's 400 bytes word by word. Both programs pass the same tail, so `both` compares those lines:
+    // the port exposes the same intermediate slab as the original. The original reads the price into a copy of the
+    // config and writes it back only after the call, so a price that moves the config (a newer observation, a Hyperp
+    // index moving toward its mark) must not show in the slab yet; the matcher's lines are checked for that too.
+    const fromLogs = (prefix: string) => {
+      const line = d.lastLogs.split("\n").find((l) => l.startsWith(`Program log: ${prefix}, `));
+      expect(line, `${prefix} logged`).toBeDefined();
+      return line!
+        .replace(/^Program log: /, "")
+        .split(", ")
+        .map((x) => BigInt(x));
+    };
+    const configWords = () => {
+      const all = d.lastLogs.split("\n");
+      const at = all.findIndex((l) => l.startsWith("Program log: 0xb5e7e1, "));
+      const words = all.slice(at + 1, at + 11).flatMap((l) =>
+        l
+          .replace(/^Program log: /, "")
+          .split(", ")
+          .map((x) => BigInt(x)),
+      );
+      expect(words.length).toBe(50);
+      const b = Buffer.alloc(400);
+      words.forEach((v, i) => b.writeBigUInt64LE(v, i * 8));
+      return b;
+    };
+    for (const hyperp of [false, true]) {
+      const m = await d.market({
+        edit: (a) => {
+          Object.assign(a, { tradingFeeBps: 10n, hMax: 100n, minOraclePriceCapE2bps: 10_000n });
+          if (hyperp) {
+            a.feedId = Buffer.alloc(32);
+            a.initialMarkPriceE6 = 100_000_000n;
+            a.tail!.markMinFee = 10n;
+          }
+        },
+      });
+      const name = hyperp ? "Hyperp" : "Pyth";
+      const ru = await d.user(m);
+      const rlp = await rogueLp(m, ru, 100n * SOL);
+      const alice = await funded(m, 10n * SOL, "alice");
+      for (const [label, tail] of [
+        ["writable", [w(m.slab)]],
+        ["read-only", [r(m.slab)]],
+      ] as const) {
+        // A newer price (or, on Hyperp, slots for the index to move): the config read during the call differs from
+        // the slab's.
+        d.setClock(d.slot + 7n);
+        if (!hyperp) d.setPrice(m, 100_500_000n + BigInt(d.slot % 1000n));
+        const before = Buffer.from(d.data(m.slab).subarray(C.collateralMint, C.collateralMint + 400));
+        const nonce = d.data(m.slab).readBigUInt64LE(H.nonce);
+        rogue(rlp, { mode: ECHO | FILL | PRICED | OBSERVE });
+        await d.ok(`TradeCpi ${name}: the slab in the tail (${label})`, alice.key, [
+          ix.tradeCpi(m, alice.key, ru.key.address, rlp, 1, 1_000_000n, 0n, [...tail]),
+        ]);
+        const [, flags, seenNonce, len] = fromLogs("0xb5e7e0");
+        expect(flags! & 4n, "FLAG_CPI_IN_PROGRESS set during the call").toBe(4n);
+        expect(seenNonce, "the nonce not yet advanced").toBe(nonce);
+        expect(len).toBe(BigInt(d.data(m.slab).length));
+        const seen = configWords();
+        expect(seen.equals(before), "the config during the call is the one from before the price read").toBe(true);
+        const after = d.data(m.slab).subarray(C.collateralMint, C.collateralMint + 400);
+        expect(Buffer.compare(after, before) !== 0, "the price read changed the config after the call").toBe(true);
+        expect(d.data(m.slab)[H.flags]! & 4, "the flag cleared after the call").toBe(0);
+      }
+      // A zero fill (the config rolled back but for the oracle state): the same view during the call.
+      d.setClock(d.slot + 7n);
+      if (!hyperp) d.setPrice(m, 100_900_000n);
+      rogue(rlp, { mode: ECHO | PRICED | OBSERVE, flags: 3, size: 0n });
+      await d.ok(`TradeCpi ${name}: zero fill, the slab in the tail`, alice.key, [
+        ix.tradeCpi(m, alice.key, ru.key.address, rlp, 1, 1_000_000n, 0n, [w(m.slab)]),
+      ]);
+      // A refused answer: the flag was set during the call; the refusal rolls the whole transaction back.
+      rogue(rlp, { mode: PRICED | OBSERVE });
+      await d.fails(
+        `TradeCpi ${name}: refused answer, the slab in the tail`,
+        alice.key,
+        [ix.tradeCpi(m, alice.key, ru.key.address, rlp, 1, 1_000_000n, 0n, [w(m.slab)])],
+        builtin("InvalidAccountData"),
+      );
+      expect(fromLogs("0xb5e7e0")[1]! & 4n).toBe(4n);
+    }
   });
 
   it("ConvertReleasedPnl: warm-up, conversion, the haircut, refusals", async () => {
