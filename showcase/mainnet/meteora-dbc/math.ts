@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The math modules (programs/dynamic-bonding-curve/src/math/: safe_math.rs, u128x128_math.rs, utils_math.rs,
 // fee_math.rs). ruint's U256 is u256 here.
 //

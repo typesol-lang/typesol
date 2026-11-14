@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The program's errors (programs/dynamic-bonding-curve/src/error.rs): codes 6000 + the position, messages as upstream.
 
 export enum PoolError {

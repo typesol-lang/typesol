@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The curve math (programs/dynamic-bonding-curve/src/curve.rs): amounts between two Q64.64 sqrt prices at a given
 // liquidity, and the next sqrt price after an amount in or out, each with the original's rounding. `assert!`s panic.
 import { type u64, panic, require, u128, u256 } from "typesol";

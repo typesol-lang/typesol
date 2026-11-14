@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The swap math (state/virtual_pool.rs: the three swap modes, the curve walks in both directions, apply_swap_result
 // and the pre- and post-swap updates; state/fee.rs: the volatility tracker) and the fee totals of PoolFeesConfig
 // (state/config.rs). The pool and config are views of the accounts' bytes after the discriminator.

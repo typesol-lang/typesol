@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // Config creation: ConfigParameters::validate and the validators it calls, process_create_config and PoolConfig::init
 // (instructions/partner/create_config/process_create_config.rs), the curve integrals (params/liquidity_distribution.rs)
 // and the PoolConfig methods they use (state/config.rs). Checks run in the original's order, with its error codes.

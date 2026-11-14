@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The swap of a VirtualPool (instructions/swap/process_swap.rs, swap_exact_in.rs, swap_partial_fill.rs,
 // swap_exact_out.rs; the pool and config account loaders of utils/). The instruction emits the events from what
 // processSwap returns (an event goes out from the instruction itself).

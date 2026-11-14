@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The migration handlers (programs/dynamic-bonding-curve/src/migration_handler/: mod.rs, compounding_liquidity.rs,
 // concentrated_liquidity.rs) and PoolConfig::get_migration_quote_amount. The original's `Box<dyn MigrationHandler>` is
 // a `compounding` flag here: compounding liquidity for DAMM v1 and for DAMM v2's compounding fee mode, concentrated

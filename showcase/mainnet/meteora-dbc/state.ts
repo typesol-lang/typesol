@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The program's accounts, the types inside them and the instruction argument types (programs/dynamic-bonding-curve/
 // src/state/*.rs, params/*.rs, the parameter structs of instructions/, and the migration metadata states). The
 // zero-copy accounts are #[repr(C)] with their padding spelled out, so TypeSOL's fixed layout stores them byte for byte

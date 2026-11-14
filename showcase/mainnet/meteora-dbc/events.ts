@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // The program's 29 events (programs/dynamic-bonding-curve/src/event.rs), emitted through the event authority's
 // self-CPI (emit_cpi!) except EvtClaimProtocolFee2 (emit!). Each is Borsh after sha256("event:<Name>")[..8].
 //

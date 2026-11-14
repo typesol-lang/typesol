@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // What the graduation instructions need beyond the swap: the DAMM v2 accounts the migration reads (the pool config it
 // is given, the pool and the second position it creates; their layouts from DBC's `idls/damm_v2.json`, which its
 // `declare_program!` builds them from), the config validation of migrate_damm_v2_initialize_pool.rs, the liquidity

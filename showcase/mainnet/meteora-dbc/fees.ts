@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // Fees: the base fee handlers (base_fee/mod.rs, base_fee/fee_scheduler.rs), the fee parameters and their validation
 // (params/fee_parameters.rs), the dynamic fee (state/config.rs DynamicFeeConfig, state/fee.rs VolatilityTracker and
 // FeeMode), the trading fee splits (state/config.rs PoolFeesConfig) and the DAMM v2 helpers that config validation

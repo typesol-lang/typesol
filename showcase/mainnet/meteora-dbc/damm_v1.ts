@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // What the DAMM v1 migration (instructions/migration/meteora_damm/) reads of DAMM v1 (the dynamic AMM): its Config,
 // which migrate_meteora_damm takes as Account<dynamic_amm::accounts::Config>, and its LockEscrow, which
 // migrate_meteora_damm_lock_lp_token takes as Account<LockEscrow> (layouts from DBC's `idls/dynamic_amm.json`, which

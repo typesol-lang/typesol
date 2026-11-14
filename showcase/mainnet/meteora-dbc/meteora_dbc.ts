@@ -1,4 +1,4 @@
-// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), subject to Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
+// A port of Meteora Dynamic Bonding Curve (MeteoraAg/dynamic-bonding-curve @ 91e696e), licensed under Meteora's Non-commercial Licence (see LICENSE.md in this directory). Changes: rewritten in TypeSOL.
 // Meteora's Dynamic Bonding Curve, release 0.2.2 (programs/dynamic-bonding-curve/src/lib.rs and instructions/):
 // launch pools that sell a base token along a curve of up to 16 constant-liquidity segments and migrate to a DAMM
 // pool when the quote threshold is reached.
