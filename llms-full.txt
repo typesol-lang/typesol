@@ -1931,6 +1931,7 @@ may gain a hint line.
 | an unused proof or signature check | `merkleVerify(leaf, proof, root);` | the result of merkleVerify is discarded, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
 | a proof check in an empty `if` | `if (merkleVerify(leaf, proof, root)) {}` | the result of merkleVerify is not acted on: the if around it has an empty body, so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
 | a proof check kept in a local never read | `const ok = merkleVerify(leaf, proof, root);` (`ok` unused) | the result of merkleVerify is never read (ok is not used), so nothing is checked: it returns whether the proof holds; write require(merkleVerify(…), error) |
+| an unused helper that returns a check | `checkProof(leaf, proof, root);` (`checkProof` returns `merkleVerify(…)`) | the result of checkProof is discarded, so nothing is checked: it returns the result of merkleVerify; write require(checkProof(…), error) |
 | a `@code` tag outside a doc comment | `export enum E { A = "a", /* @code 6100 */ B = "b" }` | this @code tag is not read: only a doc comment (/** … */) is, not a /* … */ comment; write /** @code … */ above B |
 | a `@code` tag after other code on its line | `export enum E { A = "a", /** @code 6100 */ B = "b" }` | this @code tag is not read: other code comes before it on its line; put /** @code … */ on its own line above B |
 
@@ -2767,6 +2768,9 @@ export function deposit(owner: Signer, pool: Mut<Pool>, amount: u64, tags: Vec<u
   when empty.
 - An event is at most 1024 bytes (5107).
 
+In a test, `t.events(res)` gives a transaction's events decoded, `emitCpi`'s too
+([asserting events](test-your-program.md#events)).
+
 ### Events through CPI
 
 ```ts
@@ -3422,7 +3426,14 @@ export function commit(c: Mut<Commit>, owner: Pubkey, text: string, n: u64): voi
 themselves. Unlike a check such as `HasOne`, nothing happens when the answer is false: wrap them in
 `require(…, error)`. The compiler refuses a call used as a statement, one that is the
 condition of an `if` with an empty body and no `else` or an empty one, and one whose result is kept in a local the function never
-reads. It does not catch a helper that returns the result and is itself called as a statement.
+reads. The same goes for a call of a helper that returns such a result: one with a `return` that gives the result of
+one of the three or of another such helper, directly, combined with `&&`, `||`, `!` or `?:`, or through a local of
+the helper that nothing but its returns reads (`the result of checkProof is discarded, so nothing is checked: it
+returns the result of merkleVerify; write require(checkProof(…), error)`). A helper that acts on the result itself
+(requires it, reads it outside a `return`) is not one. Not caught: a result stored in an account field, a struct or an
+Option, compared (`=== true`) or passed to another function that ignores it, a helper that branches on the result and
+returns literals (`if (!ok) { return false; } return true;`), and a helper that returns what a function passed to it
+returns (a function parameter is not followed).
 
 ```ts
 import { type Account, type Hash, type Init, type InstructionsSysvar, type Mut, type Pubkey, type Signer, type SystemProgram, type u8, type u64, type Vec, keccak256, merkleVerify, require, verifyEd25519, verifySecp256k1 } from "typesol";
@@ -4812,7 +4823,13 @@ instruction that takes the bump as an argument (prefer a stored bump:
   constants, arguments or other accounts' keys (`t.ix("initialize", {}, { authority: alice })` derives `counter`). Pass a keypair for an account that
   signs, an address otherwise, and `null` to leave an optional account out.
 - **Arguments as plain values:** bigints or numbers for integers, address strings for Pubkeys, `null` for an empty
-  Option, objects for structs (camelCase or snake_case fields), arrays for Vecs.
+  Option, objects for structs (camelCase or snake_case fields), arrays for Vecs, `{ Variant: { field: value } }` for a
+  data enum (a unit enum also as its index or variant name). Every argument and every field of a struct or variant
+  must be given, except an Option, which left out is None. A missing one is an error that names it and lists the
+  instruction's arguments (`set: argument "amount" is missing (it takes amount, cap, frame, shape; …)`,
+  `set(frame).origin.y is missing (Point has x, y; …)`), and so is a key that names no argument or field
+  (`set has no argument "amonut" (it takes amount, cap, frame, shape)`), so a misspelt name is never sent as zeros
+  or as None.
 - **Remaining accounts:** `[{ address, writable?, signer? }]`, where `signer` is the account's `KeyPairSigner` (it then
   signs as a signer account; `writable` defaults to false).
 
@@ -4844,8 +4861,9 @@ looks like one.
 | --- | --- |
 | `t.ok(res)` | the successful result, or throws with the error, its name (`NotAdmin`) and the program's logs |
 | `t.errorCode(res)` | the custom error code of a failed transaction: 6000 + the member's index in your error enum, or a framework code ([errors.md](errors.md)) |
-| `t.account(type, address)` | the account decoded by its IDL type (bigints, address strings), or `null` once closed. TypeSOL fixed layouts come back as their IDL structs: a `FixedString<N>` as `{ len, bytes }`, a `FixedVec<T, N>` as `{ len, items }` (the generated client gives strings and arrays) |
+| `t.account(type, address)` | the account decoded by its IDL type (bigints, address strings), or `null` once closed. A `FixedString<N>` comes back as a string and a fixed-layout Option as its value or `null`; a `FixedVec<T, N>` as its IDL struct `{ len, items }` (the generated client gives an array) |
 | `t.returned(instruction, res)` | the instruction's return data: an integer, boolean, Pubkey or struct |
+| `t.events(res)` | the events the transaction emitted, decoded, in order: `[{ name, data }]` ([events](#events)) |
 | `t.balance(address)` | lamports |
 | `t.errorName(code)` | the name of an error code: your program's, TypeSOL's or Anchor's |
 | `t.connection` | `{ rpc, rpcSubscriptions }` answered by this LiteSVM, for the generated client: `counter.sendInstructions(t.connection, alice, [ix])`, `counter.accounts.Counter.fetch(t.connection.rpc, address)`, views, `resolve`, `watch` and `watchEvents` (as on a cluster: `watch` yields when a later transaction changes the account, not at once; `watchEvents` gets transactions sent after it subscribed, failed ones included in the stream and skipped by the client) |
@@ -4865,6 +4883,38 @@ expect(t.errorName(t.errorCode(res))).toBe("TooMuch");
 
 `t.errorCode` throws when the transaction succeeded or failed without a custom code (a runtime error such as missing
 signatures), so the test fails then too.
+
+### Events
+
+`t.events(res)` decodes the events of a successful transaction (it throws as `t.ok` does when it failed), in the
+order the program emitted them: `emit`'s `Program data:` log lines and `emitCpi`'s self-CPIs alike, only this
+program's. Each is `{ name, data }`, the fields as `t.account` gives them (bigints, address strings, a `FixedString`
+as a string).
+
+For a program that emits
+
+```ts
+export interface Deposited {
+  owner: Pubkey;
+  amount: u64;
+  memo: string;
+  referrer: Option<Pubkey>;
+}
+
+export function deposit(owner: Signer, amount: u64): void {
+  emit<Deposited>({ owner: owner.key, amount, memo: "thanks", referrer: null });
+}
+```
+
+a test asserts
+
+```ts
+const res = await t.send(alice, t.ix("deposit", { amount: 5n }, { owner: alice }));
+expect(t.events(res)).toEqual([{ name: "Deposited", data: { owner: alice.address, amount: 5n, memo: "thanks", referrer: null } }]);
+```
+
+Log lines past the runtime's log limit are cut off, and the events in them with them. See [events](language-errors-events.md#events) for
+what a program can emit.
 
 ## Tokens and time
 
@@ -4888,8 +4938,8 @@ program you loaded yourself, and `svmConnection(svm)` the RPC pair alone (for an
 program loaded). Transactions sent through it run at once; `getProgramAccounts` (`fetchAll`) sees the accounts those
 transactions named, plus any you `track(...)`.
 
-The module needs `litesvm`, which `typesol init` adds to `devDependencies`. It encodes arguments and decodes accounts
-and return data from the IDL with its own Borsh coder, so Anchor's TypeScript package is not needed.
+The module needs `litesvm`, which `typesol init` adds to `devDependencies`. It encodes arguments and decodes accounts,
+return data and events from the IDL with its own Borsh coder, so Anchor's TypeScript package is not needed.
 
 ## Epochs and staking
 

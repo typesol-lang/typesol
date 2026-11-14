@@ -13,13 +13,7 @@ describe("data enums with strings", () => {
     t = programHarness(d.svm, d.programId, d.idl as never);
   });
 
-  const events = (res: Parameters<TestProgram["ok"]>[0]) =>
-    t
-      .ok(res)
-      .logs()
-      .filter((l) => l.startsWith("Program data: "))
-      .map((l) => t.coder.events.decode(l.slice("Program data: ".length)))
-      .map((e) => e && { name: e.name, cmd: JSON.parse(JSON.stringify(e.data.cmd)) });
+  const events = (res: Parameters<TestProgram["ok"]>[0]) => t.events<{ cmd: unknown }>(res).map((e) => ({ name: e.name, cmd: e.data.cmd }));
 
   it("describes them as Borsh enums in the IDL, with no fixed form", () => {
     const types = d.idl.types as { name: string; type: { variants?: { name: string; fields?: { name: string; type: unknown }[] }[] } }[];
@@ -51,12 +45,7 @@ describe("data enums with strings", () => {
   it("keeps nested variable enums decodable (IDL) and copies account text assigned into a field", async () => {
     const owner = await t.wallet();
     const nested = await t.send(owner, t.ix("nest", { text: "hi", times: 2, tail: 9 }, { owner }));
-    const data = t
-      .ok(nested)
-      .logs()
-      .filter((l) => l.startsWith("Program data: "))
-      .map((l) => JSON.parse(JSON.stringify(t.coder.events.decode(l.slice("Program data: ".length))?.data)));
-    expect(data).toEqual([{ w: { Wrap: { c: { Say: { text: "hi", times: 2 } }, tail: 9 } } }]);
+    expect(t.events(nested).map((e) => e.data)).toEqual([{ w: { Wrap: { c: { Say: { text: "hi", times: 2 } }, tail: 9 } } }]);
 
     const board = await t.pda("board", owner);
     t.ok(await t.send(owner, t.ix("setup", {}, { owner })));

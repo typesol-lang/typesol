@@ -13,7 +13,7 @@ In order of priority. Line counts at 0.47.0 (November 2026).
 | --- | --- | --- | ---: | --- |
 | 1 | C runtime | `runtime/typesol_rt.h` | 3,272 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
 | 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 886 | Which checks each account parameter gets, and their order |
-| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 3,875 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
+| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 4,017 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
 | 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,746 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
 | 1 | Raw views and the red-black tree | `src/compiler/emit/views.ts`, `rbtree.ts` | 655 | Accounts read without a discriminator at run-time offsets (`loadRaw`, `loadRawAt`, `rawArrayAt`, `BigVec`), their bounds, and the red-black tree's node indexes (`rbTreeAt`) |
 | 1 | Metaplex CPIs | `src/compiler/emit/metaplex.ts` | 1,465 | Token Metadata, Core and Bubblegum instruction layouts and their account lists |

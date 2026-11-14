@@ -102,6 +102,43 @@ codes, and says so here.
   now takes the DAMM v1 or the DAMM v2 path at random, locking and claiming the LP among the other steps. The binary is
   identified as 0.2.2 by its instruction names, error messages and source paths; it was not rebuilt. The README of
   `showcase/mainnet/meteora-dbc/` lists what is compared, what differs and what is not verified.
+- Changed: `typesol/testing`'s `t.ix` refuses an argument left out or misspelt. An argument missing from the arguments
+  object was encoded as zeros when its size is fixed (as Anchor's coder does), so a misspelt argument name sent
+  zeros and a misspelt `Option` argument sent None; the same for a field left out of a struct argument or of a data
+  enum variant, at any depth, and for a variant that has fields named without them (`{ Box: {} }`). Each is now an
+  error naming the instruction and the argument and listing the instruction's arguments (`set: argument "amount" is
+  missing (it takes amount, cap, frame, shape; only an Option may be left out)`), or naming the field's path and the
+  struct's fields (`set(frame).origin.y is missing (Point has x, y; only an Option may be left out)`). An `Option`
+  may still be left out (None). A key that names no argument or field, in its IDL (snake_case) or camelCase
+  spelling, was ignored and is now an error too (`set has no argument "amonut" (it takes amount, cap, frame, shape)`,
+  `set(frame) has no field "scael" (Frame has origin, scale)`). `null` for an argument or field that is not an
+  `Option` was encoded as 0 for an integer of up to 32 bits and as false for a bool; it is now an error
+  (`set(amount) is null, but it is a u64, not an Option`). No test of the repository passed a missing or unknown key.
+- Added: `t.events(res)` in `typesol/testing`: the events a successful transaction emitted, decoded from the IDL, in
+  the order the program emitted them (`[{ name, data }]`, values as `t.account` gives them): `emit`'s `Program data:`
+  log lines while this program runs, and `emitCpi`'s self-CPIs, which it finds in the transaction's inner
+  instructions. It needs no other package; decoding events in a test took `t.coder.events.decode(…)` on each log line,
+  which needs `@anchor-lang/core`, and did not see `emitCpi` events. `t.coder` does not change. TypeSOL's Borsh coder
+  decodes events as Anchor's `coder.events.decode` does (test/client/idl-coder.test.ts compares the two on random
+  values for every program with events, and on a wrong discriminator, which both decode as null).
+
+- Changed, now refused: a call of a helper that returns the result of `merkleVerify`, `verifyEd25519` or
+  `verifySecp256k1` whose result decides nothing. 0.46.0 refused such a call of the three themselves (as a statement,
+  as the condition of an `if` with an empty body, kept in a local never read) but compiled the same through a helper,
+  which dropped the result and checked nothing. A helper (a function, a const arrow or function expression, a generic
+  one, a closure) returns a check when one of its `return`s gives the result of one of the three or of another such
+  helper, directly, in parentheses or under `as`, combined with `&&`, `||`, `!` or `?:`, or through a local of the
+  helper that nothing but its returns reads. Its call is held to the same three rules, the message naming the helper
+  and the built-in: "the result of checkProof is discarded, so nothing is checked: it returns the result of
+  merkleVerify; write require(checkProof(…), error)", "the result of signed is not acted on: the if around it has an
+  empty body, so nothing is checked: it returns the result of verifyEd25519; …", "the result of checkProof is never
+  read (ok is not used), so nothing is checked: …". A helper that requires the result itself, or reads it anywhere
+  but in a `return`, does not return a check, and neither does one returning an unrelated boolean. Still not caught: a
+  result stored in an account field, a struct or an Option, compared (`=== true`) or passed to a function that ignores
+  it; a helper that branches on the result and returns literals (`if (!ok) { return false; } return true;`); and a
+  helper that returns what a function passed to it returns. No program of the repository is refused: the 76 build to
+  the same binaries and IDLs as with 0.47.0 (test/language/diagnostics.test.ts; a row in the refused-constructs table
+  of docs/language-statements.md; docs/language-chain.md).
 
 ## 0.47.0 — 2026-11-13
 
