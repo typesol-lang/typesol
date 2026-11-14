@@ -355,6 +355,11 @@ On remaining accounts and `AccountInfo` parameters:
   lamports in the receiver; [`test/language/native-close.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/native-close.test.ts) compares it with Phoenix's own Tombstone).
 - `assignOwner(account, owner)` is `AccountInfo::assign` (the runtime accepts it for a writable account of this program
   whose data is empty or zeroed).
+- `zeroData(account, offset, length)` zeroes that range of the data, as a native program's `for b in
+  data.iter_mut() { *b = 0; }`, which compiles to a memset: the memset syscall, about constant compute units whatever
+  the length (Percolator clears its 1.5 MB slab this way at InitMarket and CloseSlab). Past the end of the data fails
+  with 3003 and writes nothing; without `NATIVE_ACCOUNT_WRITES` the account must be writable (3006). The length does
+  not change, so views made before stay valid and read the zeros.
 - `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, at most
   10 KiB past the size it had when the instruction started, 3016). That size is the one the entrypoint records in the
   account's record, as solana_program 1.14's does, only in programs that resize a remaining account.
@@ -405,6 +410,11 @@ export function entry(): void {
   location)` log `panicked at '<message>', <location>` and then abort, so the runtime's last line is "SBF program
   panicked" with no location, as that panic handler leaves it. `panic(null, …)` is refused there (the handler always
   logs); without a location the TypeScript line and column are used. `PANIC_ON_OVERFLOW`'s panics abort too.
+- **Panics as solana-program 1.18 writes them.** `export const PANIC_STYLE = "solana-1.18"` (a program built with
+  solana-program 1.18, whose rustc formats a panic as it has since 1.73: Percolator v12.20) makes `panic(message,
+  location)` log one line, `panicked at <location>:` and the message after a newline, and then abort ("SBF program
+  panicked"), as that panic handler does: `panicked at src/wide_math.rs:1554:30:\nmul_div_floor_u128: a*b overflow`.
+  As under "solana-1.14", a message is required and `PANIC_ON_OVERFLOW`'s panics abort.
 - **Overflow panics with Rust's message and location.** `panicsAt("src/quantities.rs:233:1", a + b)` is `a + b` whose
   checked arithmetic panics as Rust's overflow checks do at that location ("attempt to add with overflow"; also
   "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the remainder with
@@ -435,6 +445,8 @@ export function entry(): void {
 - `createProgramAddress(seeds, program)` is `Pubkey::create_program_address` (null for no address).
 - `logComputeUnits()` is `sol_log_compute_units()`: the runtime writes "Program consumption: N units remaining" at that
   point, as for the original (Phoenix's cancel and withdraw paths log it).
+- `log64(a, b, c, d, e)` is `sol_log_64(a, b, c, d, e)`: the runtime writes the five u64s as lowercase hex,
+  `Program log: 0x174778, 0x3e8, 0x0, 0x0, 0x0` (Percolator logs the slab length it wants and the one it got this way).
 
 ## Byte strings built by hand
 

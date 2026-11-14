@@ -398,7 +398,7 @@ export function count(tally: Mut<Tally>): void {
 `remainingAccounts()` gives the accounts passed after the declared ones, in order.
 
 - `.length`, `.get(i)` (5104 past the end) → `key`, `owner`, `lamports` (writes check writability, 3006), `isSigner`,
-  `isWritable`, the data length and data.
+  `isWritable`, `executable`, the data length and data.
 - `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)` give checked struct views (owner, discriminator and size, as
   `Account<T>` / `Mut<T>`), also of an `AccountInfo` parameter (Anchor's `AccountLoader::try_from` on an
   `UncheckedAccount`).

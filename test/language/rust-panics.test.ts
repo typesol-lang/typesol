@@ -167,9 +167,9 @@ export function f(a: u128, b: u128): void {
 
   it("refuses misuse at compile time", () => {
     const head = `import { panic, panicsAt, u64 } from "typesol";\n`;
-    expect(compileErrors(`${head}export const PANIC_STYLE = "solana-1.18";\nexport function f(): void {}`)).toMatch(/PANIC_STYLE must be "solana-1.14"/);
+    expect(compileErrors(`${head}export const PANIC_STYLE = "solana-2.0";\nexport function f(): void {}`)).toMatch(/PANIC_STYLE must be "solana-1.14"/);
     expect(compileErrors(`${head}export const PANIC_STYLE = "solana-1.14";\nexport function f(): void { panic(null, "a.rs:1:2"); }`)).toMatch(
-      /under PANIC_STYLE "solana-1.14" a panic logs its message/,
+      /under PANIC_STYLE a panic logs its message/,
     );
     expect(compileErrors(`${head}export function f(a: u64): u64 { return panicsAt("a.rs:1", a + 1n); }`)).toMatch(
       /panicsAt\(location, expression\) takes a "file:line:column" string literal/,

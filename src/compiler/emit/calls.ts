@@ -169,10 +169,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           );
         const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
         if (silent && this.panicStyle())
-          this.fail(
-            args[0]!,
-            'under PANIC_STYLE "solana-1.14" a panic logs its message, as solana_program 1.14\'s panic handler always does: pass the message',
-          );
+          this.fail(args[0]!, "under PANIC_STYLE a panic logs its message, as solana_program's panic handler always does: pass the message");
         // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"), or the panic line
         // logs: the given one, as a ported program's panic reports it, else this source line (with its column under
         // PANIC_STYLE, as Rust always gives one).
@@ -842,6 +839,44 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const s = this.listSpan(args[0]!) ?? this.fail(args[0]!, what);
         if (s.elem.kind !== "int" || s.elem.name !== "u8") this.fail(args[0]!, what);
         this.line(`sol_set_return_data((const uint8_t *)${s.items}, ${s.count});`);
+        return undefined;
+      }
+      case "zeroData": {
+        // Rust's `for b in data[offset..offset + length].iter_mut() { *b = 0; }` (a memset): the memset syscall, about
+        // constant compute units whatever the length, as the original's compiled loop.
+        if (args.length !== 3) this.fail(node, "zeroData(account, offset, length) takes an account, a byte offset and a length");
+        // The length does not change: views of the account made before stay valid (they read the zeros).
+        let a = this.handle(args[0]!);
+        if (a) {
+          if (!this.nativeAccountWrites()) this.line(`TS_TRY(ts_check_writable(${a}));`);
+        } else {
+          const acct = this.accountParam(args[0], "zeroData's account");
+          if (acct.kind.kind !== "info" || (!isWritable(acct.kind) && !this.nativeAccountWrites()))
+            this.fail(args[0], "zeroData needs a Mut<AccountInfo> parameter or a remaining account");
+          a = `a_${acct.name}`;
+        }
+        const off = this.expect(this.expr(args[1], U64), U64, args[1]);
+        const o = this.tmp("off");
+        this.line(`uint64_t ${o} = ${off.c};`);
+        const len = this.expect(this.expr(args[2], U64), U64, args[2]);
+        const n = this.tmp("len");
+        this.line(`uint64_t ${n} = ${len.c};`);
+        this.line(
+          `if (${o} > ${a}->data_len || ${a}->data_len - ${o} < ${n}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: write past the end of the account data");`,
+        );
+        this.line(`ts_memzero_bulk(${a}->data + ${o}, ${n});`);
+        return undefined;
+      }
+      case "log64": {
+        // Rust's `sol_log_64(a, b, c, d, e)`: the runtime writes "Program log: 0x<a>, 0x<b>, 0x<c>, 0x<d>, 0x<e>" (hex).
+        if (args.length !== 5) this.fail(node, "log64(a, b, c, d, e) takes five u64 values");
+        const vs = args.map((a) => this.expect(this.expr(a, U64), U64, a).c);
+        const ts_ = vs.map((v) => {
+          const t = this.tmp("l64");
+          this.line(`uint64_t ${t} = ${v};`);
+          return t;
+        });
+        this.line(`sol_log_64(${ts_.join(", ")});`);
         return undefined;
       }
       case "logComputeUnits": {

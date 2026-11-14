@@ -470,8 +470,10 @@ export abstract class ExpressionEmitter extends StorageEmitter {
           return { c: `${h}->is_signer`, type: BOOL };
         case "isWritable":
           return { c: `${h}->is_writable`, type: BOOL };
+        case "executable":
+          return { c: `${h}->executable`, type: BOOL };
       }
-      this.fail(node.name, `remaining accounts expose key, owner, lamports, dataLen, isSigner and isWritable, not ${field}`);
+      this.fail(node.name, `remaining accounts expose key, owner, lamports, dataLen, isSigner, isWritable and executable, not ${field}`);
     }
     // A struct loaded with loadAccount / loadAccountMut is also its account: key, lamports, dataLen, isSigner, isWritable.
     if (ts.isIdentifier(node.expression)) {

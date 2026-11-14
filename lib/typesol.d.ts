@@ -240,6 +240,8 @@ export interface RemainingAccount {
   readonly dataLen: u64;
   readonly isSigner: boolean;
   readonly isWritable: boolean;
+  /** Whether the account is an executable program (AccountInfo::executable). */
+  readonly executable: boolean;
 }
 
 /**
@@ -2488,7 +2490,8 @@ export declare enum ProgramError {
  * own: `panic(null, "src/lib.rs:105:19")` leaves only the runtime's "SBF program Panicked in src/lib.rs at 105:19".
  * Under `export const PANIC_STYLE = "solana-1.14"` (a program built with solana-program 1.14 to 1.17) it logs
  * `panicked at '<message>', <location>` and aborts, so the runtime reports "SBF program panicked", as that panic
- * handler does; a message is then required.
+ * handler does; under `"solana-1.18"` (rustc 1.73 and later) it logs `panicked at <location>:` with the message on the
+ * next line, in one log line, and aborts. A message is then required.
  */
 export declare function panic(message?: string | null, location?: string): never;
 /**
@@ -2583,6 +2586,21 @@ export declare function setReturnData(bytes: IndexedList<u8>): void;
  * remaining", as the original's line, at the same place.
  */
 export declare function logComputeUnits(): void;
+
+/**
+ * Log five u64 values as Rust's `sol_log_64(a, b, c, d, e)` does: the runtime writes
+ * "Program log: 0x<a>, 0x<b>, 0x<c>, 0x<d>, 0x<e>" (lowercase hex, no padding). For native ports whose original logs
+ * numbers this way.
+ */
+export declare function log64(a: u64, b: u64, c: u64, d: u64, e: u64): void;
+
+/**
+ * Zero `length` bytes of an account's data from `offset`, as a native program's
+ * `for b in data[offset..offset + length].iter_mut() { *b = 0; }` (a memset): the memset syscall, about constant compute
+ * units whatever the length. A remaining account (or a `Mut<AccountInfo>` parameter); past the end of the data fails
+ * with 3003 and writes nothing. Only this program's accounts can change: check the owner first.
+ */
+export declare function zeroData(account: RemainingAccount | Mut<AccountInfo>, offset: u64, length: u64): void;
 
 /**
  * Verify `account.key` is the PDA for `seeds` + `bump` under this program. Any bump that gives a PDA passes (Anchor's

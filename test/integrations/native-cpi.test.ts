@@ -648,7 +648,7 @@ describe("programAt compile errors", () => {
 
   it("takes a remaining account or an AccountInfo parameter", () => {
     expect(errors(`export function f(t: TokenAccount): void { const p = programAt<StakeProgram>(t); }`)).toMatch(
-      /pass a remaining account \(remainingAccounts\(\)\.get\(i\)\) or an AccountInfo parameter; a declared parameter can be typed StakeProgram itself/,
+      /hint: pass a remaining account \(remainingAccounts\(\)\.get\(i\)\) or an AccountInfo parameter; a declared parameter of a program or sysvar type is used as it is/,
     );
     expect(errors(`export function f(a: AccountInfo): void { const p = programAt<StakeProgram>(a); }`)).toBe("");
   });
