@@ -52,6 +52,9 @@ trimmed 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 raydium_amm_v4.so
 # Meteora Dynamic Bonding Curve 0.2.2 (showcase/mainnet/meteora-dbc's differential test): Meteora's Non-commercial
 # Licence, fetched only.
 trimmed dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN meteora_dbc.so
+# The programs Meteora DBC's migration calls: DAMM v2 (cp-amm) and the locker (Jupiter lock), fetched only.
+trimmed cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG meteora_damm_v2.so
+trimmed LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn meteora_locker.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded. Either
 # is a failure (exit 3, after every file is checked): tests run against an unrecorded binary prove nothing about the

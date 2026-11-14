@@ -13,6 +13,8 @@ import {
   type Account,
   type AccountInfo,
   type Address,
+  type Ata,
+  type Seeds,
   type Dup,
   type TokenAccount,
   type TokenInterface,
@@ -40,6 +42,10 @@ import {
   ProgramError,
   currentSlot,
   invoke,
+  log,
+  panic,
+  sighash,
+  u32,
   readonly,
   readonlySigner,
   writable,
@@ -66,11 +72,42 @@ import {
   u64,
   u128,
 } from "typesol";
-import { DEFAULT_PUBKEY, initialBaseSupply, totalLiquidityLockedBpsAtNSeconds, processCreateConfig, validateConfigParameters, validateTransferFeeParameters } from "./config";
+import { type DammV2VestingParameters } from "./fees";
+import { DEFAULT_PUBKEY, dammV2VestingParameters, validateTransferFeeRestrictions, initialBaseSupply, totalLiquidityLockedBpsAtNSeconds, processCreateConfig, validateConfigParameters, validateTransferFeeParameters } from "./config";
 import { PoolError } from "./errors";
-import { type EvtInitializePool, type EvtInitializePoolWithTransferHook, type EvtSwap2WithTransferHook, type EvtSwap3WithTransferHook, type EvtCurveCompleteWithTransferHook, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
-import { U64_MAX, addU64, safeMulDivCastU64, subU64 } from "./math";
-import { validateMinBaseFee } from "./fees";
+import { type EvtPartnerWithdrawSurplus, type EvtCreatorWithdrawSurplus, type EvtWithdrawLeftover, type EvtWithdrawMigrationFee, type EvtInitializePool, type EvtInitializePoolWithTransferHook, type EvtSwap2WithTransferHook, type EvtSwap3WithTransferHook, type EvtCurveCompleteWithTransferHook, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
+import { U64_MAX, addU128, addU64, addU8, safeMulDivCastU128, safeMulDivCastU64, subU128, subU64 } from "./math";
+import {
+  type LiquidityItem,
+  SPLIT_POSITION_DENOMINATOR,
+  adjustLiquidity,
+  dammPoolReserves,
+  dammPositionUnlockedLiquidity,
+  epochFeeOf,
+  mintFeeIsZero,
+  hasTransferFeeOrConfigAuthorityOf,
+  itemLocked,
+  itemTotal,
+  liquidityItem,
+  migratedBaseFee,
+  migratedDynamicFeeControl,
+  migrationFeeDistribution,
+  surplusSplit,
+  validateDammConfig,
+} from "./damm_v2";
+import {
+  DAMM_V2_COMPOUNDING_DEAD_LIQUIDITY,
+  MAX_SQRT_PRICE,
+  MIN_SQRT_PRICE,
+  compoundingDepositAmounts,
+  compoundingInitialSqrtPriceAndLiquidity,
+  compoundingLiquidityDelta,
+  compoundingProtocolFees,
+  concentratedInitialLiquidity,
+  concentratedProtocolFees,
+  includedProtocolFeeMigrationAmounts2,
+} from "./migration";
+import { BIN_STEP_BPS_DEFAULT, BIN_STEP_BPS_U128_DEFAULT, DECAY_PERIOD_DEFAULT, FILTER_PERIOD_DEFAULT, MAX_VOLATILITY_ACCUMULATOR, REDUCTION_FACTOR_DEFAULT, validateMinBaseFee } from "./fees";
 import {
   type HookAccounts,
   POOL_AUTHORITY_BUMP,
@@ -106,6 +143,9 @@ import {
   type SwapParameters,
   type SwapParameters2,
   type TransferFeeParameters,
+  MIGRATED_COLLECT_FEE_MODE_COMPOUNDING,
+  MIGRATION_FEE_OPTION_CUSTOMIZABLE,
+  MIGRATION_OPTION_DAMM_V2,
   MIGRATION_PROGRESS_CREATED_POOL,
   OPERATOR_CLAIM_PROTOCOL_FEE,
   OPERATOR_CLOSE_TOKEN_BADGE,
@@ -119,6 +159,8 @@ import {
   MINT_SCORE_UNSUPPORTED,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  calculateFee,
+  epochFee,
   mintScore,
   mintScoreWithBadge,
   token2022BaseMintSpace,
@@ -1675,4 +1717,788 @@ export function claimCreatorTradingFee2(
   if (baseAmount > 0n) transferFromPoolAuthority(tokenBaseProgram, baseVault, baseMint, tokenAAccount, poolAuthority, baseAmount, rest, h.has_base, h.base_from, h.base_to);
   if (quoteAmount > 0n) transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, tokenBAccount, poolAuthority, quoteAmount, rest, false, 0n, 0n);
   emitCpi<EvtClaimCreatorTradingFee>({ pool: pool.key, token_base_amount: baseAmount, token_quote_amount: quoteAmount }, eventAuthority, program);
+}
+
+// ---- stage 3: surplus, migration fee, leftover, locker (instructions/partner, creator, migration) ---------------
+
+/** partner_withdraw_surplus: the partner's share of the quote above the threshold, once, after the curve completes. */
+export function partnerWithdrawSurplus(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  virtualPool: Mut<AccountInfo>,
+  tokenQuoteAccount: Mut<TokenAccount>,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  quoteMint: Mint,
+  feeClaimer: Signer,
+  tokenQuoteProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {
+  // access control: is_partner_fee_claimer
+  checkConfigAccount(config);
+  require(loadRawAt<PoolConfig>(config, 8n).fee_claimer === feeClaimer.key, PoolError.Unauthorized);
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  checkPoolAccount(virtualPool);
+  const p = loadRawMutAt<PoolState>(virtualPool, 8n);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(p.quote_reserve >= c.migration_quote_threshold, PoolError.NotPermitToDoThisAction);
+  require(p.is_partner_withdraw_surplus === 0n, PoolError.SurplusHasBeenWithdraw);
+  const amount = surplusSplit(c, subU64(p.quote_reserve, c.migration_quote_threshold)).a;
+  transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, tokenQuoteAccount, poolAuthority, amount, remainingAccounts(), false, 0n, 0n);
+  p.is_partner_withdraw_surplus = 1n;
+  emitCpi<EvtPartnerWithdrawSurplus>({ pool: virtualPool.key, surplus_amount: amount }, eventAuthority, program);
+}
+
+/** creator_withdraw_surplus: the creator's share of the quote above the threshold, once, after the curve completes. */
+export function creatorWithdrawSurplus(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  virtualPool: Mut<AccountInfo>,
+  tokenQuoteAccount: Mut<TokenAccount>,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  quoteMint: Mint,
+  creator: Signer,
+  tokenQuoteProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {
+  // access control: is_pool_creator
+  checkPoolAccount(virtualPool);
+  require(loadRawAt<PoolState>(virtualPool, 8n).creator === creator.key, PoolError.Unauthorized);
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  checkPoolAccount(virtualPool);
+  const p = loadRawMutAt<PoolState>(virtualPool, 8n);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(p.quote_reserve >= c.migration_quote_threshold, PoolError.NotPermitToDoThisAction);
+  require(p.is_creator_withdraw_surplus === 0n, PoolError.SurplusHasBeenWithdraw);
+  const amount = surplusSplit(c, subU64(p.quote_reserve, c.migration_quote_threshold)).b;
+  transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, tokenQuoteAccount, poolAuthority, amount, remainingAccounts(), false, 0n, 0n);
+  p.is_creator_withdraw_surplus = 1n;
+  emitCpi<EvtCreatorWithdrawSurplus>({ pool: virtualPool.key, surplus_amount: amount }, eventAuthority, program);
+}
+
+/** withdraw_migration_fee: the partner's (`flag` 0) or the creator's (1) share of the migration fee, once each. */
+export function withdrawMigrationFee(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  virtualPool: Mut<AccountInfo>,
+  tokenQuoteAccount: Mut<TokenAccount>,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  quoteMint: Mint,
+  sender: Signer,
+  tokenQuoteProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  flag: u8,
+): void {
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  checkPoolAccount(virtualPool);
+  const p = loadRawMutAt<PoolState>(virtualPool, 8n);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(p.quote_reserve >= c.migration_quote_threshold, PoolError.NotPermitToDoThisAction);
+  const split = migrationFeeDistribution(c);
+  require(flag <= 1n, PoolError.TypeCastFailed);
+  // PARTNER_MIGRATION_FEE_MASK 0b100, CREATOR_MIGRATION_FEE_MASK 0b010
+  let fee: u64 = 0n;
+  if (flag === 0n) {
+    require(sender.key === c.fee_claimer, PoolError.NotPermitToDoThisAction);
+    require((p.migration_fee_withdraw_status & 4n) === 0n, PoolError.MigrationFeeHasBeenWithdraw);
+    p.migration_fee_withdraw_status = p.migration_fee_withdraw_status ^ 4n;
+    fee = split.a;
+  } else {
+    require(sender.key === p.creator, PoolError.NotPermitToDoThisAction);
+    require((p.migration_fee_withdraw_status & 2n) === 0n, PoolError.MigrationFeeHasBeenWithdraw);
+    p.migration_fee_withdraw_status = p.migration_fee_withdraw_status ^ 2n;
+    fee = split.b;
+  }
+  transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, tokenQuoteAccount, poolAuthority, fee, remainingAccounts(), false, 0n, 0n);
+  emitCpi<EvtWithdrawMigrationFee>({ pool: virtualPool.key, fee, flag }, eventAuthority, program);
+}
+
+/** withdraw_leftover: the base a fixed-supply pool did not migrate, to the leftover receiver's ATA, once, after migration. */
+export function withdrawLeftover(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  virtualPool: Mut<AccountInfo>,
+  tokenBaseAccount: Ata<TokenOf<Mut<TokenAccount>, never, never, "tokenBaseProgram">, "leftoverReceiver", "baseMint">,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  baseMint: Mint,
+  leftoverReceiver: AccountInfo,
+  tokenBaseProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.leftover_receiver === leftoverReceiver.key, AnchorError.ConstraintHasOne);
+  checkPoolAccount(virtualPool);
+  const p = loadRawMutAt<PoolState>(virtualPool, 8n);
+  require(p.base_mint === baseMint.key, AnchorError.ConstraintHasOne);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(p.migration_progress <= MIGRATION_PROGRESS_CREATED_POOL, PoolError.TypeCastFailed);
+  require(p.migration_progress === MIGRATION_PROGRESS_CREATED_POOL, PoolError.NotPermitToDoThisAction);
+  require(c.fixed_token_supply_flag === 1n, PoolError.NotPermitToDoThisAction);
+  require(p.is_withdraw_leftover === 0n, PoolError.LeftoverHasBeenWithdraw);
+  const fees = addU64(addU64(p.partner_base_fee, p.protocol_base_fee), p.creator_base_fee);
+  const amount = subU64(subU64(baseVault.amount, fees), p.protocol_migration_base_fee_amount);
+  const baseFee = epochFee(baseMint);
+  if (baseFee.has && calculateFee(baseFee.bps, baseFee.max, amount) > 0n) require(leftoverReceiver.isSigner, AnchorError.AccountNotSigner);
+  transferFromPoolAuthority(tokenBaseProgram, baseVault, baseMint, tokenBaseAccount, poolAuthority, amount, remainingAccounts(), false, 0n, 0n);
+  p.is_withdraw_leftover = 1n;
+  emitCpi<EvtWithdrawLeftover>({ pool: virtualPool.key, leftover_receiver: leftoverReceiver.key, leftover_amount: amount }, eventAuthority, program);
+}
+
+/**
+ * flash_rent around a CPI the pool authority pays rent in, inside cpi_with_account_lamport_and_owner_checking: what
+ * the call took from the pool authority comes back from the payer (a System transfer), and its lamports (not less),
+ * owner and size must be as before. `before` is the pool authority's lamports before the call.
+ */
+function repayFlashRent(poolAuthority: Mut<AccountInfo>, payer: Mut<Signer>, systemProgram: SystemProgram, before: u64): void {
+  const after = poolAuthority.lamports;
+  if (before > after) invoke(systemProgram, [writableSigner(payer), writable(poolAuthority)], [u32(2n), before - after]);
+}
+
+function requireInvariant(poolAuthority: AccountInfo, lamports: u64, owner: Pubkey, size: u64): void {
+  require(poolAuthority.lamports >= lamports, PoolError.AccountInvariantViolation);
+  require(poolAuthority.owner === owner, PoolError.AccountInvariantViolation);
+  require(poolAuthority.dataLen === size, PoolError.AccountInvariantViolation);
+}
+
+/** create_locker: the config's locked vesting moves from the base vault to a Jupiter lock escrow for the creator. */
+export function createLocker(
+  virtualPool: Dup<Mut<AccountInfo>>,
+  config: AccountInfo,
+  poolAuthority: Address<Mut<AccountInfo>, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenProgram">,
+  baseMint: Dup<Mut<AccountInfo>>,
+  base: Seeds<Mut<AccountInfo>, ["base_locker", "@virtualPool"]>,
+  creator: AccountInfo,
+  escrow: Dup<Mut<AccountInfo>>,
+  escrowToken: Dup<Mut<AccountInfo>>,
+  payer: Mut<Signer>,
+  tokenProgram: TokenInterface,
+  lockerProgram: Address<AccountInfo, "LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn">,
+  lockerEventAuthority: AccountInfo,
+  systemProgram: SystemProgram,
+): void {
+  checkPoolAccount(virtualPool);
+  const p = loadRawMutAt<PoolState>(virtualPool, 8n);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(p.creator === creator.key, AnchorError.ConstraintHasOne);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.base_mint === baseMint.key, AnchorError.ConstraintHasOne);
+  require(p.migration_progress <= MIGRATION_PROGRESS_CREATED_POOL, PoolError.TypeCastFailed);
+  require(p.migration_progress === 1n, PoolError.NotPermitToDoThisAction);
+  checkConfigAccount(config);
+  const v = loadRawAt<PoolConfig>(config, 8n).locked_vesting_config;
+  // LockedVestingParams::to_create_vesting_escrow_params
+  const start = p.finish_curve_timestamp;
+  const cliffTime = start > U64_MAX - v.cliff_duration_from_migration_time ? U64_MAX : start + v.cliff_duration_from_migration_time;
+  const lamports = poolAuthority.lamports;
+  const owner = poolAuthority.owner;
+  const size = poolAuthority.dataLen;
+  log("create vesting escrow for creator");
+  // create_vesting_escrow_v2 (base, escrow, token_mint, escrow_token, sender, sender_token, recipient, token_program,
+  // system_program, event_authority, program), update_recipient_mode 2, cancel_mode 1, no remaining accounts info
+  invoke(
+    lockerProgram,
+    [
+      writableSigner(base),
+      writable(escrow),
+      readonly(baseMint),
+      writable(escrowToken),
+      writableSigner(poolAuthority),
+      writable(baseVault),
+      readonly(creator),
+      readonly(tokenProgram),
+      readonly(systemProgram),
+      readonly(lockerEventAuthority),
+      readonly(lockerProgram),
+    ],
+    [sighash("create_vesting_escrow_v2"), start, cliffTime, v.frequency, v.cliff_unlock_amount, v.amount_per_period, v.number_of_period, u8(2n), u8(1n), u8(0n)],
+    [
+      ["base_locker", virtualPool.key, u8(base.pdaBump)],
+      ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+    ],
+  );
+  repayFlashRent(poolAuthority, payer, systemProgram, lamports);
+  requireInvariant(poolAuthority, lamports, owner, size);
+  p.migration_progress = 2n;
+}
+
+/** migration_damm_v2_create_metadata (deprecated): accepts its accounts and does nothing. */
+export function migrationDammV2CreateMetadata(
+  virtualPool: AccountInfo,
+  config: AccountInfo,
+  migrationMetadata: AccountInfo,
+  payer: AccountInfo,
+  systemProgram: AccountInfo,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {}
+
+// ---- stage 3: migration_damm_v2 (instructions/migration/dynamic_amm_v2/migrate_damm_v2_initialize_pool.rs) -------
+
+/** LiquidityDistributionItem::get_damm_v2_vesting_parameters: the vested part's DAMM v2 vesting from the migration time. */
+function itemVesting(item: LiquidityItem, currentTimestamp: u64): DammV2VestingParameters {
+  return dammV2VestingParameters(item.bps_per_period, item.number_of_periods, item.frequency, item.cliff_duration_from_migration_time, item.vested_liquidity, currentTimestamp);
+}
+
+/** set_authority_for_position: the position NFT account's owner (Token-2022 SetAuthority, AccountOwner) to `owner`. */
+function setPositionOwner(positionNftAccount: Mut<AccountInfo>, poolAuthority: AccountInfo, token2022Program: TokenInterface, owner: Pubkey): void {
+  invoke(token2022Program, [writable(positionNftAccount), readonlySigner(poolAuthority)], [u8(6n), u8(2n), u8(1n), owner], [
+    "pool_authority",
+    u8(POOL_AUTHORITY_BUMP),
+  ]);
+}
+
+/** apply_transfer_fee_authority_option: after a migration with a base transfer fee, the fee config authority as the config says. */
+function applyTransferFeeAuthorityOption(c: PoolConfig, creator: Pubkey, baseMint: Mut<AccountInfo>, poolAuthority: AccountInfo, tokenBaseProgram: TokenInterface): void {
+  if (c.transfer_fee_flag !== 1n) return;
+  const option = c.migrated_transfer_fee_authority_option;
+  require(option <= 3n, PoolError.InvalidTransferFeeParameters);
+  if (option === 0n) return;
+  // transfer_fee_set(0, 0): TransferFeeExtension (26), SetTransferFee (5)
+  if (option === 1n)
+    invoke(tokenBaseProgram, [writable(baseMint), readonlySigner(poolAuthority)], [u8(26n), u8(5n), u16(0n), 0n], ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  // SetAuthority TransferFeeConfig (4): the creator (2) or the partner (3), revoked when that key is the default
+  const next = option === 2n ? creator : option === 3n ? c.fee_claimer : DEFAULT_PUBKEY;
+  if (next === DEFAULT_PUBKEY)
+    invoke(tokenBaseProgram, [writable(baseMint), readonlySigner(poolAuthority)], [u8(6n), u8(4n), u8(0n)], ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  else
+    invoke(tokenBaseProgram, [writable(baseMint), readonlySigner(poolAuthority)], [u8(6n), u8(4n), u8(1n), next], ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+}
+
+/**
+ * migration_damm_v2: a completed pool's quote and base move into a new DAMM v2 pool (remaining account 0 is its
+ * config): the first position (the larger of the partner's and the creator's liquidity) is created with the pool,
+ * the second gets the rest (add_liquidity) or, when either mint charges a transfer fee, is split out of the first
+ * (split_position2); each is locked as the config says (permanently, vested) and handed to its owner. The pool
+ * authority pays the rent of DAMM v2's accounts and the payer pays it back (flash rent).
+ */
+export function migrationDammV2(
+  virtualPool: Dup<Mut<AccountInfo>>,
+  migrationMetadata: AccountInfo,
+  config: AccountInfo,
+  poolAuthority: Address<Mut<AccountInfo>, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  pool: Dup<Mut<AccountInfo>>,
+  firstPositionNftMint: Mut<Signer>,
+  firstPositionNftAccount: Dup<Mut<AccountInfo>>,
+  firstPosition: Dup<Mut<AccountInfo>>,
+  secondPositionNftMint: Dup<Mut<Signer>> | null,
+  secondPositionNftAccount: Dup<Mut<AccountInfo>> | null,
+  secondPosition: Dup<Mut<AccountInfo>> | null,
+  dammPoolAuthority: AccountInfo,
+  ammProgram: Address<AccountInfo, "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG">,
+  baseMint: Dup<Mut<AccountInfo>>,
+  quoteMint: Dup<Mut<AccountInfo>>,
+  tokenAVault: Dup<Mut<AccountInfo>>,
+  tokenBVault: Dup<Mut<AccountInfo>>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  payer: Mut<Signer>,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  token2022Program: TokenInterface,
+  dammEventAuthority: AccountInfo,
+  systemProgram: SystemProgram,
+): void {
+  constraint(secondPositionNftMint, secondPositionNftMint === null || firstPositionNftMint.key !== secondPositionNftMint.key, AnchorError.ConstraintRaw);
+  // handle_migrate_damm_v2: the path (legacy configs and configs without transfer fees take the original one)
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  const quoteFee = epochFeeOf(quoteMint);
+  let feePath = false;
+  if (c.version === 0n) require(!quoteFee.has || mintFeeIsZero(quoteFee), PoolError.QuoteMintHasNonZeroTransferFee);
+  else feePath = c.transfer_fee_flag === 1n || hasTransferFeeOrConfigAuthorityOf(quoteMint);
+  const currentTimestamp = nowAsU64();
+  if (feePath) validateTransferFeeRestrictions(c);
+  require(c.migration_fee_option <= MIGRATION_FEE_OPTION_CUSTOMIZABLE, PoolError.InvalidMigrationFeeOption);
+  checkPoolAccount(virtualPool);
+  const p = loadRawMutAt<PoolState>(virtualPool, 8n);
+  // validate
+  const rest = remainingAccounts();
+  require(rest.length >= 1n, PoolError.MissingPoolConfigInRemainingAccount);
+  validateDammConfig(rest.get(0n), c.migration_fee_option);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  require(p.migration_progress <= MIGRATION_PROGRESS_CREATED_POOL, PoolError.TypeCastFailed);
+  require(p.migration_progress === 2n, PoolError.NotPermitToDoThisAction);
+  require(p.quote_reserve >= c.migration_quote_threshold, PoolError.PoolIsIncompleted);
+  require(c.migration_option <= 1n, PoolError.InvalidMigrationOption);
+  require(c.migration_option === MIGRATION_OPTION_DAMM_V2, PoolError.InvalidMigrationOption);
+
+  const initialQuote = quoteVault.amount;
+  const initialBase = baseVault.amount;
+  const baseFees = addU64(addU64(p.partner_base_fee, p.protocol_base_fee), p.creator_base_fee);
+  require(c.migrated_collect_fee_mode <= 2n, PoolError.TypeCastFailed);
+  const compounding = feePath || c.migrated_collect_fee_mode === MIGRATED_COLLECT_FEE_MODE_COMPOUNDING;
+  const msp = c.migration_sqrt_price;
+  const included = includedProtocolFeeMigrationAmounts2(compounding, c.migration_base_threshold, c.migration_quote_threshold, c.migration_fee_percentage, subU64(initialBase, baseFees));
+  const bps = p.protocol_liquidity_migration_fee_bps;
+  const protocolFees = compounding ? compoundingProtocolFees(included.a, included.b, bps) : concentratedProtocolFees(included.b, bps, msp);
+  if (!feePath) {
+    p.protocol_migration_base_fee_amount = protocolFees.a;
+    p.protocol_migration_quote_fee_amount = protocolFees.b;
+  }
+  const excludedBase = subU64(included.a, protocolFees.a);
+  const excludedQuote = subU64(included.b, protocolFees.b);
+  let depositBase = excludedBase;
+  let depositQuote = excludedQuote;
+  if (feePath) {
+    // get_migration_transfer_fee_amounts: the base fee as the config fixes it, the quote mint's for this epoch
+    const baseTransferFee = c.transfer_fee_flag === 1n ? calculateFee(u64(c.transfer_fee_basis_points), U64_MAX, excludedBase) : 0n;
+    const quoteTransferFee = quoteFee.has ? calculateFee(quoteFee.bps, quoteFee.max, excludedQuote) : 0n;
+    const d = compoundingDepositAmounts(excludedBase, excludedQuote, subU64(excludedBase, baseTransferFee), subU64(excludedQuote, quoteTransferFee));
+    depositBase = d.a;
+    depositQuote = d.b;
+  }
+  let sqrtPrice: u128 = msp;
+  let distributable: u128 = 0n;
+  let dead: u128 = 0n;
+  if (compounding) {
+    const r = compoundingInitialSqrtPriceAndLiquidity(depositBase, depositQuote);
+    require(r.some, PoolError.MathOverflow);
+    sqrtPrice = r.sqrt_price;
+    distributable = subU128(r.liquidity, DAMM_V2_COMPOUNDING_DEAD_LIQUIDITY);
+    dead = DAMM_V2_COMPOUNDING_DEAD_LIQUIDITY;
+  } else {
+    distributable = concentratedInitialLiquidity(depositBase, depositQuote, msp);
+  }
+  const partnerFirst = itemTotal(liquidityItem(c, distributable, true)) > itemTotal(liquidityItem(c, distributable, false));
+  let secondPercentage: u8 = 0n;
+  if (feePath) {
+    const partnerPercentage = addU8(addU8(c.partner_liquidity_percentage, c.partner_permanent_locked_liquidity_percentage), c.partner_liquidity_vesting_info.vesting_percentage);
+    require(partnerPercentage <= 100n, PoolError.MathOverflow);
+    secondPercentage = partnerFirst ? u8(100n - partnerPercentage) : partnerPercentage;
+  }
+  const first = liquidityItem(c, distributable, partnerFirst);
+  const second = liquidityItem(c, distributable, !partnerFirst);
+  const firstOwner = partnerFirst ? c.fee_claimer : p.creator;
+  const secondOwner = partnerFirst ? p.creator : c.fee_claimer;
+
+  // create_pool: initialize_pool on a static config, initialize_pool_with_dynamic_config on a customizable one
+  log("create pool");
+  const poolLiquidity = feePath ? addU128(distributable, dead) : addU128(itemTotal(first), dead);
+  const cfg = rest.get(0n);
+  {
+    const lamports = poolAuthority.lamports;
+    const owner = poolAuthority.owner;
+    const size = poolAuthority.dataLen;
+    if (c.migration_fee_option === MIGRATION_FEE_OPTION_CUSTOMIZABLE) {
+      const baseFee = migratedBaseFee(c);
+      const dynamicFee = migratedDynamicFeeControl(c);
+      // MigratedCollectFeeMode::to_dammv2_collect_fee_mode: QuoteToken 1 (OnlyB), OutputToken 0 (BothToken), Compounding 2
+      const collectFeeMode: u8 = c.migrated_collect_fee_mode === 0n ? 1n : c.migrated_collect_fee_mode === 1n ? 0n : 2n;
+      // BaseFeeParameters' 27 bytes: cliff_fee_numerator u64, number_of_period u16, then period_frequency u64 and
+      // reduction_factor u64 (BorshFeeTimeScheduler, zero) or sqrt_price_step_bps u32, scheduler_expiration_duration
+      // u32 and reduction_factor u64 (BorshFeeMarketCapScheduler), then base_fee_mode u8
+      const middle = u64(baseFee.sqrt_price_step_bps) | (u64(baseFee.scheduler_expiration_duration) << 32n);
+      if (dynamicFee.some)
+        invoke(
+          ammProgram,
+          [
+          readonly(poolAuthority),
+          writableSigner(firstPositionNftMint),
+          writable(firstPositionNftAccount),
+          writableSigner(poolAuthority),
+          readonlySigner(poolAuthority),
+          readonly(cfg),
+          readonly(dammPoolAuthority),
+          writable(pool),
+          writable(firstPosition),
+          readonly(baseMint),
+          readonly(quoteMint),
+          writable(tokenAVault),
+          writable(tokenBVault),
+          writable(baseVault),
+          writable(quoteVault),
+          readonly(tokenBaseProgram),
+          readonly(tokenQuoteProgram),
+          readonly(token2022Program),
+          readonly(systemProgram),
+          readonly(dammEventAuthority),
+          readonly(ammProgram),
+        ],
+          [
+            sighash("initialize_pool_with_dynamic_config"),
+            baseFee.cliff_fee_numerator,
+            u16(baseFee.number_of_period),
+            u64(middle),
+            baseFee.reduction_factor,
+            u8(baseFee.base_fee_mode),
+            u16(c.migrated_compounding_fee_bps),
+            u8(0n),
+            u8(1n),
+            u16(BIN_STEP_BPS_DEFAULT),
+            u128(BIN_STEP_BPS_U128_DEFAULT),
+            u16(FILTER_PERIOD_DEFAULT),
+            u16(DECAY_PERIOD_DEFAULT),
+            u16(REDUCTION_FACTOR_DEFAULT),
+            u32(MAX_VOLATILITY_ACCUMULATOR),
+            u32(dynamicFee.value),
+            u128(MIN_SQRT_PRICE),
+            u128(MAX_SQRT_PRICE),
+            false,
+            u128(poolLiquidity),
+            u128(sqrtPrice),
+            u8(1n),
+            u8(collectFeeMode),
+            u8(0n),
+          ],
+          ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+        );
+      else
+        invoke(
+          ammProgram,
+          [
+          readonly(poolAuthority),
+          writableSigner(firstPositionNftMint),
+          writable(firstPositionNftAccount),
+          writableSigner(poolAuthority),
+          readonlySigner(poolAuthority),
+          readonly(cfg),
+          readonly(dammPoolAuthority),
+          writable(pool),
+          writable(firstPosition),
+          readonly(baseMint),
+          readonly(quoteMint),
+          writable(tokenAVault),
+          writable(tokenBVault),
+          writable(baseVault),
+          writable(quoteVault),
+          readonly(tokenBaseProgram),
+          readonly(tokenQuoteProgram),
+          readonly(token2022Program),
+          readonly(systemProgram),
+          readonly(dammEventAuthority),
+          readonly(ammProgram),
+        ],
+          [
+            sighash("initialize_pool_with_dynamic_config"),
+            baseFee.cliff_fee_numerator,
+            u16(baseFee.number_of_period),
+            u64(middle),
+            baseFee.reduction_factor,
+            u8(baseFee.base_fee_mode),
+            u16(c.migrated_compounding_fee_bps),
+            u8(0n),
+            u8(0n),
+            u128(MIN_SQRT_PRICE),
+            u128(MAX_SQRT_PRICE),
+            false,
+            u128(poolLiquidity),
+            u128(sqrtPrice),
+            u8(1n),
+            u8(collectFeeMode),
+            u8(0n),
+          ],
+          ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+        );
+    } else
+      invoke(
+        ammProgram,
+        [
+          readonly(poolAuthority),
+          writableSigner(firstPositionNftMint),
+          writable(firstPositionNftAccount),
+          writableSigner(poolAuthority),
+          readonly(cfg),
+          readonly(dammPoolAuthority),
+          writable(pool),
+          writable(firstPosition),
+          readonly(baseMint),
+          readonly(quoteMint),
+          writable(tokenAVault),
+          writable(tokenBVault),
+          writable(baseVault),
+          writable(quoteVault),
+          readonly(tokenBaseProgram),
+          readonly(tokenQuoteProgram),
+          readonly(token2022Program),
+          readonly(systemProgram),
+          readonly(dammEventAuthority),
+          readonly(ammProgram),
+        ],
+        [sighash("initialize_pool"), u128(poolLiquidity), u128(sqrtPrice), u8(0n)],
+        ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+      );
+    repayFlashRent(poolAuthority, payer, systemProgram, lamports);
+    requireInvariant(poolAuthority, lamports, owner, size);
+  }
+
+  if (!feePath) {
+    if (itemLocked(first) > 0n)
+      {
+        // lock_liquidity_position: permanent_lock_position, then lock_inner_position for the vested part, under flash rent
+        const vesting = itemVesting(first, currentTimestamp);
+        const lamports = poolAuthority.lamports;
+        const owner = poolAuthority.owner;
+        const size = poolAuthority.dataLen;
+        if (first.permanent_locked_liquidity > 0n)
+          invoke(
+            ammProgram,
+            [writable(pool), writable(firstPosition), readonly(firstPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+            [sighash("permanent_lock_position"), u128(first.permanent_locked_liquidity)],
+            ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+          );
+        if (first.vested_liquidity > 0n)
+          invoke(
+            ammProgram,
+            [readonly(pool), writable(firstPosition), readonly(firstPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+            [
+              sighash("lock_inner_position"),
+              u8(1n),
+              vesting.cliff_point,
+              vesting.period_frequency,
+              u128(vesting.cliff_unlock_liquidity),
+              u128(vesting.liquidity_per_period),
+              u16(vesting.number_of_period),
+            ],
+            ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+          );
+        repayFlashRent(poolAuthority, payer, systemProgram, lamports);
+        requireInvariant(poolAuthority, lamports, owner, size);
+      }
+    log("transfer ownership of the first position");
+    setPositionOwner(firstPositionNftAccount, poolAuthority, token2022Program, firstOwner);
+    const leftoverBase = subU64(excludedBase, subU64(initialBase, baseVault.amount));
+    const leftoverQuote = subU64(excludedQuote, subU64(initialQuote, quoteVault.amount));
+    const reserves = dammPoolReserves(pool);
+    const secondLiquidity = compounding
+      ? compoundingLiquidityDelta(leftoverBase, leftoverQuote, reserves.token_a_amount, reserves.token_b_amount, reserves.liquidity)
+      : concentratedInitialLiquidity(leftoverBase, leftoverQuote, msp);
+    if (secondLiquidity > 0n) {
+      adjustLiquidity(second, secondLiquidity);
+      log("create second position");
+      if (secondPositionNftMint === null || secondPositionNftAccount === null || secondPosition === null) panic("called `Option::unwrap()` on a `None` value");
+      // create_second_position_without_liquidity: create_position for the pool authority, the payer paying
+      log("create position");
+      invoke(
+        ammProgram,
+        [
+          readonly(poolAuthority),
+          writableSigner(secondPositionNftMint),
+          writable(secondPositionNftAccount),
+          writable(pool),
+          writable(secondPosition),
+          readonly(dammPoolAuthority),
+          writableSigner(payer),
+          readonly(token2022Program),
+          readonly(systemProgram),
+          readonly(dammEventAuthority),
+          readonly(ammProgram),
+        ],
+        [sighash("create_position")],
+      );
+      log("add liquidity");
+      const lamports = poolAuthority.lamports;
+      const owner = poolAuthority.owner;
+      const size = poolAuthority.dataLen;
+      invoke(
+        ammProgram,
+        [
+          writable(pool),
+          writable(secondPosition),
+          writable(baseVault),
+          writable(quoteVault),
+          writable(tokenAVault),
+          writable(tokenBVault),
+          readonly(baseMint),
+          readonly(quoteMint),
+          readonly(secondPositionNftAccount),
+          readonlySigner(poolAuthority),
+          readonly(tokenBaseProgram),
+          readonly(tokenQuoteProgram),
+          readonly(dammEventAuthority),
+          readonly(ammProgram),
+        ],
+        [sighash("add_liquidity"), u128(secondLiquidity), U64_MAX, U64_MAX],
+        ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+      );
+      requireInvariant(poolAuthority, lamports, owner, size);
+      if (itemLocked(second) > 0n)
+        {
+          // lock_liquidity_position: permanent_lock_position, then lock_inner_position for the vested part, under flash rent
+          const vesting = itemVesting(second, currentTimestamp);
+          const lamports = poolAuthority.lamports;
+          const owner = poolAuthority.owner;
+          const size = poolAuthority.dataLen;
+          if (second.permanent_locked_liquidity > 0n)
+            invoke(
+              ammProgram,
+              [writable(pool), writable(secondPosition), readonly(secondPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+              [sighash("permanent_lock_position"), u128(second.permanent_locked_liquidity)],
+              ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+            );
+          if (second.vested_liquidity > 0n)
+            invoke(
+              ammProgram,
+              [readonly(pool), writable(secondPosition), readonly(secondPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+              [
+                sighash("lock_inner_position"),
+                u8(1n),
+                vesting.cliff_point,
+                vesting.period_frequency,
+                u128(vesting.cliff_unlock_liquidity),
+                u128(vesting.liquidity_per_period),
+                u16(vesting.number_of_period),
+              ],
+              ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+            );
+          repayFlashRent(poolAuthority, payer, systemProgram, lamports);
+          requireInvariant(poolAuthority, lamports, owner, size);
+        }
+      log("set authority for second position");
+      setPositionOwner(secondPositionNftAccount, poolAuthority, token2022Program, secondOwner);
+    }
+    p.is_migrated = 1n;
+    // burn what is left of the base beyond the fees owed, up to the supply the config lets go
+    const left = subU64(baseVault.amount, addU64(baseFees, protocolFees.a));
+    let burnable = left;
+    if (c.fixed_token_supply_flag === 1n) {
+      const max = subU64(c.pre_migration_token_supply, c.post_migration_token_supply);
+      if (max < burnable) burnable = max;
+    }
+    if (burnable > 0n)
+      invoke(tokenBaseProgram, [writable(baseVault), writable(baseMint), readonlySigner(poolAuthority)], [u8(8n), burnable], ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    p.migration_progress = MIGRATION_PROGRESS_CREATED_POOL;
+    return;
+  }
+
+  // the transfer fee path: the second position is split out of the first, so the fee is not charged twice
+  const numerator = 10_000_000n * u64(secondPercentage);
+  const split = safeMulDivCastU128(distributable, u128(numerator), u128(SPLIT_POSITION_DENOMINATOR), false);
+  const hasSecond = split > 0n;
+  if (hasSecond) {
+    log("create second position");
+    if (secondPositionNftMint === null || secondPositionNftAccount === null || secondPosition === null) panic("called `Option::unwrap()` on a `None` value");
+    // create_second_position_without_liquidity: create_position for the pool authority, the payer paying
+    log("create position");
+    invoke(
+      ammProgram,
+      [
+        readonly(poolAuthority),
+        writableSigner(secondPositionNftMint),
+        writable(secondPositionNftAccount),
+        writable(pool),
+        writable(secondPosition),
+        readonly(dammPoolAuthority),
+        writableSigner(payer),
+        readonly(token2022Program),
+        readonly(systemProgram),
+        readonly(dammEventAuthority),
+        readonly(ammProgram),
+      ],
+      [sighash("create_position")],
+    );
+    log("split position");
+    invoke(
+      ammProgram,
+      [
+        writable(pool),
+        writable(firstPosition),
+        readonly(firstPositionNftAccount),
+        writable(secondPosition),
+        readonly(secondPositionNftAccount),
+        readonlySigner(poolAuthority),
+        readonlySigner(poolAuthority),
+        readonly(dammEventAuthority),
+        readonly(ammProgram),
+      ],
+      [sighash("split_position2"), u32(numerator)],
+      ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+    );
+    adjustLiquidity(second, dammPositionUnlockedLiquidity(secondPosition));
+  }
+  if (itemLocked(first) > 0n)
+    {
+      // lock_liquidity_position: permanent_lock_position, then lock_inner_position for the vested part, under flash rent
+      const vesting = itemVesting(first, currentTimestamp);
+      const lamports = poolAuthority.lamports;
+      const owner = poolAuthority.owner;
+      const size = poolAuthority.dataLen;
+      if (first.permanent_locked_liquidity > 0n)
+        invoke(
+          ammProgram,
+          [writable(pool), writable(firstPosition), readonly(firstPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+          [sighash("permanent_lock_position"), u128(first.permanent_locked_liquidity)],
+          ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+        );
+      if (first.vested_liquidity > 0n)
+        invoke(
+          ammProgram,
+          [readonly(pool), writable(firstPosition), readonly(firstPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+          [
+            sighash("lock_inner_position"),
+            u8(1n),
+            vesting.cliff_point,
+            vesting.period_frequency,
+            u128(vesting.cliff_unlock_liquidity),
+            u128(vesting.liquidity_per_period),
+            u16(vesting.number_of_period),
+          ],
+          ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+        );
+      repayFlashRent(poolAuthority, payer, systemProgram, lamports);
+      requireInvariant(poolAuthority, lamports, owner, size);
+    }
+  if (hasSecond && secondPosition !== null && secondPositionNftAccount !== null && itemLocked(second) > 0n)
+    {
+      // lock_liquidity_position: permanent_lock_position, then lock_inner_position for the vested part, under flash rent
+      const vesting = itemVesting(second, currentTimestamp);
+      const lamports = poolAuthority.lamports;
+      const owner = poolAuthority.owner;
+      const size = poolAuthority.dataLen;
+      if (second.permanent_locked_liquidity > 0n)
+        invoke(
+          ammProgram,
+          [writable(pool), writable(secondPosition), readonly(secondPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+          [sighash("permanent_lock_position"), u128(second.permanent_locked_liquidity)],
+          ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+        );
+      if (second.vested_liquidity > 0n)
+        invoke(
+          ammProgram,
+          [readonly(pool), writable(secondPosition), readonly(secondPositionNftAccount), readonlySigner(poolAuthority), readonly(dammEventAuthority), readonly(ammProgram)],
+          [
+            sighash("lock_inner_position"),
+            u8(1n),
+            vesting.cliff_point,
+            vesting.period_frequency,
+            u128(vesting.cliff_unlock_liquidity),
+            u128(vesting.liquidity_per_period),
+            u16(vesting.number_of_period),
+          ],
+          ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+        );
+      repayFlashRent(poolAuthority, payer, systemProgram, lamports);
+      requireInvariant(poolAuthority, lamports, owner, size);
+    }
+  log("transfer ownership of the first position");
+  setPositionOwner(firstPositionNftAccount, poolAuthority, token2022Program, firstOwner);
+  if (hasSecond && secondPositionNftAccount !== null) {
+    log("set authority for second position");
+    setPositionOwner(secondPositionNftAccount, poolAuthority, token2022Program, secondOwner);
+  }
+  log("apply the transfer fee authority option");
+  applyTransferFeeAuthorityOption(c, p.creator, baseMint, poolAuthority, tokenBaseProgram);
+  p.is_migrated = 1n;
+  // what the transfer fees kept out of DAMM v2 is the protocol's
+  const depositedBase = subU64(initialBase, baseVault.amount);
+  const depositedQuote = subU64(initialQuote, quoteVault.amount);
+  p.protocol_migration_base_fee_amount = addU64(protocolFees.a, excludedBase > depositedBase ? excludedBase - depositedBase : 0n);
+  p.protocol_migration_quote_fee_amount = addU64(protocolFees.b, excludedQuote > depositedQuote ? excludedQuote - depositedQuote : 0n);
+  p.migration_progress = MIGRATION_PROGRESS_CREATED_POOL;
 }

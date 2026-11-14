@@ -69,8 +69,23 @@ codes, and says so here.
   refusals (malformed lists and seeds included) against the binary. The `slices` argument holds at most 64 entries
   here (102 beyond). A swap by CPI under an active rate limiter reads the processed sibling instructions, as the
   original does (checked against the binary through a small calling program,
-  `showcase/test/fixtures/meteora-dbc/relay.ts`). Not ported yet: the migration stages. The binary is identified as
-  0.2.2 by its instruction names, error messages and source paths; it was not rebuilt.
+  `showcase/test/fixtures/meteora-dbc/relay.ts`). The third stage adds 7 more (31 of 35): `partner_withdraw_surplus`,
+  `creator_withdraw_surplus`, `withdraw_migration_fee`, `withdraw_leftover`, `create_locker` (the locker's
+  `create_vesting_escrow_v2` by CPI), the deprecated `migration_damm_v2_create_metadata` and `migration_damm_v2` (DAMM
+  v2's pool creation on a static or dynamic config, the second position by `add_liquidity` or, with a transfer fee, by
+  `split_position2`, permanent and vested locks, the position NFTs' owners, the base mint's transfer fee authority and
+  the burn, the pool authority's rent lent and paid back). `showcase/test/meteora-dbc-migration.test.ts` and
+  `meteora-dbc-migration-fuzz.test.ts` drive pools to the threshold by swaps and graduate them on both programs, which
+  call DAMM v2 (`cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG`, sha256 `ca7a3262…5a67`) and the locker
+  (`LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn`, sha256 `0ba6f4f5…abed`) as deployed on mainnet (fetched by
+  `scripts/fetch-programs.sh`, not kept here) on DAMM v2's seven migration configs read from mainnet
+  (`showcase/test/fixtures/meteora-dbc/damm-v2/`): every progress state, each fee option, customizable pools (collect
+  fee modes, dynamic fee, fee time and market cap schedulers, compounding), partner and creator liquidity splits with
+  permanent locks and vesting, SPL and Token-2022 bases and quotes, base and quote transfer fees with each migrated fee
+  authority option, a transfer hook pool, fixed supplies (the burn and the leftover), legacy configs, each DAMM v2
+  config check and the refusals; the fuzz graduates random configs with the withdrawals in a random order. Not ported
+  yet: the DAMM v1 migration (stage 4). The binary is identified as 0.2.2 by its instruction names, error messages and
+  source paths; it was not rebuilt.
 
 ## 0.47.0 — 2026-11-13
 

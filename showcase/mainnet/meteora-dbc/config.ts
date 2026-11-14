@@ -342,7 +342,7 @@ export function validateTransferFeeParameters(t: TransferFeeParameters, tokenTyp
 // ---- process_create_config ------------------------------------------------------------------------------------
 
 /** PoolConfig::validate_transfer_fee_restrictions */
-function validateTransferFeeRestrictions(c: PoolConfig): void {
+export function validateTransferFeeRestrictions(c: PoolConfig): void {
   require(c.fixed_token_supply_flag === 1n && c.pre_migration_token_supply === c.post_migration_token_supply, PoolError.InvalidTokenSupply);
   const v = c.locked_vesting_config;
   require(

@@ -17,11 +17,11 @@ export const TOKEN_2022_PROGRAM_ID = pubkey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqC
 const TOKEN_2022_NATIVE_MINT = pubkey("9pan9bMn5HatX4EJdBwg9VgCa7Uz5HL8N1m5D3NdXejP");
 
 /** Token-2022 extension types the quote mint may carry permissionlessly. */
-const EXT_TRANSFER_FEE_CONFIG = 1n;
+export const EXT_TRANSFER_FEE_CONFIG = 1n;
 const EXT_METADATA_POINTER = 18n;
 const EXT_TOKEN_METADATA = 19n;
 /** Where a Token-2022 mint's TLV entries start: after the base mint padded to an account's 165 bytes, and its type. */
-const TLV_START = 166n;
+export const TLV_START = 166n;
 /** MintScore, ordered as the original's enum. */
 export const MINT_SCORE_UNSUPPORTED = 0n;
 export const MINT_SCORE_PERMISSIONED_WITH_TRANSFER_FEE = 1n;
