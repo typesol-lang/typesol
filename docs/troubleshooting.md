@@ -93,7 +93,7 @@ an account you change is a `Mut<T>` parameter; the time is `now()`, not `Date.no
 ### A transaction fails with a custom error
 
 See [errors.md](errors.md). Failures raised by the compiler's checks log their TypeScript location, e.g. `TypeSOL:
-arithmetic overflow (vault.ts:42)`.
+arithmetic overflow (vault.ts:44)`.
 
 ### "exceeded CUs meter" / "Computational budget exceeded"
 

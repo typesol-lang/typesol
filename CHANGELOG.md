@@ -97,6 +97,30 @@ codes, and says so here.
   the honest paths work).
 - Docs: the `grow` example of docs/language-accounts.md let anyone resize another user's account; it now takes the
   log's owner (`HasOne`).
+- Docs: claims narrowed to what the tests and benchmarks show. The ports: the same outcome, events, return data and
+  account bytes on every compared transaction, and the same error codes and log lines except where each case study
+  says (Anchor error-message text, panics reported as numbered errors, Marginfi's informational `msg!` lines, CLMM's
+  reward-mint order); Phoenix, Raydium AMM v4, SPL Stake Pool and Percolator match every log line. Compute units:
+  fewer than native Rust on every instruction measured, fewer than Pinocchio on counter, vault and escrow, and more
+  than Pinocchio on 13 of the 26 instructions of the official examples (a sentence `scripts/readme-bench.ts` now
+  writes from `official`). Review status: 0.45.0 to 0.48.0 and the unreleased work have had no security review (README,
+  SECURITY.md, docs/audit.md, docs/security-model.md), `runtime/typesol_builtins.c` is in the audit scope table and in
+  docs/runtime.md, and `EVENT_AUTHORITY_CHECK` is listed as experimental and in the `emitCpi` guarantee. Transaction
+  counts are what a default run compares, with breakdowns per file: Marginfi 2,321 (it said 2,081), Raydium AMM v4 144
+  with 60 random steps (it said 484, at 400 steps), SPL Stake Pool 2,107 in five files (it said six), coral-xyz/multisig
+  55 (it said 52), Percolator 6,028 with 3,711 in its fixed-seed walks. The cross-host measurement is the one made with
+  0.45.0 over the 76 programs of its sources; Meteora DBC and Percolator are not in `test/golden/binaries.json`. Also:
+  every fuzzer and how it is seeded (docs/testing.md, docs/audit.md), the manifest's `showcase/mainnet` programs and the
+  release record's `"tests"` field, what `pnpm fetch:programs` fetches, the mainnet escrow as a benchmark record and
+  what its make_offer spends in the ATA program, the escrow case study's figures from the 0.48.0 run, the licence of the
+  Meteora port's tests and fixtures, and `llms.txt` listing every port. The destructuring example of
+  docs/language-statements.md let anyone overwrite another player's account; it now requires its owner's signature.
+- Showcase: `showcase/mainnet/meteora-dbc/README.md` describes the finished port (released in stages in 0.48.0): Meteora
+  Dynamic Bonding Curve 0.2.2, all 35 instructions, with its migrations into DAMM v1 and DAMM v2, checked against the
+  mainnet binary on outcome, error code, account bytes, inner instructions, events and return data (log text and
+  compute units not compared). The port, its tests (`showcase/test/meteora-dbc*.ts`) and their fixtures
+  (`showcase/test/fixtures/meteora-dbc/`) are under Meteora's Non-commercial Licence (NOTICE), which README.md and
+  LICENSE now say.
 
 ## 0.48.0 — 2026-11-14
 
@@ -220,7 +244,6 @@ and still compile build to the same bytes.
   which needs `@anchor-lang/core`, and did not see `emitCpi` events. `t.coder` does not change. TypeSOL's Borsh coder
   decodes events as Anchor's `coder.events.decode` does (test/client/idl-coder.test.ts compares the two on random
   values for every program with events, and on a wrong discriminator, which both decode as null).
-
 - Changed, now refused: a call of a helper that returns the result of `merkleVerify`, `verifyEd25519` or
   `verifySecp256k1` whose result decides nothing. 0.46.0 refused such a call of the three themselves (as a statement,
   as the condition of an `if` with an empty body, kept in a local never read) but compiled the same through a helper,

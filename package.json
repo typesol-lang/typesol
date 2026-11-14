@@ -1,7 +1,7 @@
 {
   "name": "@typesol/cli",
   "version": "0.48.0",
-  "description": "Compile a TypeScript-syntax language directly to Solana SBF programs.",
+  "description": "Compile a TypeScript subset to Solana SBF programs (through C and the platform-tools clang), with an Anchor-compatible IDL.",
   "type": "module",
   "license": "MIT",
   "bin": {

@@ -4,6 +4,13 @@
 entry point's input parser, account checks, checked arithmetic, Borsh helpers, CPIs, sysvars, strings and the heap.
 This page is for people changing it; programs never call it directly.
 
+Since 0.45.0 the runtime is no longer header-only: `runtime/typesol_builtins.c` holds the functions clang calls for
+128-bit multiplication, division and shifts and for signed 64-bit division (`__multi3`, `__udivti3`, `__divti3`,
+`__divdi3`, …). It is compiled with every program by the same clang and linked after it, in place of platform-tools'
+`compiler-builtins` library, whose layout differed by host package
+([stability.md](stability.md#what-builds-the-same-bytes-where)); `test/language/builtins.test.ts` checks it against
+BigInt and its compute units against compiler-builtins'.
+
 ## Conventions
 
 - **Header-only, `static inline`.** Each program compiles the header with its own code, and `--gc-sections` drops

@@ -65,7 +65,8 @@ export function llms(): { index: string; full: string } {
     "",
     "## Optional",
     "",
-    `- [Case studies](${SITE}/case-study-marginfi/): mainnet programs (Marginfi v2, Phoenix v1, SPL Stake Pool, Raydium AMM v4, CLMM, CP-Swap, Jito) ported and checked against their binaries`,
+    `- [Case studies](${SITE}/case-study-marginfi/): mainnet programs (Marginfi v2, Phoenix v1, SPL Stake Pool, Raydium AMM v4, CLMM, CP-Swap, Jito MEV, coral-xyz/multisig) ported and checked against their binaries`,
+    "- [Percolator v12.20 and Meteora DBC 0.2.2](https://github.com/typesol-lang/typesol/tree/main/showcase/mainnet): two more ports checked against their mainnet binaries, each described in its own README (Meteora's under Meteora's Non-commercial Licence)",
     "",
   ].join("\n");
   const full = [

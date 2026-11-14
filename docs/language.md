@@ -59,9 +59,9 @@ The error codes are in [errors.md](errors.md); what a compiled program checks fo
 - `?.` and `!` on anything but optional accounts, Options and a `find` on struct elements.
 - Functions stored in a struct, chosen from a list by index, or returned from an instruction.
 - A fused `map` to strings: store it, annotated.
-- Floating point (by design).
 
-They are rejected at compile time rather than half-supported.
+They are rejected at compile time rather than half-supported. Floating-point arithmetic is not planned at all, by
+design: an `f64` is carried only as its bits, in accounts and events ([f64](language-types.md#f64)).
 
 ## Index of the former sections
 

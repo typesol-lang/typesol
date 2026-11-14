@@ -309,7 +309,11 @@ logs and bytes in both programs: 350 successful trades (235 TradeCpi, 115 TradeN
 begun on each side, losses socialised into K 9 times, sides turned drain-only 12 times. No divergence was found.
 
 **The default run** of all ten test files (`vitest run showcase/test/percolator*`, the default seeds) compares 6,028
-transactions through `both()`, 3,896 of them successful under both.
+transactions through `both()`, 3,896 of them successful under both: 2,317 in the nine files of fixed cases
+(`percolator-crank-cu.test.ts` 749, `-crank` 370, `-resolve` 345, `percolator.test.ts` 255, `-trade` 229, `-liquidate`
+140, `-accounts` 127, `-admin` 102; `-layout` sends none) and 3,711 in the three random walks of
+`percolator-fuzz.test.ts` on their fixed seeds (720 in the account walk, 1,452 in the oracle walk, 1,539 in the walk of
+leveraged trades, crashes and liquidations).
 
 ## The author's test suite
 

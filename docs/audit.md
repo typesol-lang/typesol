@@ -1,7 +1,7 @@
 # Audit package
 
 For a security firm reviewing TypeSOL. TypeSOL compiles a subset of TypeScript to C and then to Solana SBF; every
-program it builds includes one C runtime header. The question for an audit is whether a program compiled by TypeSOL
+program it builds includes one C runtime header and, from 0.45.0 on, links one C file of compiler builtins. The question for an audit is whether a program compiled by TypeSOL
 can be made to do something its source and [the security model](security-model.md) say it cannot. Programs written
 with TypeSOL are out of scope; their authors audit them.
 
@@ -12,6 +12,7 @@ In order of priority. Line counts at 0.48.0 (November 2026).
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |
 | 1 | C runtime | `runtime/typesol_rt.h` | 3,273 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
+| 1 | Compiler builtins | `runtime/typesol_builtins.c` | 484 | Compiled and linked with every program (0.45.0): the functions clang calls for 128-bit multiplication, division and shifts and signed 64-bit division (`__multi3`, `__udivti3`, `__divti3`, `__divdi3`, …), in place of platform-tools' compiler-builtins |
 | 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 886 | Which checks each account parameter gets, and their order |
 | 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 4,022 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
 | 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,781 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
@@ -33,7 +34,8 @@ one warn, and the review of 0.43.0 traced one defect to how that backend passes 
 host package mattered too, up to 0.44.1: its compiler-builtins library, which each of the macOS, Linux arm64 and
 Linux x86_64 packages lays out differently, made a program with 128-bit or signed division link to different bytes on
 each. From 0.45.0 on the builtins are TypeSOL's own C, compiled with the program, and the programs measured build to
-the same bytes on the three hosts (the 76 of the sources for SBPF v0, 14 for v1 and v2;
+the same bytes on the three hosts (measured with 0.45.0: the 76 programs then in the sources for SBPF v0, 14 for v1
+and v2;
 [stability.md](stability.md#what-builds-the-same-bytes-where)). The reference environment for binaries is the
 `--docker` build container (`docker/Dockerfile`, linux/amd64; base images by digest, release files by sha256, the
 TypeSOL tarball by its release record and its npm dependencies by a lock whose every integrity `npm ci` checks), which
@@ -61,6 +63,14 @@ accepts. Areas where a bug would be most damaging, and where earlier internal re
 
 Internal reviews, by the maintainers: none of them is an independent audit. Their findings and fixes are in the
 CHANGELOG.
+
+### Not reviewed: 0.45.0 and later
+
+0.45.0 to 0.48.0, and the unreleased work since, have had no security review. They add, among others,
+`runtime/typesol_builtins.c` (the compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`,
+`EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), and, not yet released, `zeroData`,
+`log64`, `PANIC_STYLE = "solana-1.18"` and `executable` on remaining accounts. An external review should include them
+with the areas the reviews below left out.
 
 ### 0.44.0 (2026-11-11)
 
@@ -168,11 +178,16 @@ since it skips the account checks Anchor-style parameters get, and the areas the
   Marginfi's I80F48 against vectors the `fixed` crate wrote; honest and hostile action sequences against state models
   with value conservation; account layout with two growable Vecs and aliasing through remaining accounts. Each run
   prints its seed (`FUZZ_SEED`), `pnpm fuzz` runs them wide.
-- **Random transactions against mainnet binaries**: Jito's three MEV programs (`showcase/test/fuzz-jito.test.ts`),
-  Marginfi's administration and interest (`showcase/test/fuzz-marginfi.test.ts`) and Raydium CLMM (the `fuzz:`
-  case of its differential test) take random sequences of honest and hostile
-  transactions, in the original and the port alike, with the same outcome, account bytes and events required after
-  every step. A new seed on every run, CI's included.
+- **Random transactions against mainnet binaries**: random sequences of honest and hostile transactions go to the
+  original and the port alike, with the same outcome, account bytes and events required after every step (and the log
+  lines, for the native ports), in Jito's three MEV programs (`showcase/test/fuzz-jito.test.ts`), Marginfi's
+  administration and interest (`showcase/test/fuzz-marginfi.test.ts`), Raydium CLMM and CP-Swap (the `fuzz:` case of
+  each differential test), SPL Stake Pool (`spl-stake-pool-fuzz.test.ts`) and Meteora DBC
+  (`meteora-dbc-fuzz.test.ts`, `meteora-dbc-migration-fuzz.test.ts`): each takes a new seed from the clock on every
+  run, CI's included, and prints it. Phoenix (`phoenix-fuzz.test.ts`: seeds 1, 2 and 3), Percolator
+  (`percolator-fuzz.test.ts`: seeds 1 to 6 and two per oracle shape) and Raydium AMM v4 (the last case of its
+  differential test: seed 7) walk fixed seeds, the same in CI, unless `FUZZ_SEED` names another
+  ([testing.md](testing.md)).
 - **Ported programs**: all 46 programs of solana-developers/program-examples, run through their original tests' flows
   and failure paths ([showcase/program-examples/README.md](https://github.com/typesol-lang/typesol/blob/main/showcase/program-examples/README.md)).
 - **Four-way comparison**: [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) runs 17 of those programs in
@@ -184,7 +199,7 @@ since it skips the account checks Anchor-style parameters get, and the areas the
 ```sh
 git clone https://github.com/typesol-lang/typesol && cd typesol
 pnpm install && pnpm build
-pnpm fetch:programs        # Metaplex binaries for the token-metadata, Core and Bubblegum tests
+pnpm fetch:programs        # third-party binaries not kept in the repository: Metaplex, Kamino, JupLend, Meteora, …
 pnpm build:twins           # the Anchor twins (Rust + Anchor 1.0.2)
 pnpm test                  # everything; CI runs it on Ubuntu (Node 22, 24) per change, macOS on demand (macos.yml)
 pnpm fuzz                  # the randomized checks, wide

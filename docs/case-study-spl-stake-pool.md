@@ -58,9 +58,10 @@ to the same C as before):
 The mainnet binary and the port run in two LiteSVMs under the same program id, with the same clock and the same
 StakeHistory written into both by one `StakeCluster`. Every transaction must give the same outcome, the same log
 lines (the "Instruction: …" lines, every message with its numbers, the error lines, panic locations) and the same
-bytes in every account it names. There are 2,107 such transactions in six files:
+bytes in every account it names. There are 2,107 such transactions in five files (the random walk below comes on
+top):
 
-- **The instructions** (`spl-stake-pool.test.ts`, `-stake`, `-rebalance`, `-metadata`; 1,406): every instruction's
+- **The instructions** (`spl-stake-pool.test.ts` 505, `-stake` 274, `-rebalance` 360, `-metadata` 267; 1,406): every instruction's
   success paths and every refusal that can be built, account by account (wrong signers, PDAs, owners, mints and
   Token-2022 extensions, sysvars, short account lists), fee limits, slippage, preferred validators, funding
   authorities, read-only and repeated accounts (the original's RefCell panics included), pools of 50 to 60 validators,
@@ -71,7 +72,7 @@ bytes in every account it names. There are 2,107 such transactions in six files:
 - **A random walk over epochs** (`spl-stake-pool-fuzz.test.ts`): validators added and removed, users depositing and
   withdrawing SOL and stake, rebalancing, updates in random chunks, fee and authority changes, rewards, slow warmup,
   and invalid inputs at a low rate (`FUZZ_SEED`, `STAKE_POOL_FUZZ_STEPS`). Five seeds of 600 steps (215 epochs, about
-  3,700 transactions) found no difference. Each run is 1,000 steps by default and requires every main kind of
+  3,700 transactions) found no difference. Each run is 1,000 steps by default, with a new seed each time, and requires every main kind of
   instruction (SOL and stake deposits and withdrawals, increases, decreases, both updates, adding a validator) to
   succeed at least once.
 
