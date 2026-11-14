@@ -4,7 +4,7 @@
 // processSwap returns (an event goes out from the instruction itself).
 //
 // The instructions sysvar, which the original reads with solana_instructions_sysvar when a client passes it as the
-// one remaining account, is read here from its bytes: a u16 count, a u16 offset per instruction, each instruction as
+// first remaining account, is read here from its bytes: a u16 count, a u16 offset per instruction, each instruction as
 // a u16 account count, (u8 flags, 32-byte key) per account, the program id, a u16 data length and the data, and the
 // current index in the last two bytes.
 import {
@@ -22,6 +22,8 @@ import {
   currentSlot,
   now,
   panic,
+  processedSiblingInstruction,
+  processedSiblingInstructionCount,
   programId,
   pubkey,
   readData,
@@ -136,8 +138,8 @@ function includesPoolSwap(ixs: RemainingAccount, at: u64, pool: Pubkey): boolean
 
 /**
  * validate_single_swap_instruction: no other swap on this pool earlier in the transaction. When this program runs by
- * CPI the original also reads the processed sibling instructions (sol_get_processed_sibling_instruction), which this
- * port cannot: it refuses that case (FailToValidateSingleSwapInstruction) where the original may accept it.
+ * CPI (at stack height 2 at most), no swap on this pool among the instructions its caller already invoked (the
+ * processed siblings), then the top-level checks.
  */
 function validateSingleSwap(pool: Pubkey, rest: RemainingAccounts, hasSysvar: boolean): void {
   require(hasSysvar, PoolError.FailToValidateSingleSwapInstruction);
@@ -145,7 +147,19 @@ function validateSingleSwap(pool: Pubkey, rest: RemainingAccounts, hasSysvar: bo
   const current = currentIndex(ixs);
   if (programOf(ixs, instructionAt(ixs, current)) !== programId()) {
     require(stackHeight() <= 2n, PoolError.FailToValidateSingleSwapInstruction);
-    require(false, PoolError.FailToValidateSingleSwapInstruction);
+    const siblings = processedSiblingInstructionCount();
+    for (let i = 0n; i < siblings; i++) {
+      const s = processedSiblingInstruction(i);
+      if (s.programId === programId()) {
+        // is_instruction_include_pool_swap: `&data[..8]` and `accounts[2]` panic when short
+        if (s.dataLength < 8n) panic("range end index 8 out of range for slice");
+        const d = s.readU64(0n);
+        if (d === IX_SWAP || d === IX_SWAP2 || d === IX_SWAP2_WITH_TRANSFER_HOOK) {
+          if (s.accountsLength <= 2n) panic("index out of bounds");
+          require(s.accountKey(2n) !== pool, PoolError.FailToValidateSingleSwapInstruction);
+        }
+      }
+    }
   }
   for (let i = 0n; i < current; i++) {
     const at = instructionAt(ixs, i);

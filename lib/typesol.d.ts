@@ -493,6 +493,18 @@ export interface TransactionInstruction {
  * program invoked it. `require(stackHeight() === 1n, …)` refuses CPI callers.
  */
 export declare function stackHeight(): u64;
+/**
+ * How many instructions the caller of this program has already invoked at this program's stack height (its processed
+ * siblings), or, when the transaction calls this program directly, how many top-level instructions ran before this one
+ * (Rust's `get_processed_sibling_instruction(i)` until it returns None).
+ */
+export declare function processedSiblingInstructionCount(): u64;
+/**
+ * Processed sibling instruction `index` (0 the latest), as Rust's `get_processed_sibling_instruction(index)` reads it
+ * with the `sol_get_processed_sibling_instruction` syscall: its program id, accounts and data, as a
+ * TransactionInstruction. 5104 when there is none at that index.
+ */
+export declare function processedSiblingInstruction(index: u64): TransactionInstruction;
 
 /**
  * Whether this transaction contains an Ed25519 precompile instruction that verified `message`

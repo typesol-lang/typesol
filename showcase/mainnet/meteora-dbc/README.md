@@ -52,5 +52,6 @@ where the original reads any length and refuses more than 16 with InvalidCurve);
 The transfer hook instructions' `slices` argument holds at most 64 entries (102 beyond; the original takes a Vec of
 any length, though more than two slices with accounts are refused as duplicates). The quote vault is sized from the quote mint's extensions as Anchor's `init` sizes it, for the extensions listed in
 `token.ts` (`tokenAccountSpace`); a quote mint with confidential-transfer extensions would be sized differently.
-When this program is invoked by another program and a rate limiter applies, the original also reads the processed
-sibling instructions; this port cannot and refuses that swap with FailToValidateSingleSwapInstruction (not tested).
+When this program is invoked by another program and a rate limiter applies, it reads the processed sibling instructions
+as the original does (`processedSiblingInstruction`), checked through a calling program
+(`showcase/test/fixtures/meteora-dbc/relay.ts`) loaded in both.

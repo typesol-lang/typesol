@@ -130,6 +130,11 @@ export function approved(drop: Account<Drop>, ixs: InstructionsSysvar, who: Pubk
   `is(program, "name")` (that program's instruction by its default Anchor discriminator, sha256("global:<name>"); an
   instruction with its own `@discriminator` is matched with `programId` and `readU64(0)` instead).
 - Every read is bounds-checked (5104).
+- `processedSiblingInstructionCount()` and `processedSiblingInstruction(i)` (a `TransactionInstruction`, 5104 past
+  the last) read the instructions already processed at this program's stack height, with the
+  `sol_get_processed_sibling_instruction` syscall as Rust's `get_processed_sibling_instruction` reads it: under a
+  caller, the instructions that caller already invoked (index 0 the latest); at the top level, the transaction's
+  earlier instructions. With `stackHeight()`, a program can refuse to run twice under one caller.
 - It is the transaction author's data: require things of the transaction with it (a repay instruction after a flash
   loan), never treat it as proof.
 

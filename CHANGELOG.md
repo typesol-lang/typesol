@@ -21,6 +21,10 @@ codes, and says so here.
   error codes. A mint without a hook gets a plain TransferChecked (test/language/transfer-hook-cpi.test.ts;
   showcase/test/meteora-dbc-hook.test.ts compares it with Meteora's Rust program; docs/language-cpi.md). Existing
   programs build to the same bytes (the 76 programs of `scripts/release-manifest.ts` other than the Meteora port).
+- Added: `processedSiblingInstructionCount()` and `processedSiblingInstruction(i)`, the instructions already processed
+  at the program's stack height (the `sol_get_processed_sibling_instruction` syscall, as Rust's
+  `get_processed_sibling_instruction` reads it), each a `TransactionInstruction` (test/language/sibling-instructions.test.ts;
+  docs/language-chain.md). Existing programs build to the same bytes.
 - Showcase: the first stage of a port of Meteora's Dynamic Bonding Curve 0.2.2 (MeteoraAg/dynamic-bonding-curve @
   91e696e), `showcase/mainnet/meteora-dbc/`. It is subject to Meteora's Non-commercial Licence, not to this
   repository's MIT licence (LICENSE.md and README.md there, and NOTICE), and is not in the published package. This
@@ -63,9 +67,10 @@ codes, and says so here.
   (`transferCheckedWithHook`): `meteora-dbc-hook.test.ts` swaps, pays referrals and claims fees on TransferHookPools
   with each kind of extra account meta, revokes the hook at completion, and checks the slices' and the resolver's
   refusals (malformed lists and seeds included) against the binary. The `slices` argument holds at most 64 entries
-  here (102 beyond). Not ported yet: the migration stages; a swap by CPI under an active rate limiter, which the original checks against the processed
-  sibling instructions, is refused here (not tested). The binary is identified as 0.2.2 by its instruction names, error messages and
-  source paths; it was not rebuilt.
+  here (102 beyond). A swap by CPI under an active rate limiter reads the processed sibling instructions, as the
+  original does (checked against the binary through a small calling program,
+  `showcase/test/fixtures/meteora-dbc/relay.ts`). Not ported yet: the migration stages. The binary is identified as
+  0.2.2 by its instruction names, error messages and source paths; it was not rebuilt.
 
 ## 0.47.0 — 2026-11-13
 

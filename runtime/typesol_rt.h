@@ -2803,6 +2803,59 @@ static inline uint64_t ts_t22_init_metadata(TsParams *params, const TsAccount *p
 }
 
 /*
+ * ---- Processed sibling instructions ----------------------------------------------------------------------------------
+ * sol_get_processed_sibling_instruction, as solana-instruction's get_processed_sibling_instruction calls it: the
+ * instructions the program that invoked this one has already invoked at this stack height (index 0 the latest), or the
+ * transaction's earlier top-level instructions when this program runs at the top. A first call with zero lengths
+ * reads the sizes, a second one the program id, data and accounts (Rust's AccountMeta: key, is_signer, is_writable),
+ * which are copied to the heap in the Instructions sysvar's account layout (flags, then key) for TsIx.
+ */
+typedef struct {
+  uint64_t data_len;
+  uint64_t accounts_len;
+} TsSiblingMeta;
+extern uint64_t sol_get_processed_sibling_instruction(uint64_t index, TsSiblingMeta *meta, SolPubkey *program_id, uint8_t *data, uint8_t *accounts);
+
+/* How many processed sibling instructions there are: indexes 0, 1, … until the syscall finds none. */
+static __attribute__((unused)) uint64_t ts_sibling_count(void) {
+  uint64_t n = 0;
+  for (;;) {
+    TsSiblingMeta meta = {0, 0};
+    SolPubkey program;
+    uint8_t data = 0;
+    uint8_t account[34];
+    if (sol_get_processed_sibling_instruction(n, &meta, &program, &data, account) != 1) return n;
+    n++;
+  }
+}
+
+static __attribute__((unused)) uint64_t ts_sibling_load(uint64_t index, TsIx *out) {
+  TsSiblingMeta meta = {0, 0};
+  SolPubkey *program;
+  TS_TRY(ts_alloc(sizeof(SolPubkey), (uint8_t **)&program));
+  uint8_t byte = 0;
+  uint8_t account[34];
+  if (sol_get_processed_sibling_instruction(index, &meta, program, &byte, account) != 1)
+    TS_FAIL(TS_ERR_INDEX, "TypeSOL: no processed sibling instruction at that index");
+  if (meta.data_len > 0xffff || meta.accounts_len > 0xffff) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the sibling instruction is too large to read");
+  uint8_t *data, *raw, *accounts;
+  TS_TRY(ts_alloc(meta.data_len + 1, &data));
+  TS_TRY(ts_alloc(meta.accounts_len * 34 + 1, &raw));
+  TS_TRY(ts_alloc(meta.accounts_len * 33 + 1, &accounts));
+  sol_get_processed_sibling_instruction(index, &meta, program, data, raw);
+  for (uint64_t i = 0; i < meta.accounts_len; i++) {
+    accounts[i * 33] = (uint8_t)((raw[i * 34 + 32] ? 1 : 0) | (raw[i * 34 + 33] ? 2 : 0));
+    ts_memcpy(accounts + i * 33 + 1, raw + i * 34, 32);
+  }
+  out->accounts = accounts;
+  out->program_id = program;
+  out->data = data;
+  out->num_accounts = (uint16_t)meta.accounts_len;
+  out->data_len = (uint16_t)meta.data_len;
+  return SUCCESS;
+}
+
+/*
  * ---- TransferChecked with a transfer hook's extra accounts ----------------------------------------------------------
  * Rust's `spl_token_2022::instruction::transfer_checked` followed, when the mint's TransferHook extension names a
  * program, by spl-transfer-hook-interface 2.1's `onchain::add_extra_accounts_for_execute_cpi` (with

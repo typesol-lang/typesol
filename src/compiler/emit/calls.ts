@@ -106,6 +106,20 @@ export abstract class CallEmitter extends ExpressionEmitter {
         if (args.length) this.fail(node, "stackHeight() takes no arguments");
         return { c: "sol_get_stack_height()", type: U64 };
       }
+      case "processedSiblingInstructionCount": {
+        if (args.length) this.fail(node, "processedSiblingInstructionCount() takes no arguments");
+        const t = this.tmp("sibn");
+        this.line(`uint64_t ${t} = ts_sibling_count();`);
+        return { c: t, type: U64 };
+      }
+      case "processedSiblingInstruction": {
+        if (args.length !== 1) this.fail(node, "processedSiblingInstruction(index) takes the sibling's index");
+        const i = this.expect(this.expr(args[0], U64), U64, args[0]);
+        const t = this.tmp("sib");
+        this.line(`TsIx ${t};`);
+        this.line(`TS_TRY(ts_sibling_load(${i.c}, &${t}));`);
+        return { c: t, type: { kind: "txIx" } };
+      }
       case "constraint":
         this.fail(node, "constraint(account, condition, error?) goes at the start of an instruction's body, before any other statement");
       case "require": {
@@ -1509,6 +1523,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
   protected isTxIx(node: ts.Expression): boolean {
     if (ts.isParenthesizedExpression(node)) return this.isTxIx(node.expression);
     if (ts.isIdentifier(node)) return this.lookup(node.text)?.type.kind === "txIx";
+    if (ts.isCallExpression(node) && this.exportName(node.expression) === "processedSiblingInstruction") return true;
     return (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&

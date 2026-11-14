@@ -6,11 +6,12 @@
 // outcome, pool, vault and user bytes, and the same events. A random sequence of swaps per pool (every mode, both
 // directions, referrals, slippage limits) runs to the migration threshold. Reproduce with FUZZ_SEED=<seed>; lengthen with FUZZ_RUNS=<n> (pools per run).
 import * as t22 from "@solana-program/token-2022";
-import { type Address, type Instruction, type KeyPairSigner, generateKeyPairSigner, lamports } from "@solana/kit";
+import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner, lamports } from "@solana/kit";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
-import { BN, pda } from "../../test/harness.js";
+import { BN, deployFile, pda } from "../../test/harness.js";
+const RELAY = fileURLToPath(new URL("./fixtures/meteora-dbc/relay.ts", import.meta.url));
 const pdaOf = (seeds: (string | Address)[]) => pda("dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN" as Address, seeds);
 const MPL = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s" as Address;
 const MPL_SO = fileURLToPath(new URL("../../test/programs/mpl_token_metadata.so", import.meta.url));
@@ -628,6 +629,44 @@ describe.skipIf(!present(ORIGINAL, MPL_SO))("showcase/mainnet/meteora-dbc swaps 
     expect(await doSwap("base in is not limited", pi, t, false, 10n ** 12n, 0n, 0)).toBe("ok");
     const two = [swapIx(pi, t, true, 1_000_000_000n, 0n, 0, { rest: [INSTRUCTIONS] }), swapIx(pi, t, true, 1_000_000_000n, 0n, 2, { rest: [INSTRUCTIONS] })];
     expect(await p.both("two swaps in one transaction", t.who, two, watch(pi, t))).toBe(builtinAt(1));
+  });
+  it("a rate limiter by CPI: the processed sibling instructions (sol_get_processed_sibling_instruction)", async () => {
+    const params = baseParams();
+    const cfg = await config(params, quoteSpl, (d) => {
+      d.writeBigUInt64LE(10_000_000n, 104);
+      d.writeBigUInt64LE(10n ** 9n, 112);
+      d.writeBigUInt64LE(1_000_000_000n, 120);
+      d.writeUInt16LE(10, 128);
+      d[130] = 2;
+    });
+    const pi = await pool(cfg, params, quoteSpl, TOKEN, [], false, true);
+    const other = await pool(cfg, params, quoteSpl, TOKEN, [], false, true);
+    const t = await trader(pi);
+    const t2 = await trader(other);
+    const relay = (await generateKeyPairSigner()).address;
+    for (const vm of p.vms()) await deployFile(RELAY, { svm: vm, programId: relay });
+    /** The relay calling the DBC `n` times with `ix` (its accounts after the DBC's id, its data after n). */
+    const via = (n: number, ix: Instruction): Instruction => ({
+      programAddress: relay,
+      accounts: [{ address: PROGRAM, role: AccountRole.READONLY }, ...(ix.accounts ?? [])] as Instruction["accounts"],
+      data: new Uint8Array([n, ...(ix.data ?? [])]),
+    });
+    const one = (pool: PoolInfo, tr: Trader, rest = [INSTRUCTIONS]) => swapIx(pool, tr, true, 1_000_000_000n, 0n, 0, { rest });
+    expect(await p.both("one swap by CPI", t.who, [via(1, one(pi, t))], watch(pi, t))).toBe("ok");
+    expect(await p.both("by CPI without the sysvar", t.who, [via(1, one(pi, t, []))], watch(pi, t))).toBe(custom(E.FailToValidateSingleSwapInstruction));
+    expect(await p.both("two swaps by CPI on one pool", t.who, [via(2, one(pi, t))], watch(pi, t))).toBe(custom(E.FailToValidateSingleSwapInstruction));
+    // the first call's sibling is on another pool: not this pool's swap
+    expect(
+      await p.both(
+        "a swap on another pool first, by CPI",
+        t.who,
+        [via(1, one(other, t2)), via(1, one(pi, t))],
+        [...watch(pi, t), ...watch(other, t2)],
+        [t2.who],
+      ),
+    ).toBe("ok");
+    // a top-level swap on the pool before the CPI one
+    expect(await p.both("a top-level swap first", t.who, [one(pi, t), via(1, one(pi, t))], watch(pi, t))).toBe(builtinAt(1));
   });
   const builtinAt = (i: number) =>
     `error: TransactionErrorInstructionError { index: ${i}, error: InstructionErrorCustom { code: ${E.FailToValidateSingleSwapInstruction} } }`;

@@ -239,6 +239,7 @@ export const SYSCALLS: readonly string[] = [
   "sol_get_epoch_rewards_sysvar",
   "sol_get_epoch_schedule_sysvar",
   "sol_get_last_restart_slot",
+  "sol_get_processed_sibling_instruction",
   "sol_get_rent_sysvar",
   "sol_get_return_data",
   "sol_get_stack_height",
