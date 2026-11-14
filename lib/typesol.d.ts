@@ -2083,6 +2083,21 @@ type MintArg = Mint | AccountInfo | RemainingAccount;
 interface TokenOps {
   transfer(from: TokenAccountArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   transferChecked(from: TokenAccountArg, mint: MintArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  /**
+   * transferChecked for a Token-2022 mint with a transfer hook: the hook's extra accounts are resolved from its
+   * validation account (["extra-account-metas", mint] of the hook program) among `hookAccounts` and appended, then the
+   * validation account and the hook program, as spl-transfer-hook-interface's `add_extra_accounts_for_execute_cpi`
+   * does (its refusals and error codes included). Without a hook program on the mint, a plain transferChecked.
+   */
+  transferCheckedWithHook(
+    from: TokenAccountArg,
+    mint: MintArg,
+    to: TokenAccountArg,
+    authority: AccountMeta,
+    amount: u64,
+    hookAccounts: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
   /** `mint`: a Mut<Mint>, or a mint this instruction created and initialized (Mut<Signer> / Mut<AccountInfo>). */
   /** `to`: a Mut<TokenAccount>, or a Mut<AccountInfo> token account this instruction created (e.g. with `ata.create`). */
   mintTo(mint: MintArg | AccountMeta, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;

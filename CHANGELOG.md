@@ -13,6 +13,14 @@ codes, and says so here.
   its accounts, as Anchor's does). Programs without the constant build to the same bytes: the 76 programs of
   `scripts/release-manifest.ts` other than the new port build identically with and without this change
   (test/language/event-authority-check.test.ts; docs/language-errors-events.md).
+- Added: `tokenProgram.transferCheckedWithHook(from, mint, to, authority, amount, hookAccounts, signerSeeds?)`, a
+  TransferChecked by CPI of a Token-2022 mint with a transfer hook: the hook's extra accounts are resolved among
+  `hookAccounts` (the remaining accounts or a slice of them) and appended with the validation account and the hook
+  program, as spl-transfer-hook-interface 2.1's `add_extra_accounts_for_execute_cpi` (with spl-tlv-account-resolution
+  0.11) does on chain: every kind of extra account meta, the de-escalation of writable flags, and the same refusals and
+  error codes. A mint without a hook gets a plain TransferChecked (test/language/transfer-hook-cpi.test.ts;
+  showcase/test/meteora-dbc-hook.test.ts compares it with Meteora's Rust program; docs/language-cpi.md). Existing
+  programs build to the same bytes (the 76 programs of `scripts/release-manifest.ts` other than the Meteora port).
 - Showcase: the first stage of a port of Meteora's Dynamic Bonding Curve 0.2.2 (MeteoraAg/dynamic-bonding-curve @
   91e696e), `showcase/mainnet/meteora-dbc/`. It is subject to Meteora's Non-commercial Licence, not to this
   repository's MIT licence (LICENSE.md and README.md there, and NOTICE), and is not in the published package. This
@@ -50,8 +58,12 @@ codes, and says so here.
   authority kept under a transfer hook config), each base transfer fee option, a Token-2022 quote, a creation fee,
   slot activation and addresses funded before creation, and checks their refusals, with a small transfer hook program
   (`showcase/test/fixtures/meteora-dbc/hook.ts`) loaded in both; the swap tests now swap only on pools made by the
-  three pool creation instructions (written only under a rate limiter config). Not ported yet: the 3 transfer-hook
-  instructions and the migration stages; a swap by CPI under an active rate limiter, which the original checks against the processed
+  three pool creation instructions (written only under a rate limiter config). Then `swap2_with_transfer_hook`,
+  `claim_trading_fee2` and `claim_creator_trading_fee2`, the base mint's transfers carrying the hook's extra accounts
+  (`transferCheckedWithHook`): `meteora-dbc-hook.test.ts` swaps, pays referrals and claims fees on TransferHookPools
+  with each kind of extra account meta, revokes the hook at completion, and checks the slices' and the resolver's
+  refusals (malformed lists and seeds included) against the binary. The `slices` argument holds at most 64 entries
+  here (102 beyond). Not ported yet: the migration stages; a swap by CPI under an active rate limiter, which the original checks against the processed
   sibling instructions, is refused here (not tested). The binary is identified as 0.2.2 by its instruction names, error messages and
   source paths; it was not rebuilt.
 

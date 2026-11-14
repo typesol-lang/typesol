@@ -694,3 +694,12 @@ export interface RemainingAccountsSlice {
   /** @idlName length */
   length_: u8;
 }
+
+/**
+ * TransferHookAccountsInfo as an instruction argument. The original's `slices` is a Vec of any length; here a Borsh Vec
+ * of at most 64 (more fail to deserialize, 102): beyond two slices with accounts the parse refuses a duplicate, so only
+ * zero-length slices can make more.
+ */
+export interface TransferHookAccountsInfo {
+  slices: FixedVec<RemainingAccountsSlice, 64>;
+}

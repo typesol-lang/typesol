@@ -23,6 +23,7 @@ import {
   type CloseTo,
   type EventAuthority,
   type Executable,
+  type Inout,
   type Init,
   type Mint,
   type Mut,
@@ -67,10 +68,22 @@ import {
 } from "typesol";
 import { DEFAULT_PUBKEY, initialBaseSupply, totalLiquidityLockedBpsAtNSeconds, processCreateConfig, validateConfigParameters, validateTransferFeeParameters } from "./config";
 import { PoolError } from "./errors";
-import { type EvtInitializePool, type EvtInitializePoolWithTransferHook, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
+import { type EvtInitializePool, type EvtInitializePoolWithTransferHook, type EvtSwap2WithTransferHook, type EvtSwap3WithTransferHook, type EvtCurveCompleteWithTransferHook, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
 import { U64_MAX, addU64, safeMulDivCastU64, subU64 } from "./math";
 import { validateMinBaseFee } from "./fees";
-import { POOL_AUTHORITY_BUMP, checkConfigAccount, checkPoolAccount, finishSwap, processSwap, requireNoTransferHook } from "./process_swap";
+import {
+  type HookAccounts,
+  POOL_AUTHORITY_BUMP,
+  checkConfigAccount,
+  checkPoolAccount,
+  finishSwap,
+  noHookAccounts,
+  parseHookSlice,
+  processSwap,
+  requireHookParsed,
+  requireNoTransferHook,
+  transferFromPoolAuthority,
+} from "./process_swap";
 import {
   type ClaimFeeOperator,
   type MeteoraDammMigrationMetadata,
@@ -88,6 +101,8 @@ import {
   type PoolState,
   type TokenBadge,
   type TransferHookPool,
+  type TransferHookAccountsInfo,
+  AccountsType,
   type SwapParameters,
   type SwapParameters2,
   type TransferFeeParameters,
@@ -553,6 +568,7 @@ export function swap(
     tokenQuoteProgram,
     referralTokenAccount !== null,
     remainingAccounts(),
+    noHookAccounts(),
     params.amount_in,
     params.minimum_amount_out,
     0n,
@@ -692,6 +708,7 @@ export function swap2(
     tokenQuoteProgram,
     referralTokenAccount !== null,
     remainingAccounts(),
+    noHookAccounts(),
     params.amount_0,
     params.amount_1,
     u64(params.swap_mode),
@@ -1438,4 +1455,224 @@ export function initializeVirtualPoolWithToken2022TransferHook(
     eventAuthority,
     program,
   );
+}
+
+// ---- the transfer-hook instructions (ix_swap2_with_transfer_hook.rs, the claims' TransferHookAccountsInfo) -------
+
+/**
+ * swap2_with_transfer_hook: swap2 on a TransferHookPool, the base mint's transfers carrying the hook's extra accounts
+ * (the TransferHookBase slice of the remaining accounts, after the instructions sysvar if any; the referral's base
+ * transfer the TransferHookBaseReferral slice). The swap that completes the curve revokes the hook program and its
+ * authority.
+ */
+export function swap2WithTransferHook(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  inputTokenAccount: Mut<TokenAccount>,
+  outputTokenAccount: Mut<TokenAccount>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  baseMint: Mut<Mint>,
+  quoteMint: Mint,
+  payer: Signer,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  referralTokenAccount: Dup<Mut<TokenAccount>> | null,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  params: SwapParameters2,
+  transferHookAccountsInfo: TransferHookAccountsInfo,
+): void {
+  require(checkPoolAccount(pool), PoolError.PoolTypeMismatch);
+  const rest = remainingAccounts();
+  const h = noHookAccounts();
+  for (const s of transferHookAccountsInfo.slices) h.total = h.total + u64(s.length_);
+  h.end = rest.length >= h.total ? rest.length - h.total : 0n;
+  for (const s of transferHookAccountsInfo.slices) parseHookSlice(h, s.accounts_type === AccountsType.TransferHookBaseReferral, u64(s.length_), true, rest.length);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  const o = processSwap(
+    p,
+    c,
+    pool.key,
+    poolAuthority,
+    inputTokenAccount,
+    outputTokenAccount,
+    baseVault,
+    quoteVault,
+    baseMint,
+    quoteMint,
+    payer,
+    tokenBaseProgram,
+    tokenQuoteProgram,
+    referralTokenAccount !== null,
+    rest,
+    h,
+    params.amount_0,
+    params.amount_1,
+    u64(params.swap_mode),
+  );
+  // the referral's share, from the vault of the token the fee was taken in
+  if (referralTokenAccount !== null && o.result.referral_fee > 0n) {
+    if (o.fee_on_base_token)
+      transferFromPoolAuthority(tokenBaseProgram, baseVault, baseMint, referralTokenAccount, poolAuthority, o.result.referral_fee, rest, h.has_referral, h.referral_from, h.referral_to);
+    else transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, referralTokenAccount, poolAuthority, o.result.referral_fee, rest, false, 0n, 0n);
+  }
+  finishSwap(p, c, baseVault, o);
+  // revoke_transfer_hook: the hook program, then its authority (AuthorityType::TransferHookProgramId, 10)
+  if (o.curve_complete) {
+    tokenBaseProgram.updateTransferHook(baseMint, poolAuthority, null, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    tokenBaseProgram.setAuthority(baseMint, poolAuthority, 10n, null, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  }
+  const direction: u8 = o.quote_to_base ? 1n : 0n;
+  {
+    emitCpi<EvtSwap2WithTransferHook>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        has_referral: o.has_referral,
+        swap_parameters: { amount_0: params.amount_0, amount_1: params.amount_1, swap_mode: params.swap_mode },
+        swap_result: {
+          included_fee_input_amount: o.result.included_fee_input_amount,
+          excluded_fee_input_amount: o.result.excluded_fee_input_amount,
+          amount_left: o.result.amount_left,
+          output_amount: o.result.output_amount,
+          next_sqrt_price: o.result.next_sqrt_price,
+          trading_fee: o.result.trading_fee,
+          protocol_fee: o.result.protocol_fee,
+          referral_fee: o.result.referral_fee,
+        },
+        quote_reserve_amount: o.quote_reserve_amount,
+        migration_threshold: o.migration_threshold,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  {
+    emitCpi<EvtSwap3WithTransferHook>(
+      {
+        pool: pool.key,
+        config: config.key,
+        trade_direction: direction,
+        swap_mode: params.swap_mode,
+        has_referral: o.has_referral,
+        fee_on_base_token: o.fee_on_base_token,
+        included_transfer_fee_amount_in: o.in_amount_in,
+        excluded_transfer_fee_amount_in: o.result.included_fee_input_amount,
+        included_transfer_fee_amount_out: o.result.output_amount,
+        excluded_transfer_fee_amount_out: o.excluded_transfer_fee_amount_out,
+        trading_fee: o.result.trading_fee,
+        protocol_fee: o.result.protocol_fee,
+        referral_fee: o.result.referral_fee,
+        next_sqrt_price: o.result.next_sqrt_price,
+        quote_reserve: o.quote_reserve_amount,
+        current_timestamp: o.current_timestamp,
+      },
+      eventAuthority,
+      program,
+    );
+  }
+  if (o.curve_complete)
+    emitCpi<EvtCurveCompleteWithTransferHook>(
+      { pool: pool.key, config: config.key, base_reserve: o.base_reserve, quote_reserve: o.quote_reserve_amount },
+      eventAuthority,
+      program,
+    );
+}
+
+/** The claims' TransferHookAccountsInfo: TransferHookBase slices only, and no remaining account beyond them. */
+function parseClaimHookAccounts(h: Inout<HookAccounts>, count: u64): void {
+  requireHookParsed(h);
+  require(h.end === count, PoolError.InvalidRemainingAccountsLength);
+}
+
+/** claim_trading_fee2: claim_trading_fee for either pool type, the base transfer carrying the hook's accounts. */
+export function claimTradingFee2(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  config: AccountInfo,
+  pool: Mut<AccountInfo>,
+  tokenAAccount: Mut<TokenAccount>,
+  tokenBAccount: Mut<TokenAccount>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  baseMint: Mint,
+  quoteMint: Mint,
+  feeClaimer: Signer,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  maxAmountA: u64,
+  maxAmountB: u64,
+  transferHookAccountsInfo: TransferHookAccountsInfo,
+): void {
+  // access control: is_partner_fee_claimer
+  checkConfigAccount(config);
+  const c = loadRawAt<PoolConfig>(config, 8n);
+  require(c.fee_claimer === feeClaimer.key, PoolError.Unauthorized);
+  require(c.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  checkPoolAccount(pool);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.base_mint === baseMint.key, AnchorError.ConstraintHasOne);
+  require(p.config === config.key, AnchorError.ConstraintHasOne);
+  const rest = remainingAccounts();
+  const h = noHookAccounts();
+  for (const s of transferHookAccountsInfo.slices) parseHookSlice(h, s.accounts_type === AccountsType.TransferHookBaseReferral, u64(s.length_), false, rest.length);
+  parseClaimHookAccounts(h, rest.length);
+  const baseAmount = p.partner_base_fee < maxAmountA ? p.partner_base_fee : maxAmountA;
+  const quoteAmount = p.partner_quote_fee < maxAmountB ? p.partner_quote_fee : maxAmountB;
+  p.partner_base_fee = p.partner_base_fee - baseAmount;
+  p.partner_quote_fee = p.partner_quote_fee - quoteAmount;
+  if (baseAmount > 0n) transferFromPoolAuthority(tokenBaseProgram, baseVault, baseMint, tokenAAccount, poolAuthority, baseAmount, rest, h.has_base, h.base_from, h.base_to);
+  if (quoteAmount > 0n) transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, tokenBAccount, poolAuthority, quoteAmount, rest, false, 0n, 0n);
+  emitCpi<EvtClaimTradingFee>({ pool: pool.key, token_base_amount: baseAmount, token_quote_amount: quoteAmount }, eventAuthority, program);
+}
+
+/** claim_creator_trading_fee2: claim_creator_trading_fee for either pool type, the base transfer carrying the hook's accounts. */
+export function claimCreatorTradingFee2(
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  pool: Mut<AccountInfo>,
+  tokenAAccount: Mut<TokenAccount>,
+  tokenBAccount: Mut<TokenAccount>,
+  baseVault: TokenOf<Mut<TokenAccount>, "baseMint", never, "tokenBaseProgram">,
+  quoteVault: TokenOf<Mut<TokenAccount>, "quoteMint", never, "tokenQuoteProgram">,
+  baseMint: Mint,
+  quoteMint: Mint,
+  creator: Signer,
+  tokenBaseProgram: TokenInterface,
+  tokenQuoteProgram: TokenInterface,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  maxBaseAmount: u64,
+  maxQuoteAmount: u64,
+  transferHookAccountsInfo: TransferHookAccountsInfo,
+): void {
+  // access control: is_pool_creator
+  checkPoolAccount(pool);
+  const p = loadRawMutAt<PoolState>(pool, 8n);
+  require(p.creator === creator.key, PoolError.Unauthorized);
+  require(p.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  require(p.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  require(p.base_mint === baseMint.key, AnchorError.ConstraintHasOne);
+  const rest = remainingAccounts();
+  const h = noHookAccounts();
+  for (const s of transferHookAccountsInfo.slices) parseHookSlice(h, s.accounts_type === AccountsType.TransferHookBaseReferral, u64(s.length_), false, rest.length);
+  parseClaimHookAccounts(h, rest.length);
+  const baseAmount = p.creator_base_fee < maxBaseAmount ? p.creator_base_fee : maxBaseAmount;
+  const quoteAmount = p.creator_quote_fee < maxQuoteAmount ? p.creator_quote_fee : maxQuoteAmount;
+  p.creator_base_fee = p.creator_base_fee - baseAmount;
+  p.creator_quote_fee = p.creator_quote_fee - quoteAmount;
+  if (baseAmount > 0n) transferFromPoolAuthority(tokenBaseProgram, baseVault, baseMint, tokenAAccount, poolAuthority, baseAmount, rest, h.has_base, h.base_from, h.base_to);
+  if (quoteAmount > 0n) transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, tokenBAccount, poolAuthority, quoteAmount, rest, false, 0n, 0n);
+  emitCpi<EvtClaimCreatorTradingFee>({ pool: pool.key, token_base_amount: baseAmount, token_quote_amount: quoteAmount }, eventAuthority, program);
 }

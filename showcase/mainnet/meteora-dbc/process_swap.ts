@@ -177,12 +177,134 @@ function createdInThisTransaction(pool: Pubkey, hasReferral: boolean, rest: Rema
 
 /** transfer_token_from_user / transfer_token_from_pool_authority without hook accounts: a hooked mint needs them. */
 export function requireNoTransferHook(mint: Mint): void {
-  require(mint.tokenProgram === pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") || transferHookProgram(mint) === null, PoolError.MissingRemainingAccountForTransferHook);
+  require(!hasTransferHook(mint), PoolError.MissingRemainingAccountForTransferHook);
+}
+
+/** get_transfer_hook_program_id(mint).is_some() */
+export function hasTransferHook(mint: Mint): boolean {
+  return mint.tokenProgram !== pubkey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") && transferHookProgram(mint) !== null;
+}
+
+// ---- the transfer hook's accounts (utils/remaining_accounts.rs, utils/token.rs) -----------------------------------
+
+/** parse_transfer_hook_accounts' first refusal, kept until the point where the original parses. */
+export const HOOK_PARSE_OK: u64 = 0n;
+export const HOOK_PARSE_SLICE_TYPE: u64 = 1n;
+export const HOOK_PARSE_LENGTH: u64 = 2n;
+export const HOOK_PARSE_DUPLICATED: u64 = 3n;
+
+/**
+ * TransferHookAccountsInfo as parse_transfer_hook_accounts reads it: the sum of the slices' lengths (the remaining
+ * accounts before them are the instructions sysvar, if any), where the TransferHookBase and TransferHookBaseReferral
+ * accounts are among the remaining accounts, and the first refusal of the parse (it has no effects, so it is computed
+ * when the instruction starts and raised where the original parses).
+ */
+export interface HookAccounts {
+  total: u64;
+  failure: u64;
+  has_base: boolean;
+  base_from: u64;
+  base_to: u64;
+  has_referral: boolean;
+  referral_from: u64;
+  referral_to: u64;
+  end: u64;
+}
+
+export function noHookAccounts(): HookAccounts {
+  return { total: 0n, failure: 0n, has_base: false, base_from: 0n, base_to: 0n, has_referral: false, referral_from: 0n, referral_to: 0n, end: 0n };
+}
+
+/** One RemainingAccountsSlice of parse_transfer_hook_accounts over the remaining accounts from `h.end` to `count`. */
+export function parseHookSlice(h: Inout<HookAccounts>, isReferral: boolean, length: u64, referralAllowed: boolean, count: u64): void {
+  if (h.failure !== HOOK_PARSE_OK) return;
+  if (isReferral && !referralAllowed) {
+    h.failure = HOOK_PARSE_SLICE_TYPE;
+    return;
+  }
+  if (length === 0n) return;
+  if (count < h.end + length) {
+    h.failure = HOOK_PARSE_LENGTH;
+    return;
+  }
+  const from = h.end;
+  h.end = h.end + length;
+  if (!isReferral) {
+    if (h.has_base) {
+      h.failure = HOOK_PARSE_DUPLICATED;
+      return;
+    }
+    h.has_base = true;
+    h.base_from = from;
+    h.base_to = h.end;
+  } else {
+    if (h.has_referral) {
+      h.failure = HOOK_PARSE_DUPLICATED;
+      return;
+    }
+    h.has_referral = true;
+    h.referral_from = from;
+    h.referral_to = h.end;
+  }
+}
+
+/** The parse's refusal, where the original parses. */
+export function requireHookParsed(h: HookAccounts): void {
+  require(h.failure !== HOOK_PARSE_SLICE_TYPE, PoolError.InvalidRemainingAccountSliceType);
+  require(h.failure !== HOOK_PARSE_LENGTH, PoolError.InvalidRemainingAccountsLength);
+  require(h.failure !== HOOK_PARSE_DUPLICATED, PoolError.DuplicatedRemainingAccountTypes);
 }
 
 /**
- * process_swap for a VirtualPool with no transfer hook accounts (swap, swap2). `swapMode` 0 ExactIn, 1 PartialFill,
- * 2 ExactOut; `amount0` / `amount1` as SwapParameters2 has them.
+ * transfer_token_from_user: `amount` from the user's account to a vault, the user signing; the hook's accounts
+ * `rest[from..to)` when `has` (a hooked mint needs them, another refuses them).
+ */
+export function transferFromUser(
+  program: TokenInterface,
+  source: Mut<TokenAccount>,
+  mint: Mint,
+  destination: Mut<TokenAccount>,
+  authority: Signer,
+  amount: u64,
+  rest: RemainingAccounts,
+  has: boolean,
+  from: u64,
+  to: u64,
+): void {
+  if (hasTransferHook(mint)) {
+    require(has, PoolError.MissingRemainingAccountForTransferHook);
+    program.transferCheckedWithHook(source, mint, destination, authority, amount, rest.slice(from, to));
+  } else {
+    require(!has, PoolError.NoTransferHookProgram);
+    program.transferChecked(source, mint, destination, authority, amount);
+  }
+}
+
+/** transfer_token_from_pool_authority: `amount` out of a vault, the pool authority signing. */
+export function transferFromPoolAuthority(
+  program: TokenInterface,
+  vault: Mut<TokenAccount>,
+  mint: Mint,
+  destination: Mut<TokenAccount>,
+  poolAuthority: AccountInfo,
+  amount: u64,
+  rest: RemainingAccounts,
+  has: boolean,
+  from: u64,
+  to: u64,
+): void {
+  if (hasTransferHook(mint)) {
+    require(has, PoolError.MissingRemainingAccountForTransferHook);
+    program.transferCheckedWithHook(vault, mint, destination, poolAuthority, amount, rest.slice(from, to), ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  } else {
+    require(!has, PoolError.NoTransferHookProgram);
+    program.transferChecked(vault, mint, destination, poolAuthority, amount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  }
+}
+
+/**
+ * process_swap. `swapMode` 0 ExactIn, 1 PartialFill, 2 ExactOut; `amount0` / `amount1` as SwapParameters2 has them;
+ * `hook` the transfer hook's accounts (none for swap and swap2), after the instructions sysvar among `rest`.
  */
 export function processSwap(
   p: Inout<PoolState>,
@@ -200,6 +322,7 @@ export function processSwap(
   tokenQuoteProgram: TokenInterface,
   hasReferral: boolean,
   rest: RemainingAccounts,
+  hook: HookAccounts,
   amount0: u64,
   amount1: u64,
   swapMode: u64,
@@ -207,8 +330,10 @@ export function processSwap(
   require(swapMode <= 2n, PoolError.TypeCastFailed);
   const quoteToBase = inputTokenAccount.mint !== baseMint.key;
   require(amount0 > 0n, PoolError.AmountIsZero);
-  require(rest.length <= 1n, PoolError.InvalidRemainingAccountsLength);
-  const hasSysvar = rest.length === 1n;
+  // the remaining accounts before the hook's: the instructions sysvar, or none
+  require(rest.length >= hook.total, PoolError.MathOverflow);
+  require(rest.length - hook.total <= 1n, PoolError.InvalidRemainingAccountsLength);
+  const hasSysvar = rest.length - hook.total === 1n;
   if (hasSysvar) require(rest.get(0n).key === INSTRUCTIONS_SYSVAR, PoolError.InvalidInstructionsSysvar);
   // get_current_point
   require(c.activation_type <= 1n, PoolError.InvalidActivationType);
@@ -261,17 +386,15 @@ export function processSwap(
   const migrationBaseThreshold = c.migration_base_threshold;
   const v = c.locked_vesting_config;
   
-  // the input to its vault, then the output from the other vault (transfer_token_from_user, _from_pool_authority)
+  requireHookParsed(hook);
+  // the input to its vault, then the output from the other vault (transfer_token_from_user, _from_pool_authority); the
+  // hook's base accounts go with the base mint's transfer
   if (quoteToBase) {
-    requireNoTransferHook(quoteMint);
-    tokenQuoteProgram.transferChecked(inputTokenAccount, quoteMint, quoteVault, payer, inAmountIn);
-    requireNoTransferHook(baseMint);
-    tokenBaseProgram.transferChecked(baseVault, baseMint, outputTokenAccount, poolAuthority, r.output_amount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    transferFromUser(tokenQuoteProgram, inputTokenAccount, quoteMint, quoteVault, payer, inAmountIn, rest, false, 0n, 0n);
+    transferFromPoolAuthority(tokenBaseProgram, baseVault, baseMint, outputTokenAccount, poolAuthority, r.output_amount, rest, hook.has_base, hook.base_from, hook.base_to);
   } else {
-    requireNoTransferHook(baseMint);
-    tokenBaseProgram.transferChecked(inputTokenAccount, baseMint, baseVault, payer, inAmountIn);
-    requireNoTransferHook(quoteMint);
-    tokenQuoteProgram.transferChecked(quoteVault, quoteMint, outputTokenAccount, poolAuthority, r.output_amount, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+    transferFromUser(tokenBaseProgram, inputTokenAccount, baseMint, baseVault, payer, inAmountIn, rest, hook.has_base, hook.base_from, hook.base_to);
+    transferFromPoolAuthority(tokenQuoteProgram, quoteVault, quoteMint, outputTokenAccount, poolAuthority, r.output_amount, rest, false, 0n, 0n);
   }
   return {
     quote_to_base: quoteToBase,

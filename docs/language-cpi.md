@@ -54,6 +54,7 @@ Pass signer seeds (with the bump) as the last argument when the authority is a P
 | Methods | Notes |
 | --- | --- |
 | `transfer`, `transferChecked(from, mint, to, authority, amount)` | Token-2022 mints with fees or hooks require `transferChecked` |
+| `transferCheckedWithHook(from, mint, to, authority, amount, hookAccounts)` | `transferChecked` for a mint with a transfer hook: [the hook's extra accounts](#calling-a-transfer-hook-mint) resolved among `hookAccounts` |
 | `mintTo`, `mintToChecked(mint, to, authority, amount)` | the mint may be one this instruction just created |
 | `burn`, `burnChecked(from, mint, authority, amount)` | |
 | `approve(source, delegate, owner, amount)`, `approveChecked(source, mint, delegate, owner, amount)`, `revoke` | the checked forms take the decimals from the mint |
@@ -466,5 +467,30 @@ ExtraAccountMetaList).
 - `updateExtraAccountMetas(...)` rewrites and resizes an existing list.
 - Inside the hook, `isTransferring(source)` says whether Token-2022 is transferring from it.
 - See [`test/fixtures/hook.ts`](https://github.com/typesol-lang/typesol/blob/main/test/fixtures/hook.ts) and the transfer-hook ports.
+
+### Calling a transfer hook mint
+
+A program that moves a hooked mint's tokens by CPI must pass Token-2022 the hook's extra accounts, the validation
+account and the hook program after the four of TransferChecked. `tokenProgram.transferCheckedWithHook(from, mint, to,
+authority, amount, hookAccounts, signerSeeds?)` builds that call as Rust's
+`spl_transfer_hook_interface::onchain::add_extra_accounts_for_execute_cpi` does: `hookAccounts` (`remainingAccounts()`
+or `rest.slice(a, b)`) must hold the hook program and, when the transfer needs it, the validation account and every
+extra account, in any order. Each extra account is resolved from the list (a fixed address, a PDA of the hook or of
+another program from literal, instruction-data, account-key and account-data seeds, or a key read from an account's
+data), against the execute instruction's accounts (source, mint, destination, authority, the validation account, then
+the extra accounts already resolved), made read-only where every earlier mention of it is, and never a signer. The
+refusals are the Rust crates' and their codes: the hook program missing (TransferHookError::IncorrectAccount,
+2110272652), an extra account missing (AccountResolutionError::IncorrectAccount, 2724315840; the other
+AccountResolutionError codes for bad seeds), no list in the validation account (TlvError::TypeNotFound, 1202666432), a
+malformed one (InvalidAccountData, InvalidArgument, or 1 for a list shorter than its count). Without the validation
+account among `hookAccounts` only the hook program is added; a mint without a hook gets a plain `transferChecked`.
+
+```ts
+import { type Mint, type Mut, type Signer, type TokenAccount, type TokenInterface, type u64, remainingAccounts } from "typesol";
+
+export function pay(from: Mut<TokenAccount>, mint: Mint, to: Mut<TokenAccount>, owner: Signer, tokenProgram: TokenInterface, amount: u64): void {
+  tokenProgram.transferCheckedWithHook(from, mint, to, owner, amount, remainingAccounts());
+}
+```
 
 **Next:** [Sysvars, hashes, signatures and oracles](language-chain.md).
