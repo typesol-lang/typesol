@@ -403,10 +403,105 @@ export function baseParams(): Params {
   };
 }
 
+/** A config create_config2 takes with a base transfer fee: constant supply, customizable migration fee, compounding. */
+export const constantSupply = (b: Params): Params => ({
+  ...b,
+  token_type: 1,
+  token_supply: { pre_migration_token_supply: 10n ** 17n, post_migration_token_supply: 10n ** 17n },
+  migration_fee_option: 6,
+  migrated_pool_fee: { collect_fee_mode: 2, dynamic_fee: 0, pool_fee_bps: 100 },
+});
+export const transferFee = (bps: number, withheld = 0, migrated = 1) => ({
+  transfer_fee_basis_points: bps,
+  withheld_authority: withheld,
+  migrated_transfer_fee_authority_option: migrated,
+});
+
 /** Params as the Anchor coder encodes them: bigint → BN. */
 export function coded(x: unknown): unknown {
   if (typeof x === "bigint") return new BN(x.toString());
   if (Array.isArray(x)) return x.map(coded);
   if (x && typeof x === "object") return Object.fromEntries(Object.entries(x).map(([k, v]) => [k, coded(v)]));
   return x;
+}
+
+// ---- a transfer hook program (showcase/test/fixtures/meteora-dbc/hook.ts) -----------------------------------------
+
+export const HOOK_SOURCE = fileURLToPath(new URL("./fixtures/meteora-dbc/hook.ts", import.meta.url));
+
+/** The fixture hook, built and loaded into both VMs at a new address. */
+export async function loadHook(p: Pair): Promise<Address> {
+  const hook = (await generateKeyPairSigner()).address;
+  for (const vm of p.vms()) await deployFile(HOOK_SOURCE, { svm: vm, programId: hook });
+  return hook;
+}
+
+/** spl-transfer-hook-interface's validation account: ["extra-account-metas", mint] of the hook program. */
+export const extraMetasAddress = async (hook: Address, mint: Address) => (await pda(hook, ["extra-account-metas", mint]))[0];
+
+/** sha256("spl-transfer-hook-interface:execute")[..8], the ExtraAccountMetaList's TLV type. */
+export const EXECUTE_DISC = createHash("sha256").update("spl-transfer-hook-interface:execute").digest().subarray(0, 8);
+
+/** A seed of an extra account (spl-tlv-account-resolution's Seed, packed). */
+export type HookSeed =
+  | { literal: Uint8Array | string }
+  | { ixData: [index: number, length: number] }
+  | { accountKey: number }
+  | { accountData: [account: number, offset: number, length: number] };
+/** An ExtraAccountMeta: a fixed address, a PDA of the hook (or of the program at account `program`), or a key read from data. */
+export type HookMeta = (
+  | { address: Address }
+  | { seeds: HookSeed[]; program?: number }
+  | { keyFromIxData: number }
+  | { keyFromAccountData: [account: number, offset: number] }
+  | { raw: Uint8Array }
+) & { signer?: boolean; writable?: boolean };
+
+/** The 35 bytes of one ExtraAccountMeta: discriminator, 32-byte address config, is_signer, is_writable. */
+export function packMeta(m: HookMeta): Buffer {
+  const out = Buffer.alloc(35);
+  if ("raw" in m) Buffer.from(m.raw).copy(out);
+  else if ("address" in m) key(m.address).copy(out, 1);
+  else if ("seeds" in m) {
+    out[0] = m.program === undefined ? 1 : 128 + m.program;
+    let at = 1;
+    for (const s of m.seeds) {
+      if ("literal" in s) {
+        const b = typeof s.literal === "string" ? Buffer.from(s.literal) : Buffer.from(s.literal);
+        out[at] = 1;
+        out[at + 1] = b.length;
+        b.copy(out, at + 2);
+        at += 2 + b.length;
+      } else if ("ixData" in s) {
+        out.set([2, ...s.ixData], at);
+        at += 3;
+      } else if ("accountKey" in s) {
+        out.set([3, s.accountKey], at);
+        at += 2;
+      } else {
+        out.set([4, ...s.accountData], at);
+        at += 4;
+      }
+    }
+  } else if ("keyFromIxData" in m) out.set([2, 1, m.keyFromIxData], 0);
+  else out.set([2, 2, ...m.keyFromAccountData], 0);
+  out[33] = m.signer ? 1 : 0;
+  out[34] = m.writable ? 1 : 0;
+  return out;
+}
+
+/** An ExtraAccountMetaList's bytes: the TLV entry (type, u32 length) holding a u32 count and the metas. */
+export function extraMetasData(metas: HookMeta[]): Buffer {
+  const list = Buffer.concat([Buffer.alloc(4), ...metas.map(packMeta)]);
+  list.writeUInt32LE(metas.length, 0);
+  const len = Buffer.alloc(4);
+  len.writeUInt32LE(list.length);
+  return Buffer.concat([EXECUTE_DISC, len, list]);
+}
+
+/** Write the validation account of `mint` under `hook` in both VMs (`data` as given, or the list of `metas`). */
+export async function writeExtraMetas(p: Pair, hook: Address, mint: Address, metas: HookMeta[] | Buffer): Promise<Address> {
+  const at = await extraMetasAddress(hook, mint);
+  p.write(at, Buffer.isBuffer(metas) ? metas : extraMetasData(metas), hook);
+  return at;
 }

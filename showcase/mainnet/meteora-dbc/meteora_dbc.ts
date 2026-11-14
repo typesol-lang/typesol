@@ -3,9 +3,8 @@
 // launch pools that sell a base token along a curve of up to 16 constant-liquidity segments and migrate to a DAMM
 // pool when the quote threshold is reached.
 //
-// This stage ports 9 of its 35 instructions: the admin's operator accounts and the legacy claim-fee operator, token
-// badges, partner metadata, and the three config instructions. The others are not here yet: their discriminators fail
-// with Anchor's InstructionFallbackNotFound (101).
+// The instructions ported so far are listed in README.md; the others are not here yet: their discriminators fail with
+// Anchor's InstructionFallbackNotFound (101).
 //
 // Anchor checks each instruction's accounts first (the `init` accounts created among them), then its
 // `#[access_control]` function, then the handler; the bodies below keep that order: creates first, then the access
@@ -32,7 +31,9 @@ import {
   type RemainingAccounts,
   type SelfProgram,
   type Signer,
+  type SignerSeeds,
   type SystemProgram,
+  type Token2022Program,
   AnchorError,
   AuthorityType,
   ProgramError,
@@ -51,19 +52,22 @@ import {
   loadRawMutAt,
   emit,
   emitCpi,
+  findProgramAddress,
+  findProgramAddressBump,
   instructionData,
   now,
   programId,
   pubkey,
   remainingAccounts,
   require,
+  signer,
   u8,
   u64,
   u128,
 } from "typesol";
 import { DEFAULT_PUBKEY, initialBaseSupply, totalLiquidityLockedBpsAtNSeconds, processCreateConfig, validateConfigParameters, validateTransferFeeParameters } from "./config";
 import { PoolError } from "./errors";
-import { type EvtInitializePool, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
+import { type EvtInitializePool, type EvtInitializePoolWithTransferHook, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
 import { U64_MAX, addU64, safeMulDivCastU64, subU64 } from "./math";
 import { validateMinBaseFee } from "./fees";
 import { POOL_AUTHORITY_BUMP, checkConfigAccount, checkPoolAccount, finishSwap, processSwap, requireNoTransferHook } from "./process_swap";
@@ -83,6 +87,7 @@ import {
   type PoolConfigAccount,
   type PoolState,
   type TokenBadge,
+  type TransferHookPool,
   type SwapParameters,
   type SwapParameters2,
   type TransferFeeParameters,
@@ -101,6 +106,8 @@ import {
   TOKEN_PROGRAM_ID,
   mintScore,
   mintScoreWithBadge,
+  token2022BaseMintSpace,
+  token2022BaseVaultSpace,
   tokenAccountSpace,
 } from "./token";
 
@@ -1179,6 +1186,255 @@ export function initializeVirtualPoolWithSplToken(
   pool.pool_state.protocol_liquidity_migration_fee_bps = 20n;
   emitCpi<EvtInitializePool>(
     { pool: pool.key, config: config.key, creator: creator.key, base_mint: baseMint.key, pool_type: 0n, activation_point: activationPoint },
+    eventAuthority,
+    program,
+  );
+}
+
+/**
+ * utils/accounts.rs create_account (Anchor 1.0's `init` written out) for a keypair account: CreateAccount for a new
+ * address, or for one someone funded first a top-up to the rent (at least 1 lamport), Allocate and Assign.
+ */
+function createKeypairAccountAsAnchor(account: Mut<Signer>, space: u64, owner: Pubkey, payer: Mut<Signer>, systemProgram: SystemProgram): void {
+  if (account.lamports === 0n) {
+    systemProgram.createAccount(payer, account, rentExempt(space), space, owner);
+    return;
+  }
+  require(payer.key !== account.key, AnchorError.TryingToInitPayerAsProgramAccount);
+  const rent = rentExempt(space) > 1n ? rentExempt(space) : 1n;
+  if (rent > account.lamports) systemProgram.transfer(payer, account, rent - account.lamports);
+  systemProgram.allocate(account, space);
+  systemProgram.assign(account, owner);
+}
+
+/** create_account for a PDA of this program, signed by `seeds`. */
+function createPdaAccountAsAnchor(account: Mut<AccountInfo>, space: u64, owner: Pubkey, payer: Mut<Signer>, systemProgram: SystemProgram, seeds: SignerSeeds): void {
+  if (account.lamports === 0n) {
+    systemProgram.createAccount(payer, account, rentExempt(space), space, owner, seeds);
+    return;
+  }
+  require(payer.key !== account.key, AnchorError.TryingToInitPayerAsProgramAccount);
+  const rent = rentExempt(space) > 1n ? rentExempt(space) : 1n;
+  if (rent > account.lamports) systemProgram.transfer(payer, account, rent - account.lamports);
+  systemProgram.allocate(account, space, seeds);
+  systemProgram.assign(account, owner, seeds);
+}
+
+/** BaseMintTransferFee::from_config: whether the base mint gets a transfer fee (the config's transfer fee flag). */
+function hasBaseTransferFee(c: PoolConfig): boolean {
+  return c.transfer_fee_flag === 1n;
+}
+
+/**
+ * create_token_2022_base_mint and create_token_2022_base_vault: the base mint (MetadataPointer to itself, the config's
+ * transfer fee, the hook program) with the pool authority as its mint authority, then the base vault at
+ * ["token_vault", base mint, pool] owned by the pool authority. BaseMintTransferFee::from_config's checks come first.
+ */
+function createToken2022BaseMintAndVault(
+  c: PoolConfig,
+  creator: Pubkey,
+  poolKey: Pubkey,
+  poolAuthority: AccountInfo,
+  baseMint: Mut<Signer>,
+  baseVault: Mut<AccountInfo>,
+  payer: Mut<Signer>,
+  tokenProgram: Token2022Program,
+  systemProgram: SystemProgram,
+  hookProgram: Pubkey,
+  withHook: boolean,
+): void {
+  const fee = hasBaseTransferFee(c);
+  if (fee) {
+    require(c.migrated_transfer_fee_authority_option <= 3n, PoolError.InvalidTransferFeeParameters);
+    require(c.transfer_fee_withheld_authority <= 1n, PoolError.InvalidTransferFeeParameters);
+  }
+  createKeypairAccountAsAnchor(baseMint, token2022BaseMintSpace(fee, withHook), TOKEN_2022_PROGRAM_ID, payer, systemProgram);
+  tokenProgram.initializeMetadataPointer(baseMint, poolAuthority.key, baseMint.key);
+  if (fee) {
+    const withheld = c.transfer_fee_withheld_authority === 0n ? c.fee_claimer : creator;
+    // MigratedTransferFeeAuthorityOption::Immutable: no config authority
+    if (c.migrated_transfer_fee_authority_option === 0n) tokenProgram.initializeTransferFeeConfig(baseMint, null, withheld, c.transfer_fee_basis_points, U64_MAX);
+    else tokenProgram.initializeTransferFeeConfig(baseMint, poolAuthority.key, withheld, c.transfer_fee_basis_points, U64_MAX);
+  }
+  if (withHook) tokenProgram.initializeTransferHook(baseMint, poolAuthority.key, hookProgram);
+  tokenProgram.initializeMint2(baseMint, c.token_decimal, poolAuthority.key, null);
+  const vaultBump = findProgramAddressBump(["token_vault", baseMint.key, poolKey], programId());
+  createPdaAccountAsAnchor(baseVault, token2022BaseVaultSpace(fee, withHook), TOKEN_2022_PROGRAM_ID, payer, systemProgram, signer(["token_vault", baseMint.key, poolKey, u8(vaultBump)]));
+  tokenProgram.initializeAccount3(baseVault, baseMint, poolAuthority.key);
+}
+
+/**
+ * process_initialize_virtual_pool_with_token2022: the config's checks, the mint's metadata (in the mint, Token
+ * Metadata interface) and its rent, the metadata pointer and metadata update authorities, the supply minted to the base
+ * vault, the mint authority (kept only by a transfer hook config). The creation fee and the activation point follow
+ * in the instruction.
+ */
+function processInitializeWithToken2022(
+  c: PoolConfig,
+  isHookConfig: boolean,
+  poolAuthority: AccountInfo,
+  creator: Signer,
+  baseMint: Mut<Signer>,
+  baseVault: Mut<AccountInfo>,
+  payer: Mut<Signer>,
+  tokenProgram: Token2022Program,
+  systemProgram: SystemProgram,
+  params: InitializePoolParameters,
+): void {
+  require(totalLiquidityLockedBpsAtNSeconds(c, 86400n) >= 1000n, PoolError.InvalidMigrationLockedLiquidity);
+  require(c.pool_fees.base_fee.base_fee_mode <= 2n, PoolError.InvalidBaseFeeMode);
+  require(c.pool_fees.base_fee.base_fee_mode !== 2n, PoolError.DeprecatedBaseFeeMode);
+  validateMinBaseFee(c.pool_fees.base_fee);
+  require(c.token_type <= 1n, PoolError.InvalidTokenType);
+  require(c.token_type === TOKEN_TYPE_TOKEN_2022, PoolError.InvalidTokenType);
+  tokenProgram.initializeMetadata(baseMint, creator, poolAuthority, params.name, params.symbol, params.uri, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  // update_account_lamports_to_minimum_balance: the metadata grew the mint
+  const minimum = rentExempt(baseMint.dataLen);
+  if (minimum > baseMint.lamports) systemProgram.transfer(payer, baseMint, minimum - baseMint.lamports);
+  require(c.token_update_authority <= 4n, PoolError.InvalidTokenAuthorityOption);
+  // get_update_authority: the creator (0, 3), the partner (2, 4), nobody (1)
+  const creatorUpdates = c.token_update_authority === 0n || c.token_update_authority === 3n;
+  const partnerUpdates = c.token_update_authority === 2n || c.token_update_authority === 4n;
+  // AuthorityType::MetadataPointer (12)
+  if (creatorUpdates) tokenProgram.setAuthority(baseMint, poolAuthority, 12n, creator.key, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  else if (partnerUpdates) tokenProgram.setAuthority(baseMint, poolAuthority, 12n, c.fee_claimer, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  else tokenProgram.setAuthority(baseMint, poolAuthority, 12n, null, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  if (creatorUpdates) tokenProgram.updateMetadataAuthority(baseMint, creator, creator.key);
+  else if (partnerUpdates) tokenProgram.updateMetadataAuthority(baseMint, creator, c.fee_claimer);
+  else tokenProgram.updateMetadataAuthority(baseMint, creator, null);
+  const supply = initialBaseSupply(c);
+  tokenProgram.mintTo(baseMint, baseVault, poolAuthority, supply, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  // get_mint_authority: the creator (3), the partner (4), nobody otherwise; only a transfer hook config may keep one
+  if (!isHookConfig) require(c.token_update_authority !== 3n && c.token_update_authority !== 4n, PoolError.InvalidTokenAuthorityOption);
+  if (c.token_update_authority === 3n) tokenProgram.setAuthority(baseMint, poolAuthority, AuthorityType.MintTokens, creator.key, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  else if (c.token_update_authority === 4n)
+    tokenProgram.setAuthority(baseMint, poolAuthority, AuthorityType.MintTokens, c.fee_claimer, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+  else tokenProgram.setAuthority(baseMint, poolAuthority, AuthorityType.MintTokens, null, ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+}
+
+/** The quote mint's score for a pool: a legacy config (version 0) takes only quote mints without a transfer fee. */
+function requirePoolQuoteMint(c: PoolConfig, quoteMint: Mint, rest: RemainingAccounts, legacyRule: boolean): void {
+  const score = firstRemainingAccountScore(quoteMint, rest);
+  if (!legacyRule || c.version === 0n) require(score >= MINT_SCORE_PERMISSIONED_WITHOUT_TRANSFER_FEE, PoolError.InvalidQuoteMint);
+  else require(score >= MINT_SCORE_PERMISSIONED_WITH_TRANSFER_FEE, PoolError.InvalidQuoteMint);
+}
+
+/**
+ * initialize_virtual_pool_with_token2022: a pool of `config` with a new Token-2022 base mint (a keypair that signs)
+ * carrying its metadata in itself, the config's transfer fee, the supply minted to the base vault and the mint
+ * authority revoked. A VirtualPool.
+ */
+export function initializeVirtualPoolWithToken2022(
+  config: Account<PoolConfigAccount>,
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  creator: Signer,
+  // Dup: Anchor 1.0.2 compares only typed accounts for duplicates, so the payer as the base mint reaches init (4101)
+  baseMint: Dup<Mut<Signer>>,
+  quoteMint: MintOf<Mint, never, never, "tokenQuoteProgram">,
+  pool: Init<VirtualPool>,
+  baseVault: Mut<AccountInfo>,
+  quoteVault: Mut<AccountInfo>,
+  payer: Mut<Signer>,
+  tokenQuoteProgram: TokenInterface,
+  tokenProgram: Token2022Program,
+  systemProgram: SystemProgram,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  params: InitializePoolParameters,
+): void {
+  constraint(config, config.config.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  constraint(baseVault, baseVault.key === findProgramAddress(["token_vault", baseMint.key, pool.key], programId()), AnchorError.ConstraintSeeds);
+  pool.create(payer, [
+    "pool",
+    config.key,
+    baseMint.key.compare(quoteMint.key) > 0n ? baseMint.key : quoteMint.key,
+    baseMint.key.compare(quoteMint.key) > 0n ? quoteMint.key : baseMint.key,
+  ]);
+  systemProgram.createPda(payer, quoteVault, tokenAccountSpace(quoteMint), tokenQuoteProgram.key, ["token_vault", quoteMint.key, pool.key]);
+  tokenQuoteProgram.initializeAccount3(quoteVault, quoteMint, poolAuthority.key);
+  const c = config.config;
+  requirePoolQuoteMint(c, quoteMint, remainingAccounts(), true);
+  createToken2022BaseMintAndVault(c, creator.key, pool.key, poolAuthority, baseMint, baseVault, payer, tokenProgram, systemProgram, DEFAULT_PUBKEY, false);
+  processInitializeWithToken2022(c, false, poolAuthority, creator, baseMint, baseVault, payer, tokenProgram, systemProgram, params);
+  if (c.pool_creation_fee > 0n) systemProgram.transfer(payer, pool, c.pool_creation_fee);
+  require(c.activation_type <= 1n, PoolError.InvalidActivationType);
+  const activationPoint = c.activation_type === 0n ? currentSlot() : nowAsU64();
+  const supply = initialBaseSupply(c);
+  pool.pool_state.config = config.key;
+  pool.pool_state.creator = creator.key;
+  pool.pool_state.base_mint = baseMint.key;
+  pool.pool_state.base_vault = baseVault.key;
+  pool.pool_state.quote_vault = quoteVault.key;
+  pool.pool_state.sqrt_price = c.sqrt_start_price;
+  pool.pool_state.pool_type = 1n;
+  pool.pool_state.activation_point = activationPoint;
+  pool.pool_state.base_reserve = supply;
+  pool.pool_state.protocol_liquidity_migration_fee_bps = 20n;
+  emitCpi<EvtInitializePool>(
+    { pool: pool.key, config: config.key, creator: creator.key, base_mint: baseMint.key, pool_type: 1n, activation_point: activationPoint },
+    eventAuthority,
+    program,
+  );
+}
+
+/**
+ * initialize_virtual_pool_with_token2022_transfer_hook: as initialize_virtual_pool_with_token2022 for a
+ * ConfigWithTransferHook, the base mint also carrying the config's transfer hook program (its authority the pool
+ * authority, revoked when the curve completes); the config's creator or partner mint authority options are kept. A
+ * TransferHookPool.
+ */
+export function initializeVirtualPoolWithToken2022TransferHook(
+  config: Account<ConfigWithTransferHook>,
+  poolAuthority: Address<AccountInfo, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  creator: Signer,
+  // Dup: Anchor 1.0.2 compares only typed accounts for duplicates, so the payer as the base mint reaches init (4101)
+  baseMint: Dup<Mut<Signer>>,
+  quoteMint: MintOf<Mint, never, never, "tokenQuoteProgram">,
+  pool: Init<TransferHookPool>,
+  baseVault: Mut<AccountInfo>,
+  quoteVault: Mut<AccountInfo>,
+  transferHookProgram: AccountInfo,
+  payer: Mut<Signer>,
+  tokenQuoteProgram: TokenInterface,
+  tokenProgram: Token2022Program,
+  systemProgram: SystemProgram,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+  params: InitializePoolParameters,
+): void {
+  constraint(config, config.config.quote_mint === quoteMint.key, AnchorError.ConstraintHasOne);
+  constraint(baseVault, baseVault.key === findProgramAddress(["token_vault", baseMint.key, pool.key], programId()), AnchorError.ConstraintSeeds);
+  // #[account(executable, address = config.transfer_hook_program)], in that order
+  constraint(transferHookProgram, transferHookProgram.executable, AnchorError.ConstraintExecutable);
+  constraint(transferHookProgram, transferHookProgram.key === config.transfer_hook_program, AnchorError.ConstraintAddress);
+  pool.create(payer, [
+    "pool",
+    config.key,
+    baseMint.key.compare(quoteMint.key) > 0n ? baseMint.key : quoteMint.key,
+    baseMint.key.compare(quoteMint.key) > 0n ? quoteMint.key : baseMint.key,
+  ]);
+  systemProgram.createPda(payer, quoteVault, tokenAccountSpace(quoteMint), tokenQuoteProgram.key, ["token_vault", quoteMint.key, pool.key]);
+  tokenQuoteProgram.initializeAccount3(quoteVault, quoteMint, poolAuthority.key);
+  const c = config.config;
+  requirePoolQuoteMint(c, quoteMint, remainingAccounts(), false);
+  createToken2022BaseMintAndVault(c, creator.key, pool.key, poolAuthority, baseMint, baseVault, payer, tokenProgram, systemProgram, config.transfer_hook_program, true);
+  processInitializeWithToken2022(c, true, poolAuthority, creator, baseMint, baseVault, payer, tokenProgram, systemProgram, params);
+  if (c.pool_creation_fee > 0n) systemProgram.transfer(payer, pool, c.pool_creation_fee);
+  require(c.activation_type <= 1n, PoolError.InvalidActivationType);
+  const activationPoint = c.activation_type === 0n ? currentSlot() : nowAsU64();
+  const supply = initialBaseSupply(c);
+  pool.pool_state.config = config.key;
+  pool.pool_state.creator = creator.key;
+  pool.pool_state.base_mint = baseMint.key;
+  pool.pool_state.base_vault = baseVault.key;
+  pool.pool_state.quote_vault = quoteVault.key;
+  pool.pool_state.sqrt_price = c.sqrt_start_price;
+  pool.pool_state.pool_type = 1n;
+  pool.pool_state.activation_point = activationPoint;
+  pool.pool_state.base_reserve = supply;
+  pool.pool_state.protocol_liquidity_migration_fee_bps = 20n;
+  emitCpi<EvtInitializePoolWithTransferHook>(
+    { pool: pool.key, config: config.key, creator: creator.key, base_mint: baseMint.key, pool_type: 1n, activation_point: activationPoint },
     eventAuthority,
     program,
   );

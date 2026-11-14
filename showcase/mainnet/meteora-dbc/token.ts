@@ -217,3 +217,30 @@ export function tokenAccountSpace(mint: Mint): u64 {
   }
   return extra === 0n ? 165n : 166n + extra;
 }
+
+// ---- Token-2022 base mints (utils/token.rs create_token_2022_base_mint, create_token_2022_base_vault) -------------
+
+/**
+ * The base mint's size, as anchor-spl's find_mint_account_size computes it for its extensions: the mint padded to an
+ * account's 165 bytes, the account type, then each extension with its 4-byte header (MetadataPointer 64,
+ * TransferFeeConfig 108, TransferHook 64). No combination here comes to a Multisig's 355 bytes.
+ */
+export function token2022BaseMintSpace(transferFee: boolean, transferHook: boolean): u64 {
+  let space: u64 = 166n + 68n;
+  if (transferFee) space = space + 112n;
+  if (transferHook) space = space + 68n;
+  return space;
+}
+
+/**
+ * The base vault's size: ExtensionType::get_required_init_account_extensions of the new mint's extensions
+ * (TransferFeeConfig needs TransferFeeAmount, 8 bytes; TransferHook needs TransferHookAccount, 1 byte; MetadataPointer
+ * nothing), then try_calculate_account_len (165 without extensions).
+ */
+export function token2022BaseVaultSpace(transferFee: boolean, transferHook: boolean): u64 {
+  if (!transferFee && !transferHook) return 165n;
+  let space: u64 = 166n;
+  if (transferFee) space = space + 12n;
+  if (transferHook) space = space + 5n;
+  return space;
+}

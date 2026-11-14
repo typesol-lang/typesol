@@ -44,8 +44,14 @@ codes, and says so here.
   activation, and the first swap at the minimum fee in the pool's creation transaction; the swap tests and fuzz now
   swap on pools made by it (pools are written only for a Token-2022 base, a TransferHookPool or a rate limiter).
   `meteora-dbc-mainnet.test.ts` swaps on two pools read from mainnet (an SPL and a Token-2022 base) to the end of
-  their curves. Not ported yet: the 2 Token-2022 pool creation instructions, the 3 transfer-hook instructions and the
-  migration stages; a swap by CPI under an active rate limiter, which the original checks against the processed
+  their curves. `initialize_virtual_pool_with_token2022` and `initialize_virtual_pool_with_token2022_transfer_hook`
+  follow (the base mint's MetadataPointer, transfer fee and transfer hook extensions and its metadata in the mint, as
+  the original creates them): `meteora-dbc-pool2022.test.ts` makes pools with each token authority option (the mint
+  authority kept under a transfer hook config), each base transfer fee option, a Token-2022 quote, a creation fee,
+  slot activation and addresses funded before creation, and checks their refusals, with a small transfer hook program
+  (`showcase/test/fixtures/meteora-dbc/hook.ts`) loaded in both; the swap tests now swap only on pools made by the
+  three pool creation instructions (written only under a rate limiter config). Not ported yet: the 3 transfer-hook
+  instructions and the migration stages; a swap by CPI under an active rate limiter, which the original checks against the processed
   sibling instructions, is refused here (not tested). The binary is identified as 0.2.2 by its instruction names, error messages and
   source paths; it was not rebuilt.
 
