@@ -391,10 +391,17 @@ await send("create Token-2022 mint (+MintCloseAuthority)", [
     programAddress: T22,
   }),
   t22.getInitializeMintCloseAuthorityInstruction({ mint: mint22.address, closeAuthority: deployer.address }),
-  t22.getInitializeMint2Instruction({ mint: mint22.address, decimals: 6, mintAuthority: configPda }),
+  t22.getInitializeMint2Instruction({ mint: mint22.address, decimals: 6, mintAuthority: deployer.address }),
 ]);
+// The mint's authority signs setup, which hands the mint authority to the config PDA.
 await send("setup", [
-  ix(minter, "setup", { cap: new BN(1_000_000) }, [me, { address: configPda, writable: true }, { address: mint22.address }, { address: SYSTEM }]),
+  ix(minter, "setup", { cap: new BN(1_000_000) }, [
+    me,
+    { address: configPda, writable: true },
+    { address: mint22.address, writable: true },
+    { address: T22 },
+    { address: SYSTEM },
+  ]),
 ]);
 const holder = await generateKeyPairSigner();
 const ataOf = async (owner: Address) => {

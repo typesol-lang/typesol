@@ -24,7 +24,9 @@ export interface Pot {
   bump: u8;
 }
 
+/** A member belongs to one pot: only that pot's admin can award it points. */
 export interface Member {
+  pot: Pubkey;
   owner: Pubkey;
   points: u64;
 }
@@ -32,6 +34,7 @@ export interface Member {
 export enum PotError {
   NotAdmin = "Only the admin can do this",
   Empty = "The pot cannot cover this airdrop",
+  WrongPot = "This member belongs to another pot",
 }
 
 export function setup(admin: Mut<Signer>, pot: Init<Pot>, systemProgram: SystemProgram): void {
@@ -39,8 +42,9 @@ export function setup(admin: Mut<Signer>, pot: Init<Pot>, systemProgram: SystemP
   pot.admin = admin.key;
 }
 
-export function join(owner: Mut<Signer>, member: Init<Member>, systemProgram: SystemProgram): void {
-  member.create(owner, ["member", owner.key]);
+export function join(owner: Mut<Signer>, pot: Account<Pot>, member: Init<Member>, systemProgram: SystemProgram): void {
+  member.create(owner, ["member", pot.key, owner.key]);
+  member.pot = pot.key;
   member.owner = owner.key;
 }
 
@@ -58,12 +62,13 @@ export function airdrop(admin: Signer, pot: Mut<Pot>, each: u64): void {
   pot.paidOut += total;
 }
 
-/** Add points to every Member account passed as a remaining account. */
+/** Add points to every Member of this pot passed as a remaining account. */
 export function award(admin: Signer, pot: Account<Pot>, points: u64): void {
   require(admin.key === pot.admin, PotError.NotAdmin);
   const rest = remainingAccounts();
   for (let i = 0n; i < rest.length; i++) {
     const m = loadAccountMut<Member>(rest.get(i));
+    require(m.pot === pot.key, PotError.WrongPot);
     m.points += points;
   }
 }

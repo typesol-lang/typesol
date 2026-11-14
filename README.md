@@ -419,7 +419,7 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`counter.ts`](examples/counter.ts) | PDA init, authority check |
 | [`vault.ts`](examples/vault.ts) | System CPI, direct lamport moves, rent floor, close |
 | [`escrow.ts`](examples/escrow.ts) | SPL Token CPIs signed by a PDA, atomic swap, refund |
-| [`minter.ts`](examples/minter.ts) | capped issuer over SPL Token and Token-2022 |
+| [`minter.ts`](examples/minter.ts) | capped issuer over SPL Token and Token-2022, set up by the mint's authority |
 | [`ledgerbook.ts`](examples/ledgerbook.ts) | enums, Options, a Vec that grows and shrinks its account |
 | [`airdrop.ts`](examples/airdrop.ts) | remaining accounts, batch payouts, `loadAccountMut` |
 | [`relay.ts`](examples/relay.ts), [`caller.ts`](examples/caller.ts) | generic `invoke`, PDA-signed transfers, return data |

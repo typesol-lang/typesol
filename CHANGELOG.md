@@ -86,6 +86,18 @@ codes, and says so here.
   against TypeSOL's). `scripts/percolator-author-suite.sh` now fails on a test file that does not build or run, on
   totals other than the recorded 671 / 660 / 0 / 11, and on test names that differ between the two runs.
 
+- Fixed: `examples/airdrop.ts` let the admin of any pot award points to any `Member`: anyone could set up a pot of
+  their own and pass other pots' members to `award`. A member now records its pot (`Member.pot`, PDA
+  `["member", pot, owner]`, `join` takes the pot), and `award` refuses a member of another pot (`WrongPot`, 6002).
+- Fixed: `examples/minter.ts` let anyone set up the config of any mint, choosing its admin and cap, for example before
+  the mint's owner did. `setup` now takes the mint's current mint authority as the signer (`HasOne<Mut<Mint>,
+  "mintAuthority">`, 2016), makes it the admin and moves the mint authority to the config PDA in the same instruction,
+  with the token program as a new account. Both examples' binaries and IDLs change; neither is in
+  `test/golden/binaries.json`. Tests: test/examples/airdrop.test.ts, test/examples/minter.test.ts (the attacks fail,
+  the honest paths work).
+- Docs: the `grow` example of docs/language-accounts.md let anyone resize another user's account; it now takes the
+  log's owner (`HasOne`).
+
 ## 0.48.0 — 2026-11-14
 
 A minor release: it adds three built-ins (`transferCheckedWithHook`, the processed sibling instructions,
