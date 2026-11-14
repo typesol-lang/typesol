@@ -83,9 +83,25 @@ codes, and says so here.
   fee modes, dynamic fee, fee time and market cap schedulers, compounding), partner and creator liquidity splits with
   permanent locks and vesting, SPL and Token-2022 bases and quotes, base and quote transfer fees with each migrated fee
   authority option, a transfer hook pool, fixed supplies (the burn and the leftover), legacy configs, each DAMM v2
-  config check and the refusals; the fuzz graduates random configs with the withdrawals in a random order. Not ported
-  yet: the DAMM v1 migration (stage 4). The binary is identified as 0.2.2 by its instruction names, error messages and
-  source paths; it was not rebuilt.
+  config check and the refusals; the fuzz graduates random configs with the withdrawals in a random order. The fourth
+  stage completes the port (35 of 35): the DAMM v1 migration, deprecated for new configs but still taken by pools of
+  configs made before 0.2.1: `migration_meteora_damm_create_metadata`, `migrate_meteora_damm` (DAMM v1's
+  `initialize_permissionless_constant_product_pool_with_config2` under flash rent, the burn, the partner's and
+  creator's LP split), `migrate_meteora_damm_lock_lp_token` (DAMM v1's `lock` into the owner's lock escrow) and
+  `migrate_meteora_damm_claim_lp_token`. `showcase/test/meteora-dbc-migration-v1.test.ts` checks them on both programs,
+  which call DAMM v1 (`Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB`, upgraded in slot 468,782,174 on 2026-11-13,
+  sha256 `ea4e6581…7f58`) and the dynamic vault (`24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi`, sha256
+  `a3c23d24…fdcb`) as deployed on mainnet (fetched by `scripts/fetch-programs.sh`, not kept here; their licences are
+  not established) on DAMM v1's six migration configs and the wrapped SOL vault read from mainnet
+  (`showcase/test/fixtures/meteora-dbc/damm-v1/`), with configs made for DAMM v2 and their migration option rewritten
+  to DAMM v1 in both ledgers: every progress state, each fee option with its config and another, the customizable
+  option, each DAMM v1 config check, partner and creator LP splits locked and claimed in different orders, a
+  self-partnered creator, vested shares (which DAMM v1 leaves with the pool authority), Token-2022 on either side
+  (refused, 3007, by both), a transfer hook pool (refused), wrapped SOL in its mainnet vault, fixed supplies, a payer
+  short of the rent, `transfer_pool_creator` after a DAMM v1 migration, and the account refusals; the migration fuzz
+  now takes the DAMM v1 or the DAMM v2 path at random, locking and claiming the LP among the other steps. The binary is
+  identified as 0.2.2 by its instruction names, error messages and source paths; it was not rebuilt. The README of
+  `showcase/mainnet/meteora-dbc/` lists what is compared, what differs and what is not verified.
 
 ## 0.47.0 — 2026-11-13
 

@@ -33,6 +33,7 @@ export const DAMM_V2 = address("cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG");
 export const LOCKER = address("LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn");
 export const DAMM_POOL_AUTHORITY = address("HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC");
 export const MPL = address("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
+export const WSOL = address("So11111111111111111111111111111111111111112");
 export const MPL_SO = fileURLToPath(new URL("../../test/programs/mpl_token_metadata.so", import.meta.url));
 export const DAMM_SO = fileURLToPath(new URL("../../test/programs/meteora_damm_v2.so", import.meta.url));
 export const LOCKER_SO = fileURLToPath(new URL("../../test/programs/meteora_locker.so", import.meta.url));
@@ -81,15 +82,18 @@ export interface Migrated {
   vaults: Address[];
 }
 
+/** How a pool is made: a transfer fee config (create_config2), a transfer hook config, a token badge, a creator who is the partner. */
+export type PoolOpts = { fee?: unknown; hook?: boolean; badge?: boolean; selfPartnered?: boolean };
+
 export interface Graduation {
   p: Pair;
   hook: Address;
   /** A config made by create_config, create_config2 (`fee`: transfer fee parameters) or create_config_with_transfer_hook. */
   config(params: Params, quoteMint: Address, opts?: { fee?: unknown; hook?: boolean; badge?: boolean }): Promise<{ config: Address; partner: KeyPairSigner }>;
   /** A pool of a new config, made by the pool creation instruction its base token type calls for. */
-  pool(params: Params, quoteMint: Address, quoteProgram: Address, opts?: { fee?: unknown; hook?: boolean; badge?: boolean }): Promise<PoolInfo>;
+  pool(params: Params, quoteMint: Address, quoteProgram: Address, opts?: PoolOpts): Promise<PoolInfo>;
   /** As pool(), or null when both programs refuse the config or the pool (the same way: compared). */
-  maybePool(params: Params, quoteMint: Address, quoteProgram: Address, opts?: { fee?: unknown; hook?: boolean; badge?: boolean }): Promise<PoolInfo | null>;
+  maybePool(params: Params, quoteMint: Address, quoteProgram: Address, opts?: PoolOpts): Promise<PoolInfo | null>;
   /** The ATA of `owner` for `m`, made in both, holding `amount` (written). */
   account(owner: Address, m: Address, program: Address, amount?: bigint): Promise<Address>;
   /** A swap of quote in (partial fill: up to the threshold), the trader made with enough quote. */
@@ -153,7 +157,9 @@ export async function graduation(): Promise<Graduation> {
         if (!a.exists) throw new Error("no account");
         const data = Buffer.from(a.data);
         data.writeBigUInt64LE(amount, 64);
-        vm.setAccount({ ...a, data: new Uint8Array(data) });
+        // a wrapped SOL account holds its amount in lamports too (SPL Token moves both)
+        const held = m === WSOL ? { lamports: lamports(a.lamports + amount) } : {};
+        vm.setAccount({ ...a, data: new Uint8Array(data), ...held });
       }
     return at;
   }
@@ -185,26 +191,15 @@ export async function graduation(): Promise<Graduation> {
     return { config: cfg.address, partner: payer };
   }
 
-  async function pool(
-    params: Params,
-    quoteMint: Address,
-    quoteProgram: Address,
-    opts: { fee?: unknown; hook?: boolean; badge?: boolean } = {},
-  ): Promise<PoolInfo> {
+  async function pool(params: Params, quoteMint: Address, quoteProgram: Address, opts: PoolOpts = {}): Promise<PoolInfo> {
     return (await makePool(params, quoteMint, quoteProgram, opts, false))!;
   }
-  async function makePool(
-    params: Params,
-    quoteMint: Address,
-    quoteProgram: Address,
-    opts: { fee?: unknown; hook?: boolean; badge?: boolean },
-    maybe: boolean,
-  ): Promise<PoolInfo | null> {
+  async function makePool(params: Params, quoteMint: Address, quoteProgram: Address, opts: PoolOpts, maybe: boolean): Promise<PoolInfo | null> {
     const made = await config(params, quoteMint, opts, maybe);
     if (!made) return null;
     const { config: cfg, partner } = made;
     const baseProgram = params.token_type === 1 ? TOKEN_2022 : TOKEN;
-    const creator = await p.funded();
+    const creator = opts.selfPartnered ? partner : await p.funded();
     const baseMint = await generateKeyPairSigner();
     const [hi, lo] = Buffer.compare(key(baseMint.address), key(quoteMint)) > 0 ? [baseMint.address, quoteMint] : [quoteMint, baseMint.address];
     const [poolKey] = await pda(PROGRAM, ["pool", cfg, hi, lo]);
@@ -488,8 +483,7 @@ export async function graduation(): Promise<Graduation> {
     return { outcome, migrated };
   }
 
-  const maybePool = (params: Params, quoteMint: Address, quoteProgram: Address, opts: { fee?: unknown; hook?: boolean; badge?: boolean } = {}) =>
-    makePool(params, quoteMint, quoteProgram, opts, true);
+  const maybePool = (params: Params, quoteMint: Address, quoteProgram: Address, opts: PoolOpts = {}) => makePool(params, quoteMint, quoteProgram, opts, true);
   return {
     p,
     hook,

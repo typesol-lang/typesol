@@ -3,8 +3,7 @@
 // launch pools that sell a base token along a curve of up to 16 constant-liquidity segments and migrate to a DAMM
 // pool when the quote threshold is reached.
 //
-// The instructions ported so far are listed in README.md; the others are not here yet: their discriminators fail with
-// Anchor's InstructionFallbackNotFound (101).
+// All 35 of the program's instructions are here (README.md lists them by stage).
 //
 // Anchor checks each instruction's accounts first (the `init` accounts created among them), then its
 // `#[access_control]` function, then the handler; the bodies below keep that order: creates first, then the access
@@ -16,6 +15,8 @@ import {
   type Ata,
   type Seeds,
   type Dup,
+  type HasOne,
+  type Owner,
   type TokenAccount,
   type TokenInterface,
   type TokenOf,
@@ -48,6 +49,7 @@ import {
   u32,
   readonly,
   readonlySigner,
+  readData,
   writable,
   writableSigner,
   u16,
@@ -73,9 +75,10 @@ import {
   u128,
 } from "typesol";
 import { type DammV2VestingParameters } from "./fees";
+import { type DammV1LockEscrow, DAMM_V1_CONFIG_SIZE, DAMM_V1_PROGRAM_ID, DISC_DAMM_V1_CONFIG, validateDammV1Config } from "./damm_v1";
 import { DEFAULT_PUBKEY, dammV2VestingParameters, validateTransferFeeRestrictions, initialBaseSupply, totalLiquidityLockedBpsAtNSeconds, processCreateConfig, validateConfigParameters, validateTransferFeeParameters } from "./config";
 import { PoolError } from "./errors";
-import { type EvtPartnerWithdrawSurplus, type EvtCreatorWithdrawSurplus, type EvtWithdrawLeftover, type EvtWithdrawMigrationFee, type EvtInitializePool, type EvtInitializePoolWithTransferHook, type EvtSwap2WithTransferHook, type EvtSwap3WithTransferHook, type EvtCurveCompleteWithTransferHook, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
+import { type EvtCreateMeteoraMigrationMetadata, type EvtPartnerWithdrawSurplus, type EvtCreatorWithdrawSurplus, type EvtWithdrawLeftover, type EvtWithdrawMigrationFee, type EvtInitializePool, type EvtInitializePoolWithTransferHook, type EvtSwap2WithTransferHook, type EvtSwap3WithTransferHook, type EvtCurveCompleteWithTransferHook, type EvtClaimProtocolFee2, type EvtVirtualPoolMetadata, type EvtClaimCreatorTradingFee, type EvtClaimPoolCreationFee, type EvtClaimTradingFee, type EvtPartnerClaimPoolCreationFee, type EvtUpdatePoolCreator, type EvtCurveComplete, type EvtSwap, type EvtSwap2, type EvtSwap3, type EvtCreateConfig3, type EvtCreateConfigV2, type EvtCreateConfigV2WithTransferHook, type EvtCloseClaimFeeOperator, type EvtCloseTokenBadge, type EvtCreateTokenBadge, type EvtPartnerMetadata } from "./events";
 import { U64_MAX, addU128, addU64, addU8, safeMulDivCastU128, safeMulDivCastU64, subU128, subU64 } from "./math";
 import {
   type LiquidityItem,
@@ -146,6 +149,7 @@ import {
   MIGRATED_COLLECT_FEE_MODE_COMPOUNDING,
   MIGRATION_FEE_OPTION_CUSTOMIZABLE,
   MIGRATION_OPTION_DAMM_V2,
+  MIGRATION_OPTION_METEORA_DAMM,
   MIGRATION_PROGRESS_CREATED_POOL,
   OPERATOR_CLAIM_PROTOCOL_FEE,
   OPERATOR_CLOSE_TOKEN_BADGE,
@@ -2501,4 +2505,303 @@ export function migrationDammV2(
   p.protocol_migration_base_fee_amount = addU64(protocolFees.a, excludedBase > depositedBase ? excludedBase - depositedBase : 0n);
   p.protocol_migration_quote_fee_amount = addU64(protocolFees.b, excludedQuote > depositedQuote ? excludedQuote - depositedQuote : 0n);
   p.migration_progress = MIGRATION_PROGRESS_CREATED_POOL;
+}
+
+// ---- stage 4: the DAMM v1 migration (instructions/migration/meteora_damm/) -----------------------------------------
+// Deprecated for new configs (create_config refuses migration option 0); pools of configs made before 0.2.1 still
+// migrate this way. The accounts are Anchor's AccountLoader<VirtualPool> / AccountLoader<PoolConfig> here (not the
+// custom loaders of the other instructions): a transfer hook pool or config fails their discriminator check (3002).
+
+// Their token accounts are Anchor's Account<anchor_spl::token::TokenAccount>, SPL Token's only: a Token-2022 account
+// is owned by another program (3007), checked first.
+
+/** migration_meteora_damm_create_metadata: the DAMM v1 migration metadata (PDA ["meteora", pool]), its partner the config's fee claimer. */
+export function migrationMeteoraDammCreateMetadata(
+  virtualPool: Account<VirtualPool>,
+  config: Account<PoolConfigAccount>,
+  migrationMetadata: Init<MeteoraDammMigrationMetadata>,
+  payer: Mut<Signer>,
+  systemProgram: SystemProgram,
+  eventAuthority: EventAuthority,
+  program: SelfProgram,
+): void {
+  constraint(virtualPool, virtualPool.pool_state.config === config.key, AnchorError.ConstraintHasOne);
+  migrationMetadata.create(payer, ["meteora", virtualPool.key]);
+  const c = config.config;
+  require(c.migration_option <= 1n, PoolError.InvalidMigrationOption);
+  require(c.migration_option === MIGRATION_OPTION_METEORA_DAMM, PoolError.InvalidMigrationOption);
+  migrationMetadata.virtual_pool = virtualPool.key;
+  migrationMetadata.partner = c.fee_claimer;
+  emitCpi<EvtCreateMeteoraMigrationMetadata>({ virtual_pool: virtualPool.key }, eventAuthority, program);
+}
+
+/**
+ * migrate_meteora_damm: a completed pool's quote and base (the compounding amounts, less the protocol's migration
+ * fee) go into a new DAMM v1 constant product pool on the config's DAMM v1 config
+ * (initialize_permissionless_constant_product_pool_with_config2, the pool authority paying and lending the rent, the
+ * payer paying it back), the base left beyond the fees burns up to what the config lets go, and the LP minted to the
+ * pool authority is split between the partner and the creator in the migration metadata, to be locked or claimed.
+ */
+export function migrateMeteoraDamm(
+  virtualPool: Dup<Mut<VirtualPool>>,
+  migrationMetadata: Dup<Mut<MeteoraDammMigrationMetadata>>,
+  config: Account<PoolConfigAccount>,
+  poolAuthority: Address<Dup<Mut<AccountInfo>>, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  pool: Dup<Mut<AccountInfo>>,
+  dammConfig: AccountInfo,
+  lpMint: Dup<Mut<AccountInfo>>,
+  tokenAMint: Dup<Mut<AccountInfo>>,
+  tokenBMint: AccountInfo,
+  aVault: Dup<Mut<AccountInfo>>,
+  bVault: Dup<Mut<AccountInfo>>,
+  aTokenVault: Dup<Mut<AccountInfo>>,
+  bTokenVault: Dup<Mut<AccountInfo>>,
+  aVaultLpMint: Dup<Mut<AccountInfo>>,
+  bVaultLpMint: Dup<Mut<AccountInfo>>,
+  aVaultLp: Dup<Mut<AccountInfo>>,
+  bVaultLp: Dup<Mut<AccountInfo>>,
+  baseVault: Mut<TokenAccount>,
+  quoteVault: Mut<TokenAccount>,
+  virtualPoolLp: Dup<Mut<AccountInfo>>,
+  protocolTokenAFee: Dup<Mut<AccountInfo>>,
+  protocolTokenBFee: Dup<Mut<AccountInfo>>,
+  payer: Dup<Mut<Signer>>,
+  rent: AccountInfo,
+  mintMetadata: Dup<Mut<AccountInfo>>,
+  metadataProgram: AccountInfo,
+  ammProgram: Address<AccountInfo, "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB">,
+  vaultProgram: AccountInfo,
+  tokenProgram: TokenProgram,
+  associatedTokenProgram: AccountInfo,
+  systemProgram: SystemProgram,
+): void {
+  // Account<dynamic_amm::accounts::Config>::try_from (a Borsh account): never created (3012), owner (3007), a
+  // discriminator to read (3001) and match (3002), the struct's bytes (3003); then the SPL Token accounts
+  constraint(virtualPool, dammConfig.owner !== DEFAULT_PUBKEY || dammConfig.lamports !== 0n, AnchorError.AccountNotInitialized);
+  constraint(virtualPool, dammConfig.owner === DAMM_V1_PROGRAM_ID, AnchorError.AccountOwnedByWrongProgram);
+  constraint(virtualPool, dammConfig.dataLen >= 8n, AnchorError.AccountDiscriminatorNotFound);
+  constraint(virtualPool, readData<u64>(dammConfig, 0n) === DISC_DAMM_V1_CONFIG, AnchorError.AccountDiscriminatorMismatch);
+  constraint(virtualPool, dammConfig.dataLen >= DAMM_V1_CONFIG_SIZE, AnchorError.AccountDidNotDeserialize);
+  constraint(virtualPool, baseVault.tokenProgram === TOKEN_PROGRAM_ID, AnchorError.AccountOwnedByWrongProgram);
+  constraint(virtualPool, quoteVault.tokenProgram === TOKEN_PROGRAM_ID, AnchorError.AccountOwnedByWrongProgram);
+  constraint(virtualPool, virtualPool.pool_state.base_vault === baseVault.key, AnchorError.ConstraintHasOne);
+  constraint(virtualPool, virtualPool.pool_state.quote_vault === quoteVault.key, AnchorError.ConstraintHasOne);
+  constraint(virtualPool, virtualPool.pool_state.config === config.key, AnchorError.ConstraintHasOne);
+  constraint(migrationMetadata, migrationMetadata.virtual_pool === virtualPool.key, AnchorError.ConstraintHasOne);
+  const c = config.config;
+  validateDammV1Config(dammConfig, c.migration_fee_option);
+  const p = virtualPool.pool_state;
+  require(p.migration_progress <= MIGRATION_PROGRESS_CREATED_POOL, PoolError.TypeCastFailed);
+  require(p.migration_progress === 2n, PoolError.NotPermitToDoThisAction);
+  require(p.quote_reserve >= c.migration_quote_threshold, PoolError.PoolIsIncompleted);
+  require(c.migration_option <= 1n, PoolError.InvalidMigrationOption);
+  require(c.migration_option === MIGRATION_OPTION_METEORA_DAMM, PoolError.InvalidMigrationOption);
+
+  // CompoundingLiquidity at the migration price: the base threshold and the quote less the migration fee
+  const baseFees = addU64(addU64(p.partner_base_fee, p.protocol_base_fee), p.creator_base_fee);
+  const included = includedProtocolFeeMigrationAmounts2(true, c.migration_base_threshold, c.migration_quote_threshold, c.migration_fee_percentage, subU64(baseVault.amount, baseFees));
+  const protocolFees = compoundingProtocolFees(included.a, included.b, p.protocol_liquidity_migration_fee_bps);
+  p.protocol_migration_base_fee_amount = protocolFees.a;
+  p.protocol_migration_quote_fee_amount = protocolFees.b;
+  const excludedBase = subU64(included.a, protocolFees.a);
+  const excludedQuote = subU64(included.b, protocolFees.b);
+
+  // create_pool: initialize_permissionless_constant_product_pool_with_config2 (token_a_amount, token_b_amount,
+  // activation_point None), the pool authority its payer, under flash rent
+  {
+    const lamports = poolAuthority.lamports;
+    const owner = poolAuthority.owner;
+    const size = poolAuthority.dataLen;
+    log("create pool");
+    invoke(
+      ammProgram,
+      [
+        writable(pool),
+        readonly(dammConfig),
+        writable(lpMint),
+        readonly(tokenAMint),
+        readonly(tokenBMint),
+        writable(aVault),
+        writable(bVault),
+        writable(aTokenVault),
+        writable(bTokenVault),
+        writable(aVaultLpMint),
+        writable(bVaultLpMint),
+        writable(aVaultLp),
+        writable(bVaultLp),
+        writable(baseVault),
+        writable(quoteVault),
+        writable(virtualPoolLp),
+        writable(protocolTokenAFee),
+        writable(protocolTokenBFee),
+        writableSigner(poolAuthority),
+        readonly(rent),
+        writable(mintMetadata),
+        readonly(metadataProgram),
+        readonly(vaultProgram),
+        readonly(tokenProgram),
+        readonly(associatedTokenProgram),
+        readonly(systemProgram),
+      ],
+      [sighash("initialize_permissionless_constant_product_pool_with_config2"), excludedBase, excludedQuote, u8(0n)],
+      ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+    );
+    repayFlashRent(poolAuthority, payer, systemProgram, lamports);
+    requireInvariant(poolAuthority, lamports, owner, size);
+  }
+  p.is_migrated = 1n;
+
+  // burn what is left of the base beyond the fees owed, up to the supply the config lets go
+  const left = subU64(baseVault.amount, addU64(baseFees, protocolFees.a));
+  let burnable = left;
+  if (c.fixed_token_supply_flag === 1n) {
+    const max = subU64(c.pre_migration_token_supply, c.post_migration_token_supply);
+    if (max < burnable) burnable = max;
+  }
+  if (burnable > 0n)
+    invoke(tokenProgram, [writable(baseVault), writable(tokenAMint), readonlySigner(poolAuthority)], [u8(8n), burnable], ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
+
+  // the LP the pool authority got (anchor_spl's accessor::amount: bytes 64..72), split as the config says; DAMM v1
+  // has no vesting, so a vested share stays with the pool authority
+  const lpMinted = readData<u64>(virtualPoolLp, 64n);
+  const partner = liquidityItem(c, u128(lpMinted), true);
+  const creator = liquidityItem(c, u128(lpMinted), false);
+  migrationMetadata.lp_mint = lpMint.key;
+  migrationMetadata.partner_locked_liquidity = castU128ToU64(partner.permanent_locked_liquidity);
+  migrationMetadata.partner_liquidity = castU128ToU64(partner.unlocked_liquidity);
+  migrationMetadata.creator_locked_liquidity = castU128ToU64(creator.permanent_locked_liquidity);
+  migrationMetadata.creator_liquidity = castU128ToU64(creator.unlocked_liquidity);
+  p.migration_progress = MIGRATION_PROGRESS_CREATED_POOL;
+}
+
+/** SafeCast<u64> for u128: TypeCastFailed past u64. */
+function castU128ToU64(x: u128): u64 {
+  require(x <= u128(U64_MAX), PoolError.TypeCastFailed);
+  return u64(x);
+}
+
+/**
+ * migrate_meteora_damm_lock_lp_token: the partner's or the creator's locked LP (both, for a creator who is the
+ * partner) into the owner's DAMM v1 lock escrow (DAMM v1's `lock`, signed by the pool authority), once each.
+ */
+export function migrateMeteoraDammLockLpToken(
+  virtualPool: Account<VirtualPool>,
+  migrationMetadata: Dup<Mut<MeteoraDammMigrationMetadata>>,
+  poolAuthority: Address<Dup<Mut<AccountInfo>>, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  pool: Dup<Mut<AccountInfo>>,
+  lpMint: AccountInfo,
+  lockEscrow: HasOne<HasOne<Owner<Mut<DammV1LockEscrow>, "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB">, "pool">, "owner">,
+  owner: AccountInfo,
+  sourceTokens: Ata<Mut<TokenAccount>, "poolAuthority", "lpMint">,
+  escrowVault: Dup<Mut<AccountInfo>>,
+  ammProgram: Address<AccountInfo, "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB">,
+  aVault: AccountInfo,
+  bVault: AccountInfo,
+  aVaultLp: AccountInfo,
+  bVaultLp: AccountInfo,
+  aVaultLpMint: AccountInfo,
+  bVaultLpMint: AccountInfo,
+  tokenProgram: TokenProgram,
+): void {
+  constraint(virtualPool, sourceTokens.tokenProgram === TOKEN_PROGRAM_ID, AnchorError.AccountOwnedByWrongProgram);
+  constraint(migrationMetadata, migrationMetadata.lp_mint === lpMint.key, AnchorError.ConstraintHasOne);
+  constraint(migrationMetadata, migrationMetadata.virtual_pool === virtualPool.key, AnchorError.ConstraintHasOne);
+  const p = virtualPool.pool_state;
+  require(p.migration_progress <= MIGRATION_PROGRESS_CREATED_POOL, PoolError.TypeCastFailed);
+  require(p.migration_progress === MIGRATION_PROGRESS_CREATED_POOL, PoolError.NotPermitToDoThisAction);
+  const isPartner = owner.key === migrationMetadata.partner;
+  const isCreator = owner.key === p.creator;
+  require(isPartner || isCreator, PoolError.InvalidOwnerAccount);
+  let amount: u64 = 0n;
+  if (isPartner && isCreator) {
+    // lock_as_self_partnered_creator
+    require(migrationMetadata.creator_locked_status !== 1n && migrationMetadata.partner_locked_status !== 1n, PoolError.NotPermitToDoThisAction);
+    amount = addU64(migrationMetadata.partner_locked_liquidity, migrationMetadata.creator_locked_liquidity);
+    require(amount !== 0n, PoolError.NotPermitToDoThisAction);
+    migrationMetadata.creator_locked_status = 1n;
+    migrationMetadata.partner_locked_status = 1n;
+  } else if (isPartner) {
+    require(migrationMetadata.partner_locked_status !== 1n, PoolError.NotPermitToDoThisAction);
+    require(migrationMetadata.partner_locked_liquidity !== 0n, PoolError.NotPermitToDoThisAction);
+    migrationMetadata.partner_locked_status = 1n;
+    amount = migrationMetadata.partner_locked_liquidity;
+  } else {
+    require(migrationMetadata.creator_locked_status !== 1n, PoolError.NotPermitToDoThisAction);
+    require(migrationMetadata.creator_locked_liquidity !== 0n, PoolError.NotPermitToDoThisAction);
+    migrationMetadata.creator_locked_status = 1n;
+    amount = migrationMetadata.creator_locked_liquidity;
+  }
+  // DAMM v1's lock (max_amount), the pool authority the owner of the tokens, with its lamports, owner and size kept
+  const lamports = poolAuthority.lamports;
+  const authorityOwner = poolAuthority.owner;
+  const size = poolAuthority.dataLen;
+  invoke(
+    ammProgram,
+    [
+      writable(pool),
+      readonly(lpMint),
+      writable(lockEscrow),
+      writableSigner(poolAuthority),
+      writable(sourceTokens),
+      writable(escrowVault),
+      readonly(tokenProgram),
+      readonly(aVault),
+      readonly(bVault),
+      readonly(aVaultLp),
+      readonly(bVaultLp),
+      readonly(aVaultLpMint),
+      readonly(bVaultLpMint),
+    ],
+    [sighash("lock"), amount],
+    ["pool_authority", u8(POOL_AUTHORITY_BUMP)],
+  );
+  requireInvariant(poolAuthority, lamports, authorityOwner, size);
+}
+
+/**
+ * migrate_meteora_damm_claim_lp_token: the partner's or the creator's unlocked LP (both, for a creator who is the
+ * partner) from the pool authority's LP account to the owner's, once each. Anyone may send it.
+ */
+export function migrateMeteoraDammClaimLpToken(
+  virtualPool: Account<VirtualPool>,
+  migrationMetadata: Dup<Mut<MeteoraDammMigrationMetadata>>,
+  poolAuthority: Address<Dup<Mut<AccountInfo>>, "FhVo3mqL8PW5pH5U2CN4XE33DokiyZnUwuGpH2hmHLuM">,
+  lpMint: AccountInfo,
+  sourceToken: Ata<Mut<TokenAccount>, "poolAuthority", "lpMint">,
+  destinationToken: Ata<Mut<TokenAccount>, "owner", "lpMint">,
+  owner: AccountInfo,
+  sender: Signer,
+  tokenProgram: TokenProgram,
+): void {
+  constraint(virtualPool, sourceToken.tokenProgram === TOKEN_PROGRAM_ID, AnchorError.AccountOwnedByWrongProgram);
+  constraint(virtualPool, destinationToken.tokenProgram === TOKEN_PROGRAM_ID, AnchorError.AccountOwnedByWrongProgram);
+  constraint(migrationMetadata, migrationMetadata.lp_mint === lpMint.key, AnchorError.ConstraintHasOne);
+  constraint(migrationMetadata, migrationMetadata.virtual_pool === virtualPool.key, AnchorError.ConstraintHasOne);
+  const p = virtualPool.pool_state;
+  require(p.migration_progress <= MIGRATION_PROGRESS_CREATED_POOL, PoolError.TypeCastFailed);
+  require(p.migration_progress === MIGRATION_PROGRESS_CREATED_POOL, PoolError.NotPermitToDoThisAction);
+  const isPartner = owner.key === migrationMetadata.partner;
+  const isCreator = owner.key === p.creator;
+  require(isPartner || isCreator, PoolError.InvalidOwnerAccount);
+  let amount: u64 = 0n;
+  if (isPartner && isCreator) {
+    // claim_as_self_partnered_creator
+    require(migrationMetadata.creator_claim_status !== 1n && migrationMetadata.partner_claim_status !== 1n, PoolError.NotPermitToDoThisAction);
+    amount = addU64(migrationMetadata.partner_liquidity, migrationMetadata.creator_liquidity);
+    require(amount !== 0n, PoolError.NotPermitToDoThisAction);
+    migrationMetadata.creator_claim_status = 1n;
+    migrationMetadata.partner_claim_status = 1n;
+  } else if (isPartner) {
+    require(migrationMetadata.partner_claim_status !== 1n, PoolError.NotPermitToDoThisAction);
+    require(migrationMetadata.partner_liquidity !== 0n, PoolError.NotPermitToDoThisAction);
+    migrationMetadata.partner_claim_status = 1n;
+    amount = migrationMetadata.partner_liquidity;
+  } else {
+    require(migrationMetadata.creator_claim_status !== 1n, PoolError.NotPermitToDoThisAction);
+    require(migrationMetadata.creator_liquidity !== 0n, PoolError.NotPermitToDoThisAction);
+    migrationMetadata.creator_claim_status = 1n;
+    amount = migrationMetadata.creator_liquidity;
+  }
+  // SPL Token Transfer (3), signed by the pool authority
+  invoke(tokenProgram, [writable(sourceToken), writable(destinationToken), readonlySigner(poolAuthority)], [u8(3n), amount], ["pool_authority", u8(POOL_AUTHORITY_BUMP)]);
 }

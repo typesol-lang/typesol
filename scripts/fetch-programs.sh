@@ -55,6 +55,9 @@ trimmed dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN meteora_dbc.so
 # The programs Meteora DBC's migration calls: DAMM v2 (cp-amm) and the locker (Jupiter lock), fetched only.
 trimmed cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG meteora_damm_v2.so
 trimmed LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn meteora_locker.so
+# The DAMM v1 migration's: DAMM v1 (dynamic AMM) and the dynamic vault it deposits into, fetched only.
+trimmed Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB meteora_damm_v1.so
+trimmed 24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi meteora_vault.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded. Either
 # is a failure (exit 3, after every file is checked): tests run against an unrecorded binary prove nothing about the
