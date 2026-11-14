@@ -31,6 +31,8 @@ test/programs/meteora_damm_v2.so
 test/programs/meteora_locker.so
 test/programs/meteora_damm_v1.so
 test/programs/meteora_vault.so
+# Percolator v12.20's mainnet program (Apache-2.0, but deployed immutable and large: fetched, not kept).
+test/programs/percolator_v12.so
 # local validator ledgers and fixtures (scripts/localnet.sh), npm pack output, coverage, CLI keypairs
 .localnet*/
 *.tgz
