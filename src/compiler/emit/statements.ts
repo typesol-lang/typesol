@@ -1,6 +1,18 @@
 import ts from "typescript";
 import { MAX_RETURN_DATA, type TypeScope, calleeName, resolveScalarType, resolveValueType, structNameOf, typesolName } from "../analyze.js";
-import { INT_INFO, type AccountParam, type FieldType, type ScalarType, type ValueType, isScalar, optionKey, sameType, scalarSize, typeName } from "../model.js";
+import {
+  INT_INFO,
+  type AccountParam,
+  type FieldType,
+  type HelperNode,
+  type ScalarType,
+  type ValueType,
+  isScalar,
+  optionKey,
+  sameType,
+  scalarSize,
+  typeName,
+} from "../model.js";
 import {
   U64,
   BOOL,
@@ -25,9 +37,18 @@ import { cTokens, declaredNames, isGlobalName, parameterDecls, usedNames } from 
 /**
  * Statements: variables, assignment, control flow and return.
  */
+/** The built-ins that return whether a proof or signature holds, and fail nothing by themselves. */
+const VERIFIERS = new Set(["merkleVerify", "verifyEd25519", "verifySecp256k1"]);
+/** A call whose result is a proof or signature check: a built-in, or a helper (`name`) returning the result of one (`wraps`). */
+interface CheckCall {
+  name: string;
+  wraps?: string;
+}
 /** A proof or signature check whose result decides nothing: `how` says why (discarded, never read, an empty if). */
-const VERIFIER_UNUSED = (checker: string, how: string) =>
-  `the result of ${checker} ${how}, so nothing is checked: it returns whether the ${checker === "merkleVerify" ? "proof" : "signature"} holds; write require(${checker}(…), error)`;
+const VERIFIER_UNUSED = (call: CheckCall, how: string) =>
+  `the result of ${call.name} ${how}, so nothing is checked: ${
+    call.wraps ? `it returns the result of ${call.wraps}` : `it returns whether the ${call.name === "merkleVerify" ? "proof" : "signature"} holds`
+  }; write require(${call.name}(…), error)`;
 
 export abstract class StatementEmitter extends CpiEmitter {
   protected statement(stmt: ts.Statement, topLevel = false): void {
@@ -1784,13 +1805,134 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
   }
 
-  /** merkleVerify, verifyEd25519 or verifySecp256k1 when `e` (in parentheses, or under `!` if `negated`) calls one. */
-  protected verifierCall(e: ts.Expression, negated = false): string | undefined {
+  /**
+   * The check `e` (in parentheses, or under `!` if `negated`) calls: merkleVerify, verifyEd25519 or verifySecp256k1,
+   * or a helper that returns the result of one (see returnedCheck).
+   */
+  protected verifierCall(e: ts.Expression, negated = false): CheckCall | undefined {
     while (ts.isParenthesizedExpression(e) || (negated && ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken))
       e = ts.isParenthesizedExpression(e) ? e.expression : (e as ts.PrefixUnaryExpression).operand;
-    if (!ts.isCallExpression(e)) return undefined;
-    const name = this.exportName(e.expression);
-    return name === "merkleVerify" || name === "verifyEd25519" || name === "verifySecp256k1" ? name : undefined;
+    if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) return undefined;
+    const builtin = this.exportName(e.expression);
+    if (builtin) return VERIFIERS.has(builtin) ? { name: builtin } : undefined;
+    // The helper the call runs, found as helperOf finds it but without instantiating a generic one.
+    const callee = e.expression;
+    const name =
+      this.helper?.fnArgs?.get(callee.text) ?? calleeName(callee, this.model.helperDecls, this.checker) ?? (this.lookup(callee.text) ? undefined : callee.text);
+    const wraps = name !== undefined ? this.helperCheck(name) : this.localFunctionCheck(callee, this.imports);
+    return wraps ? { name: callee.text, wraps } : undefined;
+  }
+
+  /** The built-in whose result a function declared where it is called (a closure) returns, if it does. */
+  private localFunctionCheck(callee: ts.Identifier, imports: Map<string, string>): string | undefined {
+    const decl = this.checker.getSymbolAtLocation(callee)?.valueDeclaration;
+    const init = decl && ts.isVariableDeclaration(decl) ? decl.initializer : undefined;
+    const fn = init && (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) ? init : decl && ts.isFunctionDeclaration(decl) ? decl : undefined;
+    return fn ? this.returnedCheck(fn, imports) : undefined;
+  }
+
+  /** Helpers whose returnedCheck is known (null: none), and the ones being looked at (recursion). */
+  private readonly checkMemo = new Map<HelperNode, string | null>();
+  private readonly checkActive = new Set<HelperNode>();
+  private checkMetActive = false;
+
+  /** The built-in whose result the helper or generic helper `name` returns, if it does. */
+  private helperCheck(name: string): string | undefined {
+    const h = this.model.helpers.get(name) ?? this.model.generics.get(name);
+    return h ? this.returnedCheck(h.node, h.imports) : undefined;
+  }
+
+  /**
+   * The built-in check (merkleVerify, verifyEd25519 or verifySecp256k1) a helper's result comes from: a `return` that
+   * yields its result, or a helper's that returns one, directly, in parentheses or under `as`, combined with `&&`,
+   * `||`, `!` or `?:`, or through a local of the helper that was given such a value and is read only in returns. A
+   * helper that acts on the result itself (requires it, branches on it) and returns something else returns no check.
+   * A helper still being looked at (recursion) counts as returning none.
+   */
+  private returnedCheck(fn: HelperNode, imports: Map<string, string>): string | undefined {
+    const known = this.checkMemo.get(fn);
+    if (known !== undefined) return known ?? undefined;
+    if (this.checkActive.has(fn)) {
+      this.checkMetActive = true;
+      return undefined;
+    }
+    const outer = this.checkMetActive;
+    this.checkMetActive = false;
+    this.checkActive.add(fn);
+    let found: string | undefined;
+    try {
+      const returns: ts.Expression[] = [];
+      if (fn.body && !ts.isBlock(fn.body)) returns.push(fn.body);
+      else if (fn.body) {
+        const visit = (n: ts.Node): void => {
+          if (ts.isFunctionLike(n)) return;
+          if (ts.isReturnStatement(n) && n.expression) returns.push(n.expression);
+          ts.forEachChild(n, visit);
+        };
+        visit(fn.body);
+      }
+      for (const r of returns) if ((found = this.checkIn(r, fn, imports, new Set()))) break;
+    } finally {
+      this.checkActive.delete(fn);
+    }
+    // "None" found while a helper further up was still open may change once it is known: not kept.
+    if (found || !this.checkMetActive) this.checkMemo.set(fn, found ?? null);
+    this.checkMetActive ||= outer;
+    return found;
+  }
+
+  /** The built-in check whose result the value `e`, returned by `fn`, carries (see returnedCheck). */
+  private checkIn(e: ts.Expression, fn: HelperNode, imports: Map<string, string>, seen: Set<ts.Symbol>): string | undefined {
+    while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isNonNullExpression(e) || ts.isSatisfiesExpression(e)) e = e.expression;
+    if (ts.isCallExpression(e)) {
+      if (!ts.isIdentifier(e.expression)) return undefined;
+      const builtin = imports.get(e.expression.text);
+      if (builtin) return VERIFIERS.has(builtin) ? builtin : undefined;
+      const name = calleeName(e.expression, this.model.helperDecls, this.checker);
+      return name !== undefined ? this.helperCheck(name) : this.localFunctionCheck(e.expression, imports);
+    }
+    if (ts.isPrefixUnaryExpression(e)) return e.operator === ts.SyntaxKind.ExclamationToken ? this.checkIn(e.operand, fn, imports, seen) : undefined;
+    if (ts.isBinaryExpression(e)) {
+      const op = e.operatorToken.kind;
+      if (op !== ts.SyntaxKind.AmpersandAmpersandToken && op !== ts.SyntaxKind.BarBarToken) return undefined;
+      return this.checkIn(e.left, fn, imports, seen) ?? this.checkIn(e.right, fn, imports, seen);
+    }
+    if (ts.isConditionalExpression(e))
+      return this.checkIn(e.condition, fn, imports, seen) ?? this.checkIn(e.whenTrue, fn, imports, seen) ?? this.checkIn(e.whenFalse, fn, imports, seen);
+    if (!ts.isIdentifier(e)) return undefined;
+    // A local of `fn` (not of a closure in it), every value it is given, when nothing but a return reads it.
+    const symbol = this.checker.getSymbolAtLocation(e);
+    const decl = symbol?.valueDeclaration;
+    if (!symbol || !decl || !ts.isVariableDeclaration(decl) || seen.has(symbol)) return undefined;
+    let owner: ts.Node | undefined = decl.parent;
+    while (owner && !ts.isFunctionLike(owner)) owner = owner.parent;
+    if (owner !== fn) return undefined;
+    seen.add(symbol);
+    const values: ts.Expression[] = decl.initializer ? [decl.initializer] : [];
+    const inReturn = (n: ts.Node): boolean => {
+      for (let p = n.parent; p && p !== fn; p = p.parent) {
+        if (ts.isReturnStatement(p)) return true;
+        if (ts.isFunctionLike(p)) return false; // read in a closure: it may act on it
+      }
+      return !!fn.body && !ts.isBlock(fn.body);
+    };
+    let actedOn = false;
+    const visit = (n: ts.Node): void => {
+      if (actedOn) return;
+      if (ts.isIdentifier(n) && n !== decl.name && this.checker.getSymbolAtLocation(n) === symbol) {
+        const p = n.parent;
+        if (ts.isBinaryExpression(p) && p.left === n && p.operatorToken.kind === ts.SyntaxKind.EqualsToken) values.push(p.right);
+        else if (!inReturn(n)) actedOn = true;
+      }
+      ts.forEachChild(n, visit);
+    };
+    if (fn.body) visit(fn.body);
+    if (actedOn) return undefined;
+    for (const v of values) {
+      const found = this.checkIn(v, fn, imports, seen);
+      if (found) return found;
+    }
+    return undefined;
   }
 
   /**

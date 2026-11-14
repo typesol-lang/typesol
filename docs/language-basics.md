@@ -278,7 +278,8 @@ export function setup(config: Mut<Config>): void {
   other than its accounts.
 - A few names configure the compiler: `HEAP_SIZE_KIB` ([below](#memory-stack-and-heap)), `MAX_ACCOUNTS`
   ([accounts](language-accounts.md#how-many-accounts)), `NATIVE_ACCOUNT_WRITES`, `PANIC_ON_OVERFLOW`, `PANIC_STYLE`,
-  `ERROR_LOG_PREFIX`, `PROGRAM_ERROR_LOG_PREFIX` ([native programs](language-native.md)).
+  `ERROR_LOG_PREFIX`, `PROGRAM_ERROR_LOG_PREFIX` ([native programs](language-native.md)), `EVENT_AUTHORITY_CHECK`
+  ([events through CPI](language-errors-events.md#events-through-cpi)).
 
 ## Type aliases
 

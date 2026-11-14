@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Download the third-party program binaries the tests and scripts/localnet.sh use into test/programs/.
 # The Metaplex programs (Token Metadata, Core, Bubblegum) are under the Metaplex NFT Open Source License and Kamino's
-# under the Business Source License 1.1: they are not redistributed with TypeSOL; the SPL / Program Metadata / coral multisig / Raydium / Jito ones are Apache-2.0 and are kept in the repository.
+# under the Business Source License 1.1 (Meteora's Dynamic Bonding Curve under Meteora's Non-commercial Licence): they are not redistributed with TypeSOL; the SPL / Program Metadata / coral multisig / Raydium / Jito ones are Apache-2.0 and are kept in the repository.
 # Uses the Solana CLI with the cluster you pass (default: devnet's public RPC). See test/programs/SOURCES.md.
 set -euo pipefail
 cd "$(dirname "$0")/../test/programs"
@@ -49,6 +49,15 @@ trimmed jup7TthsMgcR9Y3L277b8Eo9uboVSmu1utkuXHNUKar juplend_rewards.so
 # Drift's Merkle distributor, which pays Drift's bad-debt claims (GPL-3.0, fetched only).
 trimmed distAitdwx9mDm3SaPMtGZRjpXMPUenLhmPwoySV3Hp merkle_distributor.so
 trimmed 675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8 raydium_amm_v4.so
+# Meteora Dynamic Bonding Curve 0.2.2 (showcase/mainnet/meteora-dbc's differential test): Meteora's Non-commercial
+# Licence, fetched only.
+trimmed dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN meteora_dbc.so
+# The programs Meteora DBC's migration calls: DAMM v2 (cp-amm) and the locker (Jupiter lock), fetched only.
+trimmed cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG meteora_damm_v2.so
+trimmed LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn meteora_locker.so
+# The DAMM v1 migration's: DAMM v1 (dynamic AMM) and the dynamic vault it deposits into, fetched only.
+trimmed Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB meteora_damm_v1.so
+trimmed 24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi meteora_vault.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded. Either
 # is a failure (exit 3, after every file is checked): tests run against an unrecorded binary prove nothing about the

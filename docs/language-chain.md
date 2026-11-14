@@ -81,7 +81,14 @@ export function commit(c: Mut<Commit>, owner: Pubkey, text: string, n: u64): voi
 themselves. Unlike a check such as `HasOne`, nothing happens when the answer is false: wrap them in
 `require(…, error)`. The compiler refuses a call used as a statement, one that is the
 condition of an `if` with an empty body and no `else` or an empty one, and one whose result is kept in a local the function never
-reads. It does not catch a helper that returns the result and is itself called as a statement.
+reads. The same goes for a call of a helper that returns such a result: one with a `return` that gives the result of
+one of the three or of another such helper, directly, combined with `&&`, `||`, `!` or `?:`, or through a local of
+the helper that nothing but its returns reads (`the result of checkProof is discarded, so nothing is checked: it
+returns the result of merkleVerify; write require(checkProof(…), error)`). A helper that acts on the result itself
+(requires it, reads it outside a `return`) is not one. Not caught: a result stored in an account field, a struct or an
+Option, compared (`=== true`) or passed to another function that ignores it, a helper that branches on the result and
+returns literals (`if (!ok) { return false; } return true;`), and a helper that returns what a function passed to it
+returns (a function parameter is not followed).
 
 ```ts
 import { type Account, type Hash, type Init, type InstructionsSysvar, type Mut, type Pubkey, type Signer, type SystemProgram, type u8, type u64, type Vec, keccak256, merkleVerify, require, verifyEd25519, verifySecp256k1 } from "typesol";
@@ -130,6 +137,11 @@ export function approved(drop: Account<Drop>, ixs: InstructionsSysvar, who: Pubk
   `is(program, "name")` (that program's instruction by its default Anchor discriminator, sha256("global:<name>"); an
   instruction with its own `@discriminator` is matched with `programId` and `readU64(0)` instead).
 - Every read is bounds-checked (5104).
+- `processedSiblingInstructionCount()` and `processedSiblingInstruction(i)` (a `TransactionInstruction`, 5104 past
+  the last) read the instructions already processed at this program's stack height, with the
+  `sol_get_processed_sibling_instruction` syscall as Rust's `get_processed_sibling_instruction` reads it: under a
+  caller, the instructions that caller already invoked (index 0 the latest); at the top level, the transaction's
+  earlier instructions. With `stackHeight()`, a program can refuse to run twice under one caller.
 - It is the transaction author's data: require things of the transaction with it (a repay instruction after a flash
   loan), never treat it as proof.
 

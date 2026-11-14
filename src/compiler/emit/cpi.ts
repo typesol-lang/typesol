@@ -454,7 +454,9 @@ export abstract class CpiEmitter extends MetaplexEmitter {
       const signer = this.tmp("signer");
       this.line(`SolAccountMeta ${m}[1] = {{&a_${cpi.authority}->key, false, true}};`);
       this.line(`SolSignerSeed ${sd}[2] = {{(const uint8_t *)"__event_authority", 17}, {&eb_${cpi.authority}, 1}};`);
-      this.line(`SolInstruction ${ix} = {&a_${cpi.program}->key, ${m}, 1, ${buf}, ${len}};`);
+      // EVENT_AUTHORITY_CHECK = "address": the program account is unchecked, so the CPI names this program's id.
+      const target = this.eventAuthorityByAddress ? `(SolPubkey *)params->program_id` : `&a_${cpi.program}->key`;
+      this.line(`SolInstruction ${ix} = {${target}, ${m}, 1, ${buf}, ${len}};`);
       this.line(`SolSignerSeeds ${signer} = {${sd}, 2};`);
       this.line(`TS_TRY(ts_invoke(params, &${ix}, &${signer}, 1));`);
       return;

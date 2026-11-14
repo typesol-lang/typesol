@@ -6,6 +6,140 @@ codes, and says so here.
 
 ## Unreleased
 
+- Added: `export const EVENT_AUTHORITY_CHECK = "address"` checks `emitCpi`'s accounts as Anchor 1.x's `#[event_cpi]`
+  does: the event authority by address among the constraints (ConstraintAddress, 2012, after the accounts load and the
+  creates run) instead of by seeds when it loads (2006), and the `SelfProgram` account not at all (the self-CPI names
+  this program's id; an instruction that emits then fails in the runtime, MissingAccount, when this program is not among
+  its accounts, as Anchor's does). Programs without the constant build to the same bytes: the 76 programs of
+  `scripts/release-manifest.ts` other than the new port build identically with and without this change
+  (test/language/event-authority-check.test.ts; docs/language-errors-events.md).
+- Added: `tokenProgram.transferCheckedWithHook(from, mint, to, authority, amount, hookAccounts, signerSeeds?)`, a
+  TransferChecked by CPI of a Token-2022 mint with a transfer hook: the hook's extra accounts are resolved among
+  `hookAccounts` (the remaining accounts or a slice of them) and appended with the validation account and the hook
+  program, as spl-transfer-hook-interface 2.1's `add_extra_accounts_for_execute_cpi` (with spl-tlv-account-resolution
+  0.11) does on chain: every kind of extra account meta, the de-escalation of writable flags, and the same refusals and
+  error codes. A mint without a hook gets a plain TransferChecked (test/language/transfer-hook-cpi.test.ts;
+  showcase/test/meteora-dbc-hook.test.ts compares it with Meteora's Rust program; docs/language-cpi.md). Existing
+  programs build to the same bytes (the 76 programs of `scripts/release-manifest.ts` other than the Meteora port).
+- Added: `processedSiblingInstructionCount()` and `processedSiblingInstruction(i)`, the instructions already processed
+  at the program's stack height (the `sol_get_processed_sibling_instruction` syscall, as Rust's
+  `get_processed_sibling_instruction` reads it), each a `TransactionInstruction` (test/language/sibling-instructions.test.ts;
+  docs/language-chain.md). Existing programs build to the same bytes.
+- Showcase: the first stage of a port of Meteora's Dynamic Bonding Curve 0.2.2 (MeteoraAg/dynamic-bonding-curve @
+  91e696e), `showcase/mainnet/meteora-dbc/`. It is subject to Meteora's Non-commercial Licence, not to this
+  repository's MIT licence (LICENSE.md and README.md there, and NOTICE), and is not in the published package. This
+  stage has 9 of the program's 35 instructions (operator accounts, the legacy claim fee operator, token badges, partner
+  metadata, `create_config`, `create_config2`, `create_config_with_transfer_hook`), all 87 errors, the account layouts,
+  the 29 events, and the curve, fee scheduler, dynamic fee, vesting and migration-handler math that config creation
+  uses. Checked against the program deployed on mainnet at `dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN` (deployed in
+  slot 457,502,600; the dump cut at the ELF's end has sha256
+  `c9f45da65b0c87ca76c1ed5ad0d1ef2ead7c3392e8e41f194d50296820a22bb9`; fetched by `scripts/fetch-programs.sh`, not
+  kept here), with its two admin keys patched to test keys in both: `showcase/test/meteora-dbc.test.ts` sends 163
+  transactions (57 succeed, the others are refused with 47 distinct errors) and `meteora-dbc-fuzz.test.ts` 200 random
+  config parameter sets per run, each to both programs, which must give the same outcome and error code, the same
+  account bytes, the same events (the self-CPIs' instruction data, all inner instructions compared) and the same return
+  data. Not checked or different: log lines (Anchor's error messages, the original's "Math error thrown at …" lines),
+  compute units, the IDL (the config events' ConfigParameters is described field by field, the metadata Strings as
+  bytes), a read-only `payer` (ConstraintMut 2000 here, PrivilegeEscalation in the original), and a `curve` argument of
+  more than 24 points (102 here; a transaction carries at most 23).
+  The second stage adds 9 more: `swap` and `swap2` (ExactIn, PartialFill, ExactOut) with the swap math, the dynamic
+  fee's volatility tracker and the rate limiter of configs made before 0.2.1, the partner's and creator's trading fee
+  claims, both pool creation fee claims, `claim_protocol_fee2` (its signer, the protocol fee program's authority PDA,
+  patched to a test key in both), `transfer_pool_creator` and `create_virtual_pool_metadata`.
+  `showcase/test/meteora-dbc-swap.test.ts` checks them against the same binary on pools written into both ledgers as
+  pool creation leaves them (pool creation is not ported yet): every mode in both directions, referrals, slippage,
+  account refusals, the rate limiter's single-swap guard, and a random swap sequence per pool (fee schedulers, dynamic
+  fee, rate limiter, Token-2022 transfer fees on either mint) to the migration threshold (1,900+ swaps over three
+  seeds, all the same). `initialize_virtual_pool_with_spl_token` follows (its Metaplex CPIs checked against Token
+  Metadata as deployed on mainnet, sha256 `31f0a627dba051a938de650464e55cc5397a4be0fd496929c1f9cf02fe5e9011`):
+  `meteora-dbc-pool.test.ts` makes pools with each token authority option, a creation fee, a fixed supply and slot
+  activation, and the first swap at the minimum fee in the pool's creation transaction; the swap tests and fuzz now
+  swap on pools made by it (pools are written only for a Token-2022 base, a TransferHookPool or a rate limiter).
+  `meteora-dbc-mainnet.test.ts` swaps on two pools read from mainnet (an SPL and a Token-2022 base) to the end of
+  their curves. `initialize_virtual_pool_with_token2022` and `initialize_virtual_pool_with_token2022_transfer_hook`
+  follow (the base mint's MetadataPointer, transfer fee and transfer hook extensions and its metadata in the mint, as
+  the original creates them): `meteora-dbc-pool2022.test.ts` makes pools with each token authority option (the mint
+  authority kept under a transfer hook config), each base transfer fee option, a Token-2022 quote, a creation fee,
+  slot activation and addresses funded before creation, and checks their refusals, with a small transfer hook program
+  (`showcase/test/fixtures/meteora-dbc/hook.ts`) loaded in both; the swap tests now swap only on pools made by the
+  three pool creation instructions (written only under a rate limiter config). Then `swap2_with_transfer_hook`,
+  `claim_trading_fee2` and `claim_creator_trading_fee2`, the base mint's transfers carrying the hook's extra accounts
+  (`transferCheckedWithHook`): `meteora-dbc-hook.test.ts` swaps, pays referrals and claims fees on TransferHookPools
+  with each kind of extra account meta, revokes the hook at completion, and checks the slices' and the resolver's
+  refusals (malformed lists and seeds included) against the binary. The `slices` argument holds at most 64 entries
+  here (102 beyond). A swap by CPI under an active rate limiter reads the processed sibling instructions, as the
+  original does (checked against the binary through a small calling program,
+  `showcase/test/fixtures/meteora-dbc/relay.ts`). The third stage adds 7 more (31 of 35): `partner_withdraw_surplus`,
+  `creator_withdraw_surplus`, `withdraw_migration_fee`, `withdraw_leftover`, `create_locker` (the locker's
+  `create_vesting_escrow_v2` by CPI), the deprecated `migration_damm_v2_create_metadata` and `migration_damm_v2` (DAMM
+  v2's pool creation on a static or dynamic config, the second position by `add_liquidity` or, with a transfer fee, by
+  `split_position2`, permanent and vested locks, the position NFTs' owners, the base mint's transfer fee authority and
+  the burn, the pool authority's rent lent and paid back). `showcase/test/meteora-dbc-migration.test.ts` and
+  `meteora-dbc-migration-fuzz.test.ts` drive pools to the threshold by swaps and graduate them on both programs, which
+  call DAMM v2 (`cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG`, sha256 `ca7a3262…5a67`) and the locker
+  (`LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn`, sha256 `0ba6f4f5…abed`) as deployed on mainnet (fetched by
+  `scripts/fetch-programs.sh`, not kept here) on DAMM v2's seven migration configs read from mainnet
+  (`showcase/test/fixtures/meteora-dbc/damm-v2/`): every progress state, each fee option, customizable pools (collect
+  fee modes, dynamic fee, fee time and market cap schedulers, compounding), partner and creator liquidity splits with
+  permanent locks and vesting, SPL and Token-2022 bases and quotes, base and quote transfer fees with each migrated fee
+  authority option, a transfer hook pool, fixed supplies (the burn and the leftover), legacy configs, each DAMM v2
+  config check and the refusals; the fuzz graduates random configs with the withdrawals in a random order. The fourth
+  stage completes the port (35 of 35): the DAMM v1 migration, deprecated for new configs but still taken by pools of
+  configs made before 0.2.1: `migration_meteora_damm_create_metadata`, `migrate_meteora_damm` (DAMM v1's
+  `initialize_permissionless_constant_product_pool_with_config2` under flash rent, the burn, the partner's and
+  creator's LP split), `migrate_meteora_damm_lock_lp_token` (DAMM v1's `lock` into the owner's lock escrow) and
+  `migrate_meteora_damm_claim_lp_token`. `showcase/test/meteora-dbc-migration-v1.test.ts` checks them on both programs,
+  which call DAMM v1 (`Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB`, upgraded in slot 468,782,174 on 2026-11-13,
+  sha256 `ea4e6581…7f58`) and the dynamic vault (`24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi`, sha256
+  `a3c23d24…fdcb`) as deployed on mainnet (fetched by `scripts/fetch-programs.sh`, not kept here; their licences are
+  not established) on DAMM v1's six migration configs and the wrapped SOL vault read from mainnet
+  (`showcase/test/fixtures/meteora-dbc/damm-v1/`), with configs made for DAMM v2 and their migration option rewritten
+  to DAMM v1 in both ledgers: every progress state, each fee option with its config and another, the customizable
+  option, each DAMM v1 config check, partner and creator LP splits locked and claimed in different orders, a
+  self-partnered creator, vested shares (which DAMM v1 leaves with the pool authority), Token-2022 on either side
+  (refused, 3007, by both), a transfer hook pool (refused), wrapped SOL in its mainnet vault, fixed supplies, a payer
+  short of the rent, `transfer_pool_creator` after a DAMM v1 migration, and the account refusals; the migration fuzz
+  now takes the DAMM v1 or the DAMM v2 path at random, locking and claiming the LP among the other steps. The binary is
+  identified as 0.2.2 by its instruction names, error messages and source paths; it was not rebuilt. The README of
+  `showcase/mainnet/meteora-dbc/` lists what is compared, what differs and what is not verified.
+- Changed: `typesol/testing`'s `t.ix` refuses an argument left out or misspelt. An argument missing from the arguments
+  object was encoded as zeros when its size is fixed (as Anchor's coder does), so a misspelt argument name sent
+  zeros and a misspelt `Option` argument sent None; the same for a field left out of a struct argument or of a data
+  enum variant, at any depth, and for a variant that has fields named without them (`{ Box: {} }`). Each is now an
+  error naming the instruction and the argument and listing the instruction's arguments (`set: argument "amount" is
+  missing (it takes amount, cap, frame, shape; only an Option may be left out)`), or naming the field's path and the
+  struct's fields (`set(frame).origin.y is missing (Point has x, y; only an Option may be left out)`). An `Option`
+  may still be left out (None). A key that names no argument or field, in its IDL (snake_case) or camelCase
+  spelling, was ignored and is now an error too (`set has no argument "amonut" (it takes amount, cap, frame, shape)`,
+  `set(frame) has no field "scael" (Frame has origin, scale)`). `null` for an argument or field that is not an
+  `Option` was encoded as 0 for an integer of up to 32 bits and as false for a bool; it is now an error
+  (`set(amount) is null, but it is a u64, not an Option`). No test of the repository passed a missing or unknown key.
+- Added: `t.events(res)` in `typesol/testing`: the events a successful transaction emitted, decoded from the IDL, in
+  the order the program emitted them (`[{ name, data }]`, values as `t.account` gives them): `emit`'s `Program data:`
+  log lines while this program runs, and `emitCpi`'s self-CPIs, which it finds in the transaction's inner
+  instructions. It needs no other package; decoding events in a test took `t.coder.events.decode(…)` on each log line,
+  which needs `@anchor-lang/core`, and did not see `emitCpi` events. `t.coder` does not change. TypeSOL's Borsh coder
+  decodes events as Anchor's `coder.events.decode` does (test/client/idl-coder.test.ts compares the two on random
+  values for every program with events, and on a wrong discriminator, which both decode as null).
+
+- Changed, now refused: a call of a helper that returns the result of `merkleVerify`, `verifyEd25519` or
+  `verifySecp256k1` whose result decides nothing. 0.46.0 refused such a call of the three themselves (as a statement,
+  as the condition of an `if` with an empty body, kept in a local never read) but compiled the same through a helper,
+  which dropped the result and checked nothing. A helper (a function, a const arrow or function expression, a generic
+  one, a closure) returns a check when one of its `return`s gives the result of one of the three or of another such
+  helper, directly, in parentheses or under `as`, combined with `&&`, `||`, `!` or `?:`, or through a local of the
+  helper that nothing but its returns reads. Its call is held to the same three rules, the message naming the helper
+  and the built-in: "the result of checkProof is discarded, so nothing is checked: it returns the result of
+  merkleVerify; write require(checkProof(…), error)", "the result of signed is not acted on: the if around it has an
+  empty body, so nothing is checked: it returns the result of verifyEd25519; …", "the result of checkProof is never
+  read (ok is not used), so nothing is checked: …". A helper that requires the result itself, or reads it anywhere
+  but in a `return`, does not return a check, and neither does one returning an unrelated boolean. Still not caught: a
+  result stored in an account field, a struct or an Option, compared (`=== true`) or passed to a function that ignores
+  it; a helper that branches on the result and returns literals (`if (!ok) { return false; } return true;`); and a
+  helper that returns what a function passed to it returns. No program of the repository is refused: the 76 build to
+  the same binaries and IDLs as with 0.47.0 (test/language/diagnostics.test.ts; a row in the refused-constructs table
+  of docs/language-statements.md; docs/language-chain.md).
+
 ## 0.47.0 — 2026-11-13
 
 A minor release: it removes an optional peer dependency (`@anchor-lang/core`) and changes what `t.coder` of

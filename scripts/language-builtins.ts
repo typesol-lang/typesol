@@ -204,6 +204,8 @@ const GROUPS: [string, string, string[]][] = [
       "SlotHashesSysvar",
       "StakeHistorySysvar",
       "stackHeight",
+      "processedSiblingInstructionCount",
+      "processedSiblingInstruction",
     ],
   ],
   [

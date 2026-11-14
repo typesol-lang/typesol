@@ -493,6 +493,18 @@ export interface TransactionInstruction {
  * program invoked it. `require(stackHeight() === 1n, …)` refuses CPI callers.
  */
 export declare function stackHeight(): u64;
+/**
+ * How many instructions the caller of this program has already invoked at this program's stack height (its processed
+ * siblings), or, when the transaction calls this program directly, how many top-level instructions ran before this one
+ * (Rust's `get_processed_sibling_instruction(i)` until it returns None).
+ */
+export declare function processedSiblingInstructionCount(): u64;
+/**
+ * Processed sibling instruction `index` (0 the latest), as Rust's `get_processed_sibling_instruction(index)` reads it
+ * with the `sol_get_processed_sibling_instruction` syscall: its program id, accounts and data, as a
+ * TransactionInstruction. 5104 when there is none at that index.
+ */
+export declare function processedSiblingInstruction(index: u64): TransactionInstruction;
 
 /**
  * Whether this transaction contains an Ed25519 precompile instruction that verified `message`
@@ -2083,6 +2095,21 @@ type MintArg = Mint | AccountInfo | RemainingAccount;
 interface TokenOps {
   transfer(from: TokenAccountArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
   transferChecked(from: TokenAccountArg, mint: MintArg, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;
+  /**
+   * transferChecked for a Token-2022 mint with a transfer hook: the hook's extra accounts are resolved from its
+   * validation account (["extra-account-metas", mint] of the hook program) among `hookAccounts` and appended, then the
+   * validation account and the hook program, as spl-transfer-hook-interface's `add_extra_accounts_for_execute_cpi`
+   * does (its refusals and error codes included). Without a hook program on the mint, a plain transferChecked.
+   */
+  transferCheckedWithHook(
+    from: TokenAccountArg,
+    mint: MintArg,
+    to: TokenAccountArg,
+    authority: AccountMeta,
+    amount: u64,
+    hookAccounts: RemainingAccounts | RemainingSlice,
+    signerSeeds?: Seed[] | SignerSeeds,
+  ): void;
   /** `mint`: a Mut<Mint>, or a mint this instruction created and initialized (Mut<Signer> / Mut<AccountInfo>). */
   /** `to`: a Mut<TokenAccount>, or a Mut<AccountInfo> token account this instruction created (e.g. with `ata.create`). */
   mintTo(mint: MintArg | AccountMeta, to: TokenAccountArg, authority: AccountMeta, amount: u64, signerSeeds?: Seed[] | SignerSeeds): void;

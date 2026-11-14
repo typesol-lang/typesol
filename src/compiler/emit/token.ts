@@ -54,6 +54,24 @@ export abstract class TokenEmitter extends CreateEmitter {
         this.line(`TS_TRY(ts_token_transfer_checked(params, ${p}, ${from.c}, ${mint.c}, ${to.c}, ${auth.c}, ${amt}, ${s.name}, ${s.count}));`);
         return undefined;
       }
+      case "transferCheckedWithHook": {
+        // transferChecked with a transfer hook's extra accounts, resolved among `hookAccounts` (a remaining-accounts
+        // range) as spl-transfer-hook-interface's add_extra_accounts_for_execute_cpi resolves them on chain.
+        if (a.length !== 6 && a.length !== 7) this.fail(node, "transferCheckedWithHook(from, mint, to, authority, amount, hookAccounts, signerSeeds?)");
+        const from = want(a[0], "token", true, "the source");
+        const mint = want(a[1], "mint", false, "the mint");
+        const to = want(a[2], "token", true, "the destination");
+        const auth = this.cpiAccount(a[3], "the authority");
+        const amt = this.expect(this.expr(a[4], U64), U64, a[4]);
+        const held = this.tmp("amt");
+        this.line(`uint64_t ${held} = ${amt.c};`);
+        const range = this.remainingRange(a[5]) ?? this.fail(a[5], "pass the hook's accounts as remainingAccounts() or rest.slice(a, b)");
+        const s = this.signerSeeds(a[6], auth, a[3]);
+        this.line(
+          `TS_TRY(ts_token_transfer_checked_hook(params, ${p}, ${from.c}, ${mint.c}, ${to.c}, ${auth.c}, ${held}, ${range.base} + ${range.from}, ${range.base} + ${range.to}, ${s.name}, ${s.count}));`,
+        );
+        return undefined;
+      }
       case "mintTo": {
         arity(4);
         // A Mut<Mint>, or a mint created and initialized earlier in this instruction (Mut<Signer> / Mut<AccountInfo>).
@@ -701,7 +719,7 @@ export abstract class TokenEmitter extends CreateEmitter {
     }
     this.fail(
       node.expression,
-      `token programs support transfer, transferChecked, mintTo, burn, closeAccount, approve, revoke, setAuthority, freezeAccount, thawAccount, syncNative, initializeMint2, initializeAccount3, initializeMetadata, updateMetadataField, removeMetadataKey, updateMetadataAuthority, emitMetadata, the Token-2022 extension instructions (updateDefaultAccountState, updateTransferHook, enableRequiredMemoTransfers, disableRequiredMemoTransfers, updateInterestRate, transferCheckedWithFee, harvestWithheldTokensToMint, withdrawWithheldTokensFromMint, setTransferFee) and initializers (initializeTransferFeeConfig, initializeMintCloseAuthority, initializeNonTransferableMint, initializePermanentDelegate, initializeDefaultAccountState, initializeMetadataPointer, initializeGroupPointer, initializeGroupMemberPointer, initializeTransferHook, initializeInterestBearingMint, initializeImmutableOwner), not ${method}`,
+      `token programs support transfer, transferChecked, transferCheckedWithHook, mintTo, burn, closeAccount, approve, revoke, setAuthority, freezeAccount, thawAccount, syncNative, initializeMint2, initializeAccount3, initializeMetadata, updateMetadataField, removeMetadataKey, updateMetadataAuthority, emitMetadata, the Token-2022 extension instructions (updateDefaultAccountState, updateTransferHook, enableRequiredMemoTransfers, disableRequiredMemoTransfers, updateInterestRate, transferCheckedWithFee, harvestWithheldTokensToMint, withdrawWithheldTokensFromMint, setTransferFee) and initializers (initializeTransferFeeConfig, initializeMintCloseAuthority, initializeNonTransferableMint, initializePermanentDelegate, initializeDefaultAccountState, initializeMetadataPointer, initializeGroupPointer, initializeGroupMemberPointer, initializeTransferHook, initializeInterestBearingMint, initializeImmutableOwner), not ${method}`,
     );
   }
 

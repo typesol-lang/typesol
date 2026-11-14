@@ -24,6 +24,13 @@ test/programs/kamino_*.so
 test/programs/juplend_*.so
 # Drift's Merkle distributor (claim_bad_debt), GPL-3.0, fetched the same way.
 test/programs/merkle_distributor.so
+# Meteora's Dynamic Bonding Curve (Meteora Non-commercial Licence), and the DAMM v2, locker, DAMM v1 and dynamic vault
+# programs its migrations call (Meteora Noncommercial Licence for DAMM v2, the others not established), fetched the same way.
+test/programs/meteora_dbc.so
+test/programs/meteora_damm_v2.so
+test/programs/meteora_locker.so
+test/programs/meteora_damm_v1.so
+test/programs/meteora_vault.so
 # local validator ledgers and fixtures (scripts/localnet.sh), npm pack output, coverage, CLI keypairs
 .localnet*/
 *.tgz

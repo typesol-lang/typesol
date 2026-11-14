@@ -1,6 +1,6 @@
 /**
- * A Borsh coder driven by an Anchor IDL (spec 0.1.0): instruction data, account data and the IDL's defined types.
- * `typesol/testing` encodes arguments and decodes accounts and return data with it.
+ * A Borsh coder driven by an Anchor IDL (spec 0.1.0): instruction data, account data, events and the IDL's defined
+ * types. `typesol/testing` encodes arguments and decodes accounts, return data and events with it.
  *
  * It reads the IDL as Anchor's TypeScript `BorshCoder` does (test/client/idl-coder.test.ts compares the two byte for
  * byte): the discriminators are the IDL's own, `serialization` and `repr` do not change the layout (account data is read
@@ -13,6 +13,10 @@
  *   struct). An enum: `{ Variant: { field: value } }` (`{ Variant: {} }` for a variant without fields).
  *
  * A type the IDL can name but this coder does not handle (`coption`) fails when the coder is made, naming the type.
+ *
+ * By default a struct field or argument left undefined is written as zeros when its size is fixed, and keys that name
+ * no field are ignored, as Anchor's coder does. With `{ strict: true }` (what `typesol/testing` uses) both are errors
+ * naming the field; an Option may still be left out (None).
  */
 import { getAddressDecoder, getAddressEncoder, isAddress } from "@solana/kit";
 
@@ -36,7 +40,12 @@ export interface IdlTypeDefSpec {
 export interface CoderIdl {
   instructions: readonly { name: string; discriminator: readonly number[]; args: readonly { name: string; type: unknown }[] }[];
   accounts?: readonly { name: string; discriminator: readonly number[] }[];
+  events?: readonly { name: string; discriminator: readonly number[] }[];
   types?: readonly unknown[];
+}
+export interface IdlCoderOptions {
+  /** A missing field or argument that is not an Option, or a key that names none, is an error (default false). */
+  strict?: boolean;
 }
 
 const INTS: Record<string, { bytes: number; signed: boolean }> = {
@@ -99,10 +108,13 @@ export class IdlCoder {
   private readonly types: Map<string, IdlTypeDefSpec>;
   private readonly instructions: Map<string, { discriminator: Buffer; args: { name: string; type: IdlTypeSpec }[] }>;
   private readonly accountDefs: Map<string, { discriminator: Buffer; type: IdlTypeSpec }>;
+  private readonly eventDefs: [string, { discriminator: Buffer; type: IdlTypeSpec }][];
+  private readonly strict: boolean;
   private readonly enc = getAddressEncoder();
   private readonly dec = getAddressDecoder();
 
-  constructor(idl: CoderIdl) {
+  constructor(idl: CoderIdl, options: IdlCoderOptions = {}) {
+    this.strict = options.strict ?? false;
     const types = (idl.types ?? []) as IdlTypeDefSpec[];
     this.types = new Map(types.map((t) => [t.name, t]));
     // Every layout is checked now, as Anchor's coder builds them all when it is made.
@@ -122,6 +134,13 @@ export class IdlCoder {
         return [acc.name, { discriminator: Buffer.from(acc.discriminator), type }];
       }),
     );
+    if (idl.events?.length && !idl.types) throw new Error("Events require `idl.types`");
+    this.eventDefs = (idl.events ?? []).map((ev) => {
+      if (!this.types.has(ev.name)) throw new Error(`Event not found: ${ev.name}`);
+      const type: IdlTypeSpec = { defined: { name: ev.name } };
+      this.check(type, NO_ENV, [], false, ev.name);
+      return [ev.name, { discriminator: Buffer.from(ev.discriminator), type }];
+    });
     for (const t of types) if (!t.generics?.length) this.check({ defined: { name: t.name } }, NO_ENV, [], false, t.name);
   }
 
@@ -318,12 +337,17 @@ export class IdlCoder {
 
   /**
    * A struct's fields in order. A field left undefined is written as zeros when its size is fixed (what Anchor's coder
-   * does); a variable-size one cannot be, and throws.
+   * does); a variable-size one cannot be, and throws. Strict: a missing field that is not an Option, and a key that
+   * names no field, throw.
    */
   private fields(w: Writer, fields: { name: string; type: IdlTypeSpec }[], v: unknown, env: Env, where: string) {
     if (fields.length && (typeof v !== "object" || v === null))
       throw new TypeError(`${where}: expected an object with ${fields.map((f) => f.name).join(", ")}`);
     const o = v as Record<string, unknown>;
+    if (this.strict && typeof o === "object" && o !== null)
+      for (const k of Object.keys(o))
+        if (!fields.some((f) => f.name === k))
+          throw new Error(`${where}: no field "${k}" (${fields.length ? `the fields are ${fields.map((f) => f.name).join(", ")}` : "it has no fields"})`);
     for (const f of fields) {
       const x = o[f.name];
       if (x === undefined) {
@@ -335,6 +359,7 @@ export class IdlCoder {
           this.write(w, f.type, null, env, `${where}.${f.name}`);
           continue;
         }
+        if (this.strict) throw new Error(`${where}.${f.name}: missing (only an Option may be left out)`);
         const n = this.fixedSize(f.type, env);
         if (n === undefined) throw new Error(`${where}.${f.name}: missing`);
         w.write(n, (b, at) => b.fill(0, at, at + n));
@@ -353,6 +378,12 @@ export class IdlCoder {
     const isOption = (t: IdlTypeSpec) => typeof t === "object" && "option" in t;
     const missing = ix.args.filter((a) => !isOption(a.type) && !Object.prototype.hasOwnProperty.call(args, a.name)).map((a) => `\`${a.name}\``);
     if (missing.length) throw new Error(`Invalid arguments for instruction "${name}": missing field${missing.length > 1 ? "s" : ""} ${missing.join(", ")}.`);
+    if (this.strict && args !== null && typeof args === "object")
+      for (const k of Object.keys(args))
+        if (!ix.args.some((a) => a.name === k))
+          throw new Error(
+            `Invalid arguments for instruction "${name}": no argument \`${k}\` (${ix.args.length ? `it takes ${ix.args.map((a) => a.name).join(", ")}` : "it takes none"})`,
+          );
     const w = new Writer();
     w.bytes(ix.discriminator);
     this.fields(w, ix.args, args ?? {}, NO_ENV, name);
@@ -505,6 +536,18 @@ export class IdlCoder {
     if (!def || def.generics?.length) throw new Error(`Unknown type: ${name}`);
     const b = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     return this.read(b, 0, { defined: { name } }, NO_ENV, name)[0];
+  }
+
+  /**
+   * An event's name and fields from its bytes (the discriminator, then the fields), as Anchor's `coder.events.decode`
+   * gives them from the same bytes in base64; null when the bytes start with none of the IDL's event discriminators.
+   */
+  decodeEvent(data: Uint8Array): { name: string; data: Record<string, unknown> } | null {
+    const b = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    for (const [name, ev] of this.eventDefs)
+      if (ev.discriminator.equals(b.subarray(0, ev.discriminator.length)))
+        return { name, data: this.read(b, ev.discriminator.length, ev.type, NO_ENV, name)[0] as Record<string, unknown> };
+    return null;
   }
 
   /** An instruction's arguments read back from its data (after checking the discriminator). */

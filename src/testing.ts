@@ -12,10 +12,10 @@
  * come from the IDL, as Anchor's `.accounts({...})` does, and PDAs seeded by constants, arguments or other accounts'
  * keys are derived when left out. Arguments take plain values: bigints or numbers for
  * integers, address strings for Pubkeys, null for an empty Option. Decoded accounts and return data come back the
- * same way (bigints, address strings).
+ * same way (bigints, address strings), and so do the events of a transaction (`t.events(res)`).
  *
  * Needs `litesvm`, which `typesol init` projects have. Instruction data, accounts and return data are encoded and
- * decoded from the IDL by TypeSOL's own Borsh coder (src/idl-coder.ts).
+ * decoded from the IDL by TypeSOL's own Borsh coder (src/idl-coder.ts), events too.
  */
 import {
   type Address,
@@ -63,7 +63,7 @@ export interface TestIdl {
     returns?: unknown;
   }[];
   accounts?: readonly { name: string; discriminator: readonly number[] }[];
-  events?: readonly unknown[];
+  events?: readonly { name: string; discriminator: readonly number[] }[];
   errors?: readonly { code: number; name: string; msg?: string }[];
   types?: readonly unknown[];
   constants?: readonly unknown[];
@@ -177,6 +177,11 @@ export interface TestProgram {
   account<T = Record<string, unknown>>(type: string, address: Address): Promise<T | null>;
   /** A successful instruction's return data, decoded by its IDL `returns` type. */
   returned<T = unknown>(instruction: string, res: Result): T;
+  /**
+   * The events a successful transaction emitted, decoded by the IDL, in the order the program emitted them: `emit`'s
+   * `Program data:` log lines while this program runs, and `emitCpi`'s self-CPIs. Values as `account` gives them.
+   */
+  events<T = Record<string, unknown>>(res: Result): { name: string; data: T }[];
   /** Lamports of any account (0 when it does not exist). */
   balance(address: Address): bigint;
   /** A kit RPC and subscriptions pair over this LiteSVM, for the generated client (`svmConnection`). */
@@ -204,6 +209,8 @@ export interface TestProgram {
 }
 
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA" as Address;
+/** The first 8 bytes of Anchor's event instruction (sha256("anchor:event")[..8]), which `emitCpi` sends to the program. */
+const EVENT_IX_TAG = Buffer.from([0xe4, 0x45, 0xa5, 0x2e, 0x51, 0xcb, 0x9a, 0x1d]);
 
 /** Build `program` of the project around `from` (a file URL such as import.meta.url, or a directory) and load it. */
 export async function testProgram(program: string, from: string | URL): Promise<TestProgram> {
@@ -224,16 +231,38 @@ export async function testProgram(program: string, from: string | URL): Promise<
 
 /** The same helpers for a program already loaded into `svm` at `programId` with this IDL. */
 export function programHarness(svm: LiteSVM, programId: Address, idl: TestIdl): TestProgram {
-  const coder = new IdlCoder(idl);
+  // Strict: an argument or field left out (other than an Option) or misspelt is an error, not zeros or None.
+  const coder = new IdlCoder(idl, { strict: true });
   let anchor: AnchorBorshCoder | undefined;
   const source = idl as unknown as ProgramIdl;
   const pidl: ProgramIdl = { ...source, instructions: source.instructions.map((ix) => ({ ...ix, accounts: flattenAccounts(ix.accounts) })) };
   const types = new Map((pidl.types ?? []).map((t) => [t.name, t]));
   const enc = getAddressEncoder();
 
+  const isOption = (type: IdlType) => typeof type === "object" && "option" in type;
+  /** The value of `name` in `o`, by its IDL name or its camelCase spelling. */
+  const valueOf = (o: Record<string, unknown>, name: string) => (Object.prototype.hasOwnProperty.call(o, name) ? o[name] : o[camel(name)]);
+  /**
+   * A struct's or data variant's fields from a plain object, converted: each field by its IDL name or camelCase. A key
+   * that names no field, and a field left out that is not an Option, are errors naming them.
+   */
+  const fieldsToCoder = (o: Record<string, unknown>, fields: { name: string; type: IdlType }[], where: string, owner: string) => {
+    const names = fields.map((f) => camel(f.name)).join(", ");
+    for (const k of Object.keys(o))
+      if (!fields.some((f) => f.name === k || camel(f.name) === k)) throw new Error(`${where} has no field "${k}" (${owner} has ${names || "no fields"})`);
+    return Object.fromEntries(
+      fields.map((f) => {
+        const x = valueOf(o, f.name);
+        if (x === undefined && !isOption(f.type))
+          throw new Error(`${where}.${camel(f.name)} is missing (${owner} has ${names}; only an Option may be left out)`);
+        return [f.name, toCoder(x, f.type, `${where}.${camel(f.name)}`)];
+      }),
+    );
+  };
   /** A plain value → what the coder expects for `type` (integers of 64 bits and more it parses itself). */
   const toCoder = (v: unknown, type: IdlType, where: string): unknown => {
     if (typeof type === "string") {
+      if (v === null || v === undefined) throw new Error(`${where} is ${String(v)}, but it is a ${type}, not an Option`);
       if (/^[ui](8|16|32)$/.test(type)) return Number(v);
       if (type === "pubkey") {
         const a = isSigner(v) ? v.address : (v as string);
@@ -246,37 +275,40 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: TestIdl): 
     if ("vec" in type) return (v as unknown[]).map((x, i) => toCoder(x, type.vec, `${where}[${i}]`));
     if ("array" in type) return (v as unknown[]).map((x, i) => toCoder(x, type.array[0], `${where}[${i}]`));
     const def = types.get(type.defined.name);
-    if (def?.type.kind === "struct" && def.type.fields && typeof v === "object" && v !== null) {
-      const o = v as Record<string, unknown>;
-      return Object.fromEntries(def.type.fields.map((f) => [f.name, toCoder(o[f.name] ?? o[camel(f.name)], f.type, `${where}.${f.name}`)]));
-    }
+    const named = (fields: unknown[] | undefined) =>
+      !!fields?.length && fields.every((f) => typeof f === "object" && f !== null && (f as { name?: unknown }).name && (f as { type?: unknown }).type);
+    if (def?.type.kind === "struct" && named(def.type.fields) && typeof v === "object" && v !== null && !Array.isArray(v))
+      return fieldsToCoder(v as Record<string, unknown>, def.type.fields!, where, def.name);
+    const variants = (def?.type as { variants?: { name: string; fields?: unknown[] }[] } | undefined)?.variants;
+    const variantOf = (key: unknown) => variants?.find((x) => x.name === key || camel(x.name) === key || x.name.toLowerCase() === String(key).toLowerCase());
     // A unit enum as its index or variant name, as well as Anchor's { Variant: {} }.
-    const variants = (def?.type as { variants?: { name: string }[] } | undefined)?.variants;
     const unitObject = typeof v === "object" && v !== null && Object.keys(v).length === 1 && !Object.values(v)[0];
     const emptyObject = typeof v === "object" && v !== null && Object.keys(v).length === 1 && Object.keys(Object.values(v)[0] as object).length === 0;
     if (def?.type.kind === "enum" && variants && (typeof v === "number" || typeof v === "bigint" || typeof v === "string" || unitObject || emptyObject)) {
       const key = typeof v === "object" ? Object.keys(v as object)[0] : v;
       const same = (x: { name: string }) => x.name === key || camel(x.name) === key || x.name.toLowerCase() === String(key).toLowerCase();
       const i = typeof key === "string" ? variants.findIndex(same) : Number(key);
-      if (!variants[i]) throw new Error(`${where}: ${String(v)} is not a variant of ${type.defined.name}`);
-      return { [variants[i].name]: {} };
+      const variant = variants[i];
+      if (!variant) throw new Error(`${where}: ${String(v)} is not a variant of ${type.defined.name}`);
+      // A variant that has fields, named without them: an error naming the first, as for a struct.
+      if (named(variant.fields))
+        return { [variant.name]: fieldsToCoder({}, variant.fields as { name: string; type: IdlType }[], `${where}.${variant.name}`, variant.name) };
+      return { [variant.name]: {} };
     }
     // A variant with fields, { Variant: { field: value } }: its fields converted like a struct's.
     if (def?.type.kind === "enum" && variants && typeof v === "object" && v !== null && Object.keys(v).length === 1) {
-      const [key, body] = Object.entries(v as Record<string, unknown>)[0];
-      const variant = (variants as { name: string; fields?: unknown[] }[]).find(
-        (x) => x.name === key || camel(x.name) === key || x.name.toLowerCase() === key.toLowerCase(),
-      );
+      const [key, body] = Object.entries(v as Record<string, unknown>)[0]!;
+      const variant = variantOf(key);
       if (!variant) throw new Error(`${where}: ${key} is not a variant of ${type.defined.name}`);
-      const fields = (variant.fields ?? []) as { name?: string; type?: IdlType }[];
-      if (fields.length && fields.every((f) => typeof f === "object" && f?.name && f.type) && typeof body === "object" && body !== null) {
-        const o = body as Record<string, unknown>;
+      if (named(variant.fields) && typeof body === "object" && body !== null && !Array.isArray(body))
         return {
-          [variant.name]: Object.fromEntries(
-            fields.map((f) => [f.name!, toCoder(o[f.name!] ?? o[camel(f.name!)], f.type!, `${where}.${variant.name}.${f.name}`)]),
+          [variant.name]: fieldsToCoder(
+            body as Record<string, unknown>,
+            variant.fields as { name: string; type: IdlType }[],
+            `${where}.${variant.name}`,
+            variant.name,
           ),
         };
-      }
       return { [variant.name]: body };
     }
     return v;
@@ -437,7 +469,18 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: TestIdl): 
           ...(r.signer ? { signer: r.signer } : {}),
         });
       const a = args as Record<string, unknown>;
-      const encoded = Object.fromEntries(def.args.map((x) => [x.name, toCoder(a[x.name] ?? a[camel(x.name)], x.type, `${def.name}(${camel(x.name)})`)]));
+      // Every key names an argument, and every argument but an Option is given: a misspelt one is not sent as zeros.
+      const takes = def.args.length ? `it takes ${def.args.map((x) => camel(x.name)).join(", ")}` : "it takes no arguments";
+      for (const k of Object.keys(a))
+        if (!def.args.some((x) => x.name === k || camel(x.name) === k)) throw new Error(`${def.name} has no argument "${k}" (${takes})`);
+      const encoded = Object.fromEntries(
+        def.args.map((x) => {
+          const v = valueOf(a, x.name);
+          if (v === undefined && !isOption(x.type))
+            throw new Error(`${def.name}: argument "${camel(x.name)}" is missing (${takes}; only an Option may be left out)`);
+          return [x.name, toCoder(v, x.type, `${def.name}(${camel(x.name)})`)];
+        }),
+      );
       return { programAddress: programId, accounts: metas, data: new Uint8Array(coder.encodeInstruction(def.name, encoded)) } as unknown as Instruction;
     },
     async send(payer, ...ixs) {
@@ -558,6 +601,38 @@ export function programHarness(svm: LiteSVM, programId: Address, idl: TestIdl): 
       }
       if ("defined" in t) return plain(coder.decodeType(t.defined.name, data)) as T;
       throw new Error(`decode ${instruction}'s return data yourself (${JSON.stringify(t)})`);
+    },
+    events<T>(res: Result) {
+      const done = harness.ok(res);
+      // Every inner instruction of the transaction, in order. Not looked up by the top-level instruction's index:
+      // a precompile (Ed25519, Secp256k1) is an instruction that logs no invoke line.
+      const inner = done.innerInstructions().flat();
+      const found: { name: string; data: T }[] = [];
+      const add = (bytes: Uint8Array) => {
+        const e = coder.decodeEvent(bytes);
+        if (e) found.push({ name: e.name, data: plain(e.data) as T });
+      };
+      // The logs name every program invoked, in order: an `invoke` line deeper than [1] is the next inner instruction
+      // (where an emitCpi event is). A data line is this program's while it runs innermost.
+      const running: string[] = [];
+      let next = 0;
+      for (const line of done.logs()) {
+        const invoke = /^Program (\S+) invoke \[(\d+)\]$/.exec(line);
+        if (invoke) {
+          if (invoke[2] !== "1") {
+            const data = inner[next++]?.instruction().data();
+            if (invoke[1] === programId && data && data.length >= 8 && EVENT_IX_TAG.equals(data.subarray(0, 8))) add(data.subarray(8));
+          }
+          running.push(invoke[1]!);
+          continue;
+        }
+        if (/^Program \S+ (success$|failed)/.test(line)) {
+          running.pop();
+          continue;
+        }
+        if (running.at(-1) === programId && line.startsWith("Program data: ")) add(Buffer.from(line.slice("Program data: ".length), "base64"));
+      }
+      return found;
     },
     balance(address) {
       return svm.getBalance(address) ?? 0n;

@@ -80,6 +80,12 @@ succeeds. A case study for each says what was compared and what was not.
 | [Jito MEV](docs/case-study-jito-mev.md) | Anchor, three programs | 24 | 150 |
 | [coral-xyz/multisig](docs/case-study-multisig.md) | Anchor | all | 52 |
 
+A ninth port is held to a narrower comparison and is not counted above:
+[Meteora Dynamic Bonding Curve 0.2.2](showcase/mainnet/meteora-dbc) (Anchor, launchpad, all 35 instructions, with its
+migrations into DAMM v1 and DAMM v2). Outcomes, error codes, account bytes, events and return data are the same as the
+mainnet binary's; log text and compute units are not compared. That directory is under Meteora's Non-commercial
+Licence, not this repository's (see its README).
+
 Random walks with fixed or printed seeds run on top of these counts ([docs/testing.md](docs/testing.md)). The
 sources are in [`showcase/mainnet`](showcase/mainnet), and where each original binary comes from is recorded in
 [test/programs/SOURCES.md](test/programs/SOURCES.md).
@@ -436,6 +442,7 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Phoenix v1](docs/case
 | [`phoenix/`](showcase/mainnet/phoenix) | Phoenix v1, Ellipsis Labs' on-chain limit order book and a native program, in full, all 28 instructions: price-time matching over lib-sokoban red-black trees in one market account, every order type, self-trade behaviours, time in force, eviction, cancels, seats and fees, its events as Log self-CPIs byte for byte |
 | [`spl-stake-pool/`](showcase/mainnet/spl-stake-pool) | SPL Stake Pool in full, all 27 instructions, a native program and the one behind most liquid staking tokens: pools of stake across up to 20,000 validators, SOL and stake deposits and withdrawals, rebalancing over epochs, fees and authorities, token metadata |
 | [`raydium-amm/`](showcase/mainnet/raydium-amm) | Raydium AMM v4, the original constant-product AMM and a native (non-Anchor) program, in full: pool creation, deposits and withdrawals, the v1 and v2 swaps, P&L and administration, down to its log records and panics |
+| [`meteora-dbc/`](showcase/mainnet/meteora-dbc) | Meteora Dynamic Bonding Curve 0.2.2 in full, all 35 instructions: configs, pool creation on SPL Token and Token-2022 (transfer fees and hooks), the three swap modes, fee schedulers and the rate limiter, fee claims, the locker, and the migrations into DAMM v1 and DAMM v2. Under Meteora's Non-commercial Licence (its own `LICENSE.md`); log text and compute units are not compared |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status

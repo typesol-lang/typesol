@@ -2802,6 +2802,280 @@ static inline uint64_t ts_t22_init_metadata(TsParams *params, const TsAccount *p
   return ts_invoke(params, &ix, &signer, n > 0 ? 1 : 0);
 }
 
+/*
+ * ---- Processed sibling instructions ----------------------------------------------------------------------------------
+ * sol_get_processed_sibling_instruction, as solana-instruction's get_processed_sibling_instruction calls it: the
+ * instructions the program that invoked this one has already invoked at this stack height (index 0 the latest), or the
+ * transaction's earlier top-level instructions when this program runs at the top. A first call with zero lengths
+ * reads the sizes, a second one the program id, data and accounts (Rust's AccountMeta: key, is_signer, is_writable),
+ * which are copied to the heap in the Instructions sysvar's account layout (flags, then key) for TsIx.
+ */
+typedef struct {
+  uint64_t data_len;
+  uint64_t accounts_len;
+} TsSiblingMeta;
+extern uint64_t sol_get_processed_sibling_instruction(uint64_t index, TsSiblingMeta *meta, SolPubkey *program_id, uint8_t *data, uint8_t *accounts);
+
+/* How many processed sibling instructions there are: indexes 0, 1, … until the syscall finds none. */
+static __attribute__((unused)) uint64_t ts_sibling_count(void) {
+  uint64_t n = 0;
+  for (;;) {
+    TsSiblingMeta meta = {0, 0};
+    SolPubkey program;
+    uint8_t data = 0;
+    uint8_t account[34];
+    if (sol_get_processed_sibling_instruction(n, &meta, &program, &data, account) != 1) return n;
+    n++;
+  }
+}
+
+static __attribute__((unused)) uint64_t ts_sibling_load(uint64_t index, TsIx *out) {
+  TsSiblingMeta meta = {0, 0};
+  SolPubkey *program;
+  TS_TRY(ts_alloc(sizeof(SolPubkey), (uint8_t **)&program));
+  uint8_t byte = 0;
+  uint8_t account[34];
+  if (sol_get_processed_sibling_instruction(index, &meta, program, &byte, account) != 1)
+    TS_FAIL(TS_ERR_INDEX, "TypeSOL: no processed sibling instruction at that index");
+  if (meta.data_len > 0xffff || meta.accounts_len > 0xffff) TS_FAIL(TS_ERR_INDEX, "TypeSOL: the sibling instruction is too large to read");
+  uint8_t *data, *raw, *accounts;
+  TS_TRY(ts_alloc(meta.data_len + 1, &data));
+  TS_TRY(ts_alloc(meta.accounts_len * 34 + 1, &raw));
+  TS_TRY(ts_alloc(meta.accounts_len * 33 + 1, &accounts));
+  sol_get_processed_sibling_instruction(index, &meta, program, data, raw);
+  for (uint64_t i = 0; i < meta.accounts_len; i++) {
+    accounts[i * 33] = (uint8_t)((raw[i * 34 + 32] ? 1 : 0) | (raw[i * 34 + 33] ? 2 : 0));
+    ts_memcpy(accounts + i * 33 + 1, raw + i * 34, 32);
+  }
+  out->accounts = accounts;
+  out->program_id = program;
+  out->data = data;
+  out->num_accounts = (uint16_t)meta.accounts_len;
+  out->data_len = (uint16_t)meta.data_len;
+  return SUCCESS;
+}
+
+/*
+ * ---- TransferChecked with a transfer hook's extra accounts ----------------------------------------------------------
+ * Rust's `spl_token_2022::instruction::transfer_checked` followed, when the mint's TransferHook extension names a
+ * program, by spl-transfer-hook-interface 2.1's `onchain::add_extra_accounts_for_execute_cpi` (with
+ * spl-tlv-account-resolution 0.11's ExtraAccountMetaList::add_to_cpi_instruction), then `invoke_signed`. The extra
+ * accounts are resolved from the hook's validation account (["extra-account-metas", mint] of the hook program) among
+ * `ka[lo..hi]`, with the same refusals and codes as those crates: TransferHookError::IncorrectAccount when the hook
+ * program is not among them, AccountResolutionError (2724315840 + n), TlvError::TypeNotFound, PodSliceError
+ * BufferTooSmall (Custom(1)), InvalidAccountData and InvalidArgument. PDA seeds go to sol_try_find_program_address as
+ * Rust's find_program_address sends them, and a failed search panics as it does.
+ */
+#define TS_HOOK_INCORRECT_ACCOUNT 2110272652u
+#define TS_ACCT_RES(n) ((uint64_t)(2724315840u + (n)))
+#define TS_ACCT_RES_INCORRECT_ACCOUNT TS_ACCT_RES(0)
+#define TS_ACCT_RES_INVALID_BYTES_FOR_SEED TS_ACCT_RES(9)
+#define TS_ACCT_RES_INSTRUCTION_DATA_TOO_SMALL TS_ACCT_RES(11)
+#define TS_ACCT_RES_ACCOUNT_NOT_FOUND TS_ACCT_RES(12)
+#define TS_ACCT_RES_ACCOUNT_DATA_TOO_SMALL TS_ACCT_RES(15)
+#define TS_TLV_TYPE_NOT_FOUND 1202666432u
+
+/* The program id of a Token-2022 mint's TransferHook extension (type 14: authority, program id), NULL for none. */
+static __attribute__((unused)) const SolPubkey *ts_mint_hook_program(const TsAccount *mint) {
+  if (!ts_key_eq(&mint->owner, &TS_TOKEN_2022_PROGRAM_ID)) return NULL;
+  uint64_t off = 166;
+  while (off + 4 <= mint->data_len) {
+    uint64_t t = mint->data[off] | ((uint64_t)mint->data[off + 1] << 8);
+    uint64_t len = mint->data[off + 2] | ((uint64_t)mint->data[off + 3] << 8);
+    if (t == 0) return NULL;
+    if (t == 14) {
+      if (off + 4 + 64 > mint->data_len) return NULL;
+      const SolPubkey *program = (const SolPubkey *)(mint->data + off + 4 + 32);
+      for (int i = 0; i < 32; i++)
+        if (program->x[i]) return program;
+      return NULL; /* OptionalNonZeroPubkey: all zeros is None */
+    }
+    off += 4 + len;
+  }
+  return NULL;
+}
+
+static __attribute__((unused)) const TsAccount *ts_hook_find(const TsParams *params, uint64_t lo, uint64_t hi, const SolPubkey *key) {
+  for (uint64_t i = lo; i < hi; i++)
+    if (ts_key_eq(&params->ka[i]->key, key)) return params->ka[i];
+  return NULL;
+}
+
+static __attribute__((unused)) uint64_t ts_token_transfer_checked_hook(TsParams *params, const TsAccount *program, TsAccount *from, TsAccount *mint,
+                                               TsAccount *to, TsAccount *authority, uint64_t amount, uint64_t lo, uint64_t hi,
+                                               const SolSignerSeed *seeds, int n) {
+  uint8_t data[10] = {12}; /* TransferChecked */
+  ts_memcpy(data + 1, &amount, 8);
+  data[9] = mint->data[44];
+  const SolPubkey *hook = ts_mint_hook_program(mint);
+  if (!hook) {
+    SolAccountMeta metas[4] = {{&from->key, true, false}, {&mint->key, false, false}, {&to->key, true, false}, {&authority->key, false, true}};
+    return ts_token_cpi(params, program, data, sizeof(data), metas, 4, seeds, n);
+  }
+  const TsAccount *hook_program = ts_hook_find(params, lo, hi, hook);
+  if (!hook_program) return TS_HOOK_INCORRECT_ACCOUNT;
+  SolSignerSeed vseeds[2] = {{(const uint8_t *)"extra-account-metas", 19}, {mint->key.x, 32}};
+  SolPubkey vaddr;
+  uint8_t vbump;
+  if (sol_try_find_program_address(vseeds, 2, hook, &vaddr, &vbump) != SUCCESS) sol_panic_("", 0, 0, 0);
+  const TsAccount *validation = ts_hook_find(params, lo, hi, &vaddr);
+  uint64_t count = 0;
+  const uint8_t *list = NULL;
+  if (validation) {
+    const uint8_t *d = validation->data;
+    uint64_t len = validation->data_len;
+    /* TlvStateBorrowed::unpack: every entry must fit (zeros may follow the last) */
+    uint64_t i = 0;
+    while (i < len) {
+      if (len < i + 8) {
+        for (uint64_t k = i; k < len; k++)
+          if (d[k]) return ERROR_INVALID_ACCOUNT_DATA;
+        break;
+      }
+      bool zero = true;
+      for (int k = 0; k < 8; k++)
+        if (d[i + k]) zero = false;
+      if (zero) break;
+      if (len < i + 12) return ERROR_INVALID_ACCOUNT_DATA;
+      uint64_t end = i + 12 + *(const ts_u32_unaligned *)(d + i + 8);
+      if (end > len) return ERROR_INVALID_ACCOUNT_DATA;
+      i = end;
+    }
+    /* get_first_bytes::<ExecuteInstruction>() */
+    static const uint8_t exec_disc[8] = {105, 37, 101, 197, 75, 251, 102, 26};
+    uint64_t at = 0;
+    bool found = false;
+    while (at < len) {
+      if (len < at + 12) return ERROR_INVALID_ACCOUNT_DATA;
+      bool zero = true, match = true;
+      for (int k = 0; k < 8; k++) {
+        if (d[at + k]) zero = false;
+        if (d[at + k] != exec_disc[k]) match = false;
+      }
+      if (match) {
+        found = true;
+        break;
+      }
+      if (zero) return TS_TLV_TYPE_NOT_FOUND;
+      at = at + 12 + *(const ts_u32_unaligned *)(d + at + 8);
+    }
+    if (!found) return ERROR_INVALID_ACCOUNT_DATA;
+    uint64_t vlen = *(const ts_u32_unaligned *)(d + at + 8);
+    if (len < at + 12 + vlen) return ERROR_INVALID_ACCOUNT_DATA;
+    /* ListView<ExtraAccountMeta, PodU32>::unpack */
+    if (vlen < 4) return 1; /* PodSliceError::BufferTooSmall */
+    if ((vlen - 4) % 35 != 0) return ERROR_INVALID_ARGUMENT;
+    count = *(const ts_u32_unaligned *)(d + at + 12);
+    if (count > (vlen - 4) / 35) return 1;
+    list = d + at + 16;
+  }
+  /* The execute instruction's accounts as resolution reads them: source, mint, destination, authority, the validation
+     account (all read-only), then each extra account as it is resolved. */
+  const TsAccount **ex = NULL;
+  bool *exw = NULL;
+  SolAccountMeta *metas = NULL;
+  TS_TRY(ts_alloc((5 + count) * sizeof(TsAccount *) + 1, (uint8_t **)&ex));
+  TS_TRY(ts_alloc(5 + count + 1, (uint8_t **)&exw));
+  TS_TRY(ts_alloc((6 + count) * sizeof(SolAccountMeta) + 1, (uint8_t **)&metas));
+  uint64_t exn = 5;
+  ex[0] = from, ex[1] = mint, ex[2] = to, ex[3] = authority, ex[4] = validation;
+  for (int k = 0; k < 5; k++) exw[k] = false;
+  uint8_t ixdata[16];
+  static const uint8_t exec_disc2[8] = {105, 37, 101, 197, 75, 251, 102, 26};
+  ts_memcpy(ixdata, exec_disc2, 8);
+  ts_memcpy(ixdata + 8, &amount, 8);
+  for (uint64_t j = 0; j < count; j++) {
+    const uint8_t *e = list + 35 * j;
+    const uint8_t *cfg = e + 1;
+    SolPubkey key;
+    bool writable = e[34] != 0;
+    if (e[0] == 0) {
+      ts_memcpy(key.x, cfg, 32);
+    } else if (e[0] == 1 || e[0] >= 128) {
+      const SolPubkey *owner = hook;
+      if (e[0] >= 128) {
+        uint64_t idx = e[0] - 128;
+        if (idx >= exn) return TS_ACCT_RES_ACCOUNT_NOT_FOUND;
+        owner = &ex[idx]->key;
+      }
+      /* Seed::unpack_address_config, then resolve_pda */
+      uint8_t kind[16], a0[16], a1[16], a2[16];
+      int ns = 0;
+      uint64_t i = 0;
+      while (i < 32) {
+        uint8_t dsc = cfg[i];
+        uint64_t rest = 31 - i;
+        if (dsc == 0) break;
+        if (dsc == 1) {
+          if (rest < 1 || rest - 1 < cfg[i + 1]) return TS_ACCT_RES_INVALID_BYTES_FOR_SEED;
+          a0[ns] = (uint8_t)(i + 2), a1[ns] = cfg[i + 1];
+          i += 2 + cfg[i + 1];
+        } else if (dsc == 2) {
+          if (rest < 2) return TS_ACCT_RES_INVALID_BYTES_FOR_SEED;
+          a0[ns] = cfg[i + 1], a1[ns] = cfg[i + 2];
+          i += 3;
+        } else if (dsc == 3) {
+          if (rest < 1) return TS_ACCT_RES_INVALID_BYTES_FOR_SEED;
+          a0[ns] = cfg[i + 1];
+          i += 2;
+        } else if (dsc == 4) {
+          if (rest < 3) return TS_ACCT_RES_INVALID_BYTES_FOR_SEED;
+          a0[ns] = cfg[i + 1], a1[ns] = cfg[i + 2], a2[ns] = cfg[i + 3];
+          i += 4;
+        } else
+          return ERROR_INVALID_ACCOUNT_DATA;
+        kind[ns++] = dsc;
+      }
+      SolSignerSeed pseeds[16];
+      for (int k = 0; k < ns; k++) {
+        if (kind[k] == 1) pseeds[k] = (SolSignerSeed){cfg + a0[k], a1[k]};
+        else if (kind[k] == 2) {
+          if ((uint64_t)a0[k] + a1[k] > 16) return TS_ACCT_RES_INSTRUCTION_DATA_TOO_SMALL;
+          pseeds[k] = (SolSignerSeed){ixdata + a0[k], a1[k]};
+        } else if (kind[k] == 3) {
+          if (a0[k] >= exn) return TS_ACCT_RES_ACCOUNT_NOT_FOUND;
+          pseeds[k] = (SolSignerSeed){ex[a0[k]]->key.x, 32};
+        } else {
+          if (a0[k] >= exn) return TS_ACCT_RES_ACCOUNT_NOT_FOUND;
+          if (ex[a0[k]]->data_len < (uint64_t)a1[k] + a2[k]) return TS_ACCT_RES_ACCOUNT_DATA_TOO_SMALL;
+          pseeds[k] = (SolSignerSeed){ex[a0[k]]->data + a1[k], a2[k]};
+        }
+      }
+      uint8_t bump;
+      if (sol_try_find_program_address(pseeds, ns, owner, &key, &bump) != SUCCESS) sol_panic_("", 0, 0, 0);
+    } else if (e[0] == 2) {
+      /* PubkeyData: from the instruction data (16 bytes, too short for a key) or from an account's data */
+      if (cfg[0] == 1) return TS_ACCT_RES_INSTRUCTION_DATA_TOO_SMALL;
+      if (cfg[0] != 2) return ERROR_INVALID_ACCOUNT_DATA;
+      if (cfg[1] >= exn) return TS_ACCT_RES_ACCOUNT_NOT_FOUND;
+      if (ex[cfg[1]]->data_len < (uint64_t)cfg[2] + 32) return TS_ACCT_RES_ACCOUNT_DATA_TOO_SMALL;
+      ts_memcpy(key.x, ex[cfg[1]]->data + cfg[2], 32);
+    } else
+      return ERROR_INVALID_ACCOUNT_DATA;
+    /* de_escalate_account_meta: read-only when every earlier mention of the key is; never a signer */
+    bool seen = false, any_writable = false;
+    for (uint64_t k = 0; k < exn; k++)
+      if (ts_key_eq(&ex[k]->key, &key)) seen = true, any_writable = any_writable || exw[k];
+    if (seen && !any_writable) writable = false;
+    const TsAccount *acct = ts_hook_find(params, lo, hi, &key);
+    if (!acct) return TS_ACCT_RES_INCORRECT_ACCOUNT;
+    ex[exn] = acct;
+    exw[exn++] = writable;
+  }
+  uint64_t m = 0;
+  metas[m++] = (SolAccountMeta){&from->key, true, false};
+  metas[m++] = (SolAccountMeta){&mint->key, false, false};
+  metas[m++] = (SolAccountMeta){&to->key, true, false};
+  metas[m++] = (SolAccountMeta){&authority->key, false, true};
+  if (validation) {
+    for (uint64_t k = 5; k < exn; k++) metas[m++] = (SolAccountMeta){(SolPubkey *)&ex[k]->key, exw[k], false};
+    metas[m++] = (SolAccountMeta){(SolPubkey *)&validation->key, false, false};
+  }
+  metas[m++] = (SolAccountMeta){(SolPubkey *)&hook_program->key, false, false};
+  if (m > TS_MAX_ACCOUNTS) TS_FAIL(TS_ERR_TOO_MANY_ACCOUNTS, "TypeSOL: the transfer lists more accounts than the program's MAX_ACCOUNTS");
+  return ts_token_cpi(params, program, data, sizeof(data), metas, m, seeds, n);
+}
+
 /* Metaplex metadata PDA: ["metadata", program, mint] under Token Metadata. */
 static inline uint64_t ts_metadata_address(const SolPubkey *mint, SolPubkey *out) {
   SolSignerSeed seeds[3] = {{(const uint8_t *)"metadata", 8}, {(const uint8_t *)&TS_MPL_METADATA_ID, 32}, {(const uint8_t *)mint, 32}};

@@ -102,8 +102,16 @@ export class FunctionEmitter extends StatementEmitter {
       // Address<InstructionsSysvar, "Sysvar1nstructions…"> leaves the address to that constraint (2012, in Anchor's
       // constraint order), as Anchor's `#[account(address = sysvar::instructions::ID)]` on an UncheckedAccount.
       if (k.kind === "instructionsSysvar" && !a.constraints.address) head.push(`  TS_TRY(ts_check_address(${v}, &TS_INSTRUCTIONS_SYSVAR_ID));`);
-      if (k.kind === "eventAuthority") head.push(`  uint8_t eb_${a.name};`, `  TS_TRY(ts_check_event_authority(${v}, params->program_id, &eb_${a.name}));`);
-      if (k.kind === "selfProgram")
+      if (k.kind === "eventAuthority" && this.eventAuthorityByAddress)
+        // Anchor 1.x: the address is checked among the constraints (constraintChecks); here only the PDA and its bump.
+        head.push(
+          `  uint8_t eb_${a.name};`,
+          `  SolPubkey ek_${a.name};`,
+          `  { SolSignerSeed s = {(const uint8_t *)"__event_authority", 17}; if (ts_find_pda(&s, 1, params->program_id, &ek_${a.name}, &eb_${a.name}) != SUCCESS) TS_FAIL(TS_ERR_SEEDS, "TypeSOL: no event authority"); }`,
+        );
+      else if (k.kind === "eventAuthority")
+        head.push(`  uint8_t eb_${a.name};`, `  TS_TRY(ts_check_event_authority(${v}, params->program_id, &eb_${a.name}));`);
+      if (k.kind === "selfProgram" && !this.eventAuthorityByAddress)
         head.push(`  if (!ts_key_eq(&${v}->key, params->program_id)) TS_FAIL(TS_ERR_WRONG_PROGRAM, "TypeSOL: expected this program");`);
       if (k.kind === "programData") head.push(`  TS_TRY(ts_check_program_data(${v}, params->program_id));`);
       if (k.kind === "pyth") head.push(`  uint64_t pm_${a.name}; bool pf_${a.name};`, `  TS_TRY(ts_pyth_message(${v}, &pm_${a.name}, &pf_${a.name}));`);
@@ -682,6 +690,8 @@ export class FunctionEmitter extends StatementEmitter {
         );
       }
       if (c.executable) out.push(`  if (!a_${a.name}->executable) TS_FAIL(TS_ERR_CONSTRAINT_EXECUTABLE, "TypeSOL: ${a.name} must be an executable program");`);
+      if (k === "eventAuthority" && this.eventAuthorityByAddress)
+        out.push(`  if (!ts_key_eq(&a_${a.name}->key, &ek_${a.name})) TS_FAIL(TS_ERR_ADDRESS, "TypeSOL: ${a.name} is not this program's event authority");`);
       if (c.address) {
         out.push(`  static const SolPubkey ca_${a.name} = {${cBytes(c.address.bytes)}};`);
         out.push(
