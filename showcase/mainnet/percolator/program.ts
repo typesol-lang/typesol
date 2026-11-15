@@ -13,8 +13,8 @@
 // them back (`write_header` / `write_config`) at chosen points; the port does the same with local copies and
 // `prefix.config = config`, so a value read after a write-back sees what the original sees. Where nothing reads the
 // config between the copy and its write-back and a failure changes nothing before it fails (WithdrawCollateral,
-// CloseAccount, SettleAccount, ConvertReleasedPnl, TradeNoCpi, UpdateConfig, KeeperCrank, LiquidateAtOracle,
-// CatchupAccrue), the port changes it in place instead:
+// CloseAccount, SettleAccount, ConvertReleasedPnl, TradeNoCpi, UpdateConfig, SetOraclePriceCap, KeeperCrank,
+// LiquidateAtOracle, CatchupAccrue), the port changes it in place instead:
 // the same bytes, without two 400-byte copies (a loop of word moves in TypeSOL, one memcpy in Rust). TradeCpi keeps the
 // copy: the matcher it calls could read the slab before the write-back.
 import {

@@ -197,6 +197,41 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: admin instructions", () => {
     await d.ok("CloseSlab, empty vault", m2.admin, [ix.closeSlab(m2, adminAta)], [m2.vault, m2.slab]);
   });
 
+  it("CloseSlab past its arithmetic: insurance without a vault, a destination at the top of u64 (slabs written in)", async () => {
+    // The engine's insurance written to 5 with its vault 0 (no instruction leaves this): the insurance check refuses.
+    const m = await d.market();
+    const adminAta = await d.tokenAccount(m.mint, m.admin.address);
+    await d.ok("ResolveMarket", m.admin, [ix.resolveMarket(m, m.admin)]);
+    d.patch(m.slab, (b) => b.writeBigUInt64LE(5n, E.insurance));
+    await d.fails("CloseSlab: insurance without a vault", m.admin, [ix.closeSlab(m, adminAta)], pe("EngineInsufficientBalance"));
+    // The destination 10^9 lamports short of u64::MAX: the vault's rent (closed into it by SPL Token) fits, the slab's
+    // 10.6 SOL do not (checked_add: EngineOverflow).
+    const n = await d.market();
+    await d.ok("ResolveMarket (n)", n.admin, [ix.resolveMarket(n, n.admin)]);
+    d.patch(n.admin.address, () => {}, { lamports: 0xffffffffffffffffn - 1_000_000_000n });
+    const payer = await d.funded();
+    await d.fails("CloseSlab: the destination's lamports overflow", payer, [ix.closeSlab(n, adminAta)], pe("EngineOverflow"));
+  });
+
+  it("the Hyperp index moves at most min(dt, 9,000) slots of the cap", async () => {
+    // The mark EWMA 1,009,900 after a push 10,000 slots in; the cap then lowered to 1 (10^-6 per slot): 9,500 slots
+    // later the index has moved 10^6 · 10^-6 · 9,000 = 9,000 (dt capped at 9,000), not 9,500.
+    const h = await d.market({
+      edit: (a) => {
+        hyperp({})(a);
+        a.tail!.permissionlessResolveStaleSlots = 0n;
+      },
+    });
+    d.setClock(d.slot + 10_000n);
+    await d.ok("PushHyperpMark: 1.01", h.admin, [ix.pushHyperpMark(h, h.admin, 1_010_000n, 0n)]);
+    expect(d.data(h.slab).readBigUInt64LE(C.markEwmaE6)).toBe(1_009_900n);
+    await d.ok("SetOraclePriceCap: 1", h.admin, [ix.setOraclePriceCap(h, h.admin, 1n)]);
+    d.setClock(d.slot + 9_500n);
+    const keeper = await d.funded();
+    await d.ok("KeeperCrank: the index moves", keeper, [ix.crank(h, keeper, 65535)]);
+    expect(d.data(h.slab).readBigUInt64LE(C.lastEffectivePriceE6)).toBe(1_009_000n);
+  });
+
   it("the slab passed again where the original holds its borrow across a CPI", async () => {
     // The original keeps `slab.try_borrow_mut_data()` across the SPL Token calls of InitUser, InitLP,
     // DepositCollateral, TopUpInsurance and CloseSlab. solana-program's `invoke` borrows every account it passes (data

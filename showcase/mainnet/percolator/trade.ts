@@ -283,6 +283,9 @@ export function tradeCpiAfter(rest: RemainingAccounts, data: InstructionBytes, t
   const ratePre = t.rate_pre;
   const config = t.config;
 
+  // read_matcher_return: a context shorter than the 64-byte answer (a matcher may resize it during the call) is
+  // InvalidAccountData before any field is read.
+  require(aMatcherCtx.dataLen >= 64n, ProgramError.InvalidAccountData);
   require(abiOk(aMatcherCtx, t.lp_account_id, price, size, reqId), ProgramError.InvalidAccountData);
   const execPrice = readData<u64>(aMatcherCtx, 8n);
   const execSize = asI128(readData<u128>(aMatcherCtx, 16n));

@@ -10,10 +10,11 @@
 //
 // The readers return an Outcome (errors.ts) instead of failing in place, because UpdateConfig looks at the error
 // (OracleStale and OracleConfTooWide select its degenerate arm); every other caller passes it on with `check`.
-import { type Inout, type Pubkey, type RemainingAccount, type i64, type u8, type u16, type u32, type u64, type u128, i32, i64 as toI64, i128, lastRestartSlot, pubkey, readData, u64 as toU64, u128 as toU128 } from "typesol";
+import { type Inout, type Pubkey, type RemainingAccount, type i64, type u8, type u16, type u32, type u64, type u128, i32, i64 as toI64, i128, lastRestartSlot, panic, pubkey, readData, u64 as toU64, u128 as toU128 } from "typesol";
 import { E_ENGINE_OVERFLOW, E_INVALID_ORACLE_KEY, E_ORACLE_CONF_TOO_WIDE, E_ORACLE_INVALID, E_ORACLE_STALE, ERR_ILLEGAL_OWNER, ERR_INVALID_ACCOUNT_DATA, OK, custom } from "./errors.js";
 import { type MarketConfig } from "./state.js";
 import { MAX_ORACLE_PRICE } from "./engine.js";
+import { I128_MAX } from "./wide.js";
 
 export const PYTH_RECEIVER_PROGRAM_ID = pubkey("rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ");
 export const CHAINLINK_OCR2_PROGRAM_ID = pubkey("HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny");
@@ -256,14 +257,35 @@ export function computeCurrentFundingRateE9(config: MarketConfig): i128 {
   // diff.saturating_mul(1e9) cannot saturate (|diff| < 2^64).
   let premium = (diff * 1000000000n) / i128(index);
   const maxPrem = i128(config.funding_max_premium_bps) * 100000n;
+  // premium_e9.clamp(-max, max): i128::clamp asserts min <= max first, which fails only for a negative bound (a
+  // patched config: InitMarket and UpdateConfig refuse one).
+  if (maxPrem < 0n) clampPanic();
   if (premium < -maxPrem) premium = -maxPrem;
-  if (premium > maxPrem) premium = maxPrem;
-  const scaled = (premium * i128(config.funding_k_bps)) / 100n;
+  else if (premium > maxPrem) premium = maxPrem;
+  // premium_e9.saturating_mul(funding_k_bps): |premium| <= max_prem < 2^80, so below k = 2^47 the product fits i128;
+  // above it (a patched config) it may saturate.
+  const k = i128(config.funding_k_bps);
+  const scaled = (k < 0x800000000000n ? premium * k : saturatingMul(premium, k)) / 100n;
   const perSlot = scaled / i128(config.funding_horizon_slots);
   const maxRate = i128(config.funding_max_e9_per_slot);
+  if (maxRate < 0n) clampPanic();
   if (perSlot < -maxRate) return -maxRate;
   if (perSlot > maxRate) return maxRate;
   return perSlot;
+}
+
+const SAT_I128_MIN: i128 = -170141183460469231731687303715884105728n;
+
+/** i128::saturating_mul for k >= 0. @noinline */
+function saturatingMul(v: i128, k: i128): i128 {
+  if (v > I128_MAX / k) return I128_MAX;
+  if (v < SAT_I128_MIN / k) return SAT_I128_MIN;
+  return v * k;
+}
+
+/** `assert!(min <= max)` in i128::clamp, in core at the path of the platform-tools build. @noinline */
+function clampPanic(): void {
+  panic("assertion failed: min <= max", "/home/runner/work/platform-tools/platform-tools/out/rust/library/core/src/cmp.rs:1031:9");
 }
 
 /**

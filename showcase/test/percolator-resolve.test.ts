@@ -38,6 +38,7 @@ import {
   truncate,
   unsigned,
   withData,
+  writeU128,
 } from "./percolator-helpers.js";
 
 const ZERO = "11111111111111111111111111111111" as Address;
@@ -714,6 +715,91 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: resolution and the end of a 
     const bob = await funded(n, SOL, "bob");
     await d.ok("Deposit: a market made after the restart", bob.key, [ix.deposit(n, bob, 0, SOL)]);
     await d.fails("ResolvePermissionless: a market made after the restart", other, [ix.resolvePermissionless(n)], pe("OracleStale"));
+  });
+
+  it("the bounds of resolution: the hard timeout, a Hyperp mark at the deviation band and at its staleness", async () => {
+    // ResolvePermissionless at exactly permissionless_resolve_stale_slots (5,000) since the last good oracle slot.
+    const m = await d.market();
+    const other = await d.funded();
+    const good = slab(m).readBigUInt64LE(C.lastGoodOracleSlot);
+    d.setClock(good + 4999n);
+    await d.fails("ResolvePermissionless: 4,999 slots", other, [ix.resolvePermissionless(m)], pe("OracleStale"));
+    d.setClock(good + 5000n);
+    await d.ok("ResolvePermissionless: exactly 5,000 slots", other, [ix.resolvePermissionless(m)]);
+    // A Hyperp market whose mark EWMA (written in) is exactly 1% (resolve_price_deviation_bps 100) off the index in the
+    // index's own slot: within the band. One more e6 is outside it.
+    const hyperp = (a: InitMarketArgs) => {
+      a.feedId = Buffer.alloc(32);
+      a.initialMarkPriceE6 = 1_000_000n;
+      a.tail!.permissionlessResolveStaleSlots = 0n;
+    };
+    for (const [label, ewma, ok] of [
+      ["at the band", 1_010_000n, true],
+      ["past the band", 1_010_001n, false],
+    ] as [string, bigint, boolean][]) {
+      const h = await d.market({ edit: hyperp });
+      expect(slab(h).readBigUInt64LE(C.lastHyperpIndexSlot)).toBe(d.slot);
+      d.patch(h.slab, (b) => b.writeBigUInt64LE(ewma, C.markEwmaE6));
+      if (ok) await d.ok(`ResolveMarket: Hyperp ${label}`, h.admin, [ix.resolveMarket(h, h.admin)]);
+      else await d.fails(`ResolveMarket: Hyperp ${label}`, h.admin, [ix.resolveMarket(h, h.admin)], pe("EngineOverflow"));
+    }
+    // A Hyperp mark last pushed exactly max_staleness_secs · 3 (10,800) slots ago is not stale: the ordinary arm, at
+    // the index (moved toward the mark since the push), not the engine's last price.
+    const h = await d.market({ edit: (a) => (hyperp(a), (a.tail!.markMinFee = 10n)) });
+    d.setClock(d.slot + 100n);
+    await d.ok("PushHyperpMark", h.admin, [ix.pushHyperpMark(h, h.admin, 1_010_000n, 0n)]);
+    const pushed = slab(h).readBigUInt64LE(C.markEwmaLastSlot);
+    d.setClock(pushed + 10_800n);
+    await d.ok("ResolveMarket: a mark exactly at its staleness bound (ordinary)", h.admin, [ix.resolveMarket(h, h.admin)]);
+    expect(slab(h).readBigUInt64LE(E.resolvedLivePrice)).toBe(slab(h).readBigUInt64LE(C.lastEffectivePriceE6));
+    expect(slab(h).readBigUInt64LE(E.resolvedLivePrice)).not.toBe(1_000_000n);
+  });
+
+  it("a positive close waits for a negative PnL still open; WithdrawInsurance with one counted (slabs written in)", async () => {
+    // Two flat accounts on a resolved market; written in: 7 of matured profit on one, -5 on the other with the negative
+    // count at 1 (no instruction leaves a flat negative PnL behind). The profit's close only reconciles (ProgressOnly).
+    const m = await d.market();
+    const alice = await funded(m, SOL, "alice");
+    await funded(m, SOL, "bob");
+    await d.ok("ResolveMarket", m.admin, [ix.resolveMarket(m, m.admin)]);
+    d.patch(m.slab, (b) => {
+      writeU128(b, accountAt(0) + A.pnl, 7n);
+      writeU128(b, E.pnlPosTot, 7n);
+      writeU128(b, E.pnlMaturedPosTot, 7n);
+      writeU128(b, accountAt(1) + A.pnl, -5n);
+      b.writeBigUInt64LE(1n, E.negPnlAccountCount);
+    });
+    await d.ok("CloseAccount: a profit while a negative PnL is open (ProgressOnly)", alice.key, [ix.closeAccount(m, alice, 0)]);
+    expect(used(m, 0)).toBe(true);
+    // An empty resolved market whose vault holds 3 more than its insurance, with the negative count written to 1: no
+    // surplus sweep, only the insurance is paid out.
+    const n = await d.market();
+    const ins = await d.user(n);
+    await d.ok("TopUpInsurance 5", ins.key, [ix.topUpInsurance(n, ins, 5n)]);
+    await d.ok("ResolveMarket (n)", n.admin, [ix.resolveMarket(n, n.admin)]);
+    await d.ok("SPL Token transfer into the vault", ins.key, [tokenTransfer(ins.ata, n.vault, ins.key, 3n)]);
+    d.patch(n.slab, (b) => {
+      writeU128(b, E.vault, 8n);
+      b.writeBigUInt64LE(1n, E.negPnlAccountCount);
+    });
+    const ata = await d.tokenAccount(n.mint, n.admin.address);
+    await d.ok("WithdrawInsurance: the insurance only", n.admin, [ix.withdrawInsurance(n, n.admin, ata)]);
+    expect(d.amount(ata)).toBe(5n);
+  });
+
+  it("WithdrawInsuranceLimited's cap rounds down", async () => {
+    // 10% of 12,345 units is 1,234.5: the cap is 1,234.
+    const m = await d.market({
+      edit: (a) => {
+        a.tail!.insuranceWithdrawMaxBps = 1000;
+        a.tail!.insuranceWithdrawCooldownSlots = 50n;
+      },
+    });
+    const ins = await d.user(m);
+    await d.ok("TopUpInsurance 12,345", ins.key, [ix.topUpInsurance(m, ins, 12_345n)]);
+    const ata = await d.tokenAccount(m.mint, m.admin.address);
+    await d.fails("WithdrawInsuranceLimited: 1,235", m.admin, [ix.withdrawInsuranceLimited(m, m.admin, ata, 1235n)], pe("InsuranceWithdrawCapExceeded"));
+    await d.ok("WithdrawInsuranceLimited: 1,234", m.admin, [ix.withdrawInsuranceLimited(m, m.admin, ata, 1234n)]);
   });
 
   it("the port used fewer compute units than the original on every successful transaction", () => {

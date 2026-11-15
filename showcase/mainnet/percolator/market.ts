@@ -434,24 +434,24 @@ export function setOraclePriceCap(rest: RemainingAccounts, data: InstructionByte
   require(!engineIsResolved(aSlab), ProgramError.InvalidAccountData);
   const prefix = loadRawMut<SlabPrefix>(aSlab);
   requireAdmin(prefix.header.admin, aAdmin.key);
-  const config: MarketConfig = prefix.config;
-  const isHyperp = isHyperpMode(config);
-  const rate = computeCurrentFundingRateE9(config);
+  // The original changes a copy of the config and writes it back after the Hyperp flush and at the end; nothing reads
+  // the config in between but the flush itself, and a refusal undoes every write, so the port changes it in place
+  // (the same bytes without three 400-byte copies).
+  const isHyperp = isHyperpMode(prefix.config);
+  const rate = computeCurrentFundingRateE9(prefix.config);
   const clock = readClock(rest.get(2n));
-  require(!permissionlessStaleMatured(config, clock.slot), PercolatorError.OracleStale);
+  require(!permissionlessStaleMatured(prefix.config, clock.slot), PercolatorError.OracleStale);
   if (isHyperp) {
-    flushHyperpIndex(config, clock.slot);
-    prefix.config = config;
+    flushHyperpIndex(prefix.config, clock.slot);
     const e = loadRawMutAt<RiskEngine>(aSlab, ENGINE_OFF);
     catchupAccrue(e, clock.slot, rate);
-    accrueMarketTo(e, clock.slot, config.last_effective_price_e6, rate);
+    accrueMarketTo(e, clock.slot, prefix.config.last_effective_price_e6, rate);
   }
   require(!(isHyperp && maxChange === 0n), PercolatorError.InvalidConfigParam);
-  require(!(maxChange !== 0n && maxChange < config.min_oracle_price_cap_e2bps), PercolatorError.InvalidConfigParam);
-  require(!(!isHyperp && maxChange === 0n && config.min_oracle_price_cap_e2bps !== 0n), PercolatorError.InvalidConfigParam);
+  require(!(maxChange !== 0n && maxChange < prefix.config.min_oracle_price_cap_e2bps), PercolatorError.InvalidConfigParam);
+  require(!(!isHyperp && maxChange === 0n && prefix.config.min_oracle_price_cap_e2bps !== 0n), PercolatorError.InvalidConfigParam);
   require(maxChange <= MAX_ORACLE_PRICE_CAP_E2BPS, PercolatorError.InvalidConfigParam);
-  config.oracle_price_cap_e2bps = maxChange;
-  prefix.config = config;
+  prefix.config.oracle_price_cap_e2bps = maxChange;
 }
 
 // ---- UpdateAuthority (tag 32) ------------------------------------------------------------------------------------------

@@ -296,4 +296,26 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: KeeperCrank", () => {
     expect(acct(m, 5, "feeCredits")).toBe(-30_000n);
     expect(used(m, 5)).toBe(true);
   });
+
+  it("an ExactPartial hint whose predicted equity is exactly the remainder's requirement is not applied", async () => {
+    // A long of 100 at 100 with 1.2475 * 10^9 of capital; at 90 its equity is 2.475 * 10^8 (below maintenance, 4.5 *
+    // 10^8). Closing 50 would cost a fee of 2.25 * 10^7 and leave a requirement of 5% of 4.5 * 10^9 = 2.25 * 10^8, the
+    // predicted equity exactly: the hint is refused (no liquidation). Closing 60 leaves room: applied.
+    const m = await d.market();
+    const lp = await funded(m, 100n * SOL, "lp");
+    const alice = await funded(m, 1_247_500_000n, "alice");
+    await d.ok("TradeNoCpi: alice long 100", alice.key, [ix.tradeNoCpi(m, alice.key, lp.key, 0, 1, 100_000_000n)]);
+    d.setClock(d.slot + 2n);
+    d.setPrice(m, 90_000_000n);
+    // The risk buffer emptied (written in), so that its FullClose entries do not reach alice first.
+    const emptyBuffer = () => d.patch(m.slab, (b) => (b[RISK_BUF_OFF + 2] = 0));
+    emptyBuffer();
+    await d.ok("KeeperCrank: ExactPartial 50 (predicted equity exactly the requirement)", lp.key, [
+      ix.crank(m, lp.key, NO_CALLER, [[1, PARTIAL, 50_000_000n]]),
+    ]);
+    expect(readI128(slab(m), accountAt(1) + A.positionBasisQ)).toBe(100_000_000n);
+    emptyBuffer();
+    await d.ok("KeeperCrank: ExactPartial 60", lp.key, [ix.crank(m, lp.key, NO_CALLER, [[1, PARTIAL, 60_000_000n]])]);
+    expect(readI128(slab(m), accountAt(1) + A.positionBasisQ)).toBe(40_000_000n);
+  });
 });

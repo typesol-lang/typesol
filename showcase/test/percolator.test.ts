@@ -164,6 +164,10 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: InitMarket", () => {
       ["19 decimals", 12n, 19, 0n],
       ["answer 0", 0n, 8, 0n],
       ["stale", 4_000_000_000n, 8, 4000n],
+      // The bounds themselves: 18 decimals (MAX_EXPO_ABS) is read, an age of max_staleness_secs (3,600) is fresh.
+      ["18 decimals", 4_000_000_000n * 10n ** 10n, 18, 0n],
+      ["an age of exactly max_staleness_secs", 4_000_000_000n, 8, 3600n],
+      ["an age one past max_staleness_secs", 4_000_000_000n, 8, 3601n],
     ] as [string, bigint, number, bigint][]) {
       const m = await d.newMarket();
       const data = Buffer.alloc(232);
@@ -238,6 +242,9 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: InitMarket", () => {
     await bad("insurance withdraw without cooldown", (a) => (a.tail!.insuranceWithdrawMaxBps = 10), INVALID_DATA);
     await bad("staleness 0", (a) => (a.maxStalenessSecs = 0n), INVALID_DATA);
     await bad("staleness over a week", (a) => (a.maxStalenessSecs = 604_801n), INVALID_DATA);
+    // The bound itself is accepted (604,800 seconds).
+    const [week] = await init("InitMarket: staleness exactly a week", (a) => (a.maxStalenessSecs = 604_800n));
+    expect(week).toBe("ok");
     await bad("hyperp without a mark", (a) => (a.feedId = Buffer.alloc(32)), INVALID_DATA);
     await bad(
       "hyperp mark inverted to 0",
@@ -449,6 +456,28 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: InitUser, InitLP, deposits",
     await d.ok("DepositFeeCredits rest", alice.key, [ix.depositFeeCredits(m, alice, 5, 20_000n)]);
     expect(readI128(d.data(m.slab), accountAt(5) + A.feeCredits)).toBe(0n);
     await d.fails("DepositFeeCredits: no debt", alice.key, [ix.depositFeeCredits(m, alice, 5, 1n)], builtin("InvalidArgument"));
+  });
+
+  it("the deposit cap reached exactly; a stale market's refusal before the unit scale's", async () => {
+    // TVL:insurance cap 5 with 10 units of insurance: capital may reach exactly 50.
+    const m = await d.market();
+    const alice = await d.user(m);
+    await d.ok("InitUser: 20", alice.key, [ix.initUser(m, alice, 20n)]);
+    await d.ok("TopUpInsurance: 10", alice.key, [ix.topUpInsurance(m, alice, 10n)]);
+    await d.ok("UpdateConfig cap 5", m.admin, [
+      ix.updateConfig(m, m.admin, { horizon: 500n, kBps: 100n, maxPremiumBps: 500n, maxE9PerSlot: 1000n, tvlCapMult: 5 }),
+    ]);
+    await d.ok("Deposit: capital exactly at the cap", alice.key, [ix.deposit(m, alice, 0, 30n)]);
+    await d.fails("Deposit: one past the cap", alice.key, [ix.deposit(m, alice, 0, 1n)], pe("DepositCapExceeded"));
+    // A unit-scaled market past its hard timeout (5,000 slots without a price): an amount off the unit scale is refused
+    // as stale first, the staleness check coming before the scale's.
+    const n = await d.market({ edit: (a) => (a.unitScale = 1000) });
+    const bob = await d.user(n);
+    await d.ok("InitUser (scaled)", bob.key, [ix.initUser(n, bob, 10_000n)]);
+    d.setClock(d.slot + 5001n);
+    await d.fails("InitUser: stale and off the unit scale", bob.key, [ix.initUser(n, bob, 1500n)], pe("OracleStale"));
+    await d.fails("Deposit: stale and off the unit scale", bob.key, [ix.deposit(n, bob, 0, 1500n)], pe("OracleStale"));
+    await d.fails("TopUpInsurance: stale and off the unit scale", bob.key, [ix.topUpInsurance(n, bob, 1500n)], pe("OracleStale"));
   });
 
   it("verify_token_program: the token program's key, and executable", async () => {

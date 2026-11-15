@@ -163,9 +163,26 @@ request nonce at u64::MAX, corrupt enum tags and a TradeCpi in progress (for the
 resolved price is 0 (KeeperCrank's refusal of it: resolution refuses a zero price) and a Hyperp mark EWMA of 0
 (UpdateAuthority's refusal to burn the Hyperp authority before the EWMA: InitMarket seeds it with the initial mark and
 no update brings it back to 0), per-side position counts and caps of 2^63 and more (the i64 arithmetic of the trade's
-position cap) and a free-list head past the 4,096 slots (a difference, pinned: below). Some tests sign with the slab's
+position cap) and a free-list head past the 4,096 slots (a difference, pinned: below); and, for boundaries only such a
+state reaches, the states listed under "Mutation testing" below. Some tests sign with the slab's
 own keypair, as whoever created the slab account can, to pass the slab again as the user, the admin or the vault
 authority (below).
+
+**Mutation fuzzers** (`percolator-mutate-*.test.ts`, the shared world in `percolator-mutate.ts`). The hand-written
+cases and the random walks send transactions a client would send; these send the ones it would not. A valid
+transaction of each of the 27 instructions is built in eleven market states (empty; funded accounts; open positions;
+a reset-pending side with stale accounts; resolved with accounts open; resolved with only insurance; resolved and
+bare; matured-stale; Hyperp; Chainlink; inverted), every instruction succeeding in at least one, and then mutated:
+its account list, its data, its environment, or the slab under it. Every account of the test world is at a keypair's
+address, so any of them can sign (the slab, a token account, the vault). Each mutated transaction is compared as
+`both()` compares, and every account is put back afterwards, so each mutation starts from the same state. A
+divergence is recorded and the test fails at its end with the list; `PERCOLATOR_MUTATE_DUMP=<file>` writes one line per
+divergence for minimising, `PERCOLATOR_MUTATE_SCALE` multiplies the sizes, `PERCOLATOR_MUTATE_SEED` changes the seed,
+`PERCOLATOR_MUTATE_VERBOSE=1` prints the tally per instruction. The four differences they and a review of every
+failure site of the original found are fixed and kept as named cases in `percolator-regressions.test.ts` (under
+"Differences" below), with one difference pinned there (a panic after TradeCpi's call on a nearly full heap); the
+sites that review found without a test are reached on purpose in `percolator-sites.test.ts`.
+The tally is under "Mutation tally".
 
 Compute units: `both()` fails any transaction that succeeds under both programs, has a top-level instruction of the
 program (identified by program id) and does not cost the port fewer units than the original. That covers every
@@ -194,12 +211,19 @@ writes what its context account says.
 | `percolator-crank-cu.test.ts` | KeeperCrank's compute units at 2 to 4,096 accounts (below), under the default 200,000 and the 1.4M limits; every crank whose outcome is the same under both compared as `both()` compares |
 | `percolator-fuzz.test.ts` | two seeded random walks, each ending in the end of the market. The account walk: markets of random shape (fees, margins, warm-up bounds, caps, Pyth or Hyperp, with or without permissionless resolution, with or without bounded insurance withdrawals) and sequences of opens (users, LPs bound to the matcher or not), deposits, withdrawals, closes, settles, reclaims, top-ups, fee payments, trades (TradeNoCpi and TradeCpi, random or near the margin), conversions, config updates, liquidations, cranks with random candidates and hints, catch-ups, price moves (crashes and spikes included) and clock moves (past the accrual envelope where nothing resolves the market). The liquidation walk: leveraged traders against a few counterparties with little insurance, and leveraged trades, price moves up to crashes, liquidations, cranks, catch-ups, settlements, deposits, withdrawals, conversions, new accounts, closes and top-ups. Then the end (`endOfLife`): bounded insurance withdrawals, resolution by the admin (the oracle moved, older, stale or too wide; catch-ups and retries where the original refuses) or permissionless after the hard timeout (an early try first), the three resolved closes in random order (before and after the delay), insurance withdrawals and CloseSlab tried too early, live instructions refused, cranks; every account closed out, WithdrawInsurance, CloseSlab, and the vault, the slab and every token account compared once more. 6 seeds of each by default. The oracle walk: the account walk, from four opened accounts, on markets of one oracle shape each (a Chainlink OCR2 feed with 8, 9 or 18 decimals; an inverted Pyth market; a Pyth feed at exponent -8, -10 or -5 with its confidence exactly at the market's limit of 50, 200 or 500 bps, one past it for a wide reading; a Hyperp market), each to its end, each with at least one successful trade and crank; 2 seeds of each shape by default (`PERCOLATOR_ORACLE_RUNS`, `PERCOLATOR_ORACLE_STEPS`). `PERCOLATOR_FUZZ_VERBOSE=1` prints what a run reached, how often each ADL event occurred and how many full life cycles ran, by market shape (below) |
 | `test/language/native-log64-zero.test.ts`, `remaining-executable.test.ts` | the compiler additions this port needed, with their lines checked against the binary's |
+| `percolator-mutate-accounts.test.ts` | the account list of every instruction in every state: 60 random mutations each by default (an account replaced by any account of the test world, among them the slab, another market's slab, an uninitialized slab, the vault, the vault authority, token accounts of this and other mints and owners, the mint, the oracle, another oracle, a Chainlink account, the clock, Rent, SlotHashes, the instructions and epoch-schedule sysvars, the token, system and compute-budget programs, Percolator itself, the matcher and the rogue matcher, the matcher context, the LP PDA, users, the admin, the fee payer, a funded system account, program-owned accounts one byte short, one byte long, zeroed and of 8 bytes, a key with no account; duplicated into another position; the last one or two dropped; one to three appended; two swapped; the signer or writable flag flipped; one or two at a time); then, exhaustively, every position replaced by the slab and by the fee payer and duplicated into every other |
+| `percolator-mutate-data.test.ts` | the instruction data of every instruction in every state (InitMarket once per oracle kind): every truncation and 1 to 9 appended bytes; every field at its boundaries (0, 1, 2, max, max - 1, the sign boundaries, its own value ± 1, and either side of the limits the program checks: indexes 4,095 / 4,096, basis points 10,000, prices 10^12, TVL 10^16, sizes 10^14, A 10^15, …; key fields to zero, all ones and the world's keys); 25 random byte changes each; all 256 tags with no payload and with each instruction's payload; KeeperCrank candidate lists of 0 to 130 (free slots, indexes past the slots, every policy byte, partial sizes at their bounds, a cut last candidate) and every format byte |
+| `percolator-mutate-env.test.ts` | two or three instructions per transaction (one market, two markets, the same one twice; a market's end, WithdrawInsurance then CloseSlab, in one transaction); every instruction through a relay at stack height 2, once and twice in one instruction (`fixtures/percolator-relay.ts`); compute-unit limits from 2% to 101% of what the original needs (both fail and change nothing, or the original runs out and the port finishes: counted apart); 14 Clocks (slot 0, 1, before the market's, u64::MAX, 2^63, a timestamp of 0, -1, i64::MIN, i64::MAX, an hour either way) and the Clock moved backwards between two transactions; the Pyth account at 47 extremes (price, exponent from i32::MIN to i32::MAX, confidence, publish time, feed, verification tag, length) and the Chainlink account at 26 (decimals 0 to 255, answers 0, negative, past u128 once scaled, past u64, rounding to 0, timestamps past i64, length) |
+| `percolator-mutate-slab.test.ts` | the slab patched in both before an instruction: every field of the header, the config, the engine and its parameters, the account entries of used and free slots, the free-list links, the used bitmap's words, the risk buffer and the generation table, at its boundary values, with an instruction drawn for each (three states), then random fields and random bytes under every instruction in every state; 21 free-list and bitmap inconsistencies (the head on a used slot, a used slot's bit cleared, links to itself, past the slots, the counts at 0 and u16::MAX, the risk buffer naming a free slot or one slot twice) under every instruction |
+| `percolator-sites.test.ts` | failure sites of the original reached on purpose: CatchupRequired past 20 envelopes in WithdrawCollateral, CloseAccount, ConvertReleasedPnl and UpdateConfig; CatchupAccrue on a Hyperp market after a stale gap; SPL Token option tags of 2, states 0 / 2 / 3, accounts of 82 / 164 / 166 / 355 bytes as the user's token account, a vault of 82 or 355 bytes at InitMarket, a mint's freeze tag of 2, the vault frozen after InitMarket under every token instruction (live and resolved); TradeCpi zero fills three and 30 envelopes on, i128::MIN asked and answered, limit prices below the unit scale; CloseSlab with stranded tokens to bad destinations and a wrong vault authority, and with an account left; PushHyperpMark below and above the unit scale and with the authority burned; MAX_VAULT_TVL through InitUser, InitLP, deposits, top-ups; the trade's size, position and open-interest bounds (10^14) with real trades; TradeCpi with signers and writable accounts in its tail, the slab and the LP PDA among them, each account's flags as the matcher sees them logged by the rogue matcher and compared; the per-side cap on active positions (on a market of three accounts, which cannot reach it, then with the cap written below the counts real trades make: a third long or short refused, a flip, a close into a new position at the cap, a reduction refused above it, TradeCpi at and past it); the ADL edges: K_opp + ΔK at the headroom bound and one past it, K + ΔK past i128::MIN (the haircut fallbacks, K written in), a step past i128::MAX and A past u128::MAX / 10^6 (A written in), precision exhausted (A_candidate 0, A written in) and one past it, and KeeperCrank stopping on a pending reset, in the risk buffer's loop with real instructions and in the candidates' loop with the buffer emptied |
+| `percolator-regressions.test.ts` | the four differences found by the fuzzers and the review, each as its minimal case (below); TradeCpi's tails around the original's heap exhaustion with 1 to 26 distinct accounts, before the call (the TypeSOL matcher) and after it (the rogue matcher, which takes any tail: a fill, a zero fill, a refused answer, and a panic, the one pinned difference) |
+| `test/language/native-lamports.test.ts` | the compiler change the CloseSlab fix needed (`.lamports` on remaining accounts under NATIVE_ACCOUNT_WRITES) |
 
 ## Compute units and size
 
 | | Original | Port |
 | --- | ---: | ---: |
-| Binary | 395,368 bytes | 360,248 bytes (SBPF v0) |
+| Binary | 395,368 bytes | 363,392 bytes (SBPF v0) |
 
 Successful transactions, mean / largest: those of the two fuzz walks with their ends (the account walk 40 seeds × 400
 steps, the liquidation walk 40 seeds × 600 steps, 80 full life cycles), and for UpdateAuthority, which they do not
@@ -211,29 +235,34 @@ send, those of percolator-admin.test.ts. Every instruction is in the table.
 | InitUser | 1,445 | 6,926 / 7,225 | 2,917 / 3,250 |
 | InitLP | 230 | 7,071 / 7,301 | 3,016 / 3,272 |
 | DepositCollateral | 1,314 | 6,792 / 7,821 | 2,725 / 3,498 |
-| WithdrawCollateral | 786 | 14,475 / 45,269 | 6,403 / 16,194 |
-| KeeperCrank | 4,324 | 52,853 / 387,752 | 29,294 / 213,966 |
-| TradeNoCpi | 1,790 | 27,367 / 88,586 | 14,379 / 33,927 |
-| LiquidateAtOracle | 2,310 | 10,441 / 66,218 | 5,537 / 19,302 |
-| CloseAccount (live and resolved) | 883 | 9,808 / 28,989 | 4,445 / 10,422 |
+| WithdrawCollateral | 786 | 14,475 / 45,269 | 6,311 / 15,996 |
+| KeeperCrank | 4,324 | 52,853 / 387,752 | 29,217 / 213,766 |
+| TradeNoCpi | 1,790 | 27,367 / 88,586 | 14,298 / 33,715 |
+| LiquidateAtOracle | 2,310 | 10,441 / 66,218 | 5,459 / 19,102 |
+| CloseAccount (live and resolved) | 883 | 9,808 / 28,989 | 4,372 / 10,222 |
 | TopUpInsurance | 1,383 | 6,387 / 6,450 | 2,381 / 2,420 |
-| TradeCpi | 83 | 21,531 / 44,910 | 13,563 / 24,957 |
-| CloseSlab | 80 | 12,270 / 12,270 | 8,362 / 8,362 |
-| UpdateConfig | 433 | 3,024 / 9,318 | 1,360 / 3,315 |
-| PushHyperpMark | 774 | 3,177 / 9,269 | 2,796 / 4,539 |
-| SetOraclePriceCap | 601 | 1,934 / 8,484 | 1,696 / 4,146 |
-| ResolveMarket | 58 | 4,490 / 27,650 | 1,918 / 8,937 |
+| TradeCpi | 83 | 21,531 / 44,910 | 13,476 / 24,822 |
+| CloseSlab | 80 | 12,270 / 12,270 | 8,225 / 8,225 |
+| UpdateConfig | 433 | 3,024 / 9,318 | 1,265 / 3,107 |
+| PushHyperpMark | 774 | 3,177 / 9,269 | 2,592 / 4,335 |
+| SetOraclePriceCap | 601 | 1,934 / 8,484 | 606 / 2,577 |
+| ResolveMarket | 58 | 4,490 / 27,650 | 1,814 / 8,725 |
 | WithdrawInsurance | 92 | 6,056 / 6,404 | 2,085 / 2,299 |
 | AdminForceCloseAccount | 423 | 9,139 / 22,995 | 3,631 / 8,866 |
 | WithdrawInsuranceLimited | 31 | 7,062 / 7,085 | 2,606 / 2,660 |
 | ReclaimEmptyAccount | 90 | 1,526 / 2,298 | 727 / 1,170 |
-| SettleAccount | 1,133 | 5,794 / 22,438 | 3,689 / 10,015 |
+| SettleAccount | 1,133 | 5,794 / 22,438 | 3,609 / 9,803 |
 | DepositFeeCredits | 6 | 7,030 / 7,517 | 2,795 / 3,065 |
-| ConvertReleasedPnl | 241 | 20,188 / 35,488 | 8,707 / 12,680 |
+| ConvertReleasedPnl | 241 | 20,188 / 35,488 | 8,646 / 12,482 |
 | ResolvePermissionless | 22 | 1,617 / 1,632 | 791 / 805 |
 | ForceCloseResolved | 208 | 10,135 / 26,722 | 3,864 / 9,811 |
-| CatchupAccrue | 1,405 | 4,373 / 75,542 | 1,812 / 33,637 |
-| UpdateAuthority | 7 | 1,496 / 1,697 | 439 / 589 |
+| CatchupAccrue | 1,405 | 4,373 / 75,542 | 1,731 / 33,437 |
+| UpdateAuthority | 7 | 1,496 / 1,697 | 437 / 587 |
+
+Measured on the 363,392-byte build. Against the build before the mutation fuzzers' fixes (360,248 bytes), the same
+transactions cost the port the same or fewer units in every row (SetOraclePriceCap, which now changes the config in
+place, 606 on average from 1,696; the original's figures are unchanged, being the same binary on the same
+transactions); in the keeper-crank table below every crank costs the port one unit more than on that build.
 
 TradeCpi's figures include the matcher's call (about 1,000 units, the same TypeSOL matcher under both). Every test
 asserts the rule through `both()` (see "How it is checked"): a successful transaction with a Percolator instruction at
@@ -248,30 +277,30 @@ liquidated yet and preceded by the risk buffer's four entries with FullClose):
 
 | Accounts | Crank | Limit | Original | Port |
 | ---: | --- | ---: | ---: | ---: |
-| 2 | no candidates (the fee sweep) | 200,000 | 23,510 | 13,756 |
-| 2 | 1 candidate, touch only | 200,000 | 27,543 | 16,612 |
-| 2 | 1 candidate, FullClose | 1.4M | 26,640 | 14,364 |
-| 17 | no candidates | 200,000 | 67,040 | 33,963 |
-| 17 | 16 candidates, touch only | 200,000 | 152,756 | 89,371 |
-| 17 | 4 candidates, FullClose | 1.4M | 258,281 | 81,874 |
-| 17 | 4 candidates, FullClose (a market of its own) | 200,000 | exceeds | 81,724 |
-| 65 | no candidates | 200,000 | 120,774 | 61,449 |
+| 2 | no candidates (the fee sweep) | 200,000 | 23,510 | 13,757 |
+| 2 | 1 candidate, touch only | 200,000 | 27,543 | 16,613 |
+| 2 | 1 candidate, FullClose | 1.4M | 26,640 | 14,365 |
+| 17 | no candidates | 200,000 | 67,040 | 33,964 |
+| 17 | 16 candidates, touch only | 200,000 | 152,756 | 89,372 |
+| 17 | 4 candidates, FullClose | 1.4M | 258,281 | 81,875 |
+| 17 | 4 candidates, FullClose (a market of its own) | 200,000 | exceeds | 81,725 |
+| 65 | no candidates | 200,000 | 120,774 | 61,450 |
 | 65 | 64 candidates, touch only | 200,000 | exceeds | exceeds |
-| 65 | 64 candidates, touch only | 1.4M | 516,363 | 305,737 |
-| 65 | 32 candidates, FullClose | 1.4M | 1,031,712 | 308,922 |
-| 257 | no candidates | 200,000 | 166,501 | 88,882 |
-| 257 | 64 candidates, touch only | 1.4M | 556,056 | 319,056 |
-| 257 | 16 candidates, FullClose | 1.4M | 683,654 | 217,129 |
-| 257 | 32 candidates, FullClose | 1.4M | 1,189,473 | 356,343 |
-| 257 | 64 candidates, FullClose | 1.4M | exceeds | 622,063 |
-| 1,025 | no candidates | 200,000 | 166,494 | 88,882 |
-| 1,025 | 64 candidates, touch only | 1.4M | 591,735 | 335,306 |
-| 1,025 | 32 candidates, FullClose | 1.4M | 1,276,424 | 394,529 |
-| 1,025 | 64 candidates, FullClose | 1.4M | exceeds | 660,077 |
-| 4,096 | no candidates | 200,000 | 166,441 | 88,832 |
-| 4,096 | 64 candidates, touch only | 1.4M | 591,682 | 335,257 |
-| 4,096 | 32 candidates, FullClose | 1.4M | 1,277,097 | 394,446 |
-| 4,096 | 64 candidates, FullClose | 1.4M | exceeds | 660,036 |
+| 65 | 64 candidates, touch only | 1.4M | 516,363 | 305,738 |
+| 65 | 32 candidates, FullClose | 1.4M | 1,031,712 | 308,923 |
+| 257 | no candidates | 200,000 | 166,501 | 88,883 |
+| 257 | 64 candidates, touch only | 1.4M | 556,056 | 319,057 |
+| 257 | 16 candidates, FullClose | 1.4M | 683,654 | 217,130 |
+| 257 | 32 candidates, FullClose | 1.4M | 1,189,473 | 356,344 |
+| 257 | 64 candidates, FullClose | 1.4M | exceeds | 622,064 |
+| 1,025 | no candidates | 200,000 | 166,494 | 88,883 |
+| 1,025 | 64 candidates, touch only | 1.4M | 591,735 | 335,307 |
+| 1,025 | 32 candidates, FullClose | 1.4M | 1,276,424 | 394,530 |
+| 1,025 | 64 candidates, FullClose | 1.4M | exceeds | 660,078 |
+| 4,096 | no candidates | 200,000 | 166,441 | 88,833 |
+| 4,096 | 64 candidates, touch only | 1.4M | 591,682 | 335,258 |
+| 4,096 | 32 candidates, FullClose | 1.4M | 1,277,097 | 394,447 |
+| 4,096 | 64 candidates, FullClose | 1.4M | exceeds | 660,037 |
 
 The port completes every crank the original completes, within the same limit, and some it does not: 64 liquidations
 in one crank exceed the original's 1.4M units at every size tried from 257 accounts (the port needs 622,000 to
@@ -288,7 +317,8 @@ three validations of an account's reserve shape on every touch where two cannot 
 nothing changed it in between: `admit_outstanding_reserve_on_touch` and `advance_profit_warmup` keep the original's
 statements otherwise); a step function called for missing slots too. The handler now checks and parses the candidates
 once, at its start (the same errors as the decode, which runs nothing in between), into a list of 128 packed words;
-the two loops read that. 128 candidates on free slots: original 15,702, port 12,764.
+the two loops read that. 128 touch-only candidates on free slots of an empty market (the 363,392-byte build):
+original 15,157, port 12,140.
 
 **ADL in the fuzz** (the liquidation walk, 40 seeds × 600 steps): 535 liquidations (478 in cranks, 57 by
 LiquidateAtOracle), a loss written into a side's K past insurance 264 times (in 39 of 40 seeds), A shrunk 333 times
@@ -308,12 +338,101 @@ confidence at the market's limit, and a Hyperp market, every one from InitMarket
 logs and bytes in both programs: 350 successful trades (235 TradeCpi, 115 TradeNoCpi), 1,249 cranks, 33 side resets
 begun on each side, losses socialised into K 9 times, sides turned drain-only 12 times. No divergence was found.
 
-**The default run** of all ten test files (`vitest run showcase/test/percolator*`, the default seeds) compares 6,028
-transactions through `both()`, 3,896 of them successful under both: 2,317 in the nine files of fixed cases
-(`percolator-crank-cu.test.ts` 749, `-crank` 370, `-resolve` 345, `percolator.test.ts` 255, `-trade` 229, `-liquidate`
-140, `-accounts` 127, `-admin` 102; `-layout` sends none) and 3,711 in the three random walks of
-`percolator-fuzz.test.ts` on their fixed seeds (720 in the account walk, 1,452 in the oracle walk, 1,539 in the walk of
-leveraged trades, crashes and liquidations).
+**The default run** of all sixteen test files (`vitest run showcase/test/percolator*`, the default seeds and scales)
+compares 139,185 transactions through `both()`, 33,590 of them successful under both. Counted as each file sends them
+(`PERCOLATOR_TRACE=1` prints one line per compared transaction):
+
+| File | Compared | Successful under both |
+| --- | ---: | ---: |
+| `percolator-mutate-data.test.ts` | 54,164 | 8,517 |
+| `percolator-mutate-accounts.test.ts` | 26,714 | 1,996 |
+| `percolator-mutate-slab.test.ts` | 26,062 | 11,991 |
+| `percolator-mutate-env.test.ts` | 22,009 | 6,043 |
+| `percolator-regressions.test.ts` | 3,791 | 882 |
+| `percolator-fuzz.test.ts` | 3,711 | 2,152 |
+| `percolator-crank-cu.test.ts` | 749 | 747 |
+| `percolator-crank.test.ts` | 376 | 339 |
+| `percolator-resolve.test.ts` | 369 | 232 |
+| `percolator-sites.test.ts` | 299 | 163 |
+| `percolator.test.ts` | 270 | 69 |
+| `percolator-trade.test.ts` | 256 | 163 |
+| `percolator-liquidate.test.ts` | 162 | 138 |
+| `percolator-accounts.test.ts` | 141 | 96 |
+| `percolator-admin.test.ts` | 112 | 62 |
+| `percolator-layout.test.ts` | 0 | 0 |
+| **Total** | **139,185** | **33,590** |
+
+132,031 of them are random or mutated: 3,711 in the three random walks of `percolator-fuzz.test.ts` on their fixed
+seeds (720 in the account walk, 1,452 in the oracle walk, 1,539 in the walk of leveraged trades, crashes and
+liquidations) and 128,320 mutated transactions of the four mutation fuzzers at their default size (26,334 account
+lists, 54,081 instruction data, 21,926 environments, 25,979 slab states; each fuzzer's other 83 transactions build its
+markets, and the account-list fuzzer's 297 base transactions are sent unmutated first). The other 7,154 are fixed
+cases, 3,760 of them TradeCpi tails of every length from 150 to 200 accounts with 1 to 26 distinct ones
+(`percolator-regressions.test.ts`, the heap's limit). The mutation fuzzers' tallies also count transactions compared
+outside `compare` (one side out of compute units, a pinned difference: below), which this count leaves out.
+
+**Mutation testing** (whether the tests notice a wrong port). 196 hand-chosen mutants of the port's source, spread over
+every file in proportion to its logic (64 in `engine.ts`, 21 `oracle.ts`, 17 `crank.ts`, 15 `users.ts`, 14 each in
+`program.ts`, `market.ts` and `trade.ts`, 13 `resolve.ts`, 9 `percolator.ts`, 7 `wide.ts`, 4 `errors.ts`, 2 each in
+`wire.ts` and `state.ts`) and over kinds: comparison boundaries, swapped operands and signs, rounding direction,
+off-by-one constants and limits, removed checks, swapped error codes, reordered checks, wrong account indexes and field
+offsets, skipped write-backs, omitted log lines, saturating made wrapping, the constants of the TradeCpi heap count and
+of the funding clamp; 63 of them in rarely-run paths (ADL and the haircut, bad debt past insurance, the resolved
+wind-down, Hyperp, Chainlink, warm-up, fee credits, force close). Each was applied alone, the port rebuilt from source
+(a deliberately fatal mutant, killed, showed that the tests build what is on disk) and the sixteen files run in a fixed
+order until the first failure. Every mutant compiled. 140 were killed by the tests as they stood. 22 of the 56 that
+survived are equivalent: two compile to the same binary, and for the others no input can tell them apart (a bound an
+earlier check makes unreachable, a check every caller already makes, a reordering of checks with the same error and no
+write between them, a rounding that is exact at the boundary, the TradeCpi heap count's shortcut, which only matters
+with 132 or more distinct accounts in one transaction, past the runtime's account-lock limit). The other 34 were gaps: each now has a differential test, in the
+file of its subject, that fails on the mutant and passes on the port (boundaries hit exactly: the initial and
+maintenance margin, an ExactPartial hint's predicted equity, A at MIN_A_SIDE, 21 envelopes of catch-up inline and 20
+in one CatchupAccrue, the hard timeout, the Hyperp deviation band and mark staleness, the Hyperp index's 9,000-slot dt
+cap, a fee of exactly `mark_min_fee`, a fill at its limit price, the deposit cap, `units_to_base` at u64::MAX, Chainlink's
+18 decimals and maximum age, a week of staleness, WithdrawInsuranceLimited's rounding, and states only a written slab
+has: the funding clamp by one, K at exactly i128::MIN, the dust clear bound, a drain-only empty short side, the scan
+cursor at 4,096, an LP generation of 0, insurance without a vault and a CloseSlab destination near u64::MAX, a negative
+PnL left open on a resolved market, a pending warm-up bucket's horizon, ConvertReleasedPnl at zero equity and at a cap
+of exactly u128::MAX, the partial catch-up on Hyperp). Each such mutant was run again and is now killed. None of the
+new tests found the port differing from the original. The driver that applies the mutants is not in the repository.
+
+## Mutation tally
+
+Transactions per category, compared through `both()`: tried, failed under both, succeeded under both, diverged,
+pinned (a documented difference: the free-list index past the slots; in the compute-unit category, the original
+running out of units where the port finishes), and not sendable (an account list the transaction format refuses). The
+20-fold runs (`PERCOLATOR_MUTATE_SCALE=20 PERCOLATOR_MUTATE_SEED=7`, about 80 minutes in all) ran once, after the
+fixes below except the last one:
+
+| Fuzzer | Category | Tried | Both fail | Both succeed | Diverged | Pinned | Not sendable |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| accounts | the base transactions | 297 | 161 | 136 | 0 | 0 | 0 |
+| accounts | random account-list mutations | 326,471 | 297,807 | 26,807 | 0 | 0 | 1,857 |
+| accounts | every position the slab / the fee payer / duplicated | 10,043 | 9,553 | 490 | 0 | 0 | 0 |
+| data | truncations and appended bytes | 6,545 | 6,494 | 51 | 0 | 0 | 0 |
+| data | fields at their boundaries | 23,549 | 15,906 | 7,643 | 0 | 0 | 0 |
+| data | random byte changes | 117,500 | 103,915 | 13,585 | 0 | 0 | 0 |
+| data | every tag | 64,515 | 64,495 | 20 | 0 | 0 | 0 |
+| data | KeeperCrank candidate lists and formats | 8,877 | 7,665 | 1,212 | 0 | 0 | 0 |
+| env | several instructions per transaction | 13,205 | 10,543 | 2,662 | 0 | 0 | 0 |
+| env | through the relay, once and twice | 594 | 368 | 226 | 0 | 0 | 0 |
+| env | compute-unit limits | 2,970 | 2,109 | 408 | 0 | 453 | 0 |
+| env | Clock extremes and moved backwards | 17,358 | 10,962 | 6,396 | 0 | 0 | 0 |
+| env | oracle extremes | 14,958 | 11,048 | 3,910 | 0 | 0 | 0 |
+| slab | every field at its boundary values | 578,223 | 342,659 | 235,519 | 2 | 43 | 0 |
+| slab | random fields and bytes | 68,640 | 40,822 | 27,807 | 0 | 11 | 0 |
+| slab | free list and bitmap inconsistencies | 4,914 | 2,667 | 2,202 | 0 | 45 | 0 |
+
+About 1.26 million transactions. The two divergences of the 20-fold slab run were compute units, not behaviour:
+SetOraclePriceCap on a Hyperp market with a funding horizon of 0 or a funding k of 10^15 written into the config cost
+the port slightly more than the original's 2,611 units (the port copied the 400-byte config three times; it now
+changes it in place, 942 units: percolator-regressions.test.ts). Before the fixes, the default slab run (then three
+instructions per value) had found 16 divergences in 53,034 transactions, all the funding rate's clamp on a Hyperp
+market, and the review's four cases differed as described under "Differences" (each confirmed against the port as it
+was before its fix). The account-list, data and environment fuzzers found no divergence at either size. Every
+instruction in every state at 2% to 101% of the units the original needs: in 453 of 2,970 transactions the original ran out and the port, needing fewer
+units, finished (the only outcome the compute-unit category allows to differ); in every other one both failed with
+every account unchanged, or both succeeded the same way.
 
 ## The author's test suite
 
@@ -328,7 +447,7 @@ mainnet binary there and once with the port, and every test has the same outcome
 | Engine (path dependency `../percolator`) | aeyakovenko/percolator `3f55f871a3aa29d7b582fc2641d2106cbac0c32e` |
 | Matcher (`../percolator-match`) | the TypeSOL matcher fixture (`matcher/matcher.ts`, a port of aeyakovenko/percolator-match `199b1396`), under both programs: no build of the author's matcher is deployed, and the tests' matcher calls (Init tag 2, 66 bytes; the call tag 0, 67 bytes; the 320-byte context) are the ABI it speaks |
 | Original | `test/programs/percolator_v12.so`, sha256 `502088e9…cc93` |
-| Port | `showcase/mainnet/percolator/percolator.ts` built by this repository's compiler (360,248 bytes) |
+| Port | `showcase/mainnet/percolator/percolator.ts` built by this repository's compiler (363,392 bytes; first run on the 360,248-byte build before the mutation fuzzers' fixes, with the same outcomes) |
 | Harness | the suite's own `Cargo.lock`: litesvm 0.1.0, solana-sdk / solana-program-runtime 1.18.26, spl-token 4.0.0; host build with rustc 1.96.0 (`cargo test`, nothing built for SBF) |
 
 The port has no program id built in: `programId()` is the id the runtime passes, so the vault PDA
@@ -368,26 +487,27 @@ scenario") and `test_binary_market_complete_lifecycle_conservation` ("All accoun
 AdminForceCloseAccount", noted upstream as needing an engine fix). The only differences in their output are compute
 units and signatures.
 
-**Compute units in the author's own benchmark** (`cu_benchmark.rs`, `benchmark_all_instructions -- --nocapture`;
-the figures include the SPL Token transfers these instructions make):
+**Compute units in the author's own benchmark** (`cu_benchmark.rs`, `benchmark_all_instructions -- --nocapture`, the
+363,392-byte build; the figures include the SPL Token transfers these instructions make). Against the 360,248-byte
+build, TradeNoCpi costs the port one unit more (7,766 from 7,765), six instructions are unchanged and eight cost fewer:
 
 | Instruction | Original | Port |
 | --- | ---: | ---: |
-| TradeNoCpi | 14,033 | 7,765 |
+| TradeNoCpi | 14,033 | 7,766 |
 | DepositCollateral | 11,424 | 7,386 |
-| WithdrawCollateral | 18,095 | 11,740 |
-| KeeperCrank | 42,411 | 27,409 |
+| WithdrawCollateral | 18,095 | 11,540 |
+| KeeperCrank | 42,411 | 27,209 |
 | TopUpInsurance | 11,170 | 7,166 |
-| UpdateConfig | 3,619 | 1,921 |
-| SetOraclePriceCap | 2,507 | 2,046 |
-| LiquidateAtOracle | 12,226 | 7,216 |
-| CloseAccount | 14,397 | 9,727 |
+| UpdateConfig | 3,619 | 1,721 |
+| SetOraclePriceCap | 2,507 | 928 |
+| LiquidateAtOracle | 12,226 | 7,014 |
+| CloseAccount | 14,397 | 9,527 |
 | UpdateAuthority (admin) | 1,686 | 690 |
-| ResolveMarket | 4,048 | 2,183 |
+| ResolveMarket | 4,048 | 1,983 |
 | KeeperCrank (resolved) | 6,274 | 4,764 |
 | AdminForceCloseAccount | 12,218 | 8,018 |
 | WithdrawInsurance | 11,108 | 7,015 |
-| CloseSlab | 15,370 | 11,463 |
+| CloseSlab | 15,370 | 11,326 |
 
 **To reproduce.** Check out the three repositories side by side at the commits above (`<dir>/percolator-prog`,
 `<dir>/percolator`, `<dir>/percolator-match`), fetch the mainnet binary (`scripts/fetch-programs.sh`), then:
@@ -432,11 +552,49 @@ any test's outcome differs. A whole run takes about 6 minutes per binary on a la
   error (`depositCollateralHeld` in program.ts, CloseSlab in market.ts); percolator-admin.test.ts compares each case.
   Every other aliasing of the slab (a token account, the vault, the vault PDA, the clock, the oracle, the matcher
   context) is refused first by an owner or key check in both; the slab in TradeCpi's tail is passed by both (the
-  original drops its borrow before the call).
+  original drops its borrow before the call). CloseSlab's last moves of lamports (the slab's to the admin) are plain
+  `borrow_mut` writes in the original, so the slab or the admin named again in the position it does not read (the
+  admin's token account, read only for a drain) is fine there; the port failed it with 2040, TypeSOL's refusal of a
+  remaining account passed twice when its lamports are written. Under NATIVE_ACCOUNT_WRITES that refusal is now lifted
+  for lamports as it was for data (docs/language-native.md), and the two agree (percolator-regressions.test.ts). The
+  account-list fuzzer replaces every position of every instruction by the slab and duplicates every position into
+  every other, in every state; run against the compiler before the change, it reports exactly these three cases
+  (#4 = the admin, #4 = the slab by duplication and by replacement).
+- **TradeCpi's heap.** Before the matcher call the original allocates on its 32 KiB bump heap, which never frees: the
+  entrypoint's list of every account passed (48 bytes each) and two RefCells per distinct account (72 bytes), then the
+  call's metas (34 bytes each), its data (67), its account infos (48 each) and `invoke_signed`'s copy of the metas and
+  data. A tail of about 190 accounts exhausts it (192 with one distinct account, 184 with twenty), and the original
+  logs "Error: memory allocation failed, out of memory" and aborts. The port has no such heap: it counts the same
+  bytes in the same order (with the allocator's alignment) and stops at the same point with the same line
+  (`cpiHeap` in percolator.ts; counted only for tails long enough to matter). The original passes 3 + T account infos
+  to the call, the port 2 + T (the matcher program is not one); the runtime here has no limit that 128 or more infos
+  reach (tails of 126 to 246 give the same outcome under both). After the call the original allocates nothing on the
+  way to its answer, its trade or its refusals (read at 06f86fb: the handler's only `msg!` lines there are behind the
+  `cu-audit` feature, and the engine has no heap values), except to format a panic (below). The TypeSOL matcher
+  refuses more than 32 accounts, so percolator-regressions.test.ts also runs the rogue matcher, which takes any tail,
+  at every tail of 170 to 194 accounts with 1 to 26 distinct ones: a fill, a zero fill and a refused answer
+  give the same outcome, logs and bytes under both at every length, those the original's heap holds and those it
+  does not. No other instruction comes near the heap's end: at most 255 accounts (12,240 bytes) of which at most 64
+  are distinct (4,608), and KeeperCrank's two candidate vectors (12,288 bytes for 128 candidates) leave more than 3 KB.
+- **A panic after TradeCpi's matcher call with the heap nearly full** (pinned, percolator-regressions.test.ts).
+  solana-program 1.18's panic handler formats its line on the heap (`msg!("{}", info)`, a String grown as Rust grows
+  one: 12, 28, 56 and 112 bytes, 208 in all, for `panicked at src/wide_math.rs:1554:30:` and its message). Where the
+  call has left fewer bytes than that above the allocator's 8-byte position word, the original logs "Error: memory
+  allocation failed, out of memory" instead of the panic line and aborts; the port, which formats nothing on a heap,
+  logs the panic line. The outcome (ProgramFailedToComplete) and every account are the same. It needs a tail at the
+  last one or two lengths the heap holds (191 accounts with one distinct among them, 180 with 26: 32 of the 1,326
+  pairs of 1 to 26 distinct and 150 to 200 accounts) and a panic after the call, which only a slab written in reaches
+  (the test writes a position basis whose arithmetic overflows). Reproducing it would mean formatting every panic line
+  on a heap that holds what the original's holds at that point.
+- **A matcher that shrinks its context during TradeCpi**: the original refuses a context under 64 bytes
+  (InvalidAccountData) before it reads the answer; the port read the fields first (3003 under 32 bytes) and now checks
+  the length first.
 - **The config in place**: see "Compute units" (the same bytes; fewer copies).
-- **`LastRestartSlot::get()`**: the original treats a failing syscall as slot 0 (`unwrap_or(0)`, `Err(_) => false`);
-  the port's `lastRestartSlot()` fails the instruction (5103) instead. The sysvar is available on mainnet and in LiteSVM,
-  where the two agree (percolator-resolve.test.ts moves it).
+- **`LastRestartSlot::get()`**: the original writes a fallback for an error (`unwrap_or(0)`, `Err(_) => false`) that
+  it never receives: a sysvar syscall the runtime fails aborts the instruction with the runtime's error in both builds,
+  before any `Result` reaches the program. The port's `lastRestartSlot()` has no fallback (where the runtime returns
+  a status instead, it fails with 5103). The sysvar is available on mainnet and in LiteSVM, where the two agree
+  (percolator-resolve.test.ts moves it).
 - **Panic locations** of panics the tests cannot reach were read from the source (the one the tests reach,
   `src/wide_math.rs:1554:30`, matches the binary).
 - **KeeperCrank's candidates** are checked and parsed by its handler, first thing, instead of by the decode: the same
@@ -455,6 +613,12 @@ any test's outcome differs. A whole run takes about 6 minutes per binary on a la
   ProgressOnly.
 - **Compute units** differ (the port uses fewer on every successful transaction, asserted; tabled above): where the
   original exceeds a compute budget on a crank the port completes (above), the outcomes differ.
+- **The funding rate of a patched config** (`compute_current_funding_rate_e9`): a negative
+  funding_max_premium_bps or funding_max_e9_per_slot, which InitMarket and UpdateConfig refuse, makes `i128::clamp`
+  panic ("assertion failed: min <= max" in core's cmp.rs, at the platform-tools build's path), and a funding_k_bps past
+  2^47 can saturate the premium's product. The port used plain comparisons (no panic) and a checked product (5100); it
+  now panics with the same line and saturates as `saturating_mul` does (oracle.ts). Found by the slab fuzzer on a
+  Hyperp market (the only kind with a mark EWMA in its states), kept in percolator-regressions.test.ts.
 - **Three engine paths only a patched slab reaches**, read on both sides:
   - `I256::checked_mul_i256` in the original (`src/wide_math.rs`, about line 855) bounds a negative product by
     `U256::from_u128(1u128 << 127)`, that is 2^127, where its comment says 2^255: a negative product above 2^127 fails
@@ -487,4 +651,22 @@ any test's outcome differs. A whole run takes about 6 minutes per binary on a la
   its 609 tests that run the binary compare outcomes the tests assert, not every byte (see "The author's test suite").
 - **The matcher** is not compared with any binary (see "The matcher"); neither is the SPL Token program, which both
   sides call (LiteSVM's own build).
+- **What the mutation fuzzers do not reach.** They start from one valid transaction per instruction and state and
+  mutate one thing (or two account-list changes) at a time; the engine's internals are compared through outcomes and
+  bytes, not line by line. Three edges percolator-sites.test.ts reaches only
+  with a value written into both slabs, because no sequence of instructions makes it: enqueue_adl's haircut fallbacks
+  (K_opp + ΔK past i128 or past the headroom i128::MAX - A · MAX_ORACLE_PRICE: an accrual moves K by at most A · |Δp|
+  <= 10^27 and an ADL step by at most D · A · 10^6 / OI with D under the 10^16 vault cap, nowhere near 1.7 · 10^38),
+  its "precision exhausted" branch (A_candidate = floor(A · OI_post / OI) = 0 with OI_post > 0 needs A < OI on that
+  side, but a side takes new positions only in Normal mode, where A >= MIN_A_SIDE = 10^14 >= MAX_OI_SIDE_Q >= OI, and
+  afterwards OI only falls while each ADL step keeps A >= OI), and the per-side cap on active positions (it equals
+  max_accounts, and a side holds at most max_accounts - 1 positions). A KeeperCrank stopping on a pending reset inside
+  the candidates' loop needs the risk buffer emptied first (count 0): the account whose liquidation empties a side
+  holds that side's whole open interest, so the trades put it among the buffer's four and the stop comes in the
+  buffer's loop, which real instructions reach. Compute-unit limits are tried for every instruction in every state at
+  nine fractions of the original's need, not at every unit.
+- **TradeCpi's path after the matcher call on a nearly full heap** is compared for a fill, a zero fill and a refused
+  answer at every tail of 170 to 194 accounts with 1 to 26 distinct, and for one panic site (src/wide_math.rs:1554);
+  a panic at any other site after the call, reachable only with a slab written in, is not compared, and differs in the
+  same way wherever the heap left cannot hold its formatted line (the pinned difference above).
 - The binary was not rebuilt from source here (see "How the facts above were checked").

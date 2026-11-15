@@ -15,7 +15,7 @@
 // AdminForceCloseAccount, WithdrawInsuranceLimited, ResolvePermissionless, ForceCloseResolved). Beside them: engine.ts
 // (the risk engine), wide.ts (its 256-bit arithmetic), oracle.ts (Pyth / Chainlink / Hyperp prices), program.ts (the
 // checks and helpers every handler shares), errors.ts, wire.ts and state.ts. All 27 instructions are ported.
-import { type InstructionBytes, ProgramError, instructionData, invoke, programId, readonlySigner, remainingAccounts, require, u8, writable } from "typesol";
+import { type InstructionBytes, type RemainingAccounts, type u64, ProgramError, abort, instructionData, invoke, log, programId, readonlySigner, remainingAccounts, require, u8, writable } from "typesol";
 import { closeSlab, initMarket, pushHyperpMark, setOraclePriceCap, updateAuthority, updateConfig } from "./market.js";
 import { closeAccount, convertReleasedPnl, deposit, depositFeeCredits, initAccount, reclaimEmptyAccount, settleAccount, topUpInsurance, withdraw } from "./users.js";
 import { tradeCpiAfter, tradeCpiBefore, tradeNoCpi } from "./trade.js";
@@ -63,6 +63,62 @@ function decode(data: InstructionBytes): void {
   }
 }
 
+/** The bump allocator's next position after `size` bytes at `align` (solana-program 1.18 BumpAllocator::alloc). */
+function bumpDown(pos: u64, size: u64, align: u64): u64 {
+  const p = (pos >= size ? pos - size : 0n) & ~(align - 1n) & 0xffffffffffffffffn;
+  // The allocator returns null below its own 8-byte position word: the alloc error handler logs, then aborts.
+  if (p < 8n) {
+    log("Error: memory allocation failed, out of memory");
+    abort();
+  }
+  return p;
+}
+
+/** Whether the original's heap holds TradeCpi's CPI with `unique` distinct accounts among the `n` it was passed. */
+function heapFits(n: u64, unique: u64, abortOnFail: boolean): boolean {
+  const tail = n - 8n;
+  // The entrypoint's Vec<AccountInfo> (48 bytes each), then two Rc boxes (32 + 40 bytes) per distinct account.
+  let pos = 32768n;
+  const need = 48n * n + 72n * unique + 2n * (34n * (2n + tail) + 67n) + 48n * (3n + tail) + 7n;
+  if (!abortOnFail) return need + 8n <= pos;
+  pos = bumpDown(pos, 48n * n, 8n);
+  pos = bumpDown(pos, 72n * unique, 8n);
+  // TradeCpi: the metas (34 bytes each, align 1), the data (67), the infos (48 each), then invoke_signed's clone of
+  // the instruction (its metas and data).
+  pos = bumpDown(pos, 34n * (2n + tail), 1n);
+  pos = bumpDown(pos, 67n, 1n);
+  pos = bumpDown(pos, 48n * (3n + tail), 8n);
+  pos = bumpDown(pos, 34n * (2n + tail), 1n);
+  bumpDown(pos, 67n, 1n);
+  return true;
+}
+
+/**
+ * TradeCpi's heap, as the original spends it: its 32 KiB bump allocator never frees, and before the matcher call it
+ * holds the entrypoint's account list and RefCells and the CPI's lists, all growing with the accounts passed. A tail
+ * of about 190 accounts exhausts it (the exact count depends on how many are distinct): the original then logs the
+ * allocator's error and aborts. The port has no heap to exhaust, so it counts the same bytes and stops where the
+ * original stops (only for tails long enough that it can).
+ */
+function cpiHeap(rest: RemainingAccounts): void {
+  const n = rest.length;
+  // Every account distinct (the most the original can spend) fits: nothing to count.
+  if (heapFits(n, n, false)) return;
+  // Count the distinct accounts (the loader marks repeats; a repeat has the key of an earlier account).
+  let unique = 0n;
+  for (let i = 0n; i < n; i++) {
+    const k = rest.get(i).key;
+    let seen = false;
+    for (let j = 0n; j < i; j++)
+      if (rest.get(j).key === k) {
+        seen = true;
+        break;
+      }
+    if (!seen) unique += 1n;
+  }
+  heapFits(n, unique, true);
+}
+
 /** @fallback */
 export function process(): void {
   const data = instructionData();
@@ -85,6 +141,7 @@ export function process(): void {
     // 67-byte request (tag 0, req_id, lp_idx, lp_account_id, oracle price, size, 24 zero bytes) and the tail of
     // accounts after the eighth forwarded with their flags.
     const t = tradeCpiBefore(rest, data, id);
+    cpiHeap(rest);
     invoke(
       rest.get(5n),
       [readonlySigner(rest.get(7n)), writable(rest.get(6n)), ...rest.slice(8n)],

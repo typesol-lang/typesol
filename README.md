@@ -97,7 +97,7 @@ each (for Percolator, the port's README) says what was compared and what was not
 | [Raydium CP-Swap](docs/case-study-raydium-cp-swap.md) | Anchor, constant product | 21 | 136 |
 | [Raydium AMM v4](docs/case-study-raydium-amm.md) | native, constant product | all | 144 (60 random steps) |
 | [Jito MEV](docs/case-study-jito-mev.md) | Anchor, three programs | 24 | 150 |
-| [Percolator v12.20](showcase/mainnet/percolator) | native, perpetuals risk engine | 27 | 6,028 (3,711 in random walks on fixed seeds) |
+| [Percolator v12.20](showcase/mainnet/percolator) | native, perpetuals risk engine | 27 | 139,185 (132,031 random or mutated: 3,711 in random walks on fixed seeds, 128,320 from the mutation fuzzers) |
 | [coral-xyz/multisig](docs/case-study-multisig.md) | Anchor | all | 55 |
 
 A tenth port is held to a narrower comparison and is not counted above:

@@ -1,14 +1,17 @@
 // A matcher that answers whatever its context account tells it to, for the TradeCpi tests of
 // showcase/mainnet/percolator: each refusal of the matcher's answer (ABI version, flags, echoed fields, sizes, prices,
 // the off-market band, the user's limit) needs an answer the real matcher never gives. It also re-enters Percolator
-// to show the reentrancy flag, and logs the slab it is handed in the tail as it stands during the call.
+// to show the reentrancy flag, and logs the slab it is handed in the tail as it stands during the call. It takes up
+// to 255 accounts (TradeCpi forwards any tail; the matcher fixture refuses more than 32 with 5113), so that the
+// caller's path after the call runs with long tails too.
 //
 // The context account (owned by this program, at least 320 bytes like the real matcher's): the answer goes to bytes
 // 0..64; bytes 128..208 hold the template:
 //   128 mode (u64): bit 0 echo req_id, 1 echo lp_account_id, 2 echo the oracle price, 3 fill the requested size,
 //       4 price = oracle · (10_000 + delta_bps) / 10_000, 5 call Percolator's SettleAccount (tail: Percolator, slab,
 //       clock, oracle) before answering, 6 fill half the requested size, 7 log the slab passed as the first tail
-//       account (below)
+//       account (below), 8 after answering, resize the context to the length in bytes 64..72 (u64), 9 log every
+//       account it is given (index, signer and writable as bits 0 and 1, data length, lamports)
 //   136 delta_bps (i64)
 //   144 the answer's 64 bytes, used as they are where the mode does not replace a field
 import {
@@ -29,11 +32,14 @@ import {
   readonly,
   remainingAccounts,
   require,
+  resizeAccount,
   u8,
   u16,
   u64,
   writable,
 } from "typesol";
+
+export const MAX_ACCOUNTS = 255n;
 
 export interface Answer {
   abi_version: u32;
@@ -111,6 +117,11 @@ export function process(): void {
   require(data.length >= 1n, ProgramError.InvalidInstructionData);
   require(rest.length >= 2n, ProgramError.NotEnoughAccountKeys);
   const acct = loadRawMutAt<RogueAccount>(rest.get(1n), 0n);
+  if ((acct.mode & 512n) !== 0n)
+    for (let i = 0n; i < rest.length; i++) {
+      const a = rest.get(i);
+      log64(0x0b5e7e3n, i, (a.isSigner ? 1n : 0n) | (a.isWritable ? 2n : 0n), a.dataLen, a.lamports);
+    }
   if ((acct.mode & 128n) !== 0n) {
     require(rest.length >= 3n, ProgramError.NotEnoughAccountKeys);
     observe(rest.get(2n), data);
@@ -120,4 +131,6 @@ export function process(): void {
     invoke(rest.get(2n), [writable(rest.get(3n)), readonly(rest.get(4n)), readonly(rest.get(5n))], [u8(26n), u16(0n)]);
   }
   call(acct, data);
+  // Shrink (or grow) the context after answering: the caller reads the answer from what is left.
+  if ((acct.mode & 256n) !== 0n) resizeAccount(rest.get(1n), readData<u64>(rest.get(1n), 64n));
 }

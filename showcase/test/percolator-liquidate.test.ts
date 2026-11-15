@@ -284,4 +284,63 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: LiquidateAtOracle and Catchu
     expect(slab(m).readBigUInt64LE(E.lastMarketSlot)).toBe(d.slot);
     await d.ok("SettleAccount after the catch-up", alice.key, [ix.settleAccount(m, 1)]);
   });
+
+  it("the catch-up bounds: exactly 21 envelopes inline, exactly 20 in one CatchupAccrue", async () => {
+    const m = await d.market({
+      edit: (a) => {
+        a.minOraclePriceCapE2bps = 1_000_000n;
+        a.tail!.permissionlessResolveStaleSlots = 0n;
+      },
+    });
+    const lp = await funded(m, 1_000n * SOL, "lp");
+    const alice = await funded(m, 100n * SOL, "alice");
+    await d.ok("TradeNoCpi: alice long", alice.key, [ix.tradeNoCpi(m, alice.key, lp.key, 0, 1, 100_000_000n)]);
+    d.setClock(d.slot + 10n);
+    d.setPrice(m, 101_000_000n);
+    await d.ok("SettleAccount: the index moves (funding runs)", alice.key, [ix.settleAccount(m, 1)]);
+    // An ordinary instruction catches up 20 envelopes (10^7 slots each) and accrues the 21st itself: a gap of exactly
+    // 21 envelopes passes, one slot more is CatchupRequired.
+    const envelope = 10_000_000n;
+    d.setClock(slab(m).readBigUInt64LE(E.lastMarketSlot) + 21n * envelope);
+    d.setPrice(m, 101_000_000n);
+    await d.ok("SettleAccount: exactly 21 envelopes", alice.key, [ix.settleAccount(m, 1)]);
+    d.setClock(slab(m).readBigUInt64LE(E.lastMarketSlot) + 21n * envelope + 1n);
+    d.setPrice(m, 101_000_000n);
+    await d.fails("SettleAccount: 21 envelopes and a slot", alice.key, [ix.settleAccount(m, 1)], pe("CatchupRequired"));
+    // CatchupAccrue completes a gap of exactly 20 envelopes at the fresh price (one more slot would be partial).
+    await d.ok("CatchupAccrue: catch up", alice.key, [ix.catchupAccrue(m)]);
+    await d.ok("CatchupAccrue: catch up again", alice.key, [ix.catchupAccrue(m)]);
+    d.setClock(slab(m).readBigUInt64LE(E.lastMarketSlot) + 20n * envelope);
+    d.setPrice(m, 103_000_000n);
+    await d.ok("CatchupAccrue: exactly 20 envelopes (complete)", alice.key, [ix.catchupAccrue(m)]);
+    expect(slab(m).readBigUInt64LE(E.lastMarketSlot)).toBe(d.slot);
+    expect(slab(m).readBigUInt64LE(C.lastEffectivePriceE6)).toBe(103_000_000n);
+  });
+
+  it("the maintenance boundary: equity exactly the requirement is liquidated; A at exactly MIN_A_SIDE", async () => {
+    // A long of 100 at 100 with 1.45 * 10^9 of capital; at 90 its equity is 1.45 * 10^9 - 10^9 = 4.5 * 10^8 and its
+    // requirement 5% of 9 * 10^9, also 4.5 * 10^8: not above maintenance, so liquidated.
+    const m = await d.market();
+    const lp = await funded(m, 100n * SOL, "lp");
+    const alice = await funded(m, 1_450_000_000n, "alice");
+    await d.ok("TradeNoCpi: alice long 100", alice.key, [ix.tradeNoCpi(m, alice.key, lp.key, 0, 1, 100_000_000n)]);
+    d.setClock(d.slot + 2n);
+    d.setPrice(m, 90_000_000n);
+    await d.ok("LiquidateAtOracle: equity exactly the maintenance requirement", alice.key, [ix.liquidate(m, alice.key, 1)]);
+    expect(liquidated()).toBe(true);
+    // Longs of 900 and 100 against one short of 1,000; the 900 liquidated: the shorts' A becomes 10^15 * 100 / 1,000 =
+    // 10^14, exactly MIN_A_SIDE, which is not below it: the side stays normal.
+    const n = await d.market();
+    const short = await funded(n, 1_000n * SOL, "short");
+    const l1 = await funded(n, 10n * SOL, "l1");
+    const l2 = await funded(n, 100n * SOL, "l2");
+    await d.ok("TradeNoCpi: l1 long 900", l1.key, [ix.tradeNoCpi(n, l1.key, short.key, 0, 1, 900_000_000n)]);
+    await d.ok("TradeNoCpi: l2 long 100", l2.key, [ix.tradeNoCpi(n, l2.key, short.key, 0, 2, 100_000_000n)]);
+    d.setClock(d.slot + 2n);
+    d.setPrice(n, 90_000_000n);
+    await d.ok("LiquidateAtOracle: l1", l1.key, [ix.liquidate(n, l1.key, 1)]);
+    expect(liquidated()).toBe(true);
+    expect(u128At(n, E.adlMultShort)).toBe(ADL_ONE / 10n);
+    expect(slab(n)[E.sideModeShort]).toBe(0);
+  });
 });

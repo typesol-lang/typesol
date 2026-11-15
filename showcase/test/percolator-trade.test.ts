@@ -46,6 +46,8 @@ import {
   u64,
   unsigned,
   w,
+  writeU128,
+  GEN_TABLE_OFF,
 } from "./percolator-helpers.js";
 
 /** A rogue answer (the matcher's 64 bytes) and the mode bits that replace its fields with the request's. */
@@ -647,5 +649,75 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: trading", () => {
     const released = readI128(s, accountAt(1) + A.pnl) - readI128(s, accountAt(1) + A.reservedPnl);
     await d.fails("ConvertReleasedPnl: past the flat-account cap", alice.key, [ix.convertReleasedPnl(m, alice, 1, released)], pe("EngineUndercollateralized"));
     await d.both("ConvertReleasedPnl: within the cap", alice.key, [ix.convertReleasedPnl(m, alice, 1, released / 10n)]);
+  });
+
+  it("the boundaries of a trade: equity exactly the initial margin, a fee exactly mark_min_fee, a fill at the limit", async () => {
+    // A long of 100 at 100 (notional 10^10, initial margin 10%) with exactly 10^9 of capital opens; 10^9 - 1 does not.
+    const m = await d.market();
+    const lp = await funded(m, 100n * SOL, "lp");
+    const alice = await funded(m, 1_000_000_000n, "alice");
+    const bob = await funded(m, 999_999_999n, "bob");
+    await d.ok("TradeNoCpi: equity exactly the initial margin", alice.key, [ix.tradeNoCpi(m, alice.key, lp.key, 0, 1, 100_000_000n)]);
+    await d.fails("TradeNoCpi: one short of it", bob.key, [ix.tradeNoCpi(m, bob.key, lp.key, 0, 2, 100_000_000n)], pe("EngineUndercollateralized"));
+    // mark_min_fee 2 * 10^7 and a fee of 10^7 from each side: the first fill pays exactly the minimum, so it seeds the
+    // mark EWMA (with the index, as the first update does).
+    const f = await d.market({
+      edit: (a) => {
+        a.tradingFeeBps = 10n;
+        a.minOraclePriceCapE2bps = 10_000n;
+        a.tail!.markMinFee = 20_000_000n;
+      },
+    });
+    const flp = await funded(f, 100n * SOL, "lp");
+    const carol = await funded(f, 10n * SOL, "carol");
+    await d.ok("TradeNoCpi: a fee of exactly mark_min_fee", carol.key, [ix.tradeNoCpi(f, carol.key, flp.key, 0, 1, 100_000_000n)]);
+    expect(d.data(f.slab).readBigUInt64LE(C.markEwmaE6)).toBe(100_000_000n);
+    // A buy filled at exactly its limit price passes (above it is refused).
+    const t = await d.market({ edit: (a) => Object.assign(a, { tradingFeeBps: 10n, hMax: 100n }) });
+    const dave = await funded(t, 10n * SOL, "dave");
+    const ru = await d.user(t);
+    const rlp = await rogueLp(t, ru, 100n * SOL);
+    rogue(rlp, { mode: ECHO | FILL | PRICED, deltaBps: 50n });
+    const at = (limit: bigint) => ix.tradeCpi(t, dave.key, ru.key.address, rlp, 0, 1_000_000n, limit);
+    await d.fails("TradeCpi: a buy filled above its limit", dave.key, [at(100_499_999n)], builtin("InvalidAccountData"));
+    await d.ok("TradeCpi: a buy filled at exactly its limit", dave.key, [at(100_500_000n)]);
+    // The LP's generation written to 0 (no InitLP leaves it so): refused as a missing account.
+    d.patch(t.slab, (b) => b.writeBigUInt64LE(0n, GEN_TABLE_OFF + 8 * rlp.idx));
+    await d.fails("TradeCpi: the LP's generation 0", dave.key, [at(0n)], pe("EngineAccountNotFound"));
+  });
+
+  it("ConvertReleasedPnl on a flat account at zero equity; the flat-account cap at the top of u128 (slabs written in)", async () => {
+    // Alice's profit is released in full at a whole haircut, and her fee debt (written in) equals her capital plus her
+    // PnL: her maintenance equity is exactly 0, so max_safe_flat_conversion_released allows nothing.
+    const m = await d.market();
+    const lp = await funded(m, 100n * SOL, "lp");
+    const alice = await funded(m, 10n * SOL, "alice");
+    const bob = await funded(m, 100n * SOL, "bob");
+    await d.ok("TradeNoCpi: alice long", alice.key, [ix.tradeNoCpi(m, alice.key, lp.key, 0, 1, 100_000_000n)]);
+    d.setClock(d.slot + 2n);
+    d.setPrice(m, 110_000_000n);
+    await d.ok("TradeNoCpi: alice sells to bob (flat, the profit reserved)", alice.key, [ix.tradeNoCpi(m, bob.key, alice.key, 1, 2, 100_000_000n)]);
+    await d.ok("SettleAccount: the LP's loss settled", lp.key, [ix.settleAccount(m, 0)]);
+    d.setClock(d.slot + 2n);
+    d.patch(m.slab, (b) => {
+      const at = accountAt(1);
+      i128(-(readU128(b, at + A.capital) + readI128(b, at + A.pnl))).copy(b, at + A.feeCredits);
+    });
+    await d.fails("ConvertReleasedPnl: flat at zero equity", alice.key, [ix.convertReleasedPnl(m, alice, 1, 1n)], pe("EngineUndercollateralized"));
+    // A flat account whose maintenance equity is (2^128 - 1) / 3, with 3 of matured PnL backed by 2 (haircut 2/3):
+    // the cap e · 3 / (3 - 2) is exactly u128::MAX, which wide_mul_div_floor_u128 still returns.
+    const n = await d.market();
+    const carol = await funded(n, SOL, "carol");
+    const e = (2n ** 128n - 1n) / 3n;
+    d.patch(n.slab, (b) => {
+      const at = accountAt(0);
+      writeU128(b, at + A.capital, e - 3n);
+      writeU128(b, at + A.pnl, 3n);
+      writeU128(b, E.cTot, e - 3n);
+      writeU128(b, E.vault, e - 1n);
+      writeU128(b, E.pnlPosTot, 3n);
+      writeU128(b, E.pnlMaturedPosTot, 3n);
+    });
+    await d.ok("ConvertReleasedPnl: the cap exactly u128::MAX", carol.key, [ix.convertReleasedPnl(n, carol, 0, 1n)]);
   });
 });

@@ -312,4 +312,52 @@ describe.skipIf(!HAVE_ORIGINAL)("Percolator v12.20: withdraw, close, settle, rec
     d.setClock(d.slot + 20_000n);
     await d.fails("Withdraw: mark stale", alice.key, [ix.withdraw(m, alice, 0, SOL)], pe("OracleStale"));
   });
+
+  it("the bounds of a withdrawal: units_to_base at u64::MAX, equity exactly the initial margin", async () => {
+    // Unit scale 10^9 (MAX_UNIT_SCALE): the most units a u64 of base can pay out, floor((2^64 - 1) / 10^9), withdrawn
+    // whole (units_to_base_checked's bound itself). The oracle at 10^12 (e6) so the scaled price is not 0.
+    const units = 18_446_744_073n;
+    const m = await d.market({ price: 1_000_000_000_000n, edit: (a) => (a.unitScale = 1_000_000_000) });
+    const whale = await d.user(m, units * 1_000_000_000n);
+    await d.ok("InitUser: the most a u64 of base pays out", whale.key, [ix.initUser(m, whale, units * 1_000_000_000n)]);
+    await d.ok("Withdraw: all of it", whale.key, [ix.withdraw(m, whale, 0, units * 1_000_000_000n)]);
+    // A long of 100 at 100 (notional 10^10, initial margin 10% = 10^9) with 2 * 10^9 of capital: withdrawing 10^9
+    // leaves the equity exactly at the requirement (allowed), one more is refused.
+    const n = await d.market();
+    const lp = await funded(n, 100n * SOL, "lp");
+    const alice = await funded(n, 2_000_000_000n, "alice");
+    await d.ok("TradeNoCpi: alice long 100", alice.key, [ix.tradeNoCpi(n, alice.key, lp.key, 0, 1, 100_000_000n)]);
+    await d.ok("Withdraw: down to the initial margin exactly", alice.key, [ix.withdraw(n, alice, 1, 1_000_000_000n)]);
+    await d.fails("Withdraw: one past it", alice.key, [ix.withdraw(n, alice, 1, 1n)], pe("EngineUndercollateralized"));
+  });
+
+  it("warm-up: a reserve added to a pending bucket of a shorter horizon lengthens it (a slab written in)", async () => {
+    // h_min 1, h_max 10. Alice's account is given a scheduled bucket (100, horizon 10) and a pending one (200, horizon
+    // 5, a horizon only a written slab has): a mark-to-market profit admitted at h_max goes to the pending bucket,
+    // whose horizon becomes the larger, 10.
+    const m = await d.market({ edit: (a) => Object.assign(a, { hMin: 1n, hMax: 10n }) });
+    const lp = await funded(m, 100n * SOL, "lp");
+    const alice = await funded(m, 10n * SOL, "alice");
+    await d.ok("TradeNoCpi: alice long 100", alice.key, [ix.tradeNoCpi(m, alice.key, lp.key, 0, 1, 100_000_000n)]);
+    const now = d.data(m.slab).readBigUInt64LE(E.currentSlot);
+    d.patch(m.slab, (b) => {
+      const at = accountAt(1);
+      writeU128(b, at + A.pnl, 300n);
+      writeU128(b, at + A.reservedPnl, 300n);
+      b[at + A.schedPresent] = 1;
+      writeU128(b, at + A.schedRemainingQ, 100n);
+      writeU128(b, at + A.schedAnchorQ, 100n);
+      b.writeBigUInt64LE(now, at + A.schedStartSlot);
+      b.writeBigUInt64LE(10n, at + A.schedHorizon);
+      b[at + A.pendingPresent] = 1;
+      writeU128(b, at + A.pendingRemainingQ, 200n);
+      b.writeBigUInt64LE(5n, at + A.pendingHorizon);
+      b.writeBigUInt64LE(now, at + A.pendingCreatedSlot);
+      writeU128(b, E.pnlPosTot, readU128(b, E.pnlPosTot) + 300n);
+    });
+    d.setClock(d.slot + 2n);
+    d.setPrice(m, 101_000_000n);
+    await d.ok("SettleAccount: a profit into the pending bucket", alice.key, [ix.settleAccount(m, 1)]);
+    expect(d.data(m.slab).readBigUInt64LE(accountAt(1) + A.pendingHorizon)).toBe(10n);
+  });
 });
