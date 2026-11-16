@@ -6,6 +6,14 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.49.0 — 2026-11-16
+
+A minor release: it adds a port of Percolator v12.20 (all 27 instructions, compared with the immutable mainnet build)
+and the built-ins it needed (`log64`, `zeroData`, `PANIC_STYLE = "solana-1.18"`, `executable` on a remaining account),
+changes lamport writes on remaining accounts under `NATIVE_ACCOUNT_WRITES`, and fixes two example programs
+(`examples/airdrop.ts`, `examples/minter.ts`) that let any caller take an authority. Programs that compiled with 0.48.0
+and still compile build to the same bytes, except those two examples, whose sources changed.
+
 - Changed: under `NATIVE_ACCOUNT_WRITES`, a write to a remaining account's `.lamports` is a native program's
   `**a.lamports.borrow_mut() = v`: no writability check (3006) and no refusal of an account passed more than once
   (2040); an account passed twice is one record, and the runtime judges the change when the instruction ends. Programs

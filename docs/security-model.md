@@ -180,8 +180,9 @@ exposed to them.
 The compiler and runtime have had internal security reviews, the latest of 0.44.0 (above); its findings are fixed in
 0.44.1. It was an internal review, not an independent audit; it covered the token, Token-2022, Metaplex and Stake
 wrappers, the oracles and SBPF v1/v2 builds of the examples that the review of 0.43.0 left out, but not the Metaplex
-wrappers for unusual argument shapes beyond reading them, the large ports on SBPF v1/v2, or Windows. 0.45.0 to 0.48.0,
-and the unreleased work since, have had no security review. They add, among others, `runtime/typesol_builtins.c` (the
+wrappers for unusual argument shapes beyond reading them, the large ports on SBPF v1/v2, or Windows. 0.45.0 to 0.49.0
+have had no security review. They add, among others, `runtime/typesol_builtins.c` (the
 compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`, `EVENT_AUTHORITY_CHECK` and the reads of
-processed sibling instructions (0.48.0), and, not yet released, `zeroData`, `log64`, `PANIC_STYLE = "solana-1.18"` and
-`executable` on remaining accounts. There has been no external audit: see [audit.md](audit.md).
+processed sibling instructions (0.48.0), and `zeroData`, `log64`,
+`PANIC_STYLE = "solana-1.18"`, `executable` on remaining accounts and lamport writes on remaining accounts under
+`NATIVE_ACCOUNT_WRITES` (0.49.0). There has been no external audit: see [audit.md](audit.md).

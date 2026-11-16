@@ -508,10 +508,11 @@ change.
   The two latest, of 0.43.0 and 0.44.0 in November 2026, found defects that made a program that compiled behave
   differently from its source; each is fixed with a test, and [docs/audit.md](docs/audit.md) lists them, what the
   reviews covered and what they did not. Programs built before 0.44.1 should be rebuilt.
-- 0.45.0 to 0.48.0, and the unreleased work since, have had no security review. They add, among others,
+- 0.45.0 to 0.49.0 have had no security review. They add, among others,
   `runtime/typesol_builtins.c` (the compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`,
-  `EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), and, not yet released, `zeroData`,
-  `log64`, `PANIC_STYLE = "solana-1.18"` and `executable` on remaining accounts.
+  `EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), and `zeroData`, `log64`,
+  `PANIC_STYLE = "solana-1.18"`, `executable` on remaining accounts and lamport writes on remaining accounts under
+  `NATIVE_ACCOUNT_WRITES` (0.49.0).
 - From 0.44.0 on, a release that only fixes defects is a patch with no new language surface and a binary diff in its
   notes ([SECURITY.md](SECURITY.md#fix-releases)), and the npm tarball is the one packed from the tag and recorded
   in [releases/](releases).

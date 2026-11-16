@@ -70,7 +70,7 @@ SBPF v0 (the default), the 76 programs then in the sources (`scripts/release-man
 `examples/` and `showcase/`); for SBPF v1 and v2, the 14 programs of `test/golden/binaries.json` (counter, vault,
 escrow, multisig and the 10 below). Programs added since were not measured on the three hosts, and two of them that
 divide 128-bit and wider integers, the Meteora DBC port (0.48.0; u128 and u256 division) and the Percolator port
-(unreleased; U256 and U512), are not in `test/golden/binaries.json`, so CI's cross-host check does not build them yet
+(0.49.0; U256 and U512), are not in `test/golden/binaries.json`, so CI's cross-host check does not build them yet
 (adding them needs the file regenerated in the `--docker` reference environment).
 
 | What | Same on the three hosts? |

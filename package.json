@@ -1,6 +1,6 @@
 {
   "name": "@typesol/cli",
-  "version": "0.48.0",
+  "version": "0.49.0",
   "description": "Compile a TypeScript subset to Solana SBF programs (through C and the platform-tools clang), with an Anchor-compatible IDL.",
   "type": "module",
   "license": "MIT",
