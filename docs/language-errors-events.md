@@ -69,7 +69,7 @@ it); a zero code fails with 5100.
 - `require(cond, "message")` errors come after the highest code.
 
 When the program fails, the logs show the error and the source line, `Error 6000 NotOwner (vault.ts:21)`, and
-TypeSOL's own failures say what failed, `TypeSOL: arithmetic overflow (vault.ts:42)`. Native ports can change or drop
+TypeSOL's own failures say what failed, `TypeSOL: arithmetic overflow (vault.ts:44)`. Native ports can change or drop
 that line ([log lines](language-native.md#log-lines-as-the-original-writes-them)).
 
 ## log

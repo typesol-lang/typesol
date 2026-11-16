@@ -453,17 +453,22 @@ export abstract class EmitterBase {
   }
 
   /**
-   * `const PANIC_STYLE = "solana-1.14"`: a Rust panic logs what solana_program 1.14's panic handler logs (rustc before
-   * 1.73 formats it as `panicked at '<message>', <file>:<line>:<col>`) and then aborts, so the runtime reports "SBF
-   * program panicked"; by default it logs the message and calls sol_panic_ with the location.
+   * `const PANIC_STYLE = "solana-1.14"` / `"solana-1.18"`: a Rust panic logs what that solana-program's panic handler
+   * logs and then aborts, so the runtime reports "SBF program panicked". rustc before 1.73 (solana-program 1.14 to
+   * 1.17) formats a panic as `panicked at '<message>', <file>:<line>:<col>`; from 1.73 (solana-program 1.18's toolchain)
+   * as `panicked at <file>:<line>:<col>:\n<message>`, one log line holding the newline. By default it logs the message
+   * and calls sol_panic_ with the location.
    */
-  protected panicStyle(): "solana-1.14" | undefined {
-    return this.model.constants.get("PANIC_STYLE")?.value === "solana-1.14" ? "solana-1.14" : undefined;
+  protected panicStyle(): "solana-1.14" | "solana-1.18" | undefined {
+    const v = this.model.constants.get("PANIC_STYLE")?.value;
+    return v === "solana-1.14" || v === "solana-1.18" ? v : undefined;
   }
 
   /** The C statements of a Rust panic with `message` (undefined: nothing logged) at `location` ("file:line:col"). */
   protected panicC(message: string | undefined, location: string): string[] {
-    if (this.panicStyle()) return [`sol_log(${cString(`panicked at '${message}', ${location}`)});`, `abort();`, `__builtin_unreachable();`];
+    const style = this.panicStyle();
+    if (style === "solana-1.14") return [`sol_log(${cString(`panicked at '${message}', ${location}`)});`, `abort();`, `__builtin_unreachable();`];
+    if (style === "solana-1.18") return [`sol_log(${cString(`panicked at ${location}:\n${message}`)});`, `abort();`, `__builtin_unreachable();`];
     const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(location);
     const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [location, "0", "0"];
     return [

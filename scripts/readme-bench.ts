@@ -1,6 +1,8 @@
 /**
  * Refresh the README numbers from a four-way benchmark run (results.json of github.com/typesol-lang/benchmarks):
- * the summary chart (assets/readme/benchmarks-{dark,light}.svg) and the table between the bench markers in README.md.
+ * the summary chart (assets/readme/benchmarks-{dark,light}.svg), the table between the bench:table markers in README.md
+ * and, between the bench:official markers, the counts of the official program-examples run (`official` in results.json,
+ * written by the benchmarks' official.ts).
  *
  *   node scripts/readme-bench.ts ../benchmarks/results.json
  *
@@ -16,6 +18,8 @@ interface Results {
   programs: Record<string, { cu: Record<string, Record<Impl, number>>; binaryKb: Record<Impl, number> }>;
   /** What the run used (typesol-lang/benchmarks records it); the column headers name the versions from here. */
   toolchain?: { anchorLang?: string | null; pinocchio?: string | null };
+  /** solana-developers/program-examples in all four versions (official.ts); not every program has every version. */
+  official?: { source: string; programs: Record<string, { cu: Record<string, Partial<Record<Impl, number>>> }> };
 }
 type Impl = "typesol" | "pinocchio" | "native" | "anchor";
 
@@ -96,13 +100,36 @@ function table(): string {
   return [head, ...body, size].join("\n");
 }
 
+/** The official examples: on how many instructions TypeSOL uses fewer compute units than each of the others. */
+function official(): string {
+  if (!r.official) throw new Error("results.json has no official run (official.ts)");
+  const all = Object.values(r.official.programs).flatMap((p) => Object.values(p.cu));
+  const count = (impl: Impl) => {
+    const both = all.filter((cu) => cu[impl] !== undefined && cu.typesol !== undefined);
+    return { n: both.length, below: both.filter((cu) => cu.typesol! < cu[impl]!).length, above: both.filter((cu) => cu.typesol! > cu[impl]!).length };
+  };
+  const [a, n, p] = [count("anchor"), count("native"), count("pinocchio")];
+  const programs = Object.keys(r.official.programs).length;
+  return (
+    `On the official examples, ${programs} programs of ${r.official.source.replace(/ \(.*\)$/, "")} that this project did not write ` +
+    `(${all.length} instructions, \`official.ts\` in the benchmarks repository), TypeSOL uses fewer compute units than Anchor on ` +
+    `${a.below} of ${a.n} instructions and than native Rust on ${n.below} of ${n.n}, and more than Pinocchio on ${p.above} of ${p.n}.`
+  );
+}
+
 for (const theme of ["dark", "light"] as const) writeFileSync(path.join(root, `assets/readme/benchmarks-${theme}.svg`), svg(theme));
 const readme = path.join(root, "README.md");
-const text = readFileSync(readme, "utf8");
-const start = "<!-- bench:table -->";
-const end = "<!-- /bench:table -->";
-const a = text.indexOf(start);
-const b = text.indexOf(end);
-if (a < 0 || b < a) throw new Error(`README.md needs ${start} … ${end}`);
-writeFileSync(readme, text.slice(0, a + start.length) + "\n" + table() + "\n" + text.slice(b));
-console.log(`README numbers from ${r.generated}: ${rows.length} instructions, TypeSOL below Pinocchio on ${wins}`);
+let text = readFileSync(readme, "utf8");
+for (const [name, body] of [
+  ["bench:table", table()],
+  ["bench:official", official()],
+] as const) {
+  const start = `<!-- ${name} -->`;
+  const end = `<!-- /${name} -->`;
+  const a = text.indexOf(start);
+  const b = text.indexOf(end);
+  if (a < 0 || b < a) throw new Error(`README.md needs ${start} … ${end}`);
+  text = text.slice(0, a + start.length) + "\n" + body + "\n" + text.slice(b);
+}
+writeFileSync(readme, text);
+console.log(`README numbers from ${r.generated}: ${rows.length} instructions, TypeSOL below Pinocchio on ${wins}; ${official()}`);

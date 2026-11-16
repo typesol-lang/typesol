@@ -10,7 +10,7 @@ auditors, [SECURITY.md](../SECURITY.md) how to report a problem.
 | --- | --- |
 | The program's author | the program's logic: what it allows, to whom, for how much |
 | TypeSOL (this repository) | that the binary does what the source and these guarantees say, and nothing an attacker can steer beyond it |
-| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js. The guarantees are tested with one platform-tools release (v1.52, from Agave 3.1.10); a build with another warns, or fails with `--toolchain-strict`, and `<name>.build.json` records which one built a binary and on which host. The compiler builtins (128-bit multiplication, division and shifts, signed 64-bit division) are TypeSOL's own (`runtime/typesol_builtins.c`), compiled with the program; nothing is linked from platform-tools' Rust libraries, whose layout differed by host package, so from 0.45.0 on the programs measured build to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 ([stability.md](stability.md#what-builds-the-same-bytes-where): 76 programs for SBPF v0, 14 for v1 and v2). `--docker` builds pin the whole environment in one linux/amd64 container whose inputs are checked by digest, checksum and integrity (base images, release files, the TypeSOL tarball and every npm dependency) |
+| The toolchain | the TypeScript compiler API (parsing, types), Agave platform-tools (clang, lld), Node.js. The guarantees are tested with one platform-tools release (v1.52, from Agave 3.1.10); a build with another warns, or fails with `--toolchain-strict`, and `<name>.build.json` records which one built a binary and on which host. The compiler builtins (128-bit multiplication, division and shifts, signed 64-bit division) are TypeSOL's own (`runtime/typesol_builtins.c`), compiled with the program; nothing is linked from platform-tools' Rust libraries, whose layout differed by host package, so from 0.45.0 on the programs measured build to the same bytes on macOS arm64, Linux arm64 and Linux x86_64 ([stability.md](stability.md#what-builds-the-same-bytes-where): measured with 0.45.0 over the 76 programs then in the sources for SBPF v0, 14 for v1 and v2). `--docker` builds pin the whole environment in one linux/amd64 container whose inputs are checked by digest, checksum and integrity (base images, release files, the TypeSOL tarball and every npm dependency) |
 | The Solana runtime | account ownership and signer flags as passed, the loader's account serialization, CPI privilege rules, sysvars |
 
 Everything a transaction carries is attacker-controlled: the instruction data, which accounts are passed in which
@@ -82,7 +82,10 @@ Each holds for every instruction of every program the compiler accepts. A break 
     transaction did not pass that way and any signer the program's seeds do not cover. Only programs that store
     instructions to run (a multisig, a DAO) need it; review who can write those values.
     Return data is read only from the program named, at the expected size (5106).
-13. **Events.** `emitCpi` is accepted only from this program's event-authority PDA, signed (2002).
+13. **Events.** `emitCpi` is accepted only from this program's event-authority PDA, signed (2002). Under
+    `EVENT_AUTHORITY_CHECK = "address"` (0.48.0) the event authority is checked by address among the constraints
+    (2012) instead, and the self-program account is not checked at all: an instruction that emits fails in the runtime
+    (MissingAccount) when this program is not among its accounts, as Anchor 1.x's does.
 
 ### When it ends
 
@@ -177,5 +180,8 @@ exposed to them.
 The compiler and runtime have had internal security reviews, the latest of 0.44.0 (above); its findings are fixed in
 0.44.1. It was an internal review, not an independent audit; it covered the token, Token-2022, Metaplex and Stake
 wrappers, the oracles and SBPF v1/v2 builds of the examples that the review of 0.43.0 left out, but not the Metaplex
-wrappers for unusual argument shapes beyond reading them, the large ports on SBPF v1/v2, or Windows. There has been no
-external audit: see [audit.md](audit.md).
+wrappers for unusual argument shapes beyond reading them, the large ports on SBPF v1/v2, or Windows. 0.45.0 to 0.48.0,
+and the unreleased work since, have had no security review. They add, among others, `runtime/typesol_builtins.c` (the
+compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`, `EVENT_AUTHORITY_CHECK` and the reads of
+processed sibling instructions (0.48.0), and, not yet released, `zeroData`, `log64`, `PANIC_STYLE = "solana-1.18"` and
+`executable` on remaining accounts. There has been no external audit: see [audit.md](audit.md).

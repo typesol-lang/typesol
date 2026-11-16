@@ -11,7 +11,10 @@ a constraint or an error code.
   then `cargo-build-sbf --install-only --force-tools-install --tools-version v1.52`; on Linux arm64, the commands in
   its Requirements).
 - `pnpm install && pnpm build && pnpm test`.
-- Optional: `pnpm fetch:programs` (Metaplex programs for the Token Metadata / Core / Bubblegum tests),
+- Optional: `pnpm fetch:programs` (`scripts/fetch-programs.sh`: the third-party binaries the repository does not keep,
+  among them the Metaplex programs, Kamino's and JupLend's programs for the Marginfi venue tests, and Meteora DBC with
+  the programs its migrations call; the tests that need one skip without it, and fail instead under
+  `CI_REQUIRE_ALL=programs`),
   `pnpm build:twins` (Anchor twins for the differential tests; needs Rust + Anchor 1.0.2).
 
 ## Before a pull request
@@ -33,7 +36,8 @@ a constraint or an error code.
 TypeSOL follows the organization's [versioning and release policy](https://github.com/typesol-lang/.github/blob/main/VERSIONING.md).
 For the compiler, before 1.0:
 - a **minor** release (0.x → 0.y) may change the language surface (`lib/typesol.d.ts`), the account/IDL layout of
-  generated programs, or error codes — always listed under "Breaking" in CHANGELOG.md;
+  generated programs, or error codes — each such change has its own CHANGELOG.md entry saying so ("Changed, now
+  refused: …", "Changed: …"; older releases had a "Breaking" heading), and the release's opening paragraph names it;
 - a **patch** release only fixes bugs without changing layouts or the meaning of valid programs;
 - a **fix release** (from 0.44.0 on): a release that only fixes soundness or security defects is a patch of the latest
   minor. It adds no language surface, changes no layout, IDL or error code beyond what the fix needs, names in the

@@ -54,7 +54,8 @@ account forms; refusals (slippage, more than held, zero, the whole pool out, wro
 as the user's account, a wrong token program); deposits on either side with and without the minimum, withdrawals with
 and without minimums, amounts past u64; status, state, fees and open time changes and their refusals; the P&L taken by
 the P&L owner after the pool grew; config creation and updates; the retired tags; excess lamports; and a random mix of
-swaps, deposits and withdrawals (`FUZZ_SEED`, `FUZZ_STEPS`). 484 transactions in all at 400 fuzz steps.
+swaps, deposits and withdrawals (`FUZZ_SEED`, `FUZZ_STEPS`). A default run compares 144 transactions: 84 fixed ones and 60 random steps (seed 7
+unless `FUZZ_SEED` names another); 484 at 400 random steps.
 
 ## Differences
 

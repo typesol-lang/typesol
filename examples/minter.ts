@@ -1,4 +1,5 @@
 import {
+  type HasOne,
   type Init,
   type Mint,
   type Mut,
@@ -9,6 +10,7 @@ import {
   type TokenInterface,
   type u8,
   type u64,
+  AuthorityType,
   emit,
   require,
 } from "typesol";
@@ -37,11 +39,23 @@ export enum MinterError {
   WrongMint = "Account belongs to another mint",
 }
 
-export function setup(admin: Mut<Signer>, config: Init<Config>, mint: Mint, systemProgram: SystemProgram, cap: u64): void {
-  config.bump = config.create(admin, ["config", mint.key]);
-  config.admin = admin.key;
+/**
+ * Only the mint's current authority can set up its config: it signs, becomes the admin and hands the mint
+ * authority to the config PDA, so no one else can choose the admin or the cap of someone else's mint.
+ */
+export function setup(
+  mintAuthority: Mut<Signer>,
+  config: Init<Config>,
+  mint: HasOne<Mut<Mint>, "mintAuthority">,
+  tokenProgram: TokenInterface,
+  systemProgram: SystemProgram,
+  cap: u64,
+): void {
+  config.bump = config.create(mintAuthority, ["config", mint.key]);
+  config.admin = mintAuthority.key;
   config.mint = mint.key;
   config.cap = cap;
+  tokenProgram.setAuthority(mint, mintAuthority, AuthorityType.MintTokens, config.key);
 }
 
 export function issue(admin: Signer, config: Mut<Config>, mint: Mut<Mint>, to: Mut<TokenAccount>, tokenProgram: TokenInterface, amount: u64): void {

@@ -6,6 +6,157 @@ codes, and says so here.
 
 ## Unreleased
 
+- Changed: under `NATIVE_ACCOUNT_WRITES`, a write to a remaining account's `.lamports` is a native program's
+  `**a.lamports.borrow_mut() = v`: no writability check (3006) and no refusal of an account passed more than once
+  (2040); an account passed twice is one record, and the runtime judges the change when the instruction ends. Programs
+  without the flag build as before, and so does every program in the golden manifest
+  (test/language/native-lamports.test.ts; docs/language-native.md).
+- Showcase, Percolator: mutation fuzzers against the mainnet binary (`showcase/test/percolator-mutate-*.test.ts`):
+  the account list, the instruction data, the environment (several instructions per transaction, a relay at stack
+  height 2, low compute-unit limits, Clock and oracle extremes) and the slab's every field, from valid transactions of
+  all 27 instructions in eleven market states, each compared byte for byte; and the failure sites a review found
+  without a test, reached on purpose (`percolator-sites.test.ts`). Four differences they found are fixed, each kept as
+  a named case (`percolator-regressions.test.ts`): CloseSlab with the slab or the admin again in its unused fifth
+  position (the port failed with 2040, the original succeeds), a matcher shrinking its context below 64 bytes during
+  TradeCpi (InvalidAccountData before any field is read), a TradeCpi tail long enough to exhaust the original's 32 KiB
+  heap before the matcher call (the allocator's "out of memory" and abort, now reproduced from the same byte count),
+  and the funding rate of a config only patching can make (`i128::clamp`'s assertion panic and `saturating_mul`).
+  SetOraclePriceCap changes the config in place (on a Hyperp market it had cost about as much as the original's).
+- Showcase, Percolator: the compute-unit tables re-measured on the current build (363,392 bytes): on the same
+  transactions every instruction's mean and largest figure is the earlier build's or lower (SetOraclePriceCap 606 on
+  average, from 1,696), each keeper crank of the account-count table costs one unit more, and all stay below the
+  original. New differential tests: TradeCpi's tail with signers and writable accounts as the matcher sees them, the
+  per-side cap on active positions with real trades, the ADL edges (K without headroom, precision exhausted, a crank
+  stopping on a pending reset; the first two only on a slab written in, as no instruction reaches them), and TradeCpi's
+  path after the matcher call on nearly full heaps, through a test matcher that takes any tail. One difference found
+  and pinned: a panic after the call where the original's heap can no longer hold the formatted panic line (a tail at
+  the last length or two the heap holds and a slab written in) logs the allocator's out-of-memory error in the
+  original and the panic line in the port; the outcome and every account are the same.
+- Showcase, Percolator: mutation testing of the differential tests. 196 hand-chosen mutants of the port's source (every
+  file, 63 in rarely-run paths such as ADL, bad debt past insurance, the resolved wind-down, Hyperp and Chainlink), each
+  rebuilt and run against the sixteen test files: 140 killed as the tests stood, 22 equivalent (the reasons in
+  the port README), 34 gaps, each now covered by a new differential test in the fitting file and killed (boundaries hit
+  exactly, such as the margins, the catch-up envelopes, the deviation band and the deposit cap, and states only a
+  written slab has). The new tests found no difference from the mainnet binary. The default run's count now covers all
+  sixteen files: 139,185 compared transactions, 33,590 successful under both.
+
+- Changed: an account of another type passed where a remaining account or an `AccountInfo` is taken (`programAt`,
+  `sysvarAt`, `zeroData`) is now refused by TypeScript (a `RemainingAccount` has `executable`), with the hint "pass a
+  remaining account (remainingAccounts().get(i)) or an AccountInfo parameter; a declared parameter of a program or
+  sysvar type is used as it is"; the compiler's own message said the same before.
+- Added: `log64(a, b, c, d, e)`, Rust's `sol_log_64` (the runtime writes the five u64s as lowercase hex on one line);
+  `zeroData(account, offset, length)`, a memset of account data by the syscall, as a native program's
+  `for b in data.iter_mut() { *b = 0 }` compiles (about constant compute units for 1.5 MB); and
+  `PANIC_STYLE = "solana-1.18"`, panics logged as solana-program 1.18's handler logs them since rustc 1.73
+  (`panicked at <file>:<line>:<col>:` and the message on the next line, then abort). The lines are checked against
+  Percolator v12.20's mainnet binary (test/language/native-log64-zero.test.ts; docs/language-native.md). Existing
+  programs build to the same bytes.
+- Showcase: the first stage of a port of Percolator v12.20, `showcase/mainnet/percolator/` (Apache-2.0; educational,
+  not audited, not for real funds, as the original says), the immutable mainnet program
+  `BCGNFw6vDinWTF9AybAbi8vr69gx5nk5w8o2vEWgpsiw` built from aeyakovenko/percolator-prog `06f86fb` and the engine
+  aeyakovenko/percolator `3f55f87` (sha256 `502088e9…cc93`, 395,368 bytes; fetched by `scripts/fetch-programs.sh`, not
+  kept here). This stage has 15 of its 27 instructions (market creation and configuration, the authorities, account
+  creation, deposits, withdrawals, settles, closes on live markets, reclaims, insurance top-ups, fee credits, CloseSlab)
+  and the foundation the rest builds on: the 1,525,624-byte slab byte for byte (u128 aligned to 8, as the SBF binary
+  lays it out), the engine's 256-bit arithmetic, the oracle readers, accrual, warm-up and fees. Each transaction goes to
+  the port and to the mainnet binary, which must agree on outcome, error code, log lines, inner instructions, return
+  data and every account's bytes, in five test files and a seeded fuzz of account sequences (README there).
+- Added: `executable` on a remaining account (`rest.get(i).executable`, Rust's `AccountInfo::executable`), as a native
+  program checks a program passed among its accounts before calling it (test/language/remaining-executable.test.ts;
+  docs/language-accounts.md). Existing programs build to the same bytes.
+- Showcase: the second stage of the Percolator v12.20 port: TradeNoCpi, TradeCpi and ConvertReleasedPnl (18 of 27
+  instructions), with the engine's trade (trade PnL, positions attached at the side's indices, the open-interest
+  decomposition, trading fees, the margin rules, warm-up of trade profit) and the conversion of released PnL with its
+  haircut. TradeCpi calls a matcher: no build of the author's is deployed for v12.20, so the tests run a TypeSOL port of
+  aeyakovenko/percolator-match 199b139 (Apache-2.0, a test fixture) under both the mainnet binary and the port. Tests
+  that wrote positions into the slab now trade; a fuzz of trade sequences between many users and LPs runs against the
+  binary. The port spends fewer compute units than the original on every successful transaction measured, SettleAccount
+  included (it no longer copies the 400-byte config twice where nothing reads it in between, and zeroes its instruction
+  context with the memset syscall). verify_token_program now checks the token program is executable, as the original
+  does.
+- Showcase: the third stage of the Percolator v12.20 port: KeeperCrank, LiquidateAtOracle and CatchupAccrue (21 of 27
+  instructions), with the engine's liquidation (full close and the crank's exact partial, the liquidation fee, bad
+  debt), `enqueue_adl` (insurance first, then the loss written into the opposite side's K, A shrunk pro rata, drain-only
+  sides, side resets with stale accounts settled at the frozen indices), the crank's candidate handling and hint
+  validation, the maintenance-fee sweep with its cursor and dust reclaim, the crank reward and the risk buffer's upkeep,
+  and complete and partial catch-ups of the market clock. Tests that wrote drain-only and reset-pending sides, a flat
+  account with a loss past its capital and the sweep's fee debt into the slab now reach them with liquidations and
+  cranks; a second fuzz walk (leveraged trades, crashes, liquidations, cranks) socialises losses and runs side resets
+  to their end against the binary. KeeperCrank's compute units are measured at 2 to 4,096 accounts: the port completes
+  every crank the original does within the same limit, and 64 liquidations in one crank, which exceed the original's
+  1.4M units, in about 660,000. The port spends fewer compute units than the original on every successful transaction
+  measured (18,713 in the two fuzz walks).
+- Showcase: the fourth stage completes the Percolator v12.20 port (27 of 27 instructions): ResolveMarket,
+  ResolvePermissionless, ForceCloseResolved, AdminForceCloseAccount, CloseAccount's resolved arm, WithdrawInsurance and
+  WithdrawInsuranceLimited, with the engine's resolution (the ordinary arm with its catch-up and deviation band, the
+  degenerate arm at the last price for a dead oracle, a silent Hyperp mark or the hard timeout, terminal K deltas kept
+  apart from K, every position stale under a new epoch), the reconciliation of resolved accounts, terminal readiness,
+  the payout haircut snapshot and the terminal close (fee debt forgiven, the surplus swept into insurance), and the
+  bounded insurance withdrawals (bps cap, 10-unit floor, cooldown). Tests that wrote a resolved market into the slab
+  now resolve it, and CloseSlab's insurance and stranded-token cases come from real instructions; only states no
+  instruction can make are still written in (README there). Both fuzz walks now end each market's life: resolution by
+  the admin or by anyone, every account closed out in random order, the insurance withdrawn, the slab closed, and the
+  vault and every token account compared at the end (80 full life cycles in a 40-seed run of each walk). The port spends fewer compute units than
+  the original on every successful transaction measured (20,225 in the two fuzz walks) and its binary is
+  360,248 bytes against 395,368 (363,392 bytes after the later fixes).
+- Showcase: the Percolator author's own LiteSVM test suite (aeyakovenko/percolator-prog `06f86fb`, engine `3f55f87`)
+  run unchanged against the mainnet binary and against the TypeSOL port: 660 tests pass and 11 are ignored under both,
+  with the same outcome for every test (609 of them run the program; the rest test the Rust crates on the host); the
+  11 ignored ones, run too, also agree (4 pass, 7 fail at the same assertions). The TradeCpi tests use the TypeSOL
+  matcher fixture under both. `scripts/percolator-author-suite.sh` reproduces it (host build only, downloads nothing);
+  counts per file and the author's compute-unit benchmark in the port README.
+- Showcase: the Percolator port's checks made stricter, and what they found. Every test now fails a successful
+  transaction with a Percolator instruction at the top level unless the port used fewer compute units than the
+  original (the differential harness asserts it for every test file, the keeper-crank measurements included; only the
+  matcher's own Init and SPL Token transfers, identified by program id, are exempt). A new fuzz walk runs whole market
+  life cycles on Chainlink feeds, inverted markets, Pyth feeds at other exponents with the confidence at its limit, and
+  Hyperp markets (40 life cycles in a 10-seed run, no divergence). A test matcher logs the slab as it stands during
+  TradeCpi's call (the same in both). Two
+  divergences found and fixed in the port: the slab passed again where the original holds its mutable borrow across an
+  SPL Token call (a user or admin signing with the slab's keypair, or the slab as CloseSlab's vault authority) failed
+  the original with AccountBorrowFailed and succeeded in the port; and the trade's per-side position cap, which the
+  original counts in i64, gave another error for counts of 2^63 and more (a patched slab only). One difference on a
+  patched slab remains and is pinned in a test (a free-list index past the 4,096 slots: Rust's bounds-check panic
+  against TypeSOL's). `scripts/percolator-author-suite.sh` now fails on a test file that does not build or run, on
+  totals other than the recorded 671 / 660 / 0 / 11, and on test names that differ between the two runs.
+
+- Fixed: `examples/airdrop.ts` let the admin of any pot award points to any `Member`: anyone could set up a pot of
+  their own and pass other pots' members to `award`. A member now records its pot (`Member.pot`, PDA
+  `["member", pot, owner]`, `join` takes the pot), and `award` refuses a member of another pot (`WrongPot`, 6002).
+- Fixed: `examples/minter.ts` let anyone set up the config of any mint, choosing its admin and cap, for example before
+  the mint's owner did. `setup` now takes the mint's current mint authority as the signer (`HasOne<Mut<Mint>,
+  "mintAuthority">`, 2016), makes it the admin and moves the mint authority to the config PDA in the same instruction,
+  with the token program as a new account. Both examples' binaries and IDLs change; neither is in
+  `test/golden/binaries.json`. Tests: test/examples/airdrop.test.ts, test/examples/minter.test.ts (the attacks fail,
+  the honest paths work).
+- Docs: the `grow` example of docs/language-accounts.md let anyone resize another user's account; it now takes the
+  log's owner (`HasOne`).
+- Docs: claims narrowed to what the tests and benchmarks show. The ports: the same outcome, events, return data and
+  account bytes on every compared transaction, and the same error codes and log lines except where each case study
+  says (Anchor error-message text, panics reported as numbered errors, Marginfi's informational `msg!` lines, CLMM's
+  reward-mint order); Phoenix, Raydium AMM v4, SPL Stake Pool and Percolator match every log line. Compute units:
+  fewer than native Rust on every instruction measured, fewer than Pinocchio on counter, vault and escrow, and more
+  than Pinocchio on 13 of the 26 instructions of the official examples (a sentence `scripts/readme-bench.ts` now
+  writes from `official`). Review status: 0.45.0 to 0.48.0 and the unreleased work have had no security review (README,
+  SECURITY.md, docs/audit.md, docs/security-model.md), `runtime/typesol_builtins.c` is in the audit scope table and in
+  docs/runtime.md, and `EVENT_AUTHORITY_CHECK` is listed as experimental and in the `emitCpi` guarantee. Transaction
+  counts are what a default run compares, with breakdowns per file: Marginfi 2,321 (it said 2,081), Raydium AMM v4 144
+  with 60 random steps (it said 484, at 400 steps), SPL Stake Pool 2,107 in five files (it said six), coral-xyz/multisig
+  55 (it said 52), Percolator 139,185 in its sixteen files, 3,711 of them in its fixed-seed walks and 128,320 from its
+  mutation fuzzers (it said 6,028, the first ten files). The cross-host measurement is the one made with
+  0.45.0 over the 76 programs of its sources; Meteora DBC and Percolator are not in `test/golden/binaries.json`. Also:
+  every fuzzer and how it is seeded (docs/testing.md, docs/audit.md), the manifest's `showcase/mainnet` programs and the
+  release record's `"tests"` field, what `pnpm fetch:programs` fetches, the mainnet escrow as a benchmark record and
+  what its make_offer spends in the ATA program, the escrow case study's figures from the 0.48.0 run, the licence of the
+  Meteora port's tests and fixtures, and `llms.txt` listing every port. The destructuring example of
+  docs/language-statements.md let anyone overwrite another player's account; it now requires its owner's signature.
+- Showcase: `showcase/mainnet/meteora-dbc/README.md` describes the finished port (released in stages in 0.48.0): Meteora
+  Dynamic Bonding Curve 0.2.2, all 35 instructions, with its migrations into DAMM v1 and DAMM v2, checked against the
+  mainnet binary on outcome, error code, account bytes, inner instructions, events and return data (log text and
+  compute units not compared). The port, its tests (`showcase/test/meteora-dbc*.ts`) and their fixtures
+  (`showcase/test/fixtures/meteora-dbc/`) are under Meteora's Non-commercial Licence (NOTICE), which README.md and
+  LICENSE now say.
+
 ## 0.48.0 — 2026-11-14
 
 A minor release: it adds three built-ins (`transferCheckedWithHook`, the processed sibling instructions,
@@ -128,7 +279,6 @@ and still compile build to the same bytes.
   which needs `@anchor-lang/core`, and did not see `emitCpi` events. `t.coder` does not change. TypeSOL's Borsh coder
   decodes events as Anchor's `coder.events.decode` does (test/client/idl-coder.test.ts compares the two on random
   values for every program with events, and on a wrong discriminator, which both decode as null).
-
 - Changed, now refused: a call of a helper that returns the result of `merkleVerify`, `verifyEd25519` or
   `verifySecp256k1` whose result decides nothing. 0.46.0 refused such a call of the three themselves (as a statement,
   as the condition of an `if` with an empty body, kept in a local never read) but compiled the same through a helper,

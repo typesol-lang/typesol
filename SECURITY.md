@@ -8,6 +8,10 @@ TypeSOL generates programs that hold funds. Treat it accordingly.
   0.44.0 on 2026-11-11, found defects in the compiler (wrong token-wrapper instruction data, and a reference that could
   outlive a resize and reach another record) and a latent one in the runtime; they are fixed in 0.44.1. The one
   before it, of 0.43.0, found defects fixed in 0.44.0 (one of them could break an authorization check in a helper).
+  0.45.0 to 0.48.0, and the unreleased work since, have had no security review. They add, among others,
+  `runtime/typesol_builtins.c` (the compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`,
+  `EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), and, not yet released, `zeroData`,
+  `log64`, `PANIC_STYLE = "solana-1.18"` and `executable` on remaining accounts.
   **Rebuild and redeploy programs built before 0.44.1**;
   [docs/security-model.md](docs/security-model.md#status) gives the status, its sections on each review say how to
   tell whether a program was exposed, and [docs/audit.md](docs/audit.md#earlier-reviews) what each review did and did

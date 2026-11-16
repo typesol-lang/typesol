@@ -92,6 +92,9 @@ export function hintForTypeScript(d: ts.Diagnostic, message: string, libPath: st
     case 2365: // Operator '+=' cannot be applied to types 'bigint' and 'number'.
     case 2322: // Type 'number' is not assignable to type 'bigint'.
     case 2345: // Argument of type 'bigint' is not assignable to parameter of type 'number'.
+      // Argument of type 'TokenAccount' is not assignable to parameter of type 'RemainingAccount | AccountInfo'.
+      if (/parameter of type '(?:RemainingAccount \| AccountInfo|AccountInfo \| RemainingAccount)'/.test(message))
+        return "pass a remaining account (remainingAccounts().get(i)) or an AccountInfo parameter; a declared parameter of a program or sysvar type is used as it is";
       if (/\bDate\.now\(|\bnew Date\b/.test(line)) return CLOCK_HINT;
       if (/\bMath\.\w+\(/.test(line)) return MINMAX_HINT;
       if (/\bbigint\b/.test(message) && (/\bnumber\b/.test(message) || /'-?\d+'/.test(message))) return BIGINT_HINT;

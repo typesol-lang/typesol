@@ -472,7 +472,7 @@ circuit-breaker halt, a frozen bank, the fee state's pause, an account's flags a
 
 There are 244 transactions in that file, 174 in
 [`showcase/test/marginfi-oracle.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi-oracle.test.ts)
-for the oracles, and 1,022 in
+for the oracles, and 1,032 in
 [`showcase/test/marginfi-risk.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/marginfi-risk.test.ts)
 for withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine. The last two write Pyth and Switchboard accounts byte for
 byte into both ledgers:
@@ -521,7 +521,7 @@ byte into both ledgers:
   window walked up and down with its anchor creeping after it ran out, a reference at the floor reseeded, a tier past
   3 in raw state (a panic).
 
-- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (1,022, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
+- **Withdrawals, borrows, health pulses, liquidation records, bankruptcy, liquidation, receivership, deleverage, flash loans, account, group and fee state administration, bank administration and the risk engine (1,032, with the deposits they start from).** Part of a deposit, more than it, from a bank without a balance, by
   another signer, to the wrong mint, from disabled and frozen accounts, paused and reduce-only banks; the health
   accounts left out, short an oracle, out of order, with extras; healthy and unhealthy after; a stale liability
   oracle (fails) and a stale collateral oracle (skipped, recorded), an undecodable collateral oracle (skipped,
@@ -589,6 +589,18 @@ byte into both ledgers:
   fraction left, only the fraction, more than the vault holds); super-admin moves (by someone else, on the mainnet
   build).
 
+The integration banks have five files of their own, each with the other program's mainnet binary (or its accounts)
+loaded beside both: `marginfi-lst.test.ts` (98 transactions: staked SOL banks priced at a single pool's rate),
+`marginfi-venues.test.ts` (150: Solend banks over Solend's program), `marginfi-kamino.test.ts` (237: Kamino banks over
+klend and kfarms), `marginfi-drift.test.ts` (185: Drift banks over Drift v2) and `marginfi-juplend.test.ts` (201:
+JupLend banks over its lending, liquidity and rewards programs). The Kamino and JupLend binaries are under the Business
+Source License and fetched, not kept (`pnpm fetch:programs`); without them those two files skip.
+
+In all, a test run compares 2,321 transactions with the mainnet binary in eight files: 244 + 174 + 1,032 in the three
+above and 98 + 150 + 237 + 185 + 201 in the venue files (1,883 when the Kamino and JupLend binaries are absent).
+`marginfi-state.test.ts` checks the port's account types against the on-chain IDL and the mainnet accounts, and sends
+no transactions to the binary.
+
 Besides these, [`showcase/test/fuzz-marginfi.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/fuzz-marginfi.test.ts)
 sends random sequences of the same instructions: random bank configs and curves (most valid, some broken in one
 way), fees, balances across scales, clock jumps, frozen banks, circuit-breaker settings and halts, accounts opened and
@@ -609,6 +621,7 @@ end index now and then wrong. The keys come from the seed too (the order of keys
 reproduces a run exactly.
 Every step must match. Inputs the original panics on (a negative fee rate trips its asserts) only have to fail in the
 port too. Each run takes a new seed, CI's included; `FUZZ_SEED=<seed>` reproduces one, `FUZZ_STEPS=<n>` lengthens it.
+At the default 150 steps a run compares about 160 more transactions (161 in one run), not counted in the 2,321.
 
 ## Differences
 

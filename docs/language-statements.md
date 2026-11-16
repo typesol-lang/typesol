@@ -236,7 +236,7 @@ members`). A `switch` on a string is refused (`switch works on integers and enum
 ## Destructuring
 
 ```ts
-import { type Account, type Mut, type Pubkey, type u64 } from "typesol";
+import { type Account, type Mut, type Pubkey, type Signer, type u64, require } from "typesol";
 
 export interface Point {
   x: u64;
@@ -249,7 +249,8 @@ export interface Player {
   score: u64;
 }
 
-export function read(player: Account<Player>, out: Mut<Player>): void {
+export function read(signer: Signer, player: Account<Player>, out: Mut<Player>): void {
+  require(out.owner === signer.key, "only the owner of out can overwrite it");
   const { owner, pos: p } = player;
   let { score } = player;
   score += p.x;

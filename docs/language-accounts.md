@@ -188,8 +188,8 @@ export interface Log {
   entries: u64;
 }
 
-export function grow(payer: Mut<Signer>, log: Mut<Log>, systemProgram: SystemProgram, size: u64): void {
-  realloc(log, size, payer);
+export function grow(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">, systemProgram: SystemProgram, size: u64): void {
+  realloc(log, size, owner);
 }
 
 export function remove(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">): void {
@@ -201,9 +201,8 @@ export function remove(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">): void
   account) and its data is zeroed. The account is not used after it in the function, except its `key` (compile
   errors, or 2040 at run time in a helper given one account twice). `CloseTo<A, "dest">` does the same when the
   instruction succeeds ([constraints](#constraints)).
-- Who may call them: the lamports of a closed account are value, so `HasOne` above lets only the log's owner close it.
-  `grow` moves no value out of the account (growing charges the payer, shrinking keeps the lamports in it), so it is
-  left open here; restrict it too if the extra bytes, or their absence, matter to your program.
+- Who may call them: `HasOne` above lets only the log's owner close it (the lamports of a closed account are value)
+  or resize it. Without that check anyone could pay to grow, or shrink, another user's account.
 - `realloc(account, newSize, payer)` on a `Mut<Struct>`: growing charges the payer the extra rent (at most 10 KiB per
   instruction, 3016); shrinking keeps the lamports in the account; never below the struct. Refused on a struct with a
   growable `Vec` (its push / pop / clear size the account).
@@ -398,7 +397,7 @@ export function count(tally: Mut<Tally>): void {
 `remainingAccounts()` gives the accounts passed after the declared ones, in order.
 
 - `.length`, `.get(i)` (5104 past the end) → `key`, `owner`, `lamports` (writes check writability, 3006), `isSigner`,
-  `isWritable`, the data length and data.
+  `isWritable`, `executable`, the data length and data.
 - `loadAccount<T>(acct)` / `loadAccountMut<T>(acct)` give checked struct views (owner, discriminator and size, as
   `Account<T>` / `Mut<T>`), also of an `AccountInfo` parameter (Anchor's `AccountLoader::try_from` on an
   `UncheckedAccount`).

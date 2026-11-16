@@ -32,17 +32,22 @@ clients read TypeSOL programs unchanged.
   - Every arithmetic operation is checked.
   - Account owner, discriminator, signer, writability and aliasing checks are generated from your parameter types.
   - Constraints follow Anchor's rules and use Anchor's error codes.
-- **Small and fast.** In the LiteSVM benchmarks below, TypeSOL uses 5–32% of Anchor's compute units, with binaries
-  about 10× smaller, and fewer compute units than native Rust and hand-tuned Pinocchio on every instruction. On
-  mainnet the results differ by instruction; see [the mainnet table](#on-mainnet).
-- **Checked against mainnet.** Eight deployed programs are ported in full, among them Marginfi v2, Phoenix v1 and
-  SPL Stake Pool, and run beside the original binaries: the same outcomes, log lines, events and account bytes on
-  thousands of transactions, for fewer compute units ([the ports](#ported-and-checked-against-mainnet-binaries)).
+- **Small and fast.** In the counter, vault and escrow benchmarks below, TypeSOL uses 5–32% of Anchor's compute units,
+  with binaries about 10× smaller, and fewer compute units than native Rust and hand-tuned Pinocchio on every
+  instruction. On 17 official example programs it uses fewer than Anchor and native Rust on every instruction, and
+  more than their Pinocchio versions on 13 of the 26 ([Numbers](#numbers)). On mainnet the results differ by
+  instruction; see [the mainnet table](#on-mainnet).
+- **Checked against mainnet.** Nine ports of deployed programs (eleven programs: Jito MEV's row is three), among them
+  Marginfi v2, Phoenix v1 and SPL Stake Pool, run beside the original binaries: the same outcomes, events, return data
+  and account bytes on thousands of transactions, and the same error codes and log lines but for the exceptions each
+  case study lists, for fewer compute units ([the ports](#ported-and-checked-against-mainnet-binaries)).
 - **Verifiable.** `typesol verify` reads a deployed program from the cluster and checks it, and the IDL published on
-  chain, against its source. Every release records the hashes of its npm tarball and of every program it builds
-  ([releases/](releases), [docs/testing.md](docs/testing.md#reproducing-a-release)).
+  chain, against its source. Every release records its npm tarball in `releases/<version>.json` ([releases/](releases)),
+  and the hashes of every program it builds in its GitHub Release's `typesol-<version>-manifest.json`
+  ([docs/testing.md](docs/testing.md#reproducing-a-release)).
   The same source, TypeSOL version and toolchain build to the same bytes on macOS arm64, Linux arm64 and Linux x86_64
-  (measured: all 76 programs of the sources for SBPF v0, 14 of them for v1 and v2; Linux arm64 with the platform-tools
+  (measured with 0.45.0: all 76 programs then in the sources for SBPF v0, 14 of them for v1 and v2; programs added
+  since, the Meteora DBC and Percolator ports among them, were not in that measurement; Linux arm64 with the platform-tools
   `linux-aarch64` package set up as in [Requirements](#requirements), since there is no Agave CLI for it;
   [docs/stability.md](docs/stability.md#what-builds-the-same-bytes-where)).
   `typesol build --docker` builds in a pinned linux/amd64 container that anyone can rebuild from the Dockerfile, and
@@ -65,34 +70,53 @@ Node.js and the Solana toolchain are in place ([Quick start](#quick-start), [Req
 ## Ported and checked against mainnet binaries
 
 Each port is the whole program, written in TypeSOL from the original's source. Its tests send every transaction to
-the port and to the binary deployed on mainnet, both in LiteSVM, and require the same outcome, error, log lines,
-events, return data and bytes in every account; the port must also use fewer compute units on every transaction that
-succeeds. A case study for each says what was compared and what was not.
+the port and to the binary deployed on mainnet, both in LiteSVM, and require the same outcome, events, return data and
+bytes in every account the transaction names, and the same error code and log lines, with the exceptions each case
+study lists. Of those, the kinds that recur:
+
+- **Error-message text.** The Anchor ports log their errors in TypeSOL's words, with Anchor's codes; Jito's also leaves
+  out Anchor's `Instruction: …` lines.
+- **Panics.** Where the original panics, Marginfi, Raydium CLMM, Raydium CP-Swap and Jito MEV fail with a numbered
+  error, and Marginfi also answers a few runtime errors that carry no code (`AccountBorrowFailed`, `BorshIoError`)
+  with numbered ones; the tests require that both fail.
+- **Informational logs.** Marginfi writes only the original's `WARN` lines, of about 160 `msg!` lines.
+- **Raydium CLMM's reward mints**, kept in the order added, so `OperationState`'s bytes differ when two or more are
+  listed.
+- **Compute.** A Percolator keeper crank that exceeds the compute budget in the original completes in the port.
+
+Phoenix v1, Raydium AMM v4, SPL Stake Pool and Percolator match every log line of the compared transactions, panics
+included, except the runtime's compute-unit lines. The port must also use fewer compute units on every transaction that succeeds. A case study for
+each (for Percolator, the port's README) says what was compared and what was not.
 
 | Program | Kind | Instructions | Transactions compared |
 | --- | --- | ---: | ---: |
-| [Marginfi v2](docs/case-study-marginfi.md) | Anchor, lending | 124 | 2,081 |
+| [Marginfi v2](docs/case-study-marginfi.md) | Anchor, lending | 124 | 2,321 |
 | [Phoenix v1](docs/case-study-phoenix.md) | native, limit order book | 28 | 3,575 |
 | [SPL Stake Pool](docs/case-study-spl-stake-pool.md) | native, liquid staking | 27 | 2,107 |
 | [Raydium CLMM](docs/case-study-raydium-clmm.md) | Anchor, concentrated liquidity | 37 | 302 |
 | [Raydium CP-Swap](docs/case-study-raydium-cp-swap.md) | Anchor, constant product | 21 | 136 |
-| [Raydium AMM v4](docs/case-study-raydium-amm.md) | native, constant product | all | 484 |
+| [Raydium AMM v4](docs/case-study-raydium-amm.md) | native, constant product | all | 144 (60 random steps) |
 | [Jito MEV](docs/case-study-jito-mev.md) | Anchor, three programs | 24 | 150 |
-| [coral-xyz/multisig](docs/case-study-multisig.md) | Anchor | all | 52 |
+| [Percolator v12.20](showcase/mainnet/percolator) | native, perpetuals risk engine | 27 | 139,185 (132,031 random or mutated: 3,711 in random walks on fixed seeds, 128,320 from the mutation fuzzers) |
+| [coral-xyz/multisig](docs/case-study-multisig.md) | Anchor | all | 55 |
 
-A ninth port is held to a narrower comparison and is not counted above:
+A tenth port is held to a narrower comparison and is not counted above:
 [Meteora Dynamic Bonding Curve 0.2.2](showcase/mainnet/meteora-dbc) (Anchor, launchpad, all 35 instructions, with its
-migrations into DAMM v1 and DAMM v2). Outcomes, error codes, account bytes, events and return data are the same as the
-mainnet binary's; log text and compute units are not compared. That directory is under Meteora's Non-commercial
-Licence, not this repository's (see its README).
+migrations into DAMM v1 and DAMM v2). Outcomes, error codes, account bytes, inner instructions (its events are
+self-CPIs) and return data are compared as for the ports above, with the exceptions its README lists; of the log only
+the events' `Program data:` lines are compared, not the rest of its text, and compute units are not compared. The
+port, its tests (`showcase/test/meteora-dbc*.ts`) and their fixtures (`showcase/test/fixtures/meteora-dbc/`) are under
+Meteora's Non-commercial Licence, not this repository's (see [NOTICE](NOTICE)).
 
-Random walks with fixed or printed seeds run on top of these counts ([docs/testing.md](docs/testing.md)). The
+Each count is what a default test run compares, with the fetch-only binaries present (`pnpm fetch:programs`). Random
+walks, with fixed or printed seeds, run on top of the other ports' counts ([docs/testing.md](docs/testing.md)); the
+multisig port has none. The
 sources are in [`showcase/mainnet`](showcase/mainnet), and where each original binary comes from is recorded in
 [test/programs/SOURCES.md](test/programs/SOURCES.md).
 
 ## At a glance
 
-**`counter.ts`**: a complete program, 23 lines. (`typesol init` writes it with one more instruction, a read-only
+**`counter.ts`**: a complete program, 23 non-blank lines. (`typesol init` writes it with one more instruction, a read-only
 `assertAtLeast`.)
 
 ```ts
@@ -126,7 +150,7 @@ export function increment(authority: Signer, counter: Mut<Counter>, by: u64): vo
 ```
 
 <details>
-<summary><b>The same program in Anchor</b>: 44 lines of Rust</summary>
+<summary><b>The same program in Anchor</b>: 44 non-blank lines of Rust</summary>
 
 ```rust
 #[program]
@@ -264,9 +288,9 @@ the same.
   `typesol port` starts from your program's IDL; [docs/case-study-escrow.md](docs/case-study-escrow.md) follows one
   program through the port.
 - Real programs checked against their mainnet binaries: [Showcase](https://github.com/typesol-lang/typesol#showcase-ports-checked-against-mainnet), with a
-  case study each (Marginfi v2 in full: all 124 instructions, the same on 2,081 transactions; Phoenix v1, a native
-  order book, the same on 3,575 transactions down to its event bytes; Raydium AMM v4, a native program, down to its log
-  lines).
+  case study each (Marginfi v2 in full: all 124 instructions, 2,321 transactions with the same outcomes, events and
+  account bytes; Phoenix v1, a native order book, the same on 3,575 transactions down to its event bytes and log lines;
+  Raydium AMM v4, a native program, down to its log lines).
 - To mainnet (wallet, cost, deploy, IDL, verification): [docs/mainnet.md](docs/mainnet.md).
 - With an AI coding agent: [docs/ai.md](docs/ai.md) (agent rules, [llms.txt](https://typesol.com/llms.txt), the MCP server).
 
@@ -287,7 +311,7 @@ counter.ts ─▶ tsc typecheck ─▶ subset check ─▶ C + typesol_rt.h ─�
    `--sbpf`).
 
 Runtime failures point back to your source: `Error 6000 Unauthorized (counter.ts:25)`, or
-`TypeSOL: arithmetic overflow (vault.ts:42)`.
+`TypeSOL: arithmetic overflow (vault.ts:44)`.
 
 ## What you can write
 
@@ -367,14 +391,36 @@ CPI account records only for the accounts a call lists. It uses fewer compute un
 instruction here, while also refusing duplicate writable accounts as Anchor does. Fewer compute
 units are not a safety claim. The differential tests also run the escrow against its Anchor twin ([docs/testing.md](docs/testing.md)).
 
+These three programs' Pinocchio versions were written for this comparison.
+
+<!-- bench:official -->
+On the official examples, 17 programs of solana-developers/program-examples@de09019 that this project did not write (26 instructions, `official.ts` in the benchmarks repository), TypeSOL uses fewer compute units than Anchor on 26 of 26 instructions and than native Rust on 26 of 26, and more than Pinocchio on 13 of 26.
+<!-- /bench:official -->
+
+Those Pinocchio versions often do less: favorites, close-account and
+program-derived-addresses take the PDA bump from the client instead of searching for it on chain, and pda-rent-payer
+checks the client's bump instead of finding the canonical one; program-derived-addresses' increment checks neither the
+address nor the owner of the account it writes; transfer-sol checks neither that the recipient is a System account nor
+that the paying account of `transfer_sol_with_program` belongs to the program. The notes for each program, and every
+figure, are in the benchmarks' `results.json` (`official`).
+
 ### On mainnet
 
 The official escrow ([tokens/escrow](https://github.com/solana-developers/program-examples/tree/de090195e4de698e150572c4f886c333323a64a5/tokens/escrow)),
 deployed to Solana mainnet-beta in all four versions and called with the same mints, amounts and accounts, one
 instruction per transaction. The TypeSOL program was upgraded in place to 0.25.0 on 2026-10-29; the others are as first
 deployed on 2026-10-27. Each figure is the compute units of that transaction, linked to Solscan; the lowest per row is
-in bold. The deployed programs match their builds byte for byte (`typesol verify` for TypeSOL; that is the 0.25.0 build, not the current release), and the TypeSOL
-program's IDL is published on chain with `typesol idl publish`.
+in bold. The TypeSOL program was checked against its source with `typesol verify` (it is the 0.25.0 build, not the
+current release) and its IDL is published on chain with `typesol idl publish`; the Pinocchio, native Rust and Anchor
+programs are the benchmarks' builds, and this record does not check them byte for byte against those builds.
+
+These four programs are a benchmark record, not a service: the maintainers' own keys made every offer and took or
+refunded each one in the runs recorded, so no offer is open and they hold no one's tokens. The TypeSOL one predates
+the defects fixed in 0.44.0 and 0.44.1 (see [Status](#status)); its source,
+[`showcase/program-examples/tokens/escrow.ts`](showcase/program-examples/tokens/escrow.ts) (the same at 0.25.0, then
+`test/ports/tokens/escrow.ts`), uses none of the constructs those defects need: no helper functions, closures,
+`Dup<…>` or loaded accounts, seed lists written in place at each call, token wrapper arguments that are plain reads,
+and no `transferFee` or `updateExtraAccountMetas`.
 
 | Transaction | TypeSOL | Pinocchio | Native Rust | Anchor |
 | --- | ---: | ---: | ---: | ---: |
@@ -385,26 +431,33 @@ program's IDL is published on chain with `typesol idl publish`.
 | escrow program's own part, 4 transactions | **28,118** | 36,956 | 93,273 | 102,926 |
 | program | [65ybkcg6…](https://solscan.io/account/65ybkcg6mQa9t5EuHtirRdvf2qAu12qRiK6wYBbGk16P) | [FrQwq3iU…](https://solscan.io/account/FrQwq3iUa8ZkWEne1y27webXTAyLgH4Hj6t986t6VS2G) | [5pnmi1Md…](https://solscan.io/account/5pnmi1MdxzXKmgX7ooRSE212rzZK8rb7nNpRTSMqP8V1) | [EG7M3sLL…](https://solscan.io/account/EG7M3sLLwB7MhmtzwYsaxbhZaFDbshL9hmVK79bQVyVq) |
 
-Most of make_offer is the Associated Token Account program creating the vault. It searches for the vault address's
-bump itself at 1,500 CU a try, and every offer has its own vault, so that part varies from offer to offer in every
-version (13,585 to 22,585 CU of the make_offers above); programs that check the vault's address re-derive it, so
-take_offer and refund_offer vary with it too. The escrow program's own part is steadier: TypeSOL's make_offer spent
-6,620 CU of its own on both offers. The Pinocchio version takes the offer PDA's bump from the client instead of
+In make_offer the Associated Token Account program creates the vault: 13,480 to 22,480 CU of the make_offers above
+(13,585 to 22,585 with the token transfer after it). That is most of the TypeSOL and Pinocchio make_offers (67–77%)
+and about a third to a half of the native Rust and Anchor ones (35–46%), whose own part is larger (15,543 to 29,043
+CU). The ATA program searches for the vault address's bump itself at 1,500 CU a try, and every offer has its own
+vault, so that part depends on the offer (13,510 CU for both of Anchor's, 13,480 and 22,480 for TypeSOL's); programs
+that check the vault's address re-derive it, so take_offer and refund_offer can vary with it too. The escrow
+program's own part is steadier: TypeSOL's make_offer spent 6,620 CU of its own on both offers. The Pinocchio version takes the offer PDA's bump from the client instead of
 searching for it. Mainnet figures differ from the LiteSVM means above. Every run, including the one before the
 upgrade, is in [typesol-lang/benchmarks](https://github.com/typesol-lang/benchmarks) (`results/`).
 
 ## How it is tested
 
-- **Execution tests.** Every feature is compiled and run in LiteSVM.
-- **Diagnostics tests.** Every rejected construct is covered.
-- **Golden tests.** The generated C is compared with golden output.
+- **Execution tests.** Programs that use each language feature are compiled and run in LiteSVM (`test/language/`,
+  `test/examples/`, `test/integrations/`, `test/security/`), and every complete example of the language guide must
+  compile (`test/language/docs-examples.test.ts`).
+- **Diagnostics tests.** Refused constructs are tested with the message they get (`test/language/diagnostics.test.ts`,
+  and every row of the guide's "What is refused" table).
+- **Golden tests.** The generated C of the counter and the generated clients of two programs are compared with golden
+  output (`test/golden/`), and CI rebuilds 14 programs on Linux x86_64 to the bytes the reference container gives
+  (`test/golden/binaries.json`).
 - **Randomized tests** against independent oracles:
   - Arithmetic at every integer width is checked against BigInt.
   - Stateful vault, escrow and ledger runs are checked against a TypeScript model.
   - Differential runs send the same transactions to TypeSOL and to the Anchor twins and compare outcomes, account
     contents and balances.
-- **Ports against mainnet binaries.** The eight ports above run beside the deployed originals, transaction by
-  transaction, and random walks over them compare every step.
+- **Ports against mainnet binaries.** The nine ports above run beside the deployed originals, transaction by
+  transaction, and random walks over eight of them (all but multisig), and over Meteora DBC, compare every step.
 - **Localnet smoke test.** A script deploys every example to a local validator and drives it end to end; it is run
   by hand, not in CI.
 
@@ -417,7 +470,7 @@ Details are in [docs/testing.md](docs/testing.md).
 | [`counter.ts`](examples/counter.ts) | PDA init, authority check |
 | [`vault.ts`](examples/vault.ts) | System CPI, direct lamport moves, rent floor, close |
 | [`escrow.ts`](examples/escrow.ts) | SPL Token CPIs signed by a PDA, atomic swap, refund |
-| [`minter.ts`](examples/minter.ts) | capped issuer over SPL Token and Token-2022 |
+| [`minter.ts`](examples/minter.ts) | capped issuer over SPL Token and Token-2022, set up by the mint's authority |
 | [`ledgerbook.ts`](examples/ledgerbook.ts) | enums, Options, a Vec that grows and shrinks its account |
 | [`airdrop.ts`](examples/airdrop.ts) | remaining accounts, batch payouts, `loadAccountMut` |
 | [`relay.ts`](examples/relay.ts), [`caller.ts`](examples/caller.ts) | generic `invoke`, PDA-signed transfers, return data |
@@ -443,6 +496,7 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Phoenix v1](docs/case
 | [`spl-stake-pool/`](showcase/mainnet/spl-stake-pool) | SPL Stake Pool in full, all 27 instructions, a native program and the one behind most liquid staking tokens: pools of stake across up to 20,000 validators, SOL and stake deposits and withdrawals, rebalancing over epochs, fees and authorities, token metadata |
 | [`raydium-amm/`](showcase/mainnet/raydium-amm) | Raydium AMM v4, the original constant-product AMM and a native (non-Anchor) program, in full: pool creation, deposits and withdrawals, the v1 and v2 swaps, P&L and administration, down to its log records and panics |
 | [`meteora-dbc/`](showcase/mainnet/meteora-dbc) | Meteora Dynamic Bonding Curve 0.2.2 in full, all 35 instructions: configs, pool creation on SPL Token and Token-2022 (transfer fees and hooks), the three swap modes, fee schedulers and the rate limiter, fee claims, the locker, and the migrations into DAMM v1 and DAMM v2. Under Meteora's Non-commercial Licence (its own `LICENSE.md`); log text and compute units are not compared |
+| [`percolator/`](showcase/mainnet/percolator) | Percolator v12.20, Anatoly Yakovenko's perpetuals risk engine and its native program, in full, all 27 instructions, against the immutable mainnet build: one 1.5 MB slab of 4,096 accounts, U256 and U512 arithmetic, trades through matcher programs, funding, liquidation, the keeper crank with pro-rata loss socialisation and side resets, resolution and teardown. The author's own suite gives the same outcome on every test under both binaries (660 passed). Upstream is educational and not audited |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status
@@ -454,6 +508,10 @@ change.
   The two latest, of 0.43.0 and 0.44.0 in November 2026, found defects that made a program that compiled behave
   differently from its source; each is fixed with a test, and [docs/audit.md](docs/audit.md) lists them, what the
   reviews covered and what they did not. Programs built before 0.44.1 should be rebuilt.
+- 0.45.0 to 0.48.0, and the unreleased work since, have had no security review. They add, among others,
+  `runtime/typesol_builtins.c` (the compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`,
+  `EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), and, not yet released, `zeroData`,
+  `log64`, `PANIC_STYLE = "solana-1.18"` and `executable` on remaining accounts.
 - From 0.44.0 on, a release that only fixes defects is a patch with no new language surface and a binary diff in its
   notes ([SECURITY.md](SECURITY.md#fix-releases)), and the npm tarball is the one packed from the tag and recorded
   in [releases/](releases).
@@ -502,6 +560,9 @@ built-in, a constraint or an error code. Then read [CONTRIBUTING.md](CONTRIBUTIN
 
 ## License
 
-[MIT](LICENSE). The runtime and `typesol/testing` include code ported from MIT and Apache-2.0 projects, and the tests
+[MIT](LICENSE), except the Meteora Dynamic Bonding Curve port: `showcase/mainnet/meteora-dbc/`, its tests
+`showcase/test/meteora-dbc*.ts` and their fixtures `showcase/test/fixtures/meteora-dbc/` are subject to the Meteora
+Non-commercial Licence ([its text](showcase/mainnet/meteora-dbc/LICENSE.md), [NOTICE](NOTICE)), and none of them is in
+the npm package. The runtime and `typesol/testing` include code ported from MIT and Apache-2.0 projects, and the tests
 use third-party program binaries and data that are not in the npm package: see [NOTICE](NOTICE) and
 [test/programs/SOURCES.md](test/programs/SOURCES.md).

@@ -191,16 +191,18 @@ token account. A client that matches on this code needs to accept either.
 ## Cost
 
 Mean compute units per instruction in LiteSVM (21 make_offer, 10 take_offer and 10 refund_offer calls), and the
-program size, from typesol-lang/benchmarks (TypeSOL at this version; Anchor 1.0.2). Lower is better.
+program size, from typesol-lang/benchmarks (`results.json`, `official`: measured with TypeSOL 0.48.0 and Anchor 1.0.2
+on 2026-11-14). Lower is better.
 
 | | TypeSOL | Anchor | Native Rust | Pinocchio |
 | --- | ---: | ---: | ---: | ---: |
-| make_offer | **19,697** | 35,726 | 33,206 | 20,581 |
-| take_offer | **7,053** | 29,235 | 24,995 | 21,606 |
+| make_offer | **19,683** | 35,726 | 33,206 | 20,581 |
+| take_offer | **7,054** | 29,235 | 24,995 | 21,606 |
 | refund_offer | **4,271** | 15,326 | 12,477 | 8,137 |
-| Binary | 32.0 KB | 244.5 KB | 120.4 KB | **25.1 KB** |
+| Binary | 32.1 KB | 244.5 KB | 120.4 KB | **25.1 KB** |
 
-Most of `make_offer` in every version is the Associated Token Account program creating the vault. The native and
+Much of `make_offer` in every version is the Associated Token Account program creating the vault (13,480 to
+22,480 CU a call in the mainnet transactions the README links), most of it in TypeSOL's and Pinocchio's. The native and
 Pinocchio versions are teaching code with fewer checks (no owner or type check on the offer, `Transfer` instead of
 `TransferChecked`; Pinocchio takes the offer's bump from the client).
 

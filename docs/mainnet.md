@@ -16,7 +16,7 @@ You need Node.js 22.12 or later and the Agave CLI with platform-tools (see the R
 toolchain is part of what you trust. Deploy with the one TypeSOL is tested with (Agave 3.1.10, platform-tools v1.52;
 `typesol doctor` says whether yours is, and `typesol deploy --toolchain-strict` refuses another). The host does not
 matter from 0.45.0 on: with the same TypeSOL and toolchain a program builds to the same bytes on macOS arm64, Linux
-arm64 and Linux x86_64 (measured over 76 programs for SBPF v0 and 14 for v1 and v2; up to 0.44.1 a program with
+arm64 and Linux x86_64 (measured with 0.45.0 over the 76 programs then in the sources for SBPF v0 and 14 for v1 and v2; up to 0.44.1 a program with
 128-bit or signed division did not, [stability.md](stability.md#what-builds-the-same-bytes-where)). For a program others should be able to verify, build
 it with `--docker` (step 2) all the same: a pinned linux/amd64 container that anyone can rebuild, so the whole
 environment is one recipe. Keep

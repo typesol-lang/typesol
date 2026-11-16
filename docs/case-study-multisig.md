@@ -103,7 +103,8 @@ existing clients and existing accounts work with the port unchanged.
 another, both at `msigUdDB…`, then sends each transaction to both. After each one it requires the same outcome (success,
 or the same error down to the code) and the same lamports, owner and data bytes for every account involved.
 
-There are 52 transactions:
+There are 55 transactions (8 in the upstream flow, 11 in the `create_multisig` refusals, 14 in the other refusals,
+12 in the owner-set changes, 7 in the payouts, 3 with the 40-owner account):
 
 - **The upstream test suite** (`tests/multisig.js`): create a 2-of-3 multisig, propose `set_owners`, approve, and
   execute through the PDA. Then `Assert Unique Owners` (6008).

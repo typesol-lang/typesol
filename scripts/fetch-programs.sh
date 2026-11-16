@@ -58,6 +58,9 @@ trimmed LocpQgucEQHbqNABEYvBvwoxCPsSbG91A1QaQhQQqjn meteora_locker.so
 # The DAMM v1 migration's: DAMM v1 (dynamic AMM) and the dynamic vault it deposits into, fetched only.
 trimmed Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB meteora_damm_v1.so
 trimmed 24Uqj9JCLxUeoC3hGfh5W3s9FM9uCHDS2SG3LYwBpyTi meteora_vault.so
+# Percolator v12.20 (showcase/mainnet/percolator's differential test; Apache-2.0, fetched only). Not cut: the deployed
+# program data is the build's file as it is, 395,368 bytes, whose sha256 the author's deploy manifest records.
+[[ -f percolator_v12.so ]] || solana program dump -u mainnet-beta BCGNFw6vDinWTF9AybAbi8vr69gx5nk5w8o2vEWgpsiw percolator_v12.so
 # Each binary against the sha256 SOURCES.md records. The committed ones must match (test/verification/third-party.test.ts
 # checks that too); a fetched one differs when its program was upgraded upstream since the hash was recorded. Either
 # is a failure (exit 3, after every file is checked): tests run against an unrecorded binary prove nothing about the

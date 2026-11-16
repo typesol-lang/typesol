@@ -77,7 +77,8 @@ static __attribute__((noinline)) uint64_t ts_fail(uint64_t code, const char *msg
 #ifdef TS_PANIC_ON_OVERFLOW
   /* PANIC_ON_OVERFLOW: arithmetic fails as a Rust `checked_*().unwrap()` does, with a panic (ProgramFailedToComplete). */
 #ifdef TS_PANIC_ABORT
-  /* PANIC_STYLE "solana-1.14": a panic ends in the abort syscall ("SBF program panicked"), as that panic handler's. */
+  /* PANIC_STYLE "solana-1.14" or "solana-1.18" (with PANIC_ON_OVERFLOW): a panic ends in the abort syscall ("SBF
+   * program panicked"), as those solana_program panic handlers' do. */
   if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) abort();
 #else
   if (code == TS_ERR_OVERFLOW || code == TS_ERR_DIV_ZERO) sol_panic_("", 0, 0, 0);

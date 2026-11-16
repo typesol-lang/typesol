@@ -61,14 +61,17 @@ Meant to stay as they are; a change before 1.0 would be a breaking change listed
 
 ## What builds the same bytes where
 
-From 0.45.0 on, the programs measured build to the same bytes on each host measured. Measured with this release's
+From 0.45.0 on, the programs measured build to the same bytes on each host measured. Measured with 0.45.0's
 compiler and platform-tools v1.52 on macOS arm64 (the platform-tools `osx-aarch64` package, native), Linux arm64 and
 Linux x86_64 (the `linux-aarch64` and `linux-x86_64` packages, in containers; x86_64 is the `--docker` image; Linux
 arm64 has no Agave CLI, so there the package is set up by hand with `TYPESOL_SBF_SDK`, as in
 [troubleshooting.md](troubleshooting.md#linux-arm64-the-agave-installer-fails-with-a-404)): for
-SBPF v0 (the default), the 76 programs of the sources (`scripts/release-manifest.ts`, every program under `examples/`
-and `showcase/`); for SBPF v1 and v2, the 14 programs of `test/golden/binaries.json` (counter, vault, escrow, multisig
-and the 10 below).
+SBPF v0 (the default), the 76 programs then in the sources (`scripts/release-manifest.ts`, every program under
+`examples/` and `showcase/`); for SBPF v1 and v2, the 14 programs of `test/golden/binaries.json` (counter, vault,
+escrow, multisig and the 10 below). Programs added since were not measured on the three hosts, and two of them that
+divide 128-bit and wider integers, the Meteora DBC port (0.48.0; u128 and u256 division) and the Percolator port
+(unreleased; U256 and U512), are not in `test/golden/binaries.json`, so CI's cross-host check does not build them yet
+(adding them needs the file regenerated in the `--docker` reference environment).
 
 | What | Same on the three hosts? |
 | --- | --- |
@@ -126,6 +129,8 @@ Useful today, but may still change before 1.0 (each change listed in the CHANGEL
   its panics in solana-program 1.14–1.17's format, `removeAt(index)` (what it gives for a node in no tree may change).
 - `panic(null, location)` (no log line) and `abort()` (Rust's abort, "SBF program panicked") (0.42.0).
 - Failures without a log line (0.43.0): `ERROR_LOG_PREFIX = null` / `PROGRAM_ERROR_LOG_PREFIX = null`.
+- `EVENT_AUTHORITY_CHECK = "address"` (0.48.0): `emitCpi`'s event authority checked by address, as Anchor 1.x's
+  `#[event_cpi]` does, and the self-program account not checked (docs/security-model.md, guarantee 13).
 - `findProgramAddressWithBump` (0.43.0), with `const [address, bump] = …` its only array destructuring.
 - Plain type aliases (0.43.0): `type Price = u64`, replaced by the type they name.
 - File-local structs (0.43.0): `interface Pair { … }` without `export`, for helpers and locals, out of the IDL.
