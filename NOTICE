@@ -97,5 +97,14 @@ Third-party material in this repository only (not in the published package)
   audited, not for use with real funds. Its mainnet binary is not kept here: scripts/fetch-programs.sh downloads it
   (test/programs/SOURCES.md). showcase/mainnet/percolator/matcher/ is a TypeSOL port of the matcher TradeCpi calls,
   aeyakovenko/percolator-match (commit 199b139), Copyright Anatoly Yakovenko, Apache-2.0, kept as a test fixture.
+- showcase/mainnet/percolator-v16/: a TypeSOL port of Percolator v16, all 50 instructions, the program
+  aeyakovenko/percolator-prog (commit 7b11091) with its risk engine aeyakovenko/percolator (commit 5e3af07), Copyright
+  Anatoly Yakovenko, Apache-2.0 (the licence text is test/programs/LICENSE-Apache-2.0.txt), with its tests
+  showcase/test/percolator-v16*.ts, whose layout table (percolator-v16-layout.ts) transcribes the original's account
+  structs. Changes: rewritten in TypeSOL. The original's own warning stands for the port: an educational research
+  project, not audited, not for use with real funds. No v16 build is deployed to compare with:
+  scripts/percolator-v16-reference/ builds the reference binary from those commits, and the matchers its tests load
+  (aeyakovenko/percolator-match commit 60aac3a and two test matchers of percolator-prog, Apache-2.0), in Docker; none
+  of the binaries is kept here (test/programs/SOURCES.md).
 - showcase/program-examples/: ports of solana-developers/program-examples (MIT, Copyright Solana Foundation; the
   licence text is in showcase/program-examples/README.md).

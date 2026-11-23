@@ -126,7 +126,8 @@ jobs:
 
   showcase:
     # The ports under showcase/: Raydium, Jito, Marginfi and coral-xyz/multisig against their mainnet binaries
-    # (test/programs), with their fuzzers, and the program-examples ports.
+    # (test/programs), with their fuzzers, and the program-examples ports. The Percolator v16 files run in the
+    # percolator-v16 job instead (their reference is built from source, not fetched).
     timeout-minutes: 40
     runs-on: ubuntu-latest
     steps:
@@ -185,9 +186,79 @@ jobs:
             sleep 20
           done
           test -f test/programs/mpl_token_metadata.so
-      - run: pnpm test:showcase
+      - run: pnpm test:showcase --exclude 'showcase/test/percolator-v16-*'
         env:
           CI_REQUIRE_ALL: programs
+
+  percolator-v16:
+    # The Percolator v16 port against its reference. No v16 build is deployed, so the reference, the three matchers the
+    # author's tests load and the entrypoint probe are built here from the pinned sources, in Docker
+    # (scripts/percolator-v16-reference/build.sh and probe.sh: the image's inputs pinned by digest and sha256, the
+    # sources fetched by commit, the builds --locked, and each binary kept only when its sha256 is the one
+    # test/programs/SOURCES.md records; exit 3 otherwise). The sha256 of every v16 binary is checked again before the
+    # tests (a cached one included). The test files then run one at a time under CI_REQUIRE_ALL=built: a missing
+    # binary, a missing port source, or a test file that compared no transaction fails the job instead of skipping.
+    # Linux x86_64 only (the image is linux/amd64), so not part of the macOS run.
+    if: ${{ inputs.differential != 'no' }}
+    timeout-minutes: 300
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Cache Agave CLI and platform-tools
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.local/share/solana
+            ~/.cache/solana
+          key: agave-3.1.10-tools-${{ runner.os }}
+      - name: Install Agave CLI
+        run: |
+          [ -x ~/.local/share/solana/install/active_release/bin/solana ] || sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Install platform-tools (the clang TypeSOL compiles with)
+        run: |
+          sdk=~/.local/share/solana/install/active_release/bin/platform-tools-sdk/sbf
+          for i in 1 2 3 4; do
+            [ -x "$sdk/dependencies/platform-tools/llvm/bin/clang" ] && break
+            cargo-build-sbf --install-only --tools-version v1.52 || sleep $((i * 15))
+          done
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Cache the v16 reference binaries
+        # Keyed on everything that decides their bytes; the sha256 check below runs on a restored copy as well.
+        uses: actions/cache@v6
+        with:
+          path: test/programs/percolator_v16*.so
+          key: percolator-v16-reference-${{ hashFiles('scripts/percolator-v16-reference/build.sh', 'scripts/percolator-v16-reference/probe.sh', 'scripts/percolator-v16-reference/Dockerfile', 'scripts/percolator-v16-reference/probe/**', 'test/programs/SOURCES.md') }}
+      - name: Build the v16 reference binaries from the pinned sources (Docker)
+        run: |
+          ls test/programs/percolator_v16.so test/programs/percolator_v16_match.so test/programs/percolator_v16_auth_matcher.so \
+            test/programs/percolator_v16_hostile_matcher.so >/dev/null 2>&1 || bash scripts/percolator-v16-reference/build.sh
+          [ -f test/programs/percolator_v16_probe.so ] || bash scripts/percolator-v16-reference/probe.sh
+      - name: Every v16 binary has the sha256 test/programs/SOURCES.md records
+        run: |
+          sed -nE 's/^\| `(percolator_v16[a-z_]*\.so)` \|.*\| no \(build\) \| `([0-9a-f]{64})` \|$/\2  test\/programs\/\1/p' test/programs/SOURCES.md >"$RUNNER_TEMP/v16.sha256"
+          cat "$RUNNER_TEMP/v16.sha256"
+          test "$(wc -l <"$RUNNER_TEMP/v16.sha256")" -eq 5
+          sha256sum -c "$RUNNER_TEMP/v16.sha256"
+      - name: The v16 tests, one file at a time
+        # Each file prints the transactions it compared ("percolator-v16 compared: …"); every file runs, and the step
+        # fails if any did.
+        run: |
+          failed=""
+          for f in showcase/test/percolator-v16-*.test.ts; do
+            echo "::group::$f"
+            pnpm vitest run "$f" --maxWorkers=2 --silent=false || failed="$failed $f"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then echo "failed:$failed" >&2; exit 1; fi
+        env:
+          CI_REQUIRE_ALL: built
 
   differential:
     # A string, not a boolean: GitHub compares a missing input (null) as equal to false, which would skip this job on
