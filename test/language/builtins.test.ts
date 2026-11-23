@@ -197,17 +197,24 @@ class Harness {
 const tmp = mkdtempSync(path.join(os.tmpdir(), "typesol-builtins-"));
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
+/**
+ * The flags that make clang take the builtins' C definitions, as a clang above 20 does (its 128-bit libcalls have
+ * another calling convention than the assembly's): `__clang_major__` redefined to 22.
+ */
+const AS_CLANG_22 = ["-Wno-builtin-macro-redefined", "-U__clang_major__", "-D__clang_major__=22"];
+
 /** The harness linked with the runtime's builtins ("runtime") or with platform-tools' compiler-builtins ("toolchain"). */
-function buildHarness(sbpf: Sbpf = "v0"): Record<"runtime" | "toolchain", string> {
+function buildHarness(sbpf: Sbpf = "v0", builtinsExtra: string[] = []): Record<"runtime" | "toolchain", string> {
   const tc = findToolchain(sbpf);
   const cflags = sbfCflags(sbpf);
   const incs = tc.includes.flatMap((i, n) => (n < 2 ? ["-isystem", i] : ["-I", i]));
   const obj = path.join(tmp, `harness-${sbpf}.o`);
   const builtins = path.join(tmp, `builtins-${sbpf}.o`);
   execFileSync(tc.clang, [...cflags, ...incs, "-o", obj, "-c", HARNESS]);
-  execFileSync(tc.clang, [...builtinsCflags(sbpf), "-o", builtins, "-c", BUILTINS_SOURCE]);
-  const runtime = path.join(tmp, `runtime-${sbpf}.so`);
-  const toolchain = path.join(tmp, `toolchain-${sbpf}.so`);
+  execFileSync(tc.clang, [...builtinsCflags(sbpf), ...builtinsExtra, "-o", builtins, "-c", BUILTINS_SOURCE]);
+  const tag = builtinsExtra.length ? `${sbpf}-c` : sbpf;
+  const runtime = path.join(tmp, `runtime-${tag}.so`);
+  const toolchain = path.join(tmp, `toolchain-${tag}.so`);
   linkSharedObject([obj, builtins], runtime, tc);
   linkSharedObject([obj], toolchain, tc, [tc.compilerBuiltins]);
   return { runtime, toolchain };
@@ -311,6 +318,33 @@ function caseData(c: Case): Uint8Array {
   data.writeBigUInt64LE(c.b >> 64n, 40);
   return data;
 }
+
+// The C definitions of __multi3 and the shifts, which a clang whose 128-bit libcalls return in registers (clang 22,
+// platform-tools v1.57) takes instead of the assembly: compiled here by the tested clang with `__clang_major__` set to
+// 22, so they take its convention, and run on every case of every function against the reference.
+describe.each([["v0"], ["v1"], ["v2"]] as const)("compiler builtins in C (a clang above 20), SBPF %s", (sbpf) => {
+  it("give the reference result for every case, and the assembly is left out", async () => {
+    const so = buildHarness(sbpf, AS_CLANG_22);
+    const ids = { runtime: (await generateKeyPairSigner()).address, toolchain: (await generateKeyPairSigner()).address };
+    const h = new Harness(ids, (await generateKeyPairSigner()).address, (await generateKeyPairSigner()).address);
+    h.svm.addProgramFromFile(ids.runtime, so.runtime);
+    const all = cases(RANDOM / 10, sbpf);
+    const got: bigint[] = [];
+    for (let i = 0; i < all.length; i += PER_TX) got.push(...(await h.run(ids.runtime, all.slice(i, i + PER_TX))).map((r) => r.value));
+    const wrong: string[] = [];
+    for (const [i, c] of all.entries()) {
+      const want = OPS[c.op]!.ref(c.a, c.b);
+      const v = got[i]! & (OPS[c.op]!.bits64 ? M64 : M128);
+      if (v !== want && wrong.length < 10) wrong.push(`${OPS[c.op]!.name}(0x${c.a.toString(16)}, 0x${c.b.toString(16)}) = 0x${v.toString(16)}`);
+    }
+    expect(wrong).toEqual([]);
+    // No assembly definition is compiled in: the preprocessed source keeps no `.globl __…` line.
+    const tc = findToolchain(sbpf);
+    const pre = execFileSync(tc.clang, [...builtinsCflags(sbpf), ...AS_CLANG_22, "-E", BUILTINS_SOURCE], { encoding: "utf8" });
+    expect(pre).not.toMatch(/\.globl __/);
+    expect(execFileSync(tc.clang, [...builtinsCflags(sbpf), "-E", BUILTINS_SOURCE], { encoding: "utf8" })).toMatch(/\.globl __ashlti3/);
+  }, 600_000);
+});
 
 describe("the builtins C can reference", () => {
   it("are the ones the runtime defines, for SBPF v0, v1 and v2", () => {

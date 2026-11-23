@@ -115,7 +115,8 @@ export function edit(shape: Mut<Shape>): void {
   refused.
 - **Evaluation order**: operands and arguments are read left to right, as in JavaScript, even when a later one changes
   account data (`v.length + v.pop()`) or a local (`x + bump()` with a closure `bump` doing `x += 1n`, or a list
-  callback writing it).
+  callback writing it). Built-ins too: `log64(a.count, bump(a), 0n, 0n, 0n)` logs the count before the bump, and
+  `require(a.count === n, codeOf(a))` tests the count before a helper computing the error code runs.
 - **Ternaries** run only the chosen branch: `const fee = vip ? 0n : 30n`. Between accounts too:
   `const source = ephemeral ? rest.get(5n) : reserve` picks a remaining account (`rest.get(i)`, a local or
   `RemainingAccount` helper parameter bound to one) or an `AccountInfo` parameter, and the result goes wherever a

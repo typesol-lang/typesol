@@ -13,7 +13,7 @@
  */
 import { agentsMd, CLAUDE_MD, cursorRule, MCP_JSON } from "./ai.js";
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import ts from "typescript";
@@ -122,12 +122,45 @@ export function programAddress(ws: Workspace, name: string, opts: { needKeypair?
   if (recorded && recorded !== address)
     throw new Error(`${name}: ${path.relative(ws.root, paths.keypair)} is ${address}, but ${CONFIG} records ${recorded}. Restore the right keypair.`);
   if (!recorded) {
-    const raw = JSON.parse(readFileSync(ws.file, "utf8")) as { programs: Record<string, string | ProgramEntry> };
-    raw.programs[name] = { path: ws.programs[name].path, address };
-    writeFileSync(ws.file, JSON.stringify(raw, null, 2) + "\n");
+    // Another process (a first build of another program, under its own lock) may be recording its address now.
+    updateConfig(ws, (raw) => {
+      const entry = raw.programs[name];
+      const current = typeof entry === "object" ? entry : { path: entry ?? ws.programs[name].path };
+      if (current.address && current.address !== address)
+        throw new Error(
+          `${name}: ${CONFIG} now records ${current.address}, but ${path.relative(ws.root, paths.keypair)} is ${address}. Restore the right keypair.`,
+        );
+      raw.programs[name] = { ...current, address };
+    });
     ws.programs[name].address = address;
   }
   return { address, created };
+}
+
+/**
+ * Change typesol.json: read it, `edit` it and write it back, one process at a time (`<file>.lock`, as a build's
+ * lock), the new text written to a temporary file and renamed over it, so that concurrent first builds each keep
+ * their address and no reader sees a partly written file.
+ */
+export function updateConfig(ws: Workspace, edit: (raw: { programs: Record<string, string | ProgramEntry> }) => void): void {
+  withLockFile(`${ws.file}.lock`, () => {
+    const raw = JSON.parse(readFileSync(ws.file, "utf8")) as { programs: Record<string, string | ProgramEntry> };
+    edit(raw);
+    // A linked typesol.json stays a link: the file it points to is the one replaced.
+    const target = realpathSync(ws.file);
+    const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+    writeNewFile(tmp, JSON.stringify(raw, null, 2) + "\n");
+    try {
+      renameSync(tmp, target);
+    } catch (e) {
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // Already gone.
+      }
+      throw e;
+    }
+  });
 }
 
 /** Build every program (or the ones named). */
@@ -251,7 +284,11 @@ const LOCK_POLL_MS = 100;
  */
 export function withBuildLock<T>(dir: string, fn: () => T): T {
   mkdirSync(dir, { recursive: true });
-  const lock = path.join(dir, ".typesol-build.lock");
+  return withLockFile(path.join(dir, ".typesol-build.lock"), fn);
+}
+
+/** Run `fn` holding `lock` (see withBuildLock): created exclusively, taken over when its holder is gone or it is stale. */
+function withLockFile<T>(lock: string, fn: () => T): T {
   const me = `${os.hostname()} ${process.pid} ${Date.now()}`;
   const deadline = Date.now() + LOCK_STALE_MS + 60_000;
   for (;;) {
@@ -438,11 +475,52 @@ export function scaffold(dir: string, name: string, template: TemplateName = "co
   const agent = existing.some((f) => (AGENT_FILES as readonly string[]).includes(f));
   if (existing.length)
     throw new Error(`refusing to overwrite: ${existing.join(", ")}${agent ? " (--no-agent-files leaves out the files for AI coding agents)" : ""}`);
-  for (const [file, text] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
-    writeFileSync(path.join(dir, file), text);
-  }
+  writeProjectFiles(dir, files);
   return Object.keys(files);
+}
+
+/**
+ * Write new files under `root` (paths relative to it). Refuses, before writing anything, a path through a symbolic link
+ * below `root` (a linked directory or a link where a file goes, which would put the file outside the project), then
+ * creates each directory and each file exclusively, so an existing file (or one created meanwhile) is never overwritten.
+ * `root` itself may be a link: the project is where it points.
+ */
+function writeProjectFiles(root: string, files: Record<string, string>): void {
+  for (const file of Object.keys(files)) {
+    const parts = file.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const rel = parts.slice(0, i).join("/");
+      let link = false;
+      try {
+        link = lstatSync(path.join(root, rel)).isSymbolicLink();
+      } catch {
+        break; // Does not exist: neither does anything below it.
+      }
+      if (link)
+        throw new Error(
+          `refusing to write ${file}: ${rel} is a symbolic link (it may point outside the project); replace it with a directory or file of the project`,
+        );
+    }
+  }
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    try {
+      writeNewFile(path.join(root, file), text);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`refusing to overwrite: ${file}`);
+      throw e;
+    }
+  }
+}
+
+/** Create `file` with `text`; fails with EEXIST if anything (a file, a link, even a dangling one) is already there. */
+function writeNewFile(file: string, text: string): void {
+  const fd = openSync(file, "wx");
+  try {
+    writeSync(fd, text);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 /**
@@ -456,13 +534,11 @@ export function addProgram(ws: Workspace, name: string, template: TemplateName =
   const files: Record<string, string> = { [`programs/${name}.ts`]: t.program, [`tests/${name}.test.ts`]: t.test(name) };
   const existing = Object.keys(files).filter((f) => existsSync(path.join(ws.root, f)));
   if (existing.length) throw new Error(`refusing to overwrite: ${existing.join(", ")}`);
-  for (const [file, text] of Object.entries(files)) {
-    mkdirSync(path.dirname(path.join(ws.root, file)), { recursive: true });
-    writeFileSync(path.join(ws.root, file), text);
-  }
-  const raw = JSON.parse(readFileSync(ws.file, "utf8")) as { programs: Record<string, string | ProgramEntry> };
-  raw.programs[name] = { path: `programs/${name}.ts` };
-  writeFileSync(ws.file, JSON.stringify(raw, null, 2) + "\n");
+  writeProjectFiles(ws.root, files);
+  updateConfig(ws, (raw) => {
+    if (raw.programs[name]) throw new Error(`${CONFIG} already has a program "${name}"`);
+    raw.programs[name] = { path: `programs/${name}.ts` };
+  });
   ws.programs[name] = { path: `programs/${name}.ts` };
   const pkgFile = path.join(ws.root, "package.json");
   const pkg = existsSync(pkgFile)

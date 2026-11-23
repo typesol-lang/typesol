@@ -7,19 +7,22 @@ import { describe, expect, it } from "vitest";
 
 const dir = fileURLToPath(new URL("../programs/", import.meta.url));
 const sources = readFileSync(`${dir}SOURCES.md`, "utf8");
-// | `file.so` | `program id` | upstream | licence | in the repository | `sha256` |
-const rows = [...sources.matchAll(/^\| `([\w.-]+\.so)` \| `\w+` \| .*? \| ([^|]+) \| (yes|no \(fetch\)) \| `([0-9a-f]{64})` \|$/gm)].map((m) => ({
-  file: m[1]!,
-  licence: m[2]!.trim(),
-  kept: m[3] === "yes",
-  sha256: m[4]!,
-}));
+// | `file.so` | `program id` (none: built from source, not deployed) | upstream | licence | in the repository | `sha256` |
+const rows = [...sources.matchAll(/^\| `([\w.-]+\.so)` \| (?:`\w+`|none) \| .*? \| ([^|]+) \| (yes|no \((?:fetch|build)\)) \| `([0-9a-f]{64})` \|$/gm)].map(
+  (m) => ({
+    file: m[1]!,
+    licence: m[2]!.trim(),
+    kept: m[3] === "yes",
+    sha256: m[4]!,
+  }),
+);
 
 describe("third-party binaries in test/programs", () => {
   it("lists every binary with its licence and hash", () => {
     expect(rows.length).toBeGreaterThan(10);
     const kept = new Set(rows.filter((r) => r.kept).map((r) => r.file));
-    // Fetched ones (Metaplex) may be present locally; every other .so must be listed as kept.
+    // Fetched ones (Metaplex) and ones built from source (Percolator v16's reference) may be present locally: every .so
+    // must have a row.
     for (const f of readdirSync(dir).filter((f) => f.endsWith(".so")))
       expect(
         rows.some((r) => r.file === f),

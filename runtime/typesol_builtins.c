@@ -218,8 +218,51 @@ TS_BUILTIN ts_i64 __moddi3(ts_i64 a, ts_i64 b) {
  * The assembly. In: r1 the result's address, r2 and r3 the first operand's low and high halves, r4 and r5 the second's
  * (__multi3) or r4 the shift amount, 0 to 127. Out: 16 bytes at r1. r6 to r9 and the stack frame at r10 are the
  * callee's, as in any SBF function.
+ *
+ * That is the convention of clang 20 (platform-tools v1.52, the tested toolchain) and earlier. clang 22 (platform-tools
+ * v1.57) passes a 128-bit libcall's operands from r1 and returns its result in registers, so the assembly would store
+ * the result through the first operand's low half (a program built with it faults with "Access violation writing 8
+ * bytes at address …" at its first 128-bit multiplication). TS_ASM_LIBCALLS selects the assembly only for a clang whose
+ * convention it was written for; any other clang gets the C definitions after it, which take the convention clang
+ * gives their C signatures, the one its libcalls use.
  */
-#ifdef TS_SBPF_V0
+#if defined(__clang_major__) && __clang_major__ <= 20
+#define TS_ASM_LIBCALLS 1
+#endif
+
+#ifndef TS_ASM_LIBCALLS
+/* The low 128 bits of a * b. */
+TS_BUILTIN ts_u128 __multi3(ts_u128 a, ts_u128 b) {
+  ts_u64 al = TS_LO(a), bl = TS_LO(b), hi;
+  ts_u64 lo = ts_mul_wide(al, bl, &hi);
+  return TS_MK(hi + al * TS_HI(b) + TS_HI(a) * bl, lo);
+}
+
+/* a << (n & 127), from 64-bit halves (only constant 128-bit shifts, which are register moves). */
+TS_BUILTIN ts_u128 __ashlti3(ts_u128 a, int b) {
+  ts_u64 n = (ts_u64)b & 127, lo = TS_LO(a), hi = TS_HI(a);
+  if (n & 64) return TS_MK(lo << (n & 63), 0);
+  if (n == 0) return a;
+  return TS_MK((hi << n) | (lo >> (64 - n)), lo << n);
+}
+
+/* a >> (n & 127), logical. */
+TS_BUILTIN ts_u128 __lshrti3(ts_u128 a, int b) {
+  ts_u64 n = (ts_u64)b & 127, lo = TS_LO(a), hi = TS_HI(a);
+  if (n & 64) return TS_MK(0, hi >> (n & 63));
+  if (n == 0) return a;
+  return TS_MK(hi >> n, (lo >> n) | (hi << (64 - n)));
+}
+
+/* a >> (n & 127), arithmetic. */
+TS_BUILTIN ts_i128 __ashrti3(ts_i128 a, int b) {
+  ts_u64 n = (ts_u64)b & 127, lo = TS_LO(a), hi = TS_HI(a);
+  ts_u64 sign = (ts_u64)((ts_i64)hi >> 63);
+  if (n & 64) return (ts_i128)TS_MK(sign, (ts_u64)((ts_i64)hi >> (n & 63)));
+  if (n == 0) return a;
+  return (ts_i128)TS_MK((ts_u64)((ts_i64)hi >> n), (lo >> n) | (hi << (64 - n)));
+}
+#elif defined(TS_SBPF_V0)
 __asm__(
   ".section .text.__multi3,\"ax\",@progbits\n"
   ".hidden __multi3\n"
@@ -284,7 +327,9 @@ TS_BUILTIN ts_u128 __multi3(ts_u128 a, ts_u128 b) {
 }
 #endif
 
-#if defined(TS_SBPF_V0) || defined(TS_SBPF_V1)
+#ifndef TS_ASM_LIBCALLS
+/* The C definitions above. */
+#elif defined(TS_SBPF_V0) || defined(TS_SBPF_V1)
 /* SBPF v0 and v1 (compiler-builtins has the same instructions for both). */
 __asm__(
   ".section .text.__ashlti3,\"ax\",@progbits\n"

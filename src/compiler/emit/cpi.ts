@@ -373,7 +373,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         const src = this.ref(e);
         if (!src || src.type.kind !== "dataEnum" || src.type.name !== enumName) this.fail(e, `expected a ${enumName}`);
         this.line(`TSE_${enumName} ${t};`);
-        this.line(`ts_memcpy(&${t}, &${src.lv}, sizeof(${t}));`);
+        this.line(`TS_MEMCPY(&${t}, &${src.lv}, sizeof(${t}));`);
         return (put) => this.serializeDataEnumLv(t, enumName, put);
       } else if (vt) {
         const v = this.ownedString(this.expect(this.expr(e, vt), vt, e));
@@ -393,7 +393,7 @@ export abstract class CpiEmitter extends MetaplexEmitter {
         if (!src || !sameType(src.type, f.type)) this.fail(e, `expected a ${typeName(f.type)} from account data`);
         const n = this.fieldBytes(f.type);
         this.line(`uint8_t ${t}[${n}];`);
-        this.line(`ts_memcpy(${t}, &${src.lv}, ${n});`);
+        this.line(`TS_MEMCPY(${t}, &${src.lv}, ${n});`);
         return (put) => put(t, String(n), n);
       }
     };

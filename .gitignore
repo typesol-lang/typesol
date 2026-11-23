@@ -33,6 +33,9 @@ test/programs/meteora_damm_v1.so
 test/programs/meteora_vault.so
 # Percolator v12.20's mainnet program (Apache-2.0, but deployed immutable and large: fetched, not kept).
 test/programs/percolator_v12.so
+# Percolator v16's reference and the matchers its tests load (Apache-2.0): built from source by
+# scripts/percolator-v16-reference/build.sh, not kept.
+test/programs/percolator_v16*.so
 # local validator ledgers and fixtures (scripts/localnet.sh), npm pack output, coverage, CLI keypairs
 .localnet*/
 *.tgz

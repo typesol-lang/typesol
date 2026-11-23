@@ -81,7 +81,7 @@ export class FunctionEmitter extends StatementEmitter {
             `  if (!ts_key_eq(&${v}->owner, ${owner})) TS_FAIL(TS_ERR_WRONG_OWNER, "TypeSOL: ${a.name} is not owned by the expected program");`,
             `  if (${v}->data_len < ${n}) TS_FAIL(TS_ERR_DISC_NOT_FOUND, "TypeSOL: ${a.name} has no discriminator");`,
             `  if (!ts_mem_eq(${v}->data, TS_DISC_${k.struct.name}, ${n})) TS_FAIL(TS_ERR_DISCRIMINATOR, "TypeSOL: ${a.name}: discriminator mismatch");`,
-            `  if (${v}->data_len < ${n} + ${emptySizeC(k.struct)}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: ${a.name} is too small");`,
+            `  if (${v}->data_len < ${n} + ${k.struct.layout === "borsh" ? borshMinSize(k.struct, this.model) : emptySizeC(k.struct)}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: ${a.name} is too small");`,
           );
         else
           head.push(
@@ -161,12 +161,15 @@ export class FunctionEmitter extends StatementEmitter {
         // unused slots start as zero: ts_unpack_* only writes what the Borsh bytes hold.
         const S = k.struct.name;
         head.push(`  TSS_${S} *d_${a.name} = NULL;`, `  TS_TRY(ts_alloc(sizeof(TSS_${S}), (uint8_t **)&d_${a.name}));`);
-        if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + 8, ${v}->data_len - 8, d_${a.name}, NULL));`);
+        // The Borsh bytes start after the discriminator, of whichever length the struct declares (the checks above
+        // ensured the account holds it and the smallest Borsh form after it).
+        const n = k.struct.accountDiscriminator.length;
+        if (k.kind === "account") head.push(`  TS_TRY(ts_unpack_${S}(${v}->data + ${n}, ${v}->data_len - ${n}, d_${a.name}, NULL));`);
       } else if (k.kind === "account" || k.kind === "init" || k.kind === "zeroed" || k.kind === "initIfNeeded") {
         head.push(`  TSS_${k.struct.name} *d_${a.name} = (TSS_${k.struct.name} *)(${v}->data + ${k.struct.accountDiscriminator.length});`);
         if (k.struct.vec) {
           head.push(`  uint64_t entry_${a.name} = ${v}->data_len;`, `  (void)entry_${a.name};`);
-          if (k.kind === "account") head.push(...vecLenCheck(k.struct, v, `d_${a.name}`));
+          if (k.kind === "account") head.push(...vecLenCheck(k.struct, v, `d_${a.name}`, "  ", k.struct.accountDiscriminator.length));
         }
       }
       // realloc(x, …) needs the size the account had when the instruction started (the 10 KiB growth limit), as does
@@ -386,14 +389,14 @@ export class FunctionEmitter extends StatementEmitter {
         const ft: FieldType = a.type.kind === "structRef" ? { kind: "struct", name: a.type.struct } : a.type.array;
         const size = this.fieldBytes(ft);
         need(String(size));
-        head.push(`  ${decl};`, `  TS_TRY(ts_alloc(${size}, (uint8_t **)&${v}));`, `  ts_memcpy(${v}, ${at}, ${size});`, `  off += ${size};`);
+        head.push(`  ${decl};`, `  TS_TRY(ts_alloc(${size}, (uint8_t **)&${v}));`, `  TS_MEMCPY(${v}, ${at}, ${size});`, `  off += ${size};`);
         head.push(...this.validation(`(*${v})`, ft, "  "));
       } else if (a.type.kind === "dataEnumArg") {
         // Borsh enum: tag byte, then the variant's fields in order.
         const e = this.model.dataEnums.get(a.type.name)!;
         const v = `arg_${a.name}__v`;
         need("1");
-        head.push(`  TSE_${e.name} ${v};`, `  ts_memzero(&${v}, sizeof(${v}));`, `  ${v}.tag = *(${at});`, `  off += 1;`);
+        head.push(`  TSE_${e.name} ${v};`, `  TS_ZERO_LOCAL(&${v}, sizeof(${v}));`, `  ${v}.tag = *(${at});`, `  off += 1;`);
         head.push(`  switch (${v}.tag) {`);
         e.variants.forEach((variant, i) => {
           head.push(`  case ${i}: {`);
@@ -413,7 +416,7 @@ export class FunctionEmitter extends StatementEmitter {
               const lv = `${v}.v.${variant.name}.${f.name}`;
               const size = this.fieldBytes(f.type);
               head.push(`    if (params->data_len < off + ${size}) TS_FAIL(TS_ERR_INSTRUCTION_DATA, "TypeSOL: instruction data too short");`);
-              head.push(`    ts_memcpy(&${lv}, params->data + off, ${size});`, `    off += ${size};`);
+              head.push(`    TS_MEMCPY(&${lv}, params->data + off, ${size});`, `    off += ${size};`);
               head.push(...this.validation(lv, f.type, "    "));
               continue;
             }
@@ -566,14 +569,15 @@ export class FunctionEmitter extends StatementEmitter {
       .map((a) => {
         const v = `a_${a.name}`;
         const S = (a.kind as { struct: StructDef }).struct.name;
-        return `if (${a.optional ? `${v} != NULL && ` : ""}${v}->data_len >= 8 && ts_key_eq(&${v}->owner, params->program_id)) TS_TRY(ts_pack_${S}(d_${a.name}, ${v}->data + 8, ${v}->data_len - 8, NULL));`;
+        const n = (a.kind as { struct: StructDef }).struct.accountDiscriminator.length;
+        return `if (${a.optional ? `${v} != NULL && ` : ""}${v}->data_len >= ${n} && ts_key_eq(&${v}->owner, params->program_id)) TS_TRY(ts_pack_${S}(d_${a.name}, ${v}->data + ${n}, ${v}->data_len - ${n}, NULL));`;
       });
     return [
       ...packs,
       ...this.ix.accounts
         .filter((a) => a.constraints.closeTo)
         .map((a) => {
-          const line = `TS_TRY(ts_close(a_${a.name}, a_${a.constraints.closeTo}));`;
+          const line = `TS_TRY(${this.closeCall(a, `a_${a.constraints.closeTo}`)});`;
           const optional = this.optionalIn(line);
           return optional.length ? `if (${optional.map((n) => `a_${n} != NULL`).join(" && ")}) ${line}` : line;
         }),

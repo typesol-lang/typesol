@@ -348,7 +348,7 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
       if (bytes === undefined) dynamic = true;
       else fixed += bytes;
       if (dynamic) this.line(`if (${len} + ${n} > ${max}) TS_FAIL(${errorCode}, "TypeSOL: ${what} too large");`);
-      this.line(`ts_memcpy(${buf} + ${len}, ${src}, ${n});`);
+      this.line(`${bytes === undefined ? "ts_memcpy" : "TS_MEMCPY"}(${buf} + ${len}, ${src}, ${n});`);
       this.line(`${len} += ${n};`);
     };
     const finish = (at: ts.Node) => {
@@ -536,7 +536,7 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
     write(
       (src, n) => {
         this.line(`if (${n} > ${cap} - ${at}) TS_FAIL(TS_ERR_INDEX, "TypeSOL: ${method}() past the FixedVec's room");`);
-        this.line(`ts_memcpy(${bytes} + ${at}, ${src}, ${n});`);
+        this.line(`${/^\d+$/.test(n) ? "TS_MEMCPY" : "ts_memcpy"}(${bytes} + ${at}, ${src}, ${n});`);
         this.line(`${at} += ${n};`);
       },
       { dst: bytes, cap: String(cap), at },
@@ -599,7 +599,7 @@ export abstract class CpiCoreEmitter extends ViewEmitter {
       }
       const t = this.tmp("bv");
       this.line(`${fieldC(type)} ${t};`);
-      if (type.kind === "struct") this.line(`ts_memzero(&${t}, sizeof(${t}));`);
+      if (type.kind === "struct") this.line(`TS_ZERO_LOCAL(&${t}, sizeof(${t}));`);
       this.writeAggregate({ lv: t, type, writable: true }, arg, true);
       r = { lv: t, type, writable: true };
     } else if (targ) this.fail(targ, "pushBorsh<T> takes a type only for an object literal; the value's own type is used otherwise");

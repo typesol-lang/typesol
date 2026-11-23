@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { calleeName, discriminator, resolveScalarType, resolveValueType, snakeCase, structNameOf, typesolName } from "../analyze.js";
-import { borshIdentical, borshNativeStructUnsupported } from "./borsh.js";
+import { borshIdentical, borshMinSize, borshNativeStructUnsupported } from "./borsh.js";
 import { ANCHOR_ERRORS } from "../anchor-errors.js";
 import { decodeAddress } from "../../keys.js";
 import {
@@ -92,6 +92,20 @@ const LIST_METHODS = new Set(["forEach", "some", "every", "find", "findIndex", "
 const BYTE_METHODS = new Set(["pushLE", "pushKey", "pushBorsh", "setLE", "truncate"]);
 
 export abstract class CallEmitter extends ExpressionEmitter {
+  /**
+   * Closing an account of this program (`close`, `CloseTo<…>`): TS_CLOSE with the smallest size the account was
+   * checked to hold when it loaded (its discriminator and the struct's empty size, or a @layout borsh struct's smallest
+   * Borsh form). From TS_ZERO_RUN_MIN bytes on its data is zeroed by the memset syscall; below, by stores as before.
+   */
+  protected closeCall(a: AccountParam, dest: string): string {
+    const k = a.kind as { kind: string; struct?: StructDef };
+    if (k.kind !== "account" || !k.struct) return `ts_close(a_${a.name}, ${dest})`;
+    const s = k.struct;
+    const min =
+      s.layout === "borsh" ? String(s.accountDiscriminator.length + borshMinSize(s, this.model)) : `${s.accountDiscriminator.length} + ${emptySizeC(s)}`;
+    return `TS_CLOSE(a_${a.name}, ${dest}, ${min})`;
+  }
+
   protected call(node: ts.CallExpression, topLevel: boolean): Value | undefined {
     const callee = node.expression;
     const args = node.arguments;
@@ -124,10 +138,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.fail(node, "constraint(account, condition, error?) goes at the start of an instruction's body, before any other statement");
       case "require": {
         if (args.length !== 2) this.fail(node, "require(condition, error) takes two arguments");
-        const cond = this.expect(this.expr(args[0], BOOL), BOOL, args[0]);
+        let cond = this.expect(this.expr(args[0], BOOL), BOOL, args[0]);
         if (!this.namesError(args[1])) {
           // A code computed at run time (a helper that returns its error as a value): u32, the program error it names.
+          // The condition is evaluated first, as JS does: held when computing the code runs code that may change it.
+          const mark = this.lines.length;
           const v = this.expr(args[1], U32);
+          cond = this.settle(cond, mark);
           if (v.type.kind === "string")
             this.fail(
               args[1],
@@ -168,12 +185,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
             'panic() takes an optional message (or null to log nothing) and an optional "file:line:column" location: string literals or string constants',
           );
         const msg = silent ? undefined : args.length ? text(args[0]!)! : "explicit panic";
-        if (silent && this.panicStyle())
+        const style = this.panicStyle();
+        if (silent && (style === "solana-1.14" || style === "solana-1.18"))
           this.fail(args[0]!, "under PANIC_STYLE a panic logs its message, as solana_program's panic handler always does: pass the message");
         // The location the runtime reports ("SBF program Panicked in <file> at <line>:<column>"), or the panic line
         // logs: the given one, as a ported program's panic reports it, else this source line (with its column under
-        // PANIC_STYLE, as Rust always gives one).
-        const at = args.length > 1 ? text(args[1]!)! : this.panicStyle() ? this.locationWithColumn(node) : this.location(node);
+        // PANIC_STYLE, as Rust always gives one). Under "pinocchio" only its file is logged (a bare file is accepted).
+        const at = args.length > 1 ? text(args[1]!)! : style ? this.locationWithColumn(node) : this.location(node);
         for (const l of this.panicC(msg, at)) this.line(l);
         return undefined;
       }
@@ -275,7 +293,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
           this.line(`if (a_${a.name} == a_${d.name}) TS_FAIL(TS_ERR_DUPLICATE_MUT, "TypeSOL: close's destination is the account itself");`);
         else if (a === d) this.fail(args[1], "the destination is the account being closed; name another writable account");
         this.assertNotUsedAfterClose(a, node);
-        this.line(`TS_TRY(ts_close(a_${a.name}, a_${d.name}));`);
+        this.line(`TS_TRY(${this.closeCall(a, `a_${d.name}`)});`);
         this.forgetOwners();
         return undefined;
       }
@@ -431,7 +449,13 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const size = this.expect(this.expr(args[1], U64), U64, args[1]);
         const payer = this.accountParam(args[2], "the payer");
         if (payer.kind.kind !== "signer" || !payer.kind.mut) this.fail(args[2], "the payer must be a Mut<Signer>");
-        const min = struct ? `8 + sizeof(TSS_${struct.name})` : "0";
+        // The smallest size the account may take: its discriminator and the struct, or for a @layout borsh struct its
+        // smallest Borsh form (as its load checks); the value written back at the end must still fit (3004 if not).
+        const min = !struct
+          ? "0"
+          : struct.layout === "borsh"
+            ? String(struct.accountDiscriminator.length + borshMinSize(struct, this.model))
+            : `${struct.accountDiscriminator.length} + sizeof(TSS_${struct.name})`;
         this.line(`TS_TRY(ts_realloc(params, a_${payer.name}, a_${acct.name}, ${size.c}, entry_${acct.name}, ${min}));`);
         return undefined;
       }
@@ -656,6 +680,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
         const s = targ && ts.isTypeReferenceNode(targ) && ts.isIdentifier(targ.typeName) ? this.model.structs.get(targ.typeName.text) : undefined;
         if (!s || s.size === undefined || s.vec || s.layout === "borsh")
           this.fail(node, "initAccount<T>(account) takes a fixed-layout account struct of this program (no growable Vec, not @layout borsh)");
+        if (s.accountDiscriminator.length !== 8) this.fail(node, `${s.name}'s discriminator is shorter than 8 bytes: it is another program's account`);
         if (args.length !== 1) this.fail(node, "initAccount<T>(account) takes one account");
         let h = this.handle(args[0]);
         if (!h) {
@@ -692,6 +717,8 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`ts_log_base64(${cString(prefix)}, ${Buffer.byteLength(prefix)}, (const uint8_t *)${place.ptr}, sizeof(TSS_${sd.name}));`);
         return undefined;
       }
+      case "getReturnData":
+        this.fail(node, "bind both results where it is called: const [program, data] = getReturnData()");
       case "findProgramAddressWithBump":
         this.fail(node, "bind both results where it is called: const [address, bump] = findProgramAddressWithBump(seeds, program)");
       case "findProgramAddress": {
@@ -867,11 +894,42 @@ export abstract class CallEmitter extends ExpressionEmitter {
         this.line(`ts_memzero_bulk(${a}->data + ${o}, ${n});`);
         return undefined;
       }
+      case "copyData": {
+        // A native program's `data.copy_within(from..from + length, to)` (or a copy of a struct out of the account and
+        // back in at another offset): the memmove syscall, about constant compute units whatever the length, where a
+        // whole-struct assignment moves words one by one. Overlapping ranges are allowed.
+        if (args.length !== 4) this.fail(node, "copyData(account, from, to, length) takes an account, two byte offsets and a length");
+        // The length does not change: views of the account made before stay valid (they read the copied bytes).
+        let a = this.handle(args[0]!);
+        if (a) {
+          if (!this.nativeAccountWrites()) this.line(`TS_TRY(ts_check_writable(${a}));`);
+        } else {
+          const acct = this.accountParam(args[0], "copyData's account");
+          if (acct.kind.kind !== "info" || (!isWritable(acct.kind) && !this.nativeAccountWrites()))
+            this.fail(args[0], "copyData needs a Mut<AccountInfo> parameter or a remaining account");
+          a = `a_${acct.name}`;
+        }
+        const from = this.expect(this.expr(args[1], U64), U64, args[1]);
+        const f = this.tmp("from");
+        this.line(`uint64_t ${f} = ${from.c};`);
+        const to = this.expect(this.expr(args[2], U64), U64, args[2]);
+        const t = this.tmp("to");
+        this.line(`uint64_t ${t} = ${to.c};`);
+        const len = this.expect(this.expr(args[3], U64), U64, args[3]);
+        const n = this.tmp("len");
+        this.line(`uint64_t ${n} = ${len.c};`);
+        this.line(
+          `if (${f} > ${a}->data_len || ${a}->data_len - ${f} < ${n} || ${t} > ${a}->data_len || ${a}->data_len - ${t} < ${n}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: copy past the end of the account data");`,
+        );
+        this.line(`ts_memmove_bulk(${a}->data + ${t}, ${a}->data + ${f}, ${n});`);
+        return undefined;
+      }
       case "log64": {
         // Rust's `sol_log_64(a, b, c, d, e)`: the runtime writes "Program log: 0x<a>, 0x<b>, 0x<c>, 0x<d>, 0x<e>" (hex).
         if (args.length !== 5) this.fail(node, "log64(a, b, c, d, e) takes five u64 values");
-        const vs = args.map((a) => this.expect(this.expr(a, U64), U64, a).c);
-        const ts_ = vs.map((v) => {
+        // Left to right, each value held before the next argument is lowered (a later one may run code that changes it).
+        const ts_ = args.map((a) => {
+          const v = this.expect(this.expr(a, U64), U64, a).c;
           const t = this.tmp("l64");
           this.line(`uint64_t ${t} = ${v};`);
           return t;
@@ -1137,7 +1195,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
       if (!st) {
         this.line(`${fieldC(vt.elem)} ${t};`);
         this.writeAggregate({ lv: t, type: vt.elem, writable: true }, valueNode);
-        return (el) => this.line(`ts_memcpy(&${el.lv}, &${t}, sizeof(${t}));`);
+        return (el) => this.line(`TS_MEMCPY(&${el.lv}, &${t}, sizeof(${t}));`);
       }
       const val = this.ownedString(this.expect(this.expr(valueNode, st), st, valueNode));
       if (st.kind === "pubkey") this.line(`SolPubkey ${t} = *(${val.c});`);
@@ -2286,7 +2344,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     this.writeAggregate({ lv: `(*${tmp})`, type: { kind: "struct", name: To }, writable: true }, node.arguments[1]!);
     this.line(`TS_TRY(ts_resize(params, a_${payer.name}, a_${a.name}, 8 + sizeof(TSS_${To}), entry_${a.name}));`);
     this.line(`ts_memcpy(a_${a.name}->data, TS_DISC_${To}, 8);`);
-    this.line(`ts_memcpy(a_${a.name}->data + 8, ${tmp}, sizeof(TSS_${To}));`);
+    this.line(`TS_MEMCPY(a_${a.name}->data + 8, ${tmp}, sizeof(TSS_${To}));`);
     this.line(`TSS_${To} *dt_${a.name} = (TSS_${To} *)(a_${a.name}->data + 8);`);
     this.line(`(void)dt_${a.name};`);
     this.created.add(a.name);
@@ -2847,7 +2905,7 @@ export abstract class CallEmitter extends ExpressionEmitter {
     const t = this.tmp("argc");
     this.hoistLazy(t, (n) => (type.kind === "array" ? storageDecl(type, `(*${n})`) : `${fieldC(type)} *${n}`));
     this.line(`if (${t} == NULL) TS_TRY(ts_alloc(${n}, (uint8_t **)&${t}));`);
-    this.line(`ts_memcpy(${t}, &${lv}, ${n});`);
+    this.line(`TS_MEMCPY(${t}, &${lv}, ${n});`);
     return t;
   }
 

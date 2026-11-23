@@ -460,18 +460,22 @@ export function vecPlace(s: StructDef, base: string, k: number): { len: string; 
 
 /**
  * C lines checking that an account's size matches its growable Vecs' lengths (`d`: its TSS_<S> pointer, `a`: its
- * TsAccount). One Vec: ts_check_vec_len; more: each length read only once the bytes before it are known to exist.
+ * TsAccount, `disc`: its discriminator's length). One Vec after an 8-byte discriminator: ts_check_vec_len; otherwise
+ * each length read only once the bytes before it are known to exist.
  */
-export function vecLenCheck(s: StructDef, a: string, d: string, pad = "  "): string[] {
+export function vecLenCheck(s: StructDef, a: string, d: string, pad = "  ", disc = 8): string[] {
   const vs = s.vecs ?? [];
-  if (vs.length === 1) return [`${pad}TS_TRY(ts_check_vec_len(${a}, sizeof(TSS_${s.name}), ${d}->${vs[0]!.name}__len, TS_ELEM_${s.name}));`];
+  if (vs.length === 1 && disc === 8) return [`${pad}TS_TRY(ts_check_vec_len(${a}, sizeof(TSS_${s.name}), ${d}->${vs[0]!.name}__len, TS_ELEM_${s.name}));`];
   const o = `${d.replace(/\W/g, "")}__vo`;
   const lines = [`${pad}{`, `${pad}  uint64_t ${o} = sizeof(TSS_${s.name}) + (uint64_t)${d}->${vs[0]!.name}__len * ${vs[0]!.elemSize};`];
   for (const v of vs.slice(1)) {
-    lines.push(`${pad}  if (${a}->data_len < 8 + ${o} + 4) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec lengths");`);
-    lines.push(`${pad}  ${o} += 4 + (uint64_t)((${laterVecC(s.name, v.name)} *)(${a}->data + 8 + ${o}))->len * ${v.elemSize};`);
+    lines.push(`${pad}  if (${a}->data_len < ${disc} + ${o} + 4) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec lengths");`);
+    lines.push(`${pad}  ${o} += 4 + (uint64_t)((${laterVecC(s.name, v.name)} *)(${a}->data + ${disc} + ${o}))->len * ${v.elemSize};`);
   }
-  lines.push(`${pad}  if (${a}->data_len != 8 + ${o}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec lengths");`, `${pad}}`);
+  lines.push(
+    `${pad}  if (${a}->data_len != ${disc} + ${o}) TS_FAIL(TS_ERR_ACCOUNT_TOO_SMALL, "TypeSOL: account size does not match its Vec lengths");`,
+    `${pad}}`,
+  );
   return lines;
 }
 
@@ -499,3 +503,22 @@ export const F64_TEXT =
 /** An integer used where an f64 is expected. */
 export const INT_TO_F64 = (from: string): string =>
   `a ${from} is not an f64, so it is not converted: an f64 is made from its IEEE 754 bits with f64FromBits(bits)`;
+
+/**
+ * Whether a C lvalue is reached through a pointer the optimizer cannot see behind: account data (`d_acct->f`, a
+ * Migrate's `(*df_a)`, a view made in place), a view or reference local, a helper's pointer parameter (`(*p_x).f`). Not a local of the
+ * function (`st3.f`, `l_x___v`) nor a helper's result (`(*ret)`, `(*(&t4))`), whose copies clang may fold away when it
+ * unrolls them: those take the memory syscalls only where it would emit a loop (runtime/typesol_rt.h).
+ */
+export function throughPointer(lv: string): boolean {
+  const m = /^\(\*([A-Za-z_][A-Za-z0-9_]*)\)/.exec(lv);
+  if (m) return m[1] !== "ret";
+  // A view made where it is read (`(*((TSS_T *)(acct->data + off)))`, a tree node's value), not a local's address.
+  if (lv.startsWith("(*(") && !lv.startsWith("(*(&")) return true;
+  return /^d_[A-Za-z0-9_]+->/.test(lv);
+}
+
+/** A whole copy between two places of one type: TS_COPY when both are reached through pointers, else TS_COPY_LOCAL. */
+export function copyMacro(dst: string, src: string): string {
+  return throughPointer(dst) && throughPointer(src) ? "TS_COPY" : "TS_COPY_LOCAL";
+}

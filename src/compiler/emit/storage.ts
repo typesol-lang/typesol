@@ -1,7 +1,24 @@
 import ts from "typescript";
 import { heapVecOf, resolveScalarType, structNameOf, typesolName } from "../analyze.js";
 import { INT_INFO, type FieldType, type Helper, type ValueType, isScalar, isWritable, sameType, scalarSize, typeName } from "../model.js";
-import { U64, BOOL, PUBKEY, STRING, F64_TO_INT, type Value, type Ref, optC, fieldC, fixedVecC, storageDecl, vecCount, vecPlace, emptySizeC } from "./shared.js";
+import {
+  U64,
+  BOOL,
+  PUBKEY,
+  STRING,
+  F64_TO_INT,
+  type Value,
+  type Ref,
+  optC,
+  fieldC,
+  fixedVecC,
+  storageDecl,
+  vecCount,
+  vecPlace,
+  emptySizeC,
+  throughPointer,
+  copyMacro,
+} from "./shared.js";
 import { AliasEmitter } from "./alias.js";
 
 /**
@@ -199,12 +216,12 @@ export abstract class StorageEmitter extends AliasEmitter {
     this.checkLocalListSize(type, init);
     const one = this.tmp("fill");
     this.line(`${storageDecl(elem, one)};`);
-    this.line(`ts_memzero(&${one}, sizeof(${one}));`);
+    this.line(`TS_ZERO_LOCAL(&${one}, sizeof(${one}));`);
     const vt = this.storageValueType(elem);
     if (vt) this.line(this.writeStorage({ lv: one, type: elem, writable: true }, this.expect(this.expr(init.arguments[0], vt), vt, init.arguments[0]).c) + ";");
     else this.writeAggregate({ lv: one, type: elem, writable: true }, init.arguments[0], true);
     this.line(`${storageDecl(type, c)};`);
-    this.line(`for (uint64_t ${i} = 0; ${i} < ${len}; ${i}++) ts_memcpy(&${c}[${i}], &${one}, sizeof(${one}));`);
+    this.line(`for (uint64_t ${i} = 0; ${i} < ${len}; ${i}++) TS_MEMCPY(&${c}[${i}], &${one}, sizeof(${one}));`);
     return type;
   }
 
@@ -606,13 +623,13 @@ export abstract class StorageEmitter extends AliasEmitter {
     if (target.type.kind === "option" && target.type.inner.kind === "struct") {
       if (valueNode.kind === ts.SyntaxKind.NullKeyword) {
         this.line(`${target.lv}.some = 0;`);
-        this.line(`ts_memzero(&${target.lv}.v, sizeof(${target.lv}.v));`);
+        this.line(`${throughPointer(target.lv) ? "TS_ZERO" : "TS_ZERO_LOCAL"}(&${target.lv}.v, sizeof(${target.lv}.v));`);
         return;
       }
       // Another Option<same struct>: copy it whole (tag and value).
       const whole = ts.isObjectLiteralExpression(valueNode) ? undefined : this.ref(valueNode);
       if (whole && sameType(whole.type, target.type)) {
-        this.line(`ts_copy(&${target.lv}, &${whole.lv}, sizeof(${target.lv}));`);
+        this.line(`${copyMacro(target.lv, whole.lv)}(&${target.lv}, &${whole.lv}, sizeof(${target.lv}));`);
         return;
       }
       this.writeAggregate({ ...target, lv: `${target.lv}.v`, type: target.type.inner }, valueNode);
@@ -625,10 +642,10 @@ export abstract class StorageEmitter extends AliasEmitter {
       // Build the new value in a temporary: its fields may read the old value of the target.
       const tmp = this.tmp("de");
       this.line(`TSE_${e.name} ${tmp};`);
-      this.line(`ts_memzero(&${tmp}, sizeof(${tmp}));`);
+      this.line(`TS_ZERO_LOCAL(&${tmp}, sizeof(${tmp}));`);
       this.line(`${tmp}.tag = ${vi};`);
       lit.writeFields(`${tmp}.v.${variant.name}`);
-      this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
+      this.line(`TS_MEMCPY(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
     if (target.type.kind === "vec" && target.type.cap !== undefined && ts.isCallExpression(valueNode) && this.exportName(valueNode.expression) === "fixedVec") {
@@ -694,7 +711,7 @@ export abstract class StorageEmitter extends AliasEmitter {
         if (vt) this.line(this.writeStorage(sub, this.expect(this.expr(e, vt), vt, e).c) + ";");
         else this.writeAggregate(sub, e, true);
       }
-      if (tmp) this.line(`ts_memcpy(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
+      if (tmp) this.line(`TS_MEMCPY(&${target.lv}, &${tmp}, sizeof(${tmp}));`);
       return;
     }
     if (ts.isConditionalExpression(valueNode)) {
@@ -760,8 +777,10 @@ export abstract class StorageEmitter extends AliasEmitter {
         valueNode,
         `expected a ${typeName(target.type)}: an object literal, another ${typeName(target.type)}${target.type.kind === "vec" && target.type.cap !== undefined ? " or a Vec of the same elements" : ""}`,
       );
-    // Same-typed places are either distinct or identical (`a.p = a.p`); ts_copy skips the latter.
-    this.line(`ts_copy(&${target.lv}, &${src.lv}, sizeof(${target.lv}));`);
+    // Same-typed places are either distinct, identical (`a.p = a.p`) or, through native views of one account at
+    // different offsets, overlapping: TS_COPY leaves the source's old bytes either way (below the threshold every byte
+    // is loaded before any is stored, from it the memmove syscall copies them as copy_within does).
+    this.line(`${copyMacro(target.lv, src.lv)}(&${target.lv}, &${src.lv}, sizeof(${target.lv}));`);
   }
 
   /** `fixedVec([…])` or `[…]`: a list literal, which writeAggregate builds in a fresh target with its free slots zeroed. */

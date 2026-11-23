@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   copyFileSync,
   existsSync,
@@ -35,7 +36,7 @@ import {
   toolchainInfo,
   untestedToolchainMessage,
 } from "../../src/compiler/toolchain.ts";
-import { describeToolchain, elfLength, MEASURED_HOSTS, toolchainDifferences } from "../../src/compiler/index.ts";
+import { build, describeToolchain, elfLength, MEASURED_HOSTS, toolchainDifferences } from "../../src/compiler/index.ts";
 import { buildForTest, findWorkspace } from "../../src/workspace.ts";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
@@ -405,5 +406,43 @@ describe("the tested toolchain", () => {
     );
     expect(unknown.stdout).toMatch(new RegExp(`note {6}target/counter\\.build\\.json describes another binary \\(${local.binary.slice(0, 12)}…`));
     expect(run(["verify", "counter.ts", "deployed.so", "--manifest", "nosuch.json"], dir).status).toBe(2);
+  });
+});
+
+describe("the build manifest binds the binary to the sources that built it", () => {
+  const ADDRESS = "11111111111111111111111111111112";
+  const sha = (f: string) => createHash("sha256").update(readFileSync(f)).digest("hex");
+
+  it("a source saved after the compiler read it, before the C is compiled, fails the build and writes no manifest", () => {
+    const dir = counter();
+    const entry = path.join(dir, "counter.ts");
+    const out = path.join(dir, "out");
+    expect(() =>
+      build(entry, out, ADDRESS, {
+        onStep: (step) => {
+          if (step === "generated") appendFileSync(entry, "\n// saved by an editor mid-build\n");
+        },
+      }),
+    ).toThrow(/counter\.ts changed while it was being built/);
+    expect(existsSync(path.join(out, "counter.build.json"))).toBe(false);
+    // Built again, the manifest records the source as it is now.
+    const ok = build(entry, out, ADDRESS);
+    expect(ok.manifest.sources["counter.ts"]).toBe(sha(entry));
+  });
+
+  it("a source changed while clang runs fails the build, and the previous build's manifest is gone, not left beside the new binary", () => {
+    const dir = counter();
+    const entry = path.join(dir, "counter.ts");
+    const out = path.join(dir, "out");
+    build(entry, out, ADDRESS);
+    expect(existsSync(path.join(out, "counter.build.json"))).toBe(true);
+    expect(() =>
+      build(entry, out, ADDRESS, {
+        onStep: (step) => {
+          if (step === "compiled") appendFileSync(entry, "\n// saved while clang ran\n");
+        },
+      }),
+    ).toThrow(/counter\.ts changed while it was being built/);
+    expect(existsSync(path.join(out, "counter.build.json"))).toBe(false);
   });
 });

@@ -21,6 +21,11 @@
  *   node scripts/release-manifest.ts --docker --programs <list> --out test/golden/binaries.json   regenerate it
  *   node scripts/release-manifest.ts --check test/golden/binaries.json                             compare (exit 1)
  *
+ * A release manifest (no --programs) also lists the sha256 of every reference binary in test/programs/, refusing to
+ * start when test/programs/SOURCES.md lists one the tree lacks (--allow-missing-references records them as
+ * `referencesMissing` instead), and hashes the test corpus: every file under test/ and showcase/test/ (the directories
+ * the tests run from) but those binaries.
+ *
  * --docker runs this script inside the build image (built first if needed) with this checkout mounted read-only and
  * no network. --check requires the C, the IDL and the binary to match on whichever host runs it (CI: Linux x86_64 on
  * every change, macOS arm64 on demand): from 0.45.0 on programs link the runtime's own compiler builtins, not
@@ -66,7 +71,13 @@ type Manifest = {
   programs: Record<string, { so: string; idl: string; c: string; bytes: number } | { error: string }>;
   /** Left out with --programs (a set, not a release). */
   references?: Record<string, string>;
-  corpus?: { files: number; sha256: string };
+  /**
+   * The binaries test/programs/SOURCES.md lists that were not there (only with --allow-missing-references; without it
+   * a release manifest is refused when one is missing).
+   */
+  referencesMissing?: string[];
+  /** Every file under the test roots (`roots`: the directories vitest runs tests from) but the reference binaries. */
+  corpus?: { roots?: string[]; files: number; sha256: string };
 };
 
 if (args[0] === "--diff") {
@@ -303,17 +314,37 @@ rmSync(scratch, { recursive: true, force: true });
 
 // A set (--programs) is not a release: no reference binaries or corpus, which change with every test.
 const references: Record<string, string> = {};
+const referencesMissing: string[] = [];
 const corpusHash = createHash("sha256");
 let corpusFiles = 0;
+// The test corpus: every file under the directories the tests run from (vitest.config.ts: test/ and showcase/test/,
+// where the mainnet ports' differential tests, their helpers and fixtures are), but the reference binaries, which
+// `references` lists by hash. An older tree without showcase/test/ hashes test/ alone, as manifests did before.
+const corpusRoots = ["test", "showcase/test"].filter((d) => existsSync(path.join(sourceRoot, d)));
 if (!only) {
   for (const f of files(path.join(sourceRoot, "test/programs"))) if (f.endsWith(".so")) references[path.relative(sourceRoot, f)] = sha256(readFileSync(f));
-  for (const f of files(path.join(sourceRoot, "test")).filter((f) => !f.endsWith(".so"))) {
-    corpusFiles++;
-    corpusHash
-      .update(`${path.relative(sourceRoot, f)}\0`)
-      .update(readFileSync(f))
-      .update("\0");
+  // Every binary SOURCES.md lists must be there: a reference missing from this checkout would otherwise be missing
+  // from the list without a word, and the tests that need it skipped.
+  const listed = path.join(sourceRoot, "test/programs/SOURCES.md");
+  if (existsSync(listed))
+    for (const m of readFileSync(listed, "utf8").matchAll(/^\| `([\w.-]+\.so)` \|/gm))
+      if (!references[`test/programs/${m[1]}`]) referencesMissing.push(`test/programs/${m[1]}`);
+  if (referencesMissing.length && !args.includes("--allow-missing-references")) {
+    console.error(
+      `test/programs/SOURCES.md lists binaries this tree lacks: ${referencesMissing.join(", ")}.\n` +
+        "Fetch or build them (scripts/fetch-programs.sh, the build scripts SOURCES.md names) before making a release manifest, " +
+        "or pass --allow-missing-references to record them as missing.",
+    );
+    process.exit(1);
   }
+  for (const root of corpusRoots)
+    for (const f of files(path.join(sourceRoot, root)).filter((f) => !f.endsWith(".so"))) {
+      corpusFiles++;
+      corpusHash
+        .update(`${path.relative(sourceRoot, f)}\0`)
+        .update(readFileSync(f))
+        .update("\0");
+    }
 }
 let commit: string | undefined = opt("--commit");
 try {
@@ -340,7 +371,13 @@ const manifest: Manifest = {
   // In the container the checkout is read-only and git may not be there: --docker checked it before starting.
   sources: { root: path.basename(sourceRoot), ...(commit ? { commit } : {}), ...(!opt("--commit") && commit && treeDirty(sourceRoot) ? { dirty: true } : {}) },
   programs,
-  ...(only ? {} : { references, corpus: { files: corpusFiles, sha256: corpusHash.digest("hex") } }),
+  ...(only
+    ? {}
+    : {
+        references,
+        ...(referencesMissing.length ? { referencesMissing } : {}),
+        corpus: { roots: corpusRoots, files: corpusFiles, sha256: corpusHash.digest("hex") },
+      }),
 };
 writeFileSync(out, `${JSON.stringify(manifest, null, 1)}\n`);
 const built = Object.values(programs).filter((p) => !("error" in p)).length;

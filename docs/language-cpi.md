@@ -319,6 +319,40 @@ Pubkeys, unit enums and arrays is read as its bytes (booleans and enums checked)
 Vecs is declared `/** @layout borsh */` and Borsh-decoded. Bytes that are not exactly the struct fail with 5106. The
 type argument is required.
 
+Return data of any length, checked by the program itself (Rust's `get_return_data()`, as a native program reads a
+reply of several records), is `getReturnData()`:
+
+```ts
+import { getReturnData, instructionData, invoke, log, remainingAccounts, require, u8 } from "typesol";
+
+export enum MatchError {
+  /** @code 0 */
+  NoReply = "NoReply",
+  BadReply = "BadReply",
+}
+
+/** @fallback */
+export function entry(): void {
+  const matcher = remainingAccounts().get(0n);
+  const data = instructionData();
+  const legs = data.readU64(0n);
+  invoke(matcher, [], [u8(1n), legs]);
+  const [from, reply] = getReturnData();
+  // Rust's None: no return data (the runtime keeps no empty return data); `from` is then all zeros.
+  require(reply.length > 0n, MatchError.NoReply);
+  require(from === matcher.key && reply.length === legs * 64n, MatchError.BadReply);
+  log(reply.readU64(8n));
+}
+```
+
+- `from` is the program that set the return data (a Pubkey); `reply` its bytes, up to the runtime's 1,024, with the
+  methods of instruction data (`length`, `get`, `readU8` … `readU128`, `readPubkey`, `slice`; 5104 past the end).
+- Nothing is checked and nothing fails: the program, the length and the contents are the caller's to check, with its
+  own errors. It reads whatever the runtime holds: the last CPI's callee's return data, or what this instruction set
+  with `setReturnData` after it.
+- Bound with `const [program, data] = …` where it is called (either name may be left out: `const [, data]`). The bytes
+  are copied into 1 KiB of the calling function's stack frame.
+
 ## invokeInstruction
 
 A call decided at run time, such as one a multisig stored in account data, is `invokeInstruction` (Rust's

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import ts from "typescript";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { analyze, LIB_PATH } from "./analyze.js";
 import { hintForTypeScript, messageForTypeScript } from "./hints.js";
@@ -35,6 +35,8 @@ export interface Generated {
   c: string;
   /** The TypeSOL source files of the program (entry and relative imports). */
   files: string[];
+  /** Each source file's text as the compiler read it. */
+  texts: Map<string, string>;
 }
 
 /** Typecheck, enforce the TypeSOL subset, and generate C. Throws CompileError with every diagnostic. */
@@ -43,7 +45,7 @@ export function generate(entry: string, opts: EmitOptions = {}): Generated {
   analysis.reporter.throwIfAny();
   const c = emitProgram(analysis, opts);
   analysis.reporter.throwIfAny();
-  return { model: analysis.model, c, files: analysis.files };
+  return { model: analysis.model, c, files: analysis.files, texts: analysis.texts };
 }
 
 /** What a build was made from, written next to it as <name>.build.json (see `typesol verify`). */
@@ -115,25 +117,60 @@ export interface BuildResult extends Generated {
   idl: ReturnType<typeof buildIdl>;
 }
 
-/** Full build: `<outDir>/<name>.c`, `<name>.so`, `<name>.json` (Anchor IDL). */
-export function build(entry: string, outDir: string, programAddress: string, opts: { sbpf?: Sbpf; profile?: boolean } = {}): BuildResult {
+/** A step of `build`, for `onStep`: the C generated (the sources read), the C compiled and linked. */
+export type BuildStep = "generated" | "compiled";
+
+/**
+ * Full build: `<outDir>/<name>.c`, `<name>.so`, `<name>.json` (Anchor IDL) and `<name>.build.json`, the manifest.
+ *
+ * The manifest binds the binary to the exact inputs that made it: each source's sha256 is that of the bytes the
+ * compiler parsed (read once, checked against the text the TypeScript program holds), the runtime files are hashed
+ * before clang reads them, and every input is hashed again once the binary is linked. An input that changed in between
+ * (an editor saving a file mid-build) fails the build with no manifest: a previous build's manifest is removed before
+ * anything is written, so a reused build (buildForTest) never pairs a binary with sources that did not make it.
+ * `onStep` is called after each step (tests use it to change a file at that point).
+ */
+export function build(
+  entry: string,
+  outDir: string,
+  programAddress: string,
+  opts: { sbpf?: Sbpf; profile?: boolean; onStep?: (step: BuildStep) => void } = {},
+): BuildResult {
+  const runtime: Record<string, string> = {
+    "<runtime>/typesol_rt.h": path.join(RUNTIME_DIR, "typesol_rt.h"),
+    "<runtime>/typesol_builtins.c": BUILTINS_SOURCE,
+  };
+  const runtimeHashes = Object.fromEntries(Object.entries(runtime).map(([k, f]) => [k, sha256(readFileSync(f))]));
   const gen = generate(entry, { profile: opts.profile });
+  opts.onStep?.("generated");
+  const root = path.dirname(path.resolve(entry));
+  const changed = (rel: string) =>
+    new Error(`${rel} changed while it was being built, so the binary may not be what it holds now: no manifest was written; build again`);
+  const sources: Record<string, string> = {};
+  for (const f of gen.files) {
+    const bytes = readFileSync(f);
+    if (decodeSource(bytes) !== gen.texts.get(f)) throw changed(path.relative(root, f));
+    sources[path.relative(root, f)] = sha256(bytes);
+  }
   mkdirSync(outDir, { recursive: true });
   const base = path.join(outDir, gen.model.name);
   const cPath = `${base}.c`;
   const soPath = `${base}.so`;
   const idlPath = `${base}.json`;
+  const manifestPath = `${base}.build.json`;
+  rmSync(manifestPath, { force: true });
   writeFileSync(cPath, gen.c);
   // Before clang runs: an untested toolchain is a warning (once), or an error in strict mode.
   const toolchain = checkToolchain();
   buildSharedObject(cPath, soPath, opts.sbpf);
+  opts.onStep?.("compiled");
   const idl = buildIdl(gen.model, programAddress);
   writeFileSync(idlPath, JSON.stringify(idl, null, 2) + "\n");
-  const root = path.dirname(path.resolve(entry));
-  const sources: Record<string, string> = {};
-  for (const f of gen.files) sources[path.relative(root, f)] = sha256(readFileSync(f));
-  sources["<runtime>/typesol_rt.h"] = sha256(readFileSync(path.join(RUNTIME_DIR, "typesol_rt.h")));
-  sources["<runtime>/typesol_builtins.c"] = sha256(readFileSync(BUILTINS_SOURCE));
+  for (const f of gen.files) if (sha256(readFileSync(f)) !== sources[path.relative(root, f)]) throw changed(path.relative(root, f));
+  for (const [k, f] of Object.entries(runtime)) {
+    if (sha256(readFileSync(f)) !== runtimeHashes[k]) throw changed(f);
+    sources[k] = runtimeHashes[k]!;
+  }
   const manifest: BuildManifest = {
     program: gen.model.name,
     compiler: COMPILER_VERSION,
@@ -146,9 +183,20 @@ export function build(entry: string, outDir: string, programAddress: string, opt
     sources,
     binary: sha256(readFileSync(soPath)),
   };
-  const manifestPath = `${base}.build.json`;
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
   return { ...gen, cPath, soPath, idlPath, idl, manifest, manifestPath };
+}
+
+/** A source file's bytes as TypeScript reads them (ts.sys.readFile): UTF-8, or UTF-16 with its byte-order mark, no BOM. */
+function decodeSource(b: Buffer): string {
+  if (b.length >= 2 && b[0] === 0xfe && b[1] === 0xff) {
+    const swapped = Buffer.from(b.subarray(2, 2 + ((b.length - 2) & ~1)));
+    swapped.swap16();
+    return swapped.toString("utf16le");
+  }
+  if (b.length >= 2 && b[0] === 0xff && b[1] === 0xfe) return b.toString("utf16le", 2);
+  if (b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) return b.toString("utf8", 3);
+  return b.toString("utf8");
 }
 
 /** The package version (one source: package.json), recorded in build manifests and shown by the CLI. */

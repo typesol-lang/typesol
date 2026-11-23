@@ -59,8 +59,12 @@ or later):
   from 0.45.0 on, of the runtime's compiler builtins);
 - the sha256 of the SBF binary, IDL and C that every program under `examples/`, `showcase/mainnet/` and
   `showcase/program-examples/` builds to (`scripts/release-manifest.ts`);
-- the sha256 of the reference binaries the differential tests run against (`test/programs/`);
-- a hash of the test corpus.
+- the sha256 of the reference binaries the differential tests run against (`test/programs/`); the script refuses to
+  make a release manifest when `test/programs/SOURCES.md` lists a binary the tree lacks (with
+  `--allow-missing-references` it lists them under `referencesMissing` instead);
+- a hash of the test corpus: every file under `test/` and `showcase/test/` (the directories the tests run from, the
+  mainnet ports' differential tests, helpers and fixtures included) but the reference binaries, with the directories
+  it covers (`corpus.roots`). Manifests before this change hashed `test/` alone.
 
 It also carries `typesol-<version>-binary-diff.txt` (older releases: `binary-diff.txt`): the previous release's sources built by the previous package and by this one,
 compared program by program. That is the check behind a changelog line such as "programs that use none of these compile to the

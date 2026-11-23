@@ -197,18 +197,21 @@ export function remove(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">): void
 }
 ```
 
-- `close(account, destination)` closes a program account: its lamports go to `destination` (another writable
-  account) and its data is zeroed. The account is not used after it in the function, except its `key` (compile
-  errors, or 2040 at run time in a helper given one account twice). `CloseTo<A, "dest">` does the same when the
-  instruction succeeds ([constraints](#constraints)).
+- `close(account, destination)` closes a program account: its lamports go to `destination` (another writable account)
+  and its data is zeroed (by the memset syscall when the account's type takes 64 bytes or more, by stores below). The
+  account is not used after it in the function, except its `key` (compile errors, or 2040 at run time in a helper
+  given one account twice). `CloseTo<A, "dest">` does the same when the instruction succeeds
+  ([constraints](#constraints)).
 - Who may call them: `HasOne` above lets only the log's owner close it (the lamports of a closed account are value)
   or resize it. Without that check anyone could pay to grow, or shrink, another user's account.
 - `realloc(account, newSize, payer)` on a `Mut<Struct>`: growing charges the payer the extra rent (at most 10 KiB per
-  instruction, 3016); shrinking keeps the lamports in the account; never below the struct. Refused on a struct with a
-  growable `Vec` (its push / pop / clear size the account).
+  instruction, 3016); shrinking keeps the lamports in the account; never below the struct (3016). For a `@layout borsh`
+  struct that is its discriminator and smallest Borsh form (an empty `FixedString<64>` takes 4 bytes, not 68), the size
+  its load accepts; the value written back when the instruction returns must still fit (3004). Refused on a struct
+  with a growable `Vec` (its push / pop / clear size the account).
 - `resizeAccount(account, newSize)` on a `Mut<AccountInfo>` of this program is Rust's `AccountInfo::resize`: the
-  length only, new bytes zeroed, no rent moved (fund it first: `rentExempt(newSize)`), at most 10 KiB of growth
-  (3016).
+  length only, new bytes zeroed (64 or more by the memset syscall, as `realloc` zeroes them too), no rent moved (fund
+  it first: `rentExempt(newSize)`), at most 10 KiB of growth (3016).
 - An account grows at most 10 KiB per instruction, counted from its length when the instruction started (Solana's
   limit): realloc again in the next instruction.
 - `account.lamports` can be read on any account and written on a `Mut` one.
@@ -271,7 +274,8 @@ the body, in Anchor's order, and recorded in the IDL (`relations`, `pda`, `addre
   among its types, not its accounts (an error named on such an `Owner` is not used: the load fails with 3007). Such a
   struct may carry a shorter discriminator, `/** @discriminator 0x01 */` (1 to 8 bytes, as Anchor's
   `discriminator = &[1]`; Solend's reserve), its fields then starting right after it; this program's own accounts
-  keep 8.
+  keep 8. A `@layout borsh` struct's Borsh bytes start there too, and the account must hold the discriminator and the
+  struct's smallest Borsh form (3003).
 - `Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">` checks the address as Anchor's
   `address = sysvar::instructions::ID` on an `UncheckedAccount` does (2012, with the constraints).
 
@@ -304,7 +308,9 @@ are compared too ([native programs](language-native.md#inout-places-that-may-be-
 
 At most 32 accounts per instruction; more is refused with 5113. `export const MAX_ACCOUNTS = 128n` (up to 255; Anchor
 takes what the runtime allows) raises it for programs that take many remaining accounts. The CPI scratch lists are
-then kept on the heap instead of the stack; programs that do not declare it compile exactly as before.
+then kept on the heap instead of the stack; programs that do not declare it compile exactly as before. 255 is also
+the runtime's limit: an instruction naming more accounts (repeats count) fails with MaxAccountsExceeded before any
+program runs.
 
 ## Optional accounts
 

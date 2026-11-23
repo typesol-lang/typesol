@@ -51,7 +51,7 @@ function emitTree(model: ProgramModel, t: RbTreeInst): string[] {
     `    int c;`,
     `    TS_TRY(${p}_cmp(params, key, (const ${K} *)(ts_rbt_node(t, ${S}, parent) + 16), &c));`,
     `    if (c == 0) {`,
-    `      ts_memcpy(ts_rbt_node(t, ${S}, parent) + ${16 + ks}, value, ${vs});`,
+    `      TS_MEMCPY(ts_rbt_node(t, ${S}, parent) + ${16 + ks}, value, ${vs});`,
     `      *out = parent;`,
     `      return SUCCESS;`,
     `    }`,

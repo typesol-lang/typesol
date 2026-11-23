@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { auditDocs } from "../../scripts/audit-stats.ts";
-import { present } from "../binaries.js";
+import { group, present } from "../binaries.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const read = (f: string) => readFileSync(path.join(ROOT, f), "utf8");
@@ -94,6 +94,10 @@ describe("repository records", () => {
       expect(() => present(twin)).toThrow(/anchor_no_such\.so/);
       process.env.CI_REQUIRE_ALL = "1";
       expect(() => present(program)).toThrow();
+      // A reference built from source (SOURCES.md "no (build)") is its own group: CI_REQUIRE_ALL=programs leaves it out.
+      expect(group(path.join(ROOT, "test/programs/percolator_v16.so"))).toBe("built");
+      expect(group(path.join(ROOT, "test/programs/percolator_v12.so"))).toBe("programs");
+      expect(group(twin)).toBe("twins");
     } finally {
       if (saved === undefined) delete process.env.CI_REQUIRE_ALL;
       else process.env.CI_REQUIRE_ALL = saved;

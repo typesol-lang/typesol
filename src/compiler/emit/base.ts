@@ -456,12 +456,13 @@ export abstract class EmitterBase {
    * `const PANIC_STYLE = "solana-1.14"` / `"solana-1.18"`: a Rust panic logs what that solana-program's panic handler
    * logs and then aborts, so the runtime reports "SBF program panicked". rustc before 1.73 (solana-program 1.14 to
    * 1.17) formats a panic as `panicked at '<message>', <file>:<line>:<col>`; from 1.73 (solana-program 1.18's toolchain)
-   * as `panicked at <file>:<line>:<col>:\n<message>`, one log line holding the newline. By default it logs the message
-   * and calls sol_panic_ with the location.
+   * as `panicked at <file>:<line>:<col>:\n<message>`, one log line holding the newline. `"pinocchio"`: pinocchio's
+   * `default_panic_handler!` hook logs the location's file alone, then "** PANICKED **", and std aborts. By default it
+   * logs the message and calls sol_panic_ with the location.
    */
-  protected panicStyle(): "solana-1.14" | "solana-1.18" | undefined {
+  protected panicStyle(): "solana-1.14" | "solana-1.18" | "pinocchio" | undefined {
     const v = this.model.constants.get("PANIC_STYLE")?.value;
-    return v === "solana-1.14" || v === "solana-1.18" ? v : undefined;
+    return v === "solana-1.14" || v === "solana-1.18" || v === "pinocchio" ? v : undefined;
   }
 
   /** The C statements of a Rust panic with `message` (undefined: nothing logged) at `location` ("file:line:col"). */
@@ -469,6 +470,11 @@ export abstract class EmitterBase {
     const style = this.panicStyle();
     if (style === "solana-1.14") return [`sol_log(${cString(`panicked at '${message}', ${location}`)});`, `abort();`, `__builtin_unreachable();`];
     if (style === "solana-1.18") return [`sol_log(${cString(`panicked at ${location}:\n${message}`)});`, `abort();`, `__builtin_unreachable();`];
+    if (style === "pinocchio") {
+      // `location.file()` verbatim: the location without its ":line" / ":line:column" (a bare file is kept whole).
+      const file = location.replace(/:\d+(?::\d+)?$/, "");
+      return [`ts_panic_file(${cString(file)}, ${Buffer.byteLength(file)});`];
+    }
     const m = /^(.*?):(\d+)(?::(\d+))?$/.exec(location);
     const [file, line, col] = m ? [m[1]!, m[2]!, m[3] ?? "0"] : [location, "0", "0"];
     return [

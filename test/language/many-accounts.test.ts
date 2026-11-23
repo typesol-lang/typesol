@@ -1,6 +1,6 @@
 // Accounts per instruction: 32 by default (5113 beyond), up to 255 with `const MAX_ACCOUNTS = …n`. Above 32 the CPI
 // scratch lists live on the heap; reads, CPIs that pass every account on, and loadAccountMut past index 64 all work.
-import { type Address, generateKeyPairSigner, getAddressEncoder, lamports } from "@solana/kit";
+import { type Address, AccountRole, generateKeyPairSigner, getAddressEncoder, lamports } from "@solana/kit";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -129,5 +129,100 @@ describe("accounts per instruction", () => {
 
   it("MAX_ACCOUNTS is a number from 32 to 255", () => {
     expect(compileErrors(`${head}export const MAX_ACCOUNTS = 300n;\nexport function f(): void {}`)).toMatch(/MAX_ACCOUNTS must be an integer from 32 to 255/);
+  });
+});
+
+// A native program at the most accounts one instruction can name, 255 (the runtime refuses an instruction naming more
+// with MaxAccountsExceeded before any program runs): a fixed prefix the program checks by position, then a tail of
+// remaining accounts, read, written and forwarded whole in a CPI. 39 accounts is TradeCpi's 7 plus its 32-account
+// tail in Percolator v16; 255 is the entrypoint's own maximum there.
+const native = `import { type FixedVec, type u64, ProgramError, fixedVec, getReturnData, instructionData, invoke, loadRawMut, log, remainingAccounts, require, setReturnData, u8 } from "typesol";
+export const MAX_ACCOUNTS = 255n;
+export const NATIVE_ACCOUNT_WRITES = true;
+export interface Counter { n: u64 }
+/** @fallback */
+export function entry(): void {
+  const rest = remainingAccounts();
+  const data = instructionData();
+  // Mode 1 (the CPI's callee): the number of accounts it was given, as return data.
+  if (data.readU8(0n) === 1n) {
+    const out: FixedVec<u8, 2> = fixedVec([]);
+    out.push(u8(rest.length & 0xffn));
+    out.push(u8(rest.length >> 8n));
+    setReturnData(out);
+    return;
+  }
+  // The prefix: a signer, a writable account of this program, this program.
+  require(rest.length >= 3n, ProgramError.NotEnoughAccountKeys);
+  require(rest.get(0n).isSigner, ProgramError.MissingRequiredSignature);
+  require(rest.get(1n).isWritable, ProgramError.InvalidArgument);
+  // The tail: every account read, the last one's key logged, the count added into the prefix account.
+  const n = rest.length - 3n;
+  let lamports = 0n;
+  for (let i = 3n; i < rest.length; i++) lamports += rest.get(i).lamports;
+  const counter = loadRawMut<Counter>(rest.get(1n));
+  counter.n += n;
+  log(n);
+  log(lamports);
+  log(rest.get(rest.length - 1n).key);
+  // The tail forwarded whole to this program, which counts it.
+  invoke(rest.get(2n), [...rest.slice(3n)], [u8(1n)]);
+  const [, reply] = getReturnData();
+  log(reply.readU16(0n));
+}
+`;
+
+describe("a native program's fixed prefix and a long tail, at 39 and 255 accounts", () => {
+  let d: Deployed;
+  beforeAll(async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-accounts-native-"));
+    writeFileSync(path.join(dir, "native.ts"), native);
+    d = await deployFile(path.join(dir, "native.ts"));
+  });
+
+  it("checks the prefix, reads the tail, forwards it in a CPI", async () => {
+    const payer = await fundedSigner(d.svm);
+    const state = (await generateKeyPairSigner()).address;
+    d.svm.setAccount({ address: state, data: new Uint8Array(8), executable: false, lamports: lamports(1_000_000n), programAddress: d.programId, space: 8n });
+    // 59 distinct tail accounts at most (a transaction locks at most 64: the payer, the state, the program, the tail),
+    // each named several times.
+    const keys: Address[] = [];
+    for (let i = 0; i < 59; i++) {
+      const k = (await generateKeyPairSigner()).address;
+      d.svm.setAccount({
+        address: k,
+        data: new Uint8Array(0),
+        executable: false,
+        lamports: lamports(BigInt(1000 + i)),
+        programAddress: "11111111111111111111111111111111" as Address,
+        space: 0n,
+      });
+      keys.push(k);
+    }
+    let count = 0n;
+    for (const [total, distinct] of [
+      [39, 36],
+      [39, 5],
+      [255, 59],
+      [255, 3],
+    ] as const) {
+      const tail = Array.from({ length: total - 3 }, (_, i) => keys[i % distinct]!);
+      const accounts = [
+        { address: payer.address, role: AccountRole.READONLY_SIGNER, signer: payer },
+        { address: state, role: AccountRole.WRITABLE },
+        { address: d.programId, role: AccountRole.READONLY },
+        ...tail.map((address) => ({ address, role: AccountRole.READONLY })),
+      ];
+      const res = expectOk(await send(d.svm, payer, [{ programAddress: d.programId, accounts, data: new Uint8Array([0, total]) }]));
+      const sum = tail.reduce((t, k) => t + BigInt(1000 + keys.indexOf(k)), 0n);
+      expect(res.logs().filter((l) => l.startsWith("Program log: "))).toEqual([
+        `Program log: ${total - 3}`,
+        `Program log: ${sum}`,
+        `Program log: ${tail.at(-1)}`,
+        `Program log: ${total - 3}`,
+      ]);
+      count += BigInt(total - 3);
+      expect(Buffer.from(acct(d.svm, state).data).readBigUInt64LE(0)).toBe(count);
+    }
   });
 });

@@ -1,9 +1,10 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
+import { base58 } from "../../src/keys.js";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const CLI = path.join(ROOT, "dist/cli.js");
@@ -153,5 +154,117 @@ describe("projects: typesol init / build / deploy --dry-run", () => {
     expect(keyless.status).toBe(2);
     expect(keyless.stderr).toMatch(/--program-id \/no\/such\/dir\/k\.json does not exist/);
     expect(keyless.stderr).not.toMatch(/ENOENT|EACCES|EROFS/);
+  });
+});
+
+describe("projects: concurrent first builds and scaffolding through links", () => {
+  /** `count` node processes started together (each waits for the same instant), each running `body` with its index. */
+  const together = async (count: number, body: string): Promise<{ status: number | null; stdout: string; stderr: string }[]> => {
+    const at = Date.now() + 1500;
+    const script = `const i = Number(process.argv[1]); while (Date.now() < ${at}); ${body}`;
+    const runs = Array.from(
+      { length: count },
+      (_, i) =>
+        new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+          const child = spawn("node", ["--input-type=module", "-e", script, String(i)], { cwd: ROOT });
+          let stdout = "";
+          let stderr = "";
+          child.stdout.on("data", (b) => (stdout += b));
+          child.stderr.on("data", (b) => (stderr += b));
+          child.on("close", (status) => resolve({ status, stdout, stderr }));
+        }),
+    );
+    return Promise.all(runs);
+  };
+
+  it("first builds of several programs at once each record their address in typesol.json", async () => {
+    const dir = tmp();
+    const names = Array.from({ length: 16 }, (_, i) => `p${i}`);
+    writeFileSync(
+      path.join(dir, "typesol.json"),
+      JSON.stringify({ programs: Object.fromEntries(names.map((n) => [n, { path: `programs/${n}.ts` }])), out: "target" }, null, 2) + "\n",
+    );
+    // What a first build does before compiling (buildWorkspace, under each program's own lock): its key, then its address in typesol.json.
+    const runs = await together(
+      names.length,
+      `const ws = await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "dist/workspace.js")).href)});
+       const w = ws.findWorkspace(${JSON.stringify(dir)});
+       const name = "p" + i;
+       console.log(ws.withBuildLock(ws.programPaths(w, name).outDir, () => ws.programAddress(w, name).address));`,
+    );
+    for (const r of runs) expect(r.status, r.stderr).toBe(0);
+    const recorded = (JSON.parse(readFileSync(path.join(dir, "typesol.json"), "utf8")) as { programs: Record<string, { address?: string }> }).programs;
+    names.forEach((n, i) => {
+      const key = JSON.parse(readFileSync(path.join(dir, `target/deploy/${n}-keypair.json`), "utf8")) as number[];
+      expect(recorded[n]!.address, n).toBe(runs[i]!.stdout.trim());
+      expect(recorded[n]!.address, n).toBe(base58(Uint8Array.from(key.slice(32))));
+    });
+  }, 60_000);
+
+  it("typesol build of three programs from three processes at once: each address recorded, each build at it", async () => {
+    const dir = tmp();
+    expect(run(["init", ".", "--name", "a0"], dir).status).toBe(0);
+    for (const n of ["a1", "a2"]) expect(run(["new", n], dir).status).toBe(0);
+    const runs = await together(
+      3,
+      `const { spawnSync } = await import("node:child_process");
+       const r = spawnSync("node", [${JSON.stringify(CLI)}, "build", "a" + i], { cwd: ${JSON.stringify(dir)}, encoding: "utf8" });
+       process.stdout.write(r.stdout); process.stderr.write(r.stderr); process.exit(r.status ?? 1);`,
+    );
+    for (const r of runs) expect(r.status, r.stderr).toBe(0);
+    const recorded = (JSON.parse(readFileSync(path.join(dir, "typesol.json"), "utf8")) as { programs: Record<string, { address?: string }> }).programs;
+    for (const n of ["a0", "a1", "a2"]) {
+      const key = JSON.parse(readFileSync(path.join(dir, `target/deploy/${n}-keypair.json`), "utf8")) as number[];
+      expect(recorded[n]!.address, n).toBe(base58(Uint8Array.from(key.slice(32))));
+      expect(JSON.parse(readFileSync(path.join(dir, `target/${n}/${n}.json`), "utf8")).address, n).toBe(recorded[n]!.address);
+    }
+  }, 180_000);
+
+  it("two first users of one keypair file end with one key: the later one reads the earlier one's", async () => {
+    const dir = tmp();
+    const file = path.join(dir, "k.json");
+    const runs = await together(
+      8,
+      `const keys = await import(${JSON.stringify(pathToFileURL(path.join(ROOT, "dist/keys.js")).href)});
+       const r = keys.loadOrCreateKeypair(${JSON.stringify(file)});
+       console.log(r.address + " " + r.created);`,
+    );
+    for (const r of runs) expect(r.status, r.stderr).toBe(0);
+    const results = runs.map((r) => r.stdout.trim().split(" "));
+    const onFile = base58(Uint8Array.from((JSON.parse(readFileSync(file, "utf8")) as number[]).slice(32)));
+    expect(results.every(([address]) => address === onFile)).toBe(true);
+    expect(results.filter(([, created]) => created === "true")).toHaveLength(1);
+    expect(readdirSync(dir)).toEqual(["k.json"]);
+  }, 60_000);
+
+  it("refuses to scaffold or add a program through a linked directory, and writes nothing there", () => {
+    const shared = tmp();
+    const dir = tmp();
+    expect(run(["init", ".", "--name", "app"], dir).status).toBe(0);
+    // programs/ replaced by a link to a directory outside the project: `typesol new` would create its file there.
+    renameSync(path.join(dir, "programs"), path.join(dir, "programs.real"));
+    symlinkSync(shared, path.join(dir, "programs"), "dir");
+    const added = run(["new", "other"], dir);
+    expect(added.status).toBe(1);
+    expect(added.stderr).toMatch(/programs is a symbolic link/);
+    expect(readdirSync(shared)).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(dir, "typesol.json"), "utf8")).programs.other).toBeUndefined();
+    // A link at the file itself (dangling, so an existence check misses it).
+    rmSync(path.join(dir, "programs"));
+    renameSync(path.join(dir, "programs.real"), path.join(dir, "programs"));
+    symlinkSync(path.join(shared, "planted.ts"), path.join(dir, "tests/other.test.ts"));
+    const planted = run(["new", "other"], dir);
+    expect(planted.status).toBe(1);
+    expect(planted.stderr).toMatch(/tests\/other\.test\.ts is a symbolic link/);
+    expect(readdirSync(shared)).toEqual([]);
+    expect(existsSync(path.join(dir, "programs/other.ts"))).toBe(false);
+    // init into a project whose .cursor is a link.
+    const fresh = tmp();
+    symlinkSync(shared, path.join(fresh, ".cursor"), "dir");
+    const init = run(["init", ".", "--name", "app"], fresh);
+    expect(init.status).toBe(1);
+    expect(init.stderr).toMatch(/\.cursor is a symbolic link/);
+    expect(readdirSync(shared)).toEqual([]);
+    expect(existsSync(path.join(fresh, "typesol.json"))).toBe(false);
   });
 });

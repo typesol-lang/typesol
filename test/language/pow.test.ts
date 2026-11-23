@@ -149,3 +149,45 @@ describe("u256 in min / max, switch, indexes and **; compound shifts", () => {
     expect(Buffer.from(res.returnData().data()).readBigInt64LE(0)).toBe(-4n);
   });
 });
+
+const PANICS = `import { type u8, panicsAt } from "typesol";
+
+export const PANIC_STYLE = "solana-1.14";
+
+export function square(a: u8): u8 { return panicsAt("src/lib.rs:1:1", a ** 2n); }
+export function power(a: u8, e: u8): u8 { return panicsAt("src/lib.rs:2:1", a ** e); }
+export function sum(a: u8, b: u8): u8 { return panicsAt("src/lib.rs:3:1", (a + b) ** 1n); }
+`;
+
+describe("** inside panicsAt", () => {
+  let d: Deployed;
+  beforeAll(async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "typesol-pow-panics-"));
+    writeFileSync(path.join(dir, "pow.ts"), PANICS);
+    d = await deployFile(path.join(dir, "pow.ts"));
+  });
+  const run = (name: string, args: Record<string, unknown>) => fundedSigner(d.svm).then((p) => send(d.svm, p, [ix(d, name, args, [])]));
+
+  it("keeps TypeSOL's overflow failure (5100) for ** itself, literal or run-time exponent; its operands take the panic", async () => {
+    expect(customError(await run("square", { a: 16 }))).toBe(5100);
+    expect(
+      Buffer.from(
+        expectOk(await run("square", { a: 15 }))
+          .returnData()
+          .data(),
+      )[0],
+    ).toBe(225);
+    expect(customError(await run("power", { a: 2, e: 8 }))).toBe(5100);
+    expect(
+      Buffer.from(
+        expectOk(await run("power", { a: 2, e: 7 }))
+          .returnData()
+          .data(),
+      )[0],
+    ).toBe(128);
+    // The addition written inside panicsAt panics at its location, as before.
+    const r = await run("sum", { a: 200, b: 100 });
+    expect(r).toBeInstanceOf(FailedTransactionMetadata);
+    expect((r as FailedTransactionMetadata).meta().logs().join("\n")).toMatch(/attempt to add with overflow', src\/lib.rs:3:1/);
+  });
+});
