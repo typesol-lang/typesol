@@ -248,12 +248,13 @@ jobs:
           sha256sum -c "$RUNNER_TEMP/v16.sha256"
       - name: The v16 tests, one file at a time
         # Each file prints the transactions it compared ("percolator-v16 compared: …"); every file runs, and the step
-        # fails if any did.
+        # fails if any did. The runner is several times slower than a workstation, so a test without a limit of its
+        # own gets 300 s here instead of the default 60.
         run: |
           failed=""
           for f in showcase/test/percolator-v16-*.test.ts; do
             echo "::group::$f"
-            pnpm vitest run "$f" --maxWorkers=2 --silent=false || failed="$failed $f"
+            pnpm vitest run "$f" --maxWorkers=2 --silent=false --testTimeout=300000 || failed="$failed $f"
             echo "::endgroup::"
           done
           if [ -n "$failed" ]; then echo "failed:$failed" >&2; exit 1; fi

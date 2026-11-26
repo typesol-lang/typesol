@@ -143,7 +143,7 @@ describe.skipIf(!HAVE_REFERENCE || !HAVE_PORT)("Percolator v16 port: TradeNoCpi"
       ]);
       await d2.send(`IM ${da} / ${db} with a fee`, s2.t[0]!.owner, [trade(d2, s2.m, s2.t[0]!, s2.t[1]!, 0, 1_000_000n, 1_000_000n, 1n)]);
     }
-  });
+  }, 600_000);
 
   it("accounts: flags, owners, repeated pairs, a short list", async () => {
     const d = await Diff.create();
