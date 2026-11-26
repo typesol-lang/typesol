@@ -38,8 +38,8 @@ codes, and says so here.
   port logged four kinds of `msg!` line (from seven places) the deployed program does not: its source writes them only
   with the `enable-log` feature, and the deployed binary holds none of their text. The port no longer writes them,
   which also makes its swaps cheaper (docs/case-study-raydium-clmm.md has the new figures; its binary is 546,080
-  bytes, was 551,440); the golden check (test/golden/binaries.json) reports its C as changed until the reference is
-  regenerated. 308 Raydium CLMM
+  bytes, was 551,440); the golden reference (test/golden/binaries.json) is regenerated in the build container with
+  it and with the Marginfi and SPL Stake Pool binaries the runtime's changes give. 308 Raydium CLMM
   transactions (not 302 as listed) and 55 multisig ones are compared.
 - Percolator v16 tests: `World.restore` now removes an account its snapshot recorded as missing (one a transaction
   created since survived the restore); no result of the v16 files that restore a world changed.

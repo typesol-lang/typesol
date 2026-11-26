@@ -5,14 +5,14 @@
   "platformTools": "v1.52",
   "node": "v24.22.2",
   "typescript": "6.0.3",
-  "runtime": "eb9f6531ef1e0f51b4f07da5387aebdd45d1997149bd4171fab28e4f9f6877e8",
-  "builtins": "6a5e359b0db7871df0ce90da7dfa61664369196b575cb535b0608f1f0431517c",
+  "runtime": "d75db72662eefc64f835c8618a2d701f28ab1b09c7445e88ad215eda0baf24c0",
+  "builtins": "db3fb616e9f43406470ad8ae311e1873838630d370cca31f79b92cc415bca1a5",
   "host": "linux-x64",
   "container": "997c4c5413e4bffb4a370d03847b4e01417a7a220bfd0fc33cff93cc948cd66e"
  },
  "sources": {
   "root": "repo",
-  "commit": "058964b1d4f0e74a2a2f509ff0f9a8c17fbc3023"
+  "commit": "14194e8f00a00efbc02eacba53ced1d8da021012"
  },
  "programs": {
   "examples/counter.ts": {
@@ -46,10 +46,10 @@
    "bytes": 255616
   },
   "showcase/mainnet/marginfi/marginfi.ts": {
-   "so": "adb76a5a80d75c723f10baebee5ec4f4aabef4d7d35ab07658ff0baff29b195a",
+   "so": "ae3e637c26251a48a4b7098fef546d071e3f9794f5823eb8dea606b15f52a389",
    "idl": "7653fa760726c94a3decf72b65b2159210cad6b8b358abaebbf74dc32196eb09",
    "c": "e60889048fa7b6009b3cb3ba96633662d55f23f612b17f2d9046c8ead8a3948f",
-   "bytes": 1412552
+   "bytes": 1411696
   },
   "showcase/mainnet/raydium-amm/raydium_amm.ts": {
    "so": "9c171999624d87f30eb07cda29b759be53291bf2157abef0ff7cab125c14d391",
@@ -58,10 +58,10 @@
    "bytes": 134144
   },
   "showcase/mainnet/raydium-clmm/raydium_clmm.ts": {
-   "so": "6897e67dddd76168d446acf5e793a5ee67758eb61267854a83360ed2c2b56eef",
+   "so": "16e00beb287d4ec3ad8533fedc0435cb00dfb9c83164394df2f7bbcbb63cea8b",
    "idl": "54ecc974a242f44296553df312498f5bc64153be988f34442677e6cab275f2af",
-   "c": "b36c3282ad2566228054d9f38fb686219206c6a14c5267cba7120b4e2a7af7fe",
-   "bytes": 551440
+   "c": "7c0104dcaf3a3aedbf29a77f1a41045490352090741e79f025a841275a8eec98",
+   "bytes": 546080
   },
   "showcase/mainnet/raydium-cp-swap/raydium_cp_swap.ts": {
    "so": "6cfb7d4b0a48a9239f32b9fe68e89955e521d0be2787ecddd67e26aebee5f7fb",
@@ -76,7 +76,7 @@
    "bytes": 59384
   },
   "showcase/mainnet/spl-stake-pool/stake_pool.ts": {
-   "so": "92d49a55d41fe158aaf26f235aa08c98a63c50f2563cec44eac09ff2361251be",
+   "so": "46ac6ee66b881e86fab4daa6921856895f1aff0472aff8e307dd56666baeb3cd",
    "idl": "1b9b3839dbfbaed0318a94e80aaf8a657aec4a08eb4b27c08b54001142a371ac",
    "c": "1787f4e2bffc8658d4371b138e951f11d4016004d435506cd3a02c61ac6cbedd",
    "bytes": 204592
@@ -118,10 +118,10 @@
    "bytes": 250808
   },
   "showcase/mainnet/marginfi/marginfi.ts:v1": {
-   "so": "c8a4c593c2d8d8da009bc678a9b21e0d80a8b1ecd2cbb98f6460dcc4c79d29d5",
+   "so": "7a6dda6bdccbf7257b4177e21b11e7889273730f4cc0eb9b77692dbf8e636cac",
    "idl": "7653fa760726c94a3decf72b65b2159210cad6b8b358abaebbf74dc32196eb09",
    "c": "e60889048fa7b6009b3cb3ba96633662d55f23f612b17f2d9046c8ead8a3948f",
-   "bytes": 1382072
+   "bytes": 1381240
   },
   "examples/counter.ts:v2": {
    "so": "a2cb79dfa99cef38bf3a499bea00758a730fcfd62e085f489e4ff2f9831226ca",
@@ -142,10 +142,10 @@
    "bytes": 247672
   },
   "showcase/mainnet/marginfi/marginfi.ts:v2": {
-   "so": "fe35772367c9df0807c02c933d625932185b7b75e9c4a3bed3359836b18d0b8f",
+   "so": "1818bf95f236579c4d2f085c07853d17fa21371ea8b416fb5826fc43b15e08ec",
    "idl": "7653fa760726c94a3decf72b65b2159210cad6b8b358abaebbf74dc32196eb09",
    "c": "e60889048fa7b6009b3cb3ba96633662d55f23f612b17f2d9046c8ead8a3948f",
-   "bytes": 1387536
+   "bytes": 1386696
   }
  }
 }
