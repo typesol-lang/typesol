@@ -1,0 +1,20 @@
+# A probe of the entrypoint Percolator v16 at commit 7b110913 (engine 5e3af07) is built with: pinocchio 0.11.1's
+# `entrypoint!` (its bump allocator and panic hook) in front of solana-program 1.18.26's legacy AccountInfo, as
+# percolator-prog's `mod entrypoint` puts them. It exists only to make that entrypoint panic, run out of heap and fail
+# RefCell borrows on demand in LiteSVM (showcase/test/percolator-v16-reference.test.ts), where the reference itself
+# cannot be driven there yet. Built by ../probe.sh with the reference's toolchain; never deployed.
+[package]
+name = "percolator_v16_probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+# The versions percolator-prog 7b110913's Cargo.lock resolves (anchor-lang-v2 enables these two pinocchio features).
+pinocchio = { version = "=0.11.1", features = ["alloc", "account-resize"] }
+solana-program = "=1.18.26"

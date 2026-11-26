@@ -661,138 +661,138 @@ Compute units per transaction, mainnet original against the port, from one run o
 
 | Instruction | Marginfi (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `init_global_fee_state` | 7,116 | 2,310 | −68% |
-| `marginfi_group_initialize` | 27,404 | 7,162 | −74% |
-| `marginfi_group_configure`, five roles | 22,917 | 1,232 | −95% |
-| `propagate_fee_state` | 3,821 | 776 | −80% |
-| `lending_pool_add_bank` (SPL Token) | 97,333 | 20,072 | −79% |
-| `lending_pool_add_bank_with_seed` (Token-2022) | 100,585 | 29,973 | −70% |
-| `lending_pool_accrue_bank_interest`, an empty bank | 4,002 | 1,689 | −58% |
-| `lending_pool_accrue_bank_interest`, 25% utilization over a minute | 40,135 | 18,696 | −53% |
-| `lending_pool_accrue_bank_interest`, 80% utilization over a year | 41,642 | 22,733 | −45% |
-| `lending_pool_accrue_bank_interest`, 98,765,432,101 / 123,456,789,012 | 42,657 | 22,853 | −46% |
-| `lending_pool_configure_bank`, a new curve | 13,716 | 3,389 | −75% |
-| `lending_pool_configure_bank`, circuit breaker on | 12,743 | 3,391 | −73% |
-| `lending_pool_configure_bank`, circuit breaker off during a halt (accrues first) | 33,226 | 15,453 | −53% |
-| `lending_pool_configure_bank`, checked against an e-mode entry | 17,282 | 5,463 | −68% |
-| `lending_pool_configure_bank_interest_only`, every field | 25,668 | 847 | −97% |
+| `init_global_fee_state` | 7,116 | 2,325 | −67% |
+| `marginfi_group_initialize` | 27,404 | 5,803 | −79% |
+| `marginfi_group_configure`, five roles | 22,917 | 1,249 | −95% |
+| `propagate_fee_state` | 3,821 | 779 | −80% |
+| `lending_pool_add_bank` (SPL Token) | 86,833 | 17,585 | −80% |
+| `lending_pool_add_bank_with_seed` (Token-2022) | 96,085 | 28,841 | −70% |
+| `lending_pool_accrue_bank_interest`, an empty bank | 4,002 | 1,873 | −53% |
+| `lending_pool_accrue_bank_interest`, 25% utilization over a minute | 40,135 | 15,970 | −60% |
+| `lending_pool_accrue_bank_interest`, 80% utilization over a year | 41,642 | 19,738 | −53% |
+| `lending_pool_accrue_bank_interest`, 98,765,432,101 / 123,456,789,012 | 42,657 | 20,020 | −53% |
+| `lending_pool_configure_bank`, a new curve | 13,716 | 2,782 | −80% |
+| `lending_pool_configure_bank`, circuit breaker on | 12,743 | 2,914 | −77% |
+| `lending_pool_configure_bank`, circuit breaker off during a halt (accrues first) | 33,226 | 12,402 | −63% |
+| `lending_pool_configure_bank`, checked against an e-mode entry | 17,282 | 3,637 | −79% |
+| `lending_pool_configure_bank_interest_only`, every field | 25,668 | 780 | −97% |
 | `lending_pool_configure_bank_limits_only` | 9,043 | 461 | −95% |
 | `lending_pool_update_fees_destination_account` | 8,926 | 479 | −95% |
-| `marginfi_account_initialize` | 6,550 | 2,603 | −60% |
-| `marginfi_account_initialize_pda` | 8,670 | 3,176 | −63% |
-| `lending_account_deposit`, a new balance | 15,739 | 7,026 | −55% |
-| `lending_account_deposit`, interest accrued first | 51,033 | 25,544 | −50% |
+| `marginfi_account_initialize` | 6,550 | 2,610 | −60% |
+| `marginfi_account_initialize_pda` | 10,170 | 3,547 | −65% |
+| `lending_account_deposit`, a new balance | 15,739 | 6,873 | −56% |
+| `lending_account_deposit`, interest accrued first | 51,033 | 21,932 | −57% |
 | `lending_account_deposit`, Token-2022 with a transfer fee | 18,990 | 9,525 | −50% |
-| `lending_account_deposit`, up to the deposit limit | 15,170 | 7,523 | −50% |
-| `lending_account_close_balance`, dust to the insurance fund | 20,236 | 9,349 | −54% |
+| `lending_account_deposit`, up to the deposit limit | 15,170 | 7,538 | −50% |
+| `lending_account_close_balance`, dust to the insurance fund | 20,288 | 7,854 | −61% |
 | `lending_account_close_balance`, an empty balance | 6,677 | 3,055 | −54% |
-| `marginfi_account_close` | 7,734 | 3,383 | −56% |
-| `lending_account_repay`, part | 50,404 | 26,697 | −47% |
-| `lending_account_repay`, all (rounded up, the balance closed) | 10,997 | 5,142 | −53% |
-| `lending_account_repay`, part, with a premium settled first | 52,678 | 31,831 | −40% |
-| `lending_account_repay`, tokenless, by the risk admin | 25,228 | 12,684 | −50% |
-| `lending_account_repay`, Token-2022 with a transfer fee | 32,985 | 15,516 | −53% |
-| `lending_pool_collect_bank_fees` | 29,598 | 13,619 | −54% |
-| `lending_pool_withdraw_fees` | 13,558 | 2,493 | −82% |
-| `lending_pool_withdraw_insurance` | 13,536 | 2,527 | −81% |
-| `lending_pool_withdraw_fees_permissionless` | 10,773 | 2,412 | −78% |
-| `lending_pool_configure_bank_oracle`, Pyth | 7,337 | 1,215 | −83% |
-| `lending_pool_configure_bank_oracle`, Switchboard | 7,258 | 1,215 | −83% |
-| `lending_pool_set_oracle_price` | 4,644 | 1,133 | −76% |
-| `lending_pool_pulse_bank_price_cache`, Pyth | 14,147 | 5,152 | −64% |
-| `lending_pool_pulse_bank_price_cache`, Switchboard | 7,755 | 2,934 | −62% |
-| `lending_pool_pulse_bank_price_cache`, fixed | 3,815 | 997 | −74% |
-| `lending_pool_pulse_bank_price_cache`, an hour of interest first | 41,299 | 19,318 | −53% |
-| `lending_pool_pulse_bank_price_cache`, the breaker's reference moved | 27,267 | 10,648 | −61% |
-| `lending_pool_pulse_bank_price_cache`, a tier-3 trip breaking the bank | 24,401 | 9,115 | −63% |
-| `lending_account_withdraw`, part, no debt | 52,841 | 28,814 | −45% |
-| `lending_account_withdraw`, healthy after, against a USDC debt | 46,485 | 26,504 | −43% |
-| `lending_account_withdraw`, a stale collateral oracle skipped | 43,441 | 25,122 | −42% |
-| `lending_account_withdraw`, all of it | 41,512 | 24,821 | −40% |
-| `lending_account_withdraw`, e-mode lifting the collateral | 46,182 | 26,463 | −43% |
-| `lending_account_withdraw`, premium rates from the collateral mix | 63,341 | 37,898 | −40% |
-| `lending_account_withdraw`, Token-2022 with a transfer fee | 53,306 | 27,801 | −48% |
-| `lending_account_withdraw`, in receivership, by a liquidator | 39,987 | 16,590 | −59% |
-| `lending_account_withdraw`, 16 positions, the tag cleared | 538,319 | 296,477 | −45% |
-| `lending_account_borrow` | 71,645 | 37,550 | −48% |
-| `lending_account_borrow`, an isolated bank | 71,024 | 36,908 | −48% |
-| `lending_account_borrow`, with an origination fee | 75,830 | 42,111 | −44% |
-| `lending_account_borrow`, premium-active debt | 106,636 | 58,252 | −45% |
-| `lending_account_borrow`, Token-2022 with a transfer fee | 77,107 | 41,398 | −46% |
-| `lending_account_pulse_health`, an empty account | 7,560 | 6,302 | −17% |
-| `lending_account_pulse_health`, healthy | 81,619 | 46,772 | −43% |
-| `lending_account_pulse_health`, liquidatable | 74,068 | 46,374 | −37% |
-| `lending_account_pulse_health`, bankrupt | 65,817 | 39,377 | −40% |
-| `lending_account_pulse_health`, a stale collateral oracle | 36,258 | 23,831 | −34% |
-| `marginfi_account_tag_liq_record`, liquidatable | 25,168 | 13,904 | −45% |
-| `marginfi_account_init_liq_record` | 10,318 | 2,855 | −72% |
-| `marginfi_account_close_liq_record` | 2,444 | 636 | −74% |
-| `lending_pool_handle_bankruptcy`, insurance covering part | 91,747 | 48,664 | −47% |
-| `lending_pool_handle_bankruptcy`, permissionless, covered | 69,730 | 33,101 | −53% |
-| `lending_pool_handle_bankruptcy`, past the deposits | 35,143 | 19,708 | −44% |
-| `lending_pool_handle_bankruptcy`, Token-2022 with a transfer fee | 97,583 | 50,868 | −48% |
-| `lending_account_liquidate`, part of a collateral | 194,785 | 122,645 | −37% |
-| `lending_account_liquidate`, a liquidator owing a premium | 222,725 | 138,807 | −38% |
-| `lending_account_liquidate`, a fixed-price debt | 225,420 | 139,274 | −38% |
-| `lending_account_liquidate`, Token-2022 | 199,451 | 125,412 | −37% |
-| a receivership: start, withdraw 1 SOL, repay 140 USDC, end | 149,945 | 95,527 | −36% |
-| a receivership: start, end | 87,094 | 61,272 | −30% |
-| a receivership: a close-out under $5 | 130,094 | 78,290 | −40% |
-| a deleverage: start, withdraw 1 SOL, repay 150 USDC, end | 160,288 | 94,646 | −41% |
-| a flash loan: start, borrow past the limit, repay it all, end | 75,214 | 35,898 | −52% |
-| a flash loan: start, end | 18,114 | 10,818 | −40% |
-| `marginfi_account_set_freeze` | 5,368 | 1,237 | −77% |
-| `transfer_to_new_account`, with balances | 12,906 | 7,259 | −44% |
-| `transfer_to_new_account_pda` | 15,008 | 7,831 | −48% |
-| `admin_close_account` | 5,755 | 3,591 | −38% |
+| `marginfi_account_close` | 10,734 | 2,886 | −73% |
+| `lending_account_repay`, part | 50,404 | 24,079 | −52% |
+| `lending_account_repay`, all (rounded up, the balance closed) | 10,997 | 5,386 | −51% |
+| `lending_account_repay`, part, with a premium settled first | 52,678 | 27,862 | −47% |
+| `lending_account_repay`, tokenless, by the risk admin | 25,228 | 11,615 | −54% |
+| `lending_account_repay`, Token-2022 with a transfer fee | 32,985 | 13,991 | −58% |
+| `lending_pool_collect_bank_fees` | 26,598 | 9,730 | −63% |
+| `lending_pool_withdraw_fees` | 13,527 | 2,547 | −81% |
+| `lending_pool_withdraw_insurance` | 13,536 | 2,549 | −81% |
+| `lending_pool_withdraw_fees_permissionless` | 10,773 | 2,435 | −77% |
+| `lending_pool_configure_bank_oracle`, Pyth | 7,337 | 1,263 | −83% |
+| `lending_pool_configure_bank_oracle`, Switchboard | 7,258 | 1,269 | −83% |
+| `lending_pool_set_oracle_price` | 4,644 | 1,192 | −74% |
+| `lending_pool_pulse_bank_price_cache`, Pyth | 14,147 | 5,111 | −64% |
+| `lending_pool_pulse_bank_price_cache`, Switchboard | 7,755 | 3,396 | −56% |
+| `lending_pool_pulse_bank_price_cache`, fixed | 3,815 | 1,289 | −66% |
+| `lending_pool_pulse_bank_price_cache`, an hour of interest first | 41,299 | 16,499 | −60% |
+| `lending_pool_pulse_bank_price_cache`, the breaker's reference moved | 27,267 | 9,724 | −64% |
+| `lending_pool_pulse_bank_price_cache`, a tier-3 trip breaking the bank | 24,401 | 8,651 | −65% |
+| `lending_account_withdraw`, part, no debt | 52,841 | 26,210 | −50% |
+| `lending_account_withdraw`, healthy after, against a USDC debt | 46,485 | 25,010 | −46% |
+| `lending_account_withdraw`, a stale collateral oracle skipped | 43,441 | 23,516 | −46% |
+| `lending_account_withdraw`, all of it | 41,512 | 23,654 | −43% |
+| `lending_account_withdraw`, e-mode lifting the collateral | 46,182 | 25,056 | −46% |
+| `lending_account_withdraw`, premium rates from the collateral mix | 63,341 | 35,902 | −43% |
+| `lending_account_withdraw`, Token-2022 with a transfer fee | 53,306 | 25,418 | −52% |
+| `lending_account_withdraw`, in receivership, by a liquidator | 39,987 | 15,516 | −61% |
+| `lending_account_withdraw`, 16 positions, the tag cleared | 538,319 | 266,132 | −51% |
+| `lending_account_borrow` | 71,645 | 34,921 | −51% |
+| `lending_account_borrow`, an isolated bank | 71,024 | 34,700 | −51% |
+| `lending_account_borrow`, with an origination fee | 75,830 | 39,211 | −48% |
+| `lending_account_borrow`, premium-active debt | 106,636 | 52,610 | −51% |
+| `lending_account_borrow`, Token-2022 with a transfer fee | 77,107 | 38,438 | −50% |
+| `lending_account_pulse_health`, an empty account | 7,560 | 4,932 | −35% |
+| `lending_account_pulse_health`, healthy | 81,619 | 44,189 | −46% |
+| `lending_account_pulse_health`, liquidatable | 74,068 | 43,850 | −41% |
+| `lending_account_pulse_health`, bankrupt | 65,817 | 35,340 | −46% |
+| `lending_account_pulse_health`, a stale collateral oracle | 36,258 | 21,340 | −41% |
+| `marginfi_account_tag_liq_record`, liquidatable | 25,168 | 13,359 | −47% |
+| `marginfi_account_init_liq_record` | 10,318 | 2,864 | −72% |
+| `marginfi_account_close_liq_record` | 2,444 | 391 | −84% |
+| `lending_pool_handle_bankruptcy`, insurance covering part | 91,747 | 41,723 | −55% |
+| `lending_pool_handle_bankruptcy`, permissionless, covered | 69,730 | 28,732 | −59% |
+| `lending_pool_handle_bankruptcy`, past the deposits | 35,143 | 17,863 | −49% |
+| `lending_pool_handle_bankruptcy`, Token-2022 with a transfer fee | 97,583 | 42,792 | −56% |
+| `lending_account_liquidate`, part of a collateral | 194,785 | 106,086 | −46% |
+| `lending_account_liquidate`, a liquidator owing a premium | 222,725 | 119,306 | −46% |
+| `lending_account_liquidate`, a fixed-price debt | 225,420 | 118,315 | −48% |
+| `lending_account_liquidate`, Token-2022 | 199,447 | 108,609 | −46% |
+| a receivership: start, withdraw 1 SOL, repay 140 USDC, end | 149,945 | 88,560 | −41% |
+| a receivership: start, end | 87,094 | 59,518 | −32% |
+| a receivership: a close-out under $5 | 130,094 | 71,478 | −45% |
+| a deleverage: start, withdraw 1 SOL, repay 150 USDC, end | 160,288 | 87,533 | −45% |
+| a flash loan: start, borrow past the limit, repay it all, end | 75,214 | 33,819 | −55% |
+| a flash loan: start, end | 18,114 | 10,305 | −43% |
+| `marginfi_account_set_freeze` | 5,368 | 1,247 | −77% |
+| `transfer_to_new_account`, with balances | 12,906 | 5,574 | −57% |
+| `transfer_to_new_account_pda` | 15,008 | 6,146 | −59% |
+| `admin_close_account` | 10,255 | 3,423 | −67% |
 | `panic_pause` | 7,188 | 863 | −88% |
-| `update_group_rate_limiter`, an outflow | 5,152 | 1,397 | −73% |
-| `lending_pool_configure_group_premium`, a new pair | 5,558 | 1,155 | −79% |
-| `lending_pool_configure_bank_emode`, three entries sorted | 79,762 | 10,384 | −87% |
-| `lending_pool_close_bank` | 4,530 | 2,498 | −45% |
-| `lending_pool_configure_bank_gov`, weights | 42,109 | 11,196 | −73% |
-| `lending_pool_collect_bank_premium_fees` | 18,080 | 7,158 | −60% |
-| `lending_pool_emissions_deposit` | 12,486 | 5,070 | −59% |
-| `lending_pool_init_same_asset_emode_registry` | 9,301 | 2,314 | −75% |
-| `lending_pool_set_bank_same_asset_emode_eligibility` | 7,346 | 1,677 | −77% |
-| `init_bank_metadata` | 8,789 | 2,541 | −71% |
-| `write_bank_metadata`, ticker and description | 5,354 | 1,988 | −63% |
-| `write_bank_metadata_pre_init` | 8,719 | 2,764 | −68% |
-| `marginfi_account_place_order`, stop loss | 16,332 | 6,273 | −62% |
-| `marginfi_account_close_order` | 4,142 | 1,355 | −67% |
-| `marginfi_account_set_keeper_close_flags`, one bank | 3,094 | 1,083 | −65% |
-| `marginfi_account_keeper_close_order` | 2,709 | 1,403 | −48% |
-| an order executed (start, withdraw, repay, end), stop loss | 158,349 | 70,948 | −55% |
-| `marginfi_account_place_rebalance_order` | 10,820 | 3,570 | −67% |
-| `marginfi_account_update_rebalance_order` | 3,980 | 1,610 | −60% |
-| `marginfi_account_top_up_rebalance_fee_pool` | 6,498 | 2,970 | −54% |
-| a rebalance (start, withdraw, deposit, end), a tip escrowed | 270,773 | 116,319 | −57% |
-| `marginfi_account_settle_rebalance_tip`, paid | 72,189 | 36,058 | −50% |
-| `lending_pool_resize_bank_account` | 4,711 | 2,807 | −40% |
-| `monitor_archive_upsert_batch`, two mints | 2,741 | 973 | −65% |
-| `init_staked_settings` | 17,865 | 2,786 | −84% |
-| `lending_pool_add_bank_permissionless` | 77,694 | 19,023 | −76% |
-| `lending_pool_configure_bank_oracle_scope` | 9,597 | 1,225 | −87% |
-| `lending_pool_add_bank_solend` | 82,881 | 19,012 | −77% |
-| `solend_init_obligation` | 88,717 | 66,142 | −25% |
-| `solend_deposit` | 100,480 | 73,502 | −27% |
-| `solend_withdraw` | 191,792 | 137,009 | −29% |
-| `lending_pool_add_bank_kamino` | 77,023 | 17,759 | −77% |
-| `kamino_init_obligation` (with a farm) | 206,172 | 169,852 | −18% |
-| `kamino_deposit` | 133,066 | 106,321 | −20% |
-| `kamino_withdraw` | 181,565 | 125,229 | −31% |
-| `propagate_kamino_market_emergency` | 2,327 | 366 | −84% |
-| `kamino_harvest_reward` | 120,337 | 101,049 | −16% |
-| `lending_pool_add_bank_drift` | 76,034 | 17,489 | −77% |
-| `drift_init_user` | 106,471 | 83,160 | −22% |
-| `drift_deposit` | 76,268 | 57,301 | −25% |
-| `drift_withdraw` (with a debt) | 157,716 | 113,786 | −28% |
-| `drift_harvest_reward` | 78,993 | 58,487 | −26% |
-| `drift_claim_bad_debt` | 89,488 | 66,105 | −26% |
-| `lending_pool_add_bank_juplend` | 81,844 | 20,279 | −75% |
-| `juplend_init_position` | 71,441 | 49,524 | −31% |
-| `juplend_deposit` | 90,443 | 62,075 | −31% |
-| `juplend_withdraw` (with a debt) | 141,752 | 91,212 | −36% |
+| `update_group_rate_limiter`, an outflow | 5,152 | 1,123 | −78% |
+| `lending_pool_configure_group_premium`, a new pair | 5,558 | 1,161 | −79% |
+| `lending_pool_configure_bank_emode`, three entries sorted | 79,762 | 5,652 | −93% |
+| `lending_pool_close_bank` | 4,530 | 556 | −88% |
+| `lending_pool_configure_bank_gov`, weights | 42,109 | 5,936 | −86% |
+| `lending_pool_collect_bank_premium_fees` | 18,080 | 5,767 | −68% |
+| `lending_pool_emissions_deposit` | 12,486 | 5,198 | −58% |
+| `lending_pool_init_same_asset_emode_registry` | 9,301 | 2,327 | −75% |
+| `lending_pool_set_bank_same_asset_emode_eligibility` | 7,346 | 1,710 | −77% |
+| `init_bank_metadata` | 7,289 | 2,222 | −70% |
+| `write_bank_metadata`, ticker and description | 5,354 | 1,992 | −63% |
+| `write_bank_metadata_pre_init` | 7,219 | 2,433 | −66% |
+| `marginfi_account_place_order`, stop loss | 23,804 | 8,008 | −66% |
+| `marginfi_account_close_order` | 4,142 | 1,258 | −70% |
+| `marginfi_account_set_keeper_close_flags`, one bank | 3,094 | 1,096 | −65% |
+| `marginfi_account_keeper_close_order` | 2,709 | 1,292 | −52% |
+| an order executed (start, withdraw, repay, end), stop loss | 159,822 | 67,554 | −58% |
+| `marginfi_account_place_rebalance_order` | 10,820 | 3,578 | −67% |
+| `marginfi_account_update_rebalance_order` | 3,980 | 1,629 | −59% |
+| `marginfi_account_top_up_rebalance_fee_pool` | 6,498 | 2,982 | −54% |
+| a rebalance (start, withdraw, deposit, end), a tip escrowed | 270,544 | 114,547 | −58% |
+| `marginfi_account_settle_rebalance_tip`, paid | 70,831 | 32,478 | −54% |
+| `lending_pool_resize_bank_account` | 4,711 | 2,380 | −49% |
+| `monitor_archive_upsert_batch`, two mints | 2,741 | 975 | −64% |
+| `init_staked_settings` | 16,150 | 2,472 | −85% |
+| `lending_pool_add_bank_permissionless` | 86,716 | 20,968 | −76% |
+| `lending_pool_configure_bank_oracle_scope` | 9,597 | 1,235 | −87% |
+| `lending_pool_add_bank_solend` | 103,973 | 23,492 | −77% |
+| `solend_init_obligation` | 93,202 | 67,155 | −28% |
+| `solend_deposit` | 100,511 | 72,777 | −28% |
+| `solend_withdraw` | 191,823 | 129,900 | −32% |
+| `lending_pool_add_bank_kamino` | 80,023 | 18,414 | −77% |
+| `kamino_init_obligation` (with a farm) | 207,503 | 171,217 | −17% |
+| `kamino_deposit` | 132,922 | 104,858 | −21% |
+| `kamino_withdraw` | 181,565 | 118,064 | −35% |
+| `propagate_kamino_market_emergency` | 2,327 | 370 | −84% |
+| `kamino_harvest_reward` | 112,590 | 94,458 | −16% |
+| `lending_pool_add_bank_drift` | 83,534 | 19,110 | −77% |
+| `drift_init_user` | 106,472 | 81,991 | −23% |
+| `drift_deposit` | 82,049 | 63,163 | −23% |
+| `drift_withdraw` (with a debt) | 157,716 | 107,299 | −32% |
+| `drift_harvest_reward` | 79,359 | 58,866 | −26% |
+| `drift_claim_bad_debt` | 93,988 | 67,958 | −28% |
+| `lending_pool_add_bank_juplend` | 96,844 | 23,566 | −76% |
+| `juplend_init_position` | 71,441 | 49,533 | −31% |
+| `juplend_deposit` | 91,589 | 62,538 | −32% |
+| `juplend_withdraw` (with a debt) | 141,783 | 84,286 | −41% |
 
 Across the 125 transactions of the first file that succeed, the port uses 40–97% fewer compute units; across the 118
 refused ones, 56–93% fewer. Repayments with a premium and accrual, nearly all I80F48 arithmetic, save least (from

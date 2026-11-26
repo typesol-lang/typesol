@@ -591,9 +591,12 @@ export function setup(config: Mut<Config>): void {
 - Constants are inlined where they are used, and may be seeds; when a seed is a constant, the IDL records its value.
 - A constant with an integer type is computed in that type, every step checked: `const X: u64 = 1n - 2n + 5n` is an
   error (`1n - 2n is -1, which does not fit in u64`), and `const M: u8 = ~1n` is 254 (`~` within the width).
-  Division by zero, a negative exponent or a shift past the width are compile errors.
+  Division by zero, a negative exponent or a shift past the width are compile errors, and so is a signed type's
+  minimum divided by or reduced modulo -1 (`const X: i8 = -128n % -1n`: the quotient does not fit, and at run time
+  that remainder fails with 5100 too), where JavaScript's bigint gives 0.
 - An untyped integer constant is inlined as its value and takes the type of the place it is used in, as a literal
   does: `const FEE = 30n` stores into a `u16` field, and `const FEE = 300n` into a `u8` one is `300 does not fit in u8`.
+  It is computed as a JavaScript bigint, without a width: `const R = -128n % -1n` is 0.
 - Top-level `let` and `var` are refused: `top-level variables must be const literals`. A program has no global state
   other than its accounts.
 - A few names configure the compiler: `HEAP_SIZE_KIB` ([below](#memory-stack-and-heap)), `MAX_ACCOUNTS`
@@ -763,7 +766,9 @@ export function record(stats: Mut<Stats>, by: u64, change: i64): void {
   u8; convert with u64(...) etc.` Comparisons (`<`, `<=`, `===`, …) need equal types too.
 - **Every operation is checked.** `+ - * / % **` and their assignments (`+=` … `**=`) fail the instruction on
   overflow (5100) or division by zero (5101); `**` with a negative exponent fails as well (JavaScript throws there).
-  Unlike JavaScript there are no silent wraps and no `Infinity`.
+  Unlike JavaScript there are no silent wraps and no `Infinity`. A signed type's minimum divided by -1 overflows, and
+  so does its remainder by -1 (`x % -1n` with an `i8` holding -128 fails with 5100, as Rust's checked `%` does, where
+  JavaScript gives 0); a typed constant computing it is a compile error ([constants](language-basics.md#constants)).
 - **Bitwise operators.** `& | ^` work on equal types; `~` flips the bits within the type's width (`~1n` as a `u8` is
   254). Both shifts fail (5100) when the amount is negative or not below the width (`x >> 64n` on a `u64`), and `<<`
   also when bits would be lost; `>>` is arithmetic on signed types. Unlike JavaScript, where a bigint shift never
@@ -1013,8 +1018,16 @@ export function step(player: Mut<Player>, dx: u64): void {
   order, back to back, with no padding.
 - A struct literal names every field (`{ x, y: 2n }`); a missing or unknown field is an error. An object literal needs
   a known struct type: a typed local (`const p: Point = { … }`), a field, a helper parameter, `emit<T>(…)`.
-- `a.home = b.home` copies the whole struct, as Rust and Anchor do; how `const` binds one is in
-  [copies and references](language-statements.md#copies-and-references).
+- `a.home = b.home` copies the whole struct, as Rust and Anchor do; how `const` binds one is in [copies and
+  references](language-statements.md#copies-and-references). A copy between places reached through pointers (account
+  data, a view, a helper's struct parameter) of 80 bytes or more is the memmove syscall (16 compute units up to 2,749
+  bytes, one more per 250 bytes past that), as Rust's memcpy is; below, 8-byte loads and stores (26 units for 80
+  bytes, 54 for 192). A copy into or out of a local of the function (a local copy, a helper's result, a struct literal
+  built in a temporary) takes the syscall from 400 bytes, where clang stops unrolling the loads and stores (and about
+  1 unit a byte is the loop's cost): below that the optimizer drops what nothing reads, which a call would prevent.
+  The same holds wherever TypeSOL copies a whole value itself (Borsh fields, instruction arguments, a helper's copy of
+  a struct argument, events), and a value it zeroes whole (`x.o = null` on an `Option<struct>`, a data-enum literal)
+  takes the memset syscall from 192 bytes in account data and 600 in a local.
 - A struct cannot contain itself.
 
 ### File-local structs
@@ -1432,7 +1445,8 @@ export function edit(shape: Mut<Shape>): void {
   refused.
 - **Evaluation order**: operands and arguments are read left to right, as in JavaScript, even when a later one changes
   account data (`v.length + v.pop()`) or a local (`x + bump()` with a closure `bump` doing `x += 1n`, or a list
-  callback writing it).
+  callback writing it). Built-ins too: `log64(a.count, bump(a), 0n, 0n, 0n)` logs the count before the bump, and
+  `require(a.count === n, codeOf(a))` tests the count before a helper computing the error code runs.
 - **Ternaries** run only the chosen branch: `const fee = vip ? 0n : 30n`. Between accounts too:
   `const source = ephemeral ? rest.get(5n) : reserve` picks a remaining account (`rest.get(i)`, a local or
   `RemainingAccount` helper parameter bound to one) or an `AccountInfo` parameter, and the result goes wherever a
@@ -2139,18 +2153,21 @@ export function remove(owner: Mut<Signer>, log: HasOne<Mut<Log>, "owner">): void
 }
 ```
 
-- `close(account, destination)` closes a program account: its lamports go to `destination` (another writable
-  account) and its data is zeroed. The account is not used after it in the function, except its `key` (compile
-  errors, or 2040 at run time in a helper given one account twice). `CloseTo<A, "dest">` does the same when the
-  instruction succeeds ([constraints](#constraints)).
+- `close(account, destination)` closes a program account: its lamports go to `destination` (another writable account)
+  and its data is zeroed (by the memset syscall when the account's type takes 64 bytes or more, by stores below). The
+  account is not used after it in the function, except its `key` (compile errors, or 2040 at run time in a helper
+  given one account twice). `CloseTo<A, "dest">` does the same when the instruction succeeds
+  ([constraints](#constraints)).
 - Who may call them: `HasOne` above lets only the log's owner close it (the lamports of a closed account are value)
   or resize it. Without that check anyone could pay to grow, or shrink, another user's account.
 - `realloc(account, newSize, payer)` on a `Mut<Struct>`: growing charges the payer the extra rent (at most 10 KiB per
-  instruction, 3016); shrinking keeps the lamports in the account; never below the struct. Refused on a struct with a
-  growable `Vec` (its push / pop / clear size the account).
+  instruction, 3016); shrinking keeps the lamports in the account; never below the struct (3016). For a `@layout borsh`
+  struct that is its discriminator and smallest Borsh form (an empty `FixedString<64>` takes 4 bytes, not 68), the size
+  its load accepts; the value written back when the instruction returns must still fit (3004). Refused on a struct
+  with a growable `Vec` (its push / pop / clear size the account).
 - `resizeAccount(account, newSize)` on a `Mut<AccountInfo>` of this program is Rust's `AccountInfo::resize`: the
-  length only, new bytes zeroed, no rent moved (fund it first: `rentExempt(newSize)`), at most 10 KiB of growth
-  (3016).
+  length only, new bytes zeroed (64 or more by the memset syscall, as `realloc` zeroes them too), no rent moved (fund
+  it first: `rentExempt(newSize)`), at most 10 KiB of growth (3016).
 - An account grows at most 10 KiB per instruction, counted from its length when the instruction started (Solana's
   limit): realloc again in the next instruction.
 - `account.lamports` can be read on any account and written on a `Mut` one.
@@ -2213,7 +2230,8 @@ the body, in Anchor's order, and recorded in the IDL (`relations`, `pda`, `addre
   among its types, not its accounts (an error named on such an `Owner` is not used: the load fails with 3007). Such a
   struct may carry a shorter discriminator, `/** @discriminator 0x01 */` (1 to 8 bytes, as Anchor's
   `discriminator = &[1]`; Solend's reserve), its fields then starting right after it; this program's own accounts
-  keep 8.
+  keep 8. A `@layout borsh` struct's Borsh bytes start there too, and the account must hold the discriminator and the
+  struct's smallest Borsh form (3003).
 - `Address<InstructionsSysvar, "Sysvar1nstructions1111111111111111111111111">` checks the address as Anchor's
   `address = sysvar::instructions::ID` on an `UncheckedAccount` does (2012, with the constraints).
 
@@ -2246,7 +2264,9 @@ are compared too ([native programs](language-native.md#inout-places-that-may-be-
 
 At most 32 accounts per instruction; more is refused with 5113. `export const MAX_ACCOUNTS = 128n` (up to 255; Anchor
 takes what the runtime allows) raises it for programs that take many remaining accounts. The CPI scratch lists are
-then kept on the heap instead of the stack; programs that do not declare it compile exactly as before.
+then kept on the heap instead of the stack; programs that do not declare it compile exactly as before. 255 is also
+the runtime's limit: an instruction naming more accounts (repeats count) fails with MaxAccountsExceeded before any
+program runs.
 
 ## Optional accounts
 
@@ -3165,6 +3185,40 @@ Pubkeys, unit enums and arrays is read as its bytes (booleans and enums checked)
 Vecs is declared `/** @layout borsh */` and Borsh-decoded. Bytes that are not exactly the struct fail with 5106. The
 type argument is required.
 
+Return data of any length, checked by the program itself (Rust's `get_return_data()`, as a native program reads a
+reply of several records), is `getReturnData()`:
+
+```ts
+import { getReturnData, instructionData, invoke, log, remainingAccounts, require, u8 } from "typesol";
+
+export enum MatchError {
+  /** @code 0 */
+  NoReply = "NoReply",
+  BadReply = "BadReply",
+}
+
+/** @fallback */
+export function entry(): void {
+  const matcher = remainingAccounts().get(0n);
+  const data = instructionData();
+  const legs = data.readU64(0n);
+  invoke(matcher, [], [u8(1n), legs]);
+  const [from, reply] = getReturnData();
+  // Rust's None: no return data (the runtime keeps no empty return data); `from` is then all zeros.
+  require(reply.length > 0n, MatchError.NoReply);
+  require(from === matcher.key && reply.length === legs * 64n, MatchError.BadReply);
+  log(reply.readU64(8n));
+}
+```
+
+- `from` is the program that set the return data (a Pubkey); `reply` its bytes, up to the runtime's 1,024, with the
+  methods of instruction data (`length`, `get`, `readU8` … `readU128`, `readPubkey`, `slice`; 5104 past the end).
+- Nothing is checked and nothing fails: the program, the length and the contents are the caller's to check, with its
+  own errors. It reads whatever the runtime holds: the last CPI's callee's return data, or what this instruction set
+  with `setReturnData` after it.
+- Bound with `const [program, data] = …` where it is called (either name may be left out: `const [, data]`). The bytes
+  are copied into 1 KiB of the calling function's stack frame.
+
 ## invokeInstruction
 
 A call decided at run time, such as one a multisig stored in account data, is `invokeInstruction` (Rust's
@@ -3773,6 +3827,16 @@ A native account whose parts start where its header says (Phoenix's market at by
   after a helper that may close or resize one it is given: its bounds were checked against the old length, so it is a
   compile error saying to take the view again.
 
+### Struct copies between views that overlap
+
+Two views of one account at run-time offsets (`loadRawAt`, `loadRawMutAt`, an account passed twice under
+`NATIVE_ACCOUNT_WRITES`) can overlap, and `d.v = s.v` then copies between overlapping bytes. The destination ends with
+the source's old bytes, in either direction and at any size, as Rust's `copy_within` or a struct copied out and
+written back leaves it: below 80 bytes every byte is loaded before any is stored (a load and then a store per 8
+bytes), from 80 bytes the memmove syscall copies them. A copy through a local (`const c: T = s.v; d.v = c;`) and
+`copyData` give the same bytes
+([`test/language/bulk-copies.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/bulk-copies.test.ts)).
+
 ## lib-sokoban's red-black tree
 
 ```ts
@@ -3926,9 +3990,19 @@ On remaining accounts and `AccountInfo` parameters:
   the account's owner: check that it is this program's first (the runtime would fail the instruction after it returns,
   having changed another program's account). The length does not change, so views made before stay valid and read the
   zeros.
-- `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, at most
-  10 KiB past the size it had when the instruction started, 3016). That size is the one the entrypoint records in the
-  account's record, as solana_program 1.14's does, only in programs that resize a remaining account.
+- `copyData(account, from, to, length)` copies `length` bytes of the data from offset `from` to offset `to`, as a
+  native program's `data.copy_within(from..from + length, to)` or a struct copied out and written back at another
+  offset (a memcpy in Rust): the memmove syscall from 32 bytes, about constant compute units whatever the length (a
+  whole-struct assignment `a.p = b.p` between views uses it too, from 80 bytes: [overlapping
+  views](#struct-copies-between-views-that-overlap)). The ranges may overlap. A range past the end of the data fails
+  with 3003 and copies nothing; without `NATIVE_ACCOUNT_WRITES` the account must be writable (3006). Like `zeroData`
+  it does not check the owner, and views made before stay valid and read the copied bytes (Percolator v16's InitMarket
+  copies asset 0's 424-byte oracle profile into every slot of the market this way;
+  [`test/language/native-copy-data.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/native-copy-data.test.ts)).
+- `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, 64 or more
+  by the memset syscall as Rust's realloc zeroes them, fewer by stores; at most 10 KiB past the size it had when the
+  instruction started, 3016). That size is the one the entrypoint records in the account's record, as solana_program
+  1.14's does, only in programs that resize a remaining account.
 - A view of the account made before either (`loadRawMutAt`, `rawArrayMutAt`, `rbTreeMutAt`, a node or a struct read
   through one) is a compile error to use after it: its bounds were checked against the old length, so take the view
   again.
@@ -3937,6 +4011,7 @@ On remaining accounts and `AccountInfo` parameters:
   and not closed into itself (2040). With it nothing is checked and the runtime judges, as for the original
   (`ReadonlyLamportChange`, `ExternalAccountLamportSpend`, `UnbalancedInstruction`, `ModifiedProgramId`), and plain
   `AccountInfo` parameters are enough.
+
 
 ## Errors and panics as the original reports them
 
@@ -3981,6 +4056,30 @@ export function entry(): void {
   location)` log one line, `panicked at <location>:` and the message after a newline, and then abort ("SBF program
   panicked"), as that panic handler does: `panicked at src/wide_math.rs:1554:30:\nmul_div_floor_u128: a*b overflow`.
   As under "solana-1.14", a message is required and `PANIC_ON_OVERFLOW`'s panics abort.
+- **Panics as pinocchio's entrypoint writes them.** `export const PANIC_STYLE = "pinocchio"` (a program built with
+  pinocchio's `entrypoint!`, whose `default_panic_handler!` hook runs under std: Percolator v16) makes `panic(message,
+  location)` log two lines, the location's file exactly as Rust records it and then `** PANICKED **`, and abort ("SBF
+  program panicked"):
+
+  ```
+  Program log: src/v16.rs
+  Program log: ** PANICKED **
+  Program <id> failed: SBF program panicked
+  ```
+
+  - The file is `Location::file()` verbatim: the path rustc was given, which cargo makes relative to the crate
+    (`src/v16.rs`, `src/account_info.rs` inside solana-program) and which is the toolchain's absolute path for a panic
+    inside the standard library that is not reported at its caller (Percolator v16's binary holds
+    `/home/runner/work/platform-tools/platform-tools/out/rust/library/alloc/src/raw_vec/mod.rs`). Give it as the
+    location, alone or with its line and column (`"src/v16.rs:812:9"`, logged as `src/v16.rs`), so the port's source
+    keeps the original's place. Index, `unwrap`, `RefCell::borrow_mut` and `Vec::with_capacity`'s capacity panics are
+    reported at their caller (`#[track_caller]`), so their file is the caller's.
+  - No message is logged (the hook ignores it): the message may be `null` or a note for the reader. Without a
+    location this source file's name is logged.
+  - `panicsAt(location, expression)` logs its location's file the same way. `PANIC_ON_OVERFLOW` is refused with this
+    style: its panics have no file; wrap the arithmetic in `panicsAt`.
+  - Every panic site calls one shared helper (the two log calls and the abort), so a port with many panic sites stays
+    small.
 - **Overflow panics with Rust's message and location.** `panicsAt("src/quantities.rs:233:1", a + b)` is `a + b` whose
   checked arithmetic panics as Rust's overflow checks do at that location ("attempt to add with overflow"; also
   "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the remainder with
@@ -3996,7 +4095,8 @@ export function entry(): void {
     quantities.rs, wherever the addition is written): give the port a helper, `function addQuoteLots(a: u64, b: u64):
     u64 { return panicsAt(QUOTE_LOTS_ADD, a + b); }`.
   - The bits `<<` loses, `**`, `mulDiv` / `mulDivCeil`, casts and u256 arithmetic keep TypeSOL's failures (Rust checks
-    them differently, or with other messages).
+    them differently, or with other messages): `panicsAt(LOC, a ** 2n)` fails with 5100 when the square overflows,
+    while an operator in `**`'s operands (`(a + b) ** 2n`) still panics at the location.
   - [`test/language/rust-panics.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/rust-panics.test.ts) checks the lines against the Phoenix binary's own panics.
 
 ## Log lines as the original writes them
@@ -4076,7 +4176,7 @@ void instruction (Phoenix's Borsh `Vec<FIFOOrderId>` of the orders that rested, 
 
 <!-- Generated by scripts/language-builtins.ts from lib/typesol.d.ts; do not edit by hand. -->
 
-Every name `"typesol"` exports (220 names, 233 declarations), grouped, with its declaration and the first sentence of its doc
+Every name `"typesol"` exports (222 names, 235 declarations), grouped, with its declaration and the first sentence of its doc
 comment in `lib/typesol.d.ts`. Each group links to the part of the [language guide](language.md) that explains it;
 your editor shows the full doc comment on hover. Methods of account and program types (`systemProgram.transfer`,
 `acct.create`, …) are described with their types in the guide.
@@ -4214,7 +4314,7 @@ Explained in [Accounts: Closing and resizing](language-accounts.md#closing-and-r
 | --- | --- | --- |
 | `close` | `function close(account: AccountMeta, destination: AccountMeta): void` | Close a program-owned account: move all lamports to `destination` and wipe it. |
 | `realloc` | `function realloc(account: AccountMeta, newSize: u64, payer: Mut<Signer>): void` | Resize an account of this program (Anchor `realloc`, struct accounts only): growing charges `payer` the extra rent (never the account's own lamports, which may be deposits); shrinking keeps every lamport in the account — move freed rent out yourself if your program allows it. |
-| `resizeAccount` | `function resizeAccount(account: RemainingAccount \| Mut<AccountInfo>, newSize: u64): void` | Resize a `Mut<AccountInfo>` or a remaining account of this program to `newSize` bytes (Rust's `AccountInfo::resize` / `realloc(newSize, true)`): the data length only, the new bytes zeroed. |
+| `resizeAccount` | `function resizeAccount(account: RemainingAccount \| Mut<AccountInfo>, newSize: u64): void` | Resize a `Mut<AccountInfo>` or a remaining account of this program to `newSize` bytes (Rust's `AccountInfo::resize` / `realloc(newSize, true)`): the data length only, the new bytes zeroed (64 or more by the memset syscall). |
 
 ## Accounts created by hand
 
@@ -4294,6 +4394,7 @@ Explained in [Calling other programs: invoke](language-cpi.md#invoke).
 | `sighash` | `function sighash(name: string): Bytes` | The 8-byte Anchor instruction discriminator for `name` (sha256("global:<snake_case name>")[..8]). |
 | `hex` | `function hex(literal: string): Bytes` | Bytes from a hex string literal, e.g. hex("0a0b"). |
 | `returnData` | `function returnData<T>(program: AccountMeta): T` | Read the return data the last invoke() left behind, checking it came from `program` and has exactly the size of T: `const n = returnData<u64>(counterProgram)`. |
+| `getReturnData` | `function getReturnData(): [program: Pubkey, data: InstructionBytes]` | The return data as the runtime holds it, of any length and from any program (Rust's `get_return_data()`), for a port that checks it itself: `const [program, data] = getReturnData()`. |
 | `invokeInstruction` | `function invokeInstruction(programId: Pubkey, accounts: IndexedList<InstructionAccountMeta>, data: IndexedList<u8>, infos: RemainingAccounts \| RemainingSlice, signerSeeds?: Seed[] \| SignerSeeds \| (Seed[] \| SignerSeeds)[]): void` | A CPI decided at run time, e.g. one stored in account data (Rust's `invoke_signed(&Instruction { program_id, accounts, data }, infos, seeds)`). |
 | `InstructionAccountMeta` | `interface InstructionAccountMeta` | One account of an instruction built at run time (Rust's `AccountMeta`): any struct with these three fields. |
 | `programAt` | `function programAt<P>(account: RemainingAccount \| AccountInfo): P` | A remaining account (or an AccountInfo parameter) as a typed program: `const stake = programAt<StakeProgram>(rest.get(12n))`, then `stake.split(…)`, `token.mintTo(…)`, `system.transfer(…)` as on a declared program parameter, and passed to helpers that take that program type. |
@@ -4478,6 +4579,7 @@ Explained in [Porting a native program (advanced)](language-native.md).
 | `closeRaw` | `function closeRaw(account: RemainingAccount \| Mut<AccountInfo>, receiver: RemainingAccount \| Mut<AccountInfo>): void` | Close an account of this program as a native program does it by hand (Phoenix's Tombstone), in this order: `receiver.lamports += account.lamports`, `account.lamports = 0`, the owner set to the System Program, the data length set to 0 (`realloc(0, false)`: the bytes are not zeroed, the runtime drops them with the length). |
 | `assignOwner` | `function assignOwner(account: RemainingAccount \| Mut<AccountInfo>, owner: Pubkey): void` | Set an account's owner in place (Rust's `AccountInfo::assign`). |
 | `zeroData` | `function zeroData(account: RemainingAccount \| Mut<AccountInfo>, offset: u64, length: u64): void` | Zero `length` bytes of an account's data from `offset`, as a native program's `for b in data[offset..offset + length].iter_mut() { *b = 0; }` (a memset): the memset syscall, about constant compute units whatever the length. |
+| `copyData` | `function copyData(account: RemainingAccount \| Mut<AccountInfo>, from: u64, to: u64, length: u64): void` | Copy `length` bytes of an account's data from offset `from` to offset `to`, as a native program's `data.copy_within(from..from + length, to)` (or a struct copied out of the account and written back at another offset): the memmove syscall, about constant compute units whatever the length; the ranges may overlap. |
 | `setReturnData` | `function setReturnData(bytes: IndexedList<u8>): void` | Set this instruction's return data to `bytes` as they are (Rust's `set_return_data(&bytes)`): a list of u8 such as a local `FixedVec<u8, N>`, a Vec or FixedVec in account data, or the instruction data or a slice of it. |
 | `panic` | `function panic(message?: string \| null, location?: string): never` | Stop the program as a Rust `panic!` / `unwrap()` on `None` / `unreachable!()` does: the message is logged and the instruction fails with ProgramFailedToComplete (no error code). |
 | `panicsAt` | `function panicsAt<T>(location: string, value: T): T` | `value`, with its checked arithmetic panicking as Rust's overflow checks do at `location` ("file:line:column", where the original's expression is): `panicsAt("src/quantities.rs:233:1", a + b)` logs "attempt to add with overflow" there (also "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the remainder with a divisor of zero", "attempt to negate with overflow", "attempt to divide with overflow", "attempt to shift left / right with overflow" for a shift amount past the width), as `panic` logs (see `PANIC_STYLE`), instead of failing with 5100 / 5101. |
@@ -5021,9 +5123,9 @@ error. Exit codes: **0** success, **1** failure (compile errors, failed deploy, 
 | Command | What it does |
 | --- | --- |
 | `typesol init [<dir>] [--name <program>] [--template counter\|vault\|escrow] [--no-agent-files]` | Create a project ([below](#typesol-init)). |
-| `typesol new <program> [--template counter\|vault\|escrow]` | In a project: add a program, `programs/<program>.ts` and `tests/<program>.test.ts` from the template, and its entry in `typesol.json`. Refuses to overwrite files or reuse a name. |
+| `typesol new <program> [--template counter\|vault\|escrow]` | In a project: add a program, `programs/<program>.ts` and `tests/<program>.test.ts` from the template, and its entry in `typesol.json`. Refuses to overwrite files or reuse a name, and to write through a symbolic link inside the project (a linked `programs/` or `tests/`, or a link where a new file goes). |
 | `typesol doctor [--url <rpc>] [--config <cli config>]` | Check what building, testing and deploying need: Node.js, the platform-tools (and a `toolchain` row: the tested ones, or untested with both versions), the Solana CLI, Docker (optional: only `--docker` builds need it; it says when they run emulated), its keypair, the RPC (`--url`, a cluster moniker, or the CLI config) and the keypair's balance there, and the project. Each problem is printed with the command that fixes it. The last line says what is ready (building and testing, or also deploying) and what the warnings concern. Exit code 1 when building is impossible (Node.js or the platform-tools missing); deploy pieces are warnings. |
-| `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--toolchain-strict] [--docker [--typesol-version <v>] [--release-record <file>]] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json` (the TypeSOL, TypeScript, clang and platform-tools versions, the host, the SBPF version, each source's sha256 and the binary's). With platform-tools other than the tested ones it warns once; `--toolchain-strict` (or `TYPESOL_TOOLCHAIN=strict`) refuses them. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. `--docker` builds in the pinned container instead ([below](#build---docker-and-verify---docker)). |
+| `typesol build [<program>…] [--sbpf v0\|v1\|v2] [--profile] [--toolchain-strict] [--docker [--typesol-version <v>] [--release-record <file>]] [--quiet]` | In a project: build every program (or those named) into `<out>/<name>/`: `<name>.so`, `<name>.json` (Anchor IDL), `<name>.client.ts` (TypeScript client, see [client.md](client.md)), `<name>.c`, `<name>.build.json` (the TypeSOL, TypeScript, clang and platform-tools versions, the host, the SBPF version, each source's sha256 and the binary's). Each source's sha256 is that of the bytes the compiler read, and the build fails without a manifest when a source or the runtime changes while it runs (an editor saving a file mid-build), so a manifest never pairs a binary with sources that did not make it. With platform-tools other than the tested ones it warns once; `--toolchain-strict` (or `TYPESOL_TOOLCHAIN=strict`) refuses them. The first build creates `<out>/deploy/<name>-keypair.json` and records the address in `typesol.json`; later builds refuse a different keypair. First builds may run at once (several programs, or several processes): the keypair is created exclusively (a process that loses the race uses the winner's key) and `typesol.json` is updated one process at a time and replaced whole, so each address is kept. Without the keypair (a fresh clone, CI) it builds at the recorded address and says so; only `deploy` needs the keypair. `--docker` builds in the pinned container instead ([below](#build---docker-and-verify---docker)). |
 | `typesol build <file.ts> [--out <dir>] [--program-id <keypair.json>] [--sbpf …] [--profile] [--toolchain-strict] [--docker …] [--quiet]` | Outside a project (or a file that is not one of its programs): build that file. Its keypair is `--program-id`, which must exist, or `<out>/<name>-keypair.json`, created on the first build. A project program's `.ts` builds as that program. |
 | `typesol check [<program>… \| <file.ts>] [--json] [--stdin \| --files]` | Type-check and validate without building. In a project, no argument checks every program (or those named) and exits 1 if any has errors. `--json` prints `{ ok, diagnostics: [{ file, line, column, message }] }`, always (a missing file or unreadable `--files` input is a diagnostic too, exit 1 or 2); `--stdin` checks the text given on stdin as that file (its imports come from disk); `--files` reads `{ "files": { "<absolute path>": "<text>", … } }` from stdin and checks with those texts instead of the disk (an editor's unsaved buffers). |
 | `typesol clone [<address>…] [--url <rpc>] [--config <cli config>] [--out <dir>]` | Copy cluster accounts and programs for the tests (Anchor's `[test.validator.clone]`): each account to `<address>.json` (lamports, owner, data), each program to `<address>.so` (its ELF, from the ProgramData account for upgradeable programs), in `tests/accounts` (`"accounts"` in `typesol.json`) or `--out`. Without addresses it clones the project's `"clone"` list. `testProgram` loads that directory into its LiteSVM; commit it so the tests run offline. |
@@ -5061,7 +5163,8 @@ process on stderr. `TYPESOL_TOOLCHAIN=strict` makes it an error everywhere, `war
 `<name>` must be snake_case; by default it is derived from `<dir>` (`my-app` → `my_app`). The template picks the
 program and its test: `counter` (default, a PDA counter per user), `vault` (SOL at a PDA: deposit, withdraw above
 rent, close) or `escrow` (SPL tokens: make, take, refund, the offer PDA signing for its vault). `init` refuses to
-overwrite files. It warns, with the install commands, when the platform-tools that building needs are missing, and
+overwrite files, and to write through a symbolic link inside `<dir>` (a linked `.cursor/`, say, whose files would
+land wherever it points; `<dir>` itself may be a link). It warns, with the install commands, when the platform-tools that building needs are missing, and
 says whether the Agave CLI is missing or only its platform-tools (on Linux arm64, where there is no Agave CLI, the
 commands that set up the platform-tools' `linux-aarch64` package).
 

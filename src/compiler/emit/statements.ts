@@ -667,7 +667,7 @@ export abstract class StatementEmitter extends CpiEmitter {
               const closure: Closure = { node: st.fn, name: "map's callback", scopes: [...this.scopes], env: this.envNow(), imports: this.scope.imports };
               const sc = this.tmp("lm_s");
               this.line(`TSS_${S.name} ${sc}__v;`);
-              this.line(`ts_memzero(&${sc}__v, sizeof(${sc}__v));`);
+              this.line(`TS_ZERO_LOCAL(&${sc}__v, sizeof(${sc}__v));`);
               this.expandClosure(closure, [element, idx].slice(0, st.fn.parameters.length), st.fn, {
                 lv: `${sc}__v`,
                 type: { kind: "struct", name: S.name },
@@ -1313,7 +1313,7 @@ export abstract class StatementEmitter extends CpiEmitter {
     }
     v = this.expect(v, frame.type, stmt.expression);
     if (frame.type.kind === "pubkey") this.line(`${frame.result} = *(${v.c});`);
-    else if (frame.type.kind === "option" && v.isNull) this.line(`ts_memzero(&${frame.result}, sizeof(${frame.result}));`);
+    else if (frame.type.kind === "option" && v.isNull) this.line(`TS_ZERO_LOCAL(&${frame.result}, sizeof(${frame.result}));`);
     else this.line(`${frame.result} = ${this.ownedString(v).c};`);
     this.line(`goto ${frame.label};`);
   }
@@ -1418,7 +1418,9 @@ export abstract class StatementEmitter extends CpiEmitter {
         continue;
       }
       if (ts.isArrayBindingPattern(d.name)) {
-        this.addressAndBump(d, d.name, mutable);
+        const init = d.initializer;
+        if (init && ts.isCallExpression(init) && this.exportName(init.expression) === "getReturnData") this.programAndReturnData(d, d.name, init, mutable);
+        else this.addressAndBump(d, d.name, mutable);
         continue;
       }
       if (!ts.isIdentifier(d.name) || !d.initializer) this.fail(d, "declare one plain name with an initializer");
@@ -1742,13 +1744,52 @@ export abstract class StatementEmitter extends CpiEmitter {
   }
 
   /**
+   * `const [program, data] = getReturnData()`: Rust's `get_return_data()`, the return data as the runtime holds it
+   * (sol_get_return_data): the program that set it and its bytes, read into 1 KiB of this function's stack frame (the
+   * runtime's maximum, so nothing is cut). Rust's `None` is `data.length === 0n` (the runtime keeps no empty return
+   * data), with `program` then all zeros.
+   */
+  protected programAndReturnData(d: ts.VariableDeclaration, pattern: ts.ArrayBindingPattern, call: ts.CallExpression, mutable: boolean) {
+    const usage = "const [program, data] = getReturnData()";
+    if (mutable) this.fail(d, `bind them with const: ${usage}`);
+    if (d.type) this.fail(d.type, "leave the type out: the program is a Pubkey and the data a read-only list of u8 (InstructionBytes)");
+    if (call.arguments.length) this.fail(call, "getReturnData() takes no arguments");
+    if (pattern.elements.length > 2) this.fail(pattern, `getReturnData gives two values: ${usage}`);
+    const names: (string | undefined)[] = pattern.elements.map((el) => {
+      if (ts.isOmittedExpression(el)) return undefined;
+      if (el.dotDotDotToken || el.initializer || !ts.isIdentifier(el.name)) this.fail(el, `name the program and the data: ${usage}`);
+      const name = el.name.text;
+      if (this.scopes.at(-1)!.has(name)) this.fail(el.name, `"${name}" is already declared`);
+      if (this.accounts.has(name) || this.args.has(name) || this.isGroup(name))
+        this.fail(el.name, `"${name}" shadows the parameter "${name}"; use another name`);
+      return name;
+    });
+    const [program, data] = names;
+    const key = program ? `l_${program}_${this.temp++}` : this.tmp("rdfrom");
+    const buf = this.tmp("rdbuf");
+    const len = this.tmp("rdlen");
+    this.line(`SolPubkey ${key} = {0}; uint8_t ${buf}[1024];`);
+    this.line(`uint64_t ${len} = sol_get_return_data(${buf}, sizeof(${buf}), &${key});`);
+    if (program) this.scopes.at(-1)!.set(program, { c: key, type: PUBKEY, mutable: false });
+    if (data) {
+      const c = `l_${data}_${this.temp++}`;
+      this.line(`TS_VecArg ${c} = {${buf}, (uint32_t)(${len} < sizeof(${buf}) ? ${len} : sizeof(${buf}))};`);
+      this.scopes.at(-1)!.set(data, { c, type: { kind: "vecArg", elem: { kind: "int", name: "u8" } }, mutable: false });
+    } else this.line(`(void)${len};`);
+  }
+
+  /**
    * `const [address, bump] = findProgramAddressWithBump(seeds, program)`: Rust's `let (address, bump) =
-   * Pubkey::find_program_address(…)`, both from one search (the only array destructuring the language has).
+   * Pubkey::find_program_address(…)`, both from one search (with getReturnData, the only array destructuring).
    */
   protected addressAndBump(d: ts.VariableDeclaration, pattern: ts.ArrayBindingPattern, mutable: boolean) {
     const init = d.initializer;
     const call = init && ts.isCallExpression(init) && this.exportName(init.expression) === "findProgramAddressWithBump" ? init : undefined;
-    if (!call) this.fail(d.name, "array destructuring is only for const [address, bump] = findProgramAddressWithBump(seeds, program)");
+    if (!call)
+      this.fail(
+        d.name,
+        "array destructuring is only for const [address, bump] = findProgramAddressWithBump(seeds, program) and const [program, data] = getReturnData()",
+      );
     if (mutable) this.fail(d, "bind them with const: const [address, bump] = findProgramAddressWithBump(seeds, program)");
     if (d.type) this.fail(d.type, "leave the type out: the address is a Pubkey and the bump a u8");
     if (pattern.elements.length > 2) this.fail(pattern, "findProgramAddressWithBump gives two values: const [address, bump] = …");

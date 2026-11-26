@@ -271,9 +271,12 @@ export function setup(config: Mut<Config>): void {
 - Constants are inlined where they are used, and may be seeds; when a seed is a constant, the IDL records its value.
 - A constant with an integer type is computed in that type, every step checked: `const X: u64 = 1n - 2n + 5n` is an
   error (`1n - 2n is -1, which does not fit in u64`), and `const M: u8 = ~1n` is 254 (`~` within the width).
-  Division by zero, a negative exponent or a shift past the width are compile errors.
+  Division by zero, a negative exponent or a shift past the width are compile errors, and so is a signed type's
+  minimum divided by or reduced modulo -1 (`const X: i8 = -128n % -1n`: the quotient does not fit, and at run time
+  that remainder fails with 5100 too), where JavaScript's bigint gives 0.
 - An untyped integer constant is inlined as its value and takes the type of the place it is used in, as a literal
   does: `const FEE = 30n` stores into a `u16` field, and `const FEE = 300n` into a `u8` one is `300 does not fit in u8`.
+  It is computed as a JavaScript bigint, without a width: `const R = -128n % -1n` is 0.
 - Top-level `let` and `var` are refused: `top-level variables must be const literals`. A program has no global state
   other than its accounts.
 - A few names configure the compiler: `HEAP_SIZE_KIB` ([below](#memory-stack-and-heap)), `MAX_ACCOUNTS`

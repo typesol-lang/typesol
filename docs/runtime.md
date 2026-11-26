@@ -9,7 +9,13 @@ Since 0.45.0 the runtime is no longer header-only: `runtime/typesol_builtins.c` 
 `__divdi3`, …). It is compiled with every program by the same clang and linked after it, in place of platform-tools'
 `compiler-builtins` library, whose layout differed by host package
 ([stability.md](stability.md#what-builds-the-same-bytes-where)); `test/language/builtins.test.ts` checks it against
-BigInt and its compute units against compiler-builtins'.
+BigInt and its compute units against compiler-builtins'. Multiplication and shifts are assembly written for the 128-bit
+libcall convention of clang 20 (platform-tools v1.52) and earlier: the result's address in r1, the operands after it.
+clang 22 (platform-tools v1.57) passes the operands from r1 and returns the result in registers, so for a clang above
+20 the file compiles C definitions of the same four functions instead (`TS_ASM_LIBCALLS`), which take whatever
+convention that clang gives their C signatures; with the assembly, a program built by clang 22 stored its first
+128-bit product through the operand's low half ("Access violation writing 8 bytes at address …"). The test runs the C
+definitions too, compiled by the tested clang as a clang above 20 would select them.
 
 ## Conventions
 
@@ -36,6 +42,17 @@ BigInt and its compute units against compiler-builtins'.
 - **No byte loops from the SDK.** The SDK's `sol_memcpy`, `sol_memcmp` and `SolPubkey_same` move one byte per
   iteration. The runtime uses `ts_ld64` / `ts_st64` (unaligned 8-byte loads and stores, which SBF allows) in
   `ts_memcpy`, `ts_memzero`, `ts_mem_eq`, `ts_key_eq` and `ts_memmove`.
+- **The memory syscalls where they cost less.** `sol_memmove_` and `sol_memset_` cost about 16 and 14 compute units
+  whatever the length up to 2,749 bytes. Whole values of a size known when compiling are copied by `TS_COPY` from 80
+  bytes and zeroed by `TS_ZERO` from 192 between places reached through pointers (account data, views, a helper's
+  pointer parameters), where the unrolled loads and stores cost at least 10 units more. Where a side is a local of the
+  function, `TS_COPY_LOCAL` / `TS_MEMCPY` take the syscall from 400 bytes and `TS_ZERO_LOCAL` from 600, where clang
+  stops unrolling: below that the optimizer drops the stores and loads nothing reads (a struct literal built in place, a
+  helper's result read field by field), which a call would prevent. The size folds when compiling, so smaller copies
+  compile to exactly the code they were. Run-time lengths, always loops, take the syscall from 64 bytes: the bytes an
+  account grows by (`ts_memzero_run`, one unit more below 64) and an account's data at `close` (`TS_CLOSE`, decided from
+  the type's smallest size). The measured table is above these macros in `typesol_rt.h`. Copies always use memmove:
+  `sol_memcpy_` fails the transaction on overlapping ranges, which two views of one account can give.
 - **Same results as the reference.** Fast paths must give bit-identical results to what they replace: `ts_add_overflow_u64`
   matches `__builtin_add_overflow`, the rent fast path and `ts_rent_slow` match the double computation, PDA search
   matches `sol_try_find_program_address`. A change here needs a test against the reference, not only against itself.
@@ -47,7 +64,7 @@ In file order:
 | Section | What it provides |
 | --- | --- |
 | Error codes, `TS_FAIL`, `TS_TRY` | The codes above and the two macros |
-| Word-wise memory helpers | `ts_ld64`, `ts_st64`, `ts_memcpy`, `ts_memmove`, `ts_memzero`, `ts_mem_eq`; checked u64 add/subtract/multiply |
+| Word-wise memory helpers | `ts_ld64`, `ts_st64`, `ts_memcpy`, `ts_memmove`, `ts_memzero`, `ts_mem_eq`; the memory syscalls past their thresholds (`TS_COPY`, `TS_MEMCPY`, `TS_ZERO`, `ts_memzero_run`); checked u64 add/subtract/multiply |
 | Well-known program ids | System, Token, Token-2022, ATA, Metaplex and the other programs the language names |
 | Strings | `TS_Str` views (pointer, length), UTF-8 validation, comparison, `FixedString<N>` storage |
 | Entry point input | `TsAccount` (the loader's serialized account, read in place), `TsParams`, `ts_deserialize` |

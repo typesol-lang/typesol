@@ -1,0 +1,36 @@
+# What the author's suite of Percolator v16 at commit 7b110913 (engine 5e3af07) is expected to give, read by
+# author-suite.sh (kinds count and fail) and author-trace-compare.ts (kinds trace and cu). Tab-separated:
+# kind, binary, target, name, reason. Every row must still be observed: a listed failure that passes, a listed trace
+# difference that no longer occurs or a listed compute-unit excess that is gone fails the check, as does anything
+# unlisted. "reference" is the binary built from the author's source (sha256 cc35fa48...), not a deployed program;
+# "port" is any other binary.
+#
+# count: the number of tests a target runs unfiltered.
+count	-	listing_oracle_scope	2	tests listed by the harness
+count	-	anchor_v2_realloc_probe	1	tests listed by the harness
+count	-	open_issue_regressions	3	tests listed by the harness
+count	-	v16_program_fuzz_regressions	148	tests listed by the harness
+count	-	v16_program_stateful_fuzz	336	tests listed by the harness
+count	-	v16_cu	1581	tests listed by the harness
+#
+# fail: a test failing on that binary ("both": on the reference and on the port, at the same assertion).
+fail	both	v16_cu	inv_045_no_free_mark_movement::trade_origin_catchup::authenticated_reward_handoff::exposed_keeper_provenance::v16_program_exposed_auth_keeper_reward_commutes_with_settlement_through_hybrid_catchup	the reference's own: inv_045_exposed_keeper_provenance.rs:273 expects 10001995 where the program gives 10000000
+fail	both	v16_cu	inv_045_no_free_mark_movement::trade_origin_catchup::authenticated_reward_handoff::report_cadence_rewards::v16_program_funded_report_cadence_preserves_partial_liquidation_reward_and_custody	the reference's own: inv_045_report_cadence_rewards.rs:595 "renewal/crank cadence changed liquidation economics"
+fail	both	v16_cu	inv_045_no_free_mark_movement::trade_origin_catchup::authenticated_reward_handoff::retained_penalty_handoff::v16_program_retained_stale_penalty_survives_fresh_liquidation_and_catchup	the reference's own: inv_045_retained_penalty_handoff.rs:468 expects 3762 where the program gives 1000
+fail	both	v16_cu	inv_045_no_free_mark_movement::trade_origin_catchup::authenticated_reward_handoff::reward_maintenance_catchup::v16_program_keeper_maintenance_preserves_distinct_reward_budgets_until_catchup	the reference's own: inv_045_reward_maintenance_catchup.rs:261 "reward preserves the recipient's own fee cursor and liabilities"
+fail	both	v16_cu	inv_045_no_free_mark_movement::trade_origin_catchup::authenticated_reward_handoff::reward_policy_catchup::v16_program_reward_policy_succession_preserves_receipts_and_effective_price_catchup	the reference's own: inv_045_reward_policy_catchup.rs:244 expects 2995 where the program gives 1000
+fail	both	v16_cu	inv_045_no_free_mark_movement::trade_origin_catchup::authenticated_reward_handoff::reward_terminal_redemption::v16_program_hybrid_catchup_rewards_survive_resolved_cohort_redemption_order	the reference's own: inv_045_reward_terminal_redemption.rs:226, a portfolio not as the test expects
+fail	both	v16_cu	inv_072_order_robust_crankability::v16_program_auto_crank_refresh_not_blocked_by_unneeded_first_asset_oracle	the reference's own: tests/v16_cu.rs:4758, the first crank refused with Custom(22) before any progress
+fail	both	v16_cu	inv_077_bounded_work_and_maximum_shape_compute::v16_attack_public_recovery_kf_progress_survives_stale_42_feed_tail_at_max_shape	the reference's own: tests/v16_cu.rs:4833 "crank with oracle tail", Custom(22)
+fail	both	v16_program_stateful_fuzz	inv_086_reference_model_and_deployed_transition_equivalence::v16_program_reference_model_matches_deployed_public_sequence	the reference's own: the author's reference model and the program diverge at action 11, a RebalanceReduce ("live asset 1 has unclassified effective exposure imbalance [1, 0]"), the same seed in both
+fail	port	v16_cu	inv_077_bounded_work_and_maximum_shape_compute::short_side_b_budget::v16_program_max_shape_short_b_budget_has_exact_public_progress	compute units only: inv_077_short_side_b_budget.rs:348 asserts the reference's peak of 554,832 after every state assertion has passed; the port's peak is 192,398
+fail	port	v16_cu	inv_078_permissionless_recovery_coverage::v16_bpf_force_close_liveness_survives_14_stale_leg_grief_via_precrank	compute units only: inv_078_permissionless_recovery_coverage.rs:1074 asserts that a one-shot ForceCloseAbandonedAsset of two 14-leg portfolios exceeds the 1,400,000 limit; the port completes it
+#
+# trace: a test whose recorded transactions differ, one row per kind of difference found in it (every differing
+# transaction of the test is classed; a kind found and not listed for the test fails the comparison).
+trace	reference-over-limit	v16_cu	inv_078_permissionless_recovery_coverage::v16_bpf_force_close_liveness_survives_14_stale_leg_grief_via_precrank	the one-shot ForceCloseAbandonedAsset (transaction 12) exhausts the reference's 1,400,000 compute units; the port completes it, and its test then stops (above); the vitest harness compares the same shape with the reference under a raised budget
+#
+# cu: a Percolator instruction (first tag of the transaction) with identical successes on which the port used more
+# compute units than the reference, with the port's README recording the figures and the cause. None is listed: the
+# three the full run found (InitMarket, CloseSlab and ResolveMarket at the author's largest shapes) were removed, and
+# the author's tests that showed them no longer do (README, "Where the port costs more").

@@ -127,30 +127,30 @@ Compute units per transaction, mainnet original against the port, from one run o
 
 | Instruction | Jito (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| tip payment `initialize` | 60,085 | 23,628 | −61% |
+| tip payment `initialize` | 60,085 | 23,632 | −61% |
 | `change_tip_receiver`, the receiver also the builder (both shares to one account) | 29,889 | 7,723 | −74% |
 | `change_block_builder`, a 7% commission paid first | 29,911 | 7,736 | −74% |
-| `change_tip_receiver`, a share kept in tip account 0 | 41,355 | 9,192 | −78% |
-| tip distribution `initialize` | 7,284 | 1,946 | −73% |
+| `change_tip_receiver`, a share kept in tip account 0 | 41,511 | 9,198 | −78% |
+| tip distribution `initialize` | 7,284 | 1,958 | −73% |
 | `initialize_tip_distribution_account` | 10,007 | 2,624 | −74% |
 | `upload_merkle_root` | 3,943 | 977 | −75% |
-| `claim` | 13,067 | 3,940 | −70% |
-| `close_claim_status` | 4,302 | 1,036 | −76% |
-| `close_tip_distribution_account` | 5,735 | 1,561 | −73% |
-| `update_config` | 2,850 | 645 | −77% |
-| `migrate_tda_merkle_root_upload_authority` | 6,467 | 1,342 | −79% |
-| priority fee `claim` | 12,730 | 3,933 | −69% |
-| `transfer_priority_fee_tips`, live | 6,059 | 2,014 | −67% |
-| `transfer_priority_fee_tips`, not live (logs SOL) | 6,362 | 2,673 | −58% |
+| `claim` | 14,566 | 4,262 | −71% |
+| `close_claim_status` | 4,302 | 995 | −77% |
+| `close_tip_distribution_account` | 5,735 | 1,486 | −74% |
+| `update_config` | 2,850 | 646 | −77% |
+| `migrate_tda_merkle_root_upload_authority` | 6,467 | 1,341 | −79% |
+| priority fee `claim` | 17,231 | 4,921 | −71% |
+| `transfer_priority_fee_tips`, live | 6,059 | 2,013 | −67% |
+| `transfer_priority_fee_tips`, not live (logs SOL) | 6,362 | 2,543 | −60% |
 
 `claim` and the account openings vary from run to run with the PDA bump searches of the random keys the test uses,
 in both programs alike.
 
 | Binary | Jito (mainnet, ELF without the padding) | TypeSOL |
 | --- | ---: | ---: |
-| Tip payment | 297,848 bytes | 47,128 bytes |
-| Tip distribution | 342,432 bytes | 46,848 bytes |
-| Priority fee distribution | 387,440 bytes | 61,432 bytes |
+| Tip payment | 297,848 bytes | 47,208 bytes |
+| Tip distribution | 342,432 bytes | 46,288 bytes |
+| Priority fee distribution | 387,440 bytes | 59,384 bytes |
 
 ## Where they differ
 

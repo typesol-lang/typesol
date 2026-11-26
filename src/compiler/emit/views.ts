@@ -309,7 +309,7 @@ export abstract class ViewEmitter extends CallEmitter {
     const o = this.tmp("rbopt");
     this.line(`${optC(scalar)} ${o};`);
     this.line(`${o}.some = ${idx} != 0;`);
-    this.line(`if (${idx}) ts_memcpy(&${o}.v, ${at}, ${inst.valueSize}); else ts_memzero(&${o}.v, ${inst.valueSize});`);
+    this.line(`if (${idx}) TS_MEMCPY(&${o}.v, ${at}, ${inst.valueSize}); else TS_ZERO_LOCAL(&${o}.v, ${inst.valueSize});`);
     return { c: o, type: { kind: "option", inner: scalar } as ValueType };
   }
 

@@ -1006,12 +1006,13 @@ export declare const AuthorityType: {
  * Resize an account of this program (Anchor `realloc`, struct accounts only): growing charges `payer` the extra rent
  * (never the account's own lamports, which may be deposits); shrinking keeps every lamport in the account — move
  * freed rent out yourself if your program allows it. At most 10 KiB of growth per instruction (3016); never below
- * the struct size. Accounts ending in a Vec size themselves through push/pop/clear.
+ * the struct size (3016; for a `@layout borsh` struct its smallest Borsh form, and the value written back must fit,
+ * 3004). Accounts ending in a Vec size themselves through push/pop/clear.
  */
 export declare function realloc(account: AccountMeta, newSize: u64, payer: Mut<Signer>): void;
 /**
  * Resize a `Mut<AccountInfo>` or a remaining account of this program to `newSize` bytes (Rust's `AccountInfo::resize` /
- * `realloc(newSize, true)`): the data length only, the new bytes zeroed. No rent moves: fund the account first
+ * `realloc(newSize, true)`): the data length only, the new bytes zeroed (64 or more by the memset syscall). No rent moves: fund the account first
  * (`rentExempt(newSize)`), the runtime refuses an account left short. At most 10 KiB past its size when the
  * instruction started (3016). A remaining account must be writable (3006) unless the program declares
  * `NATIVE_ACCOUNT_WRITES`, which also lets an `AccountInfo` parameter be resized without `Mut<…>`. A view of the
@@ -2491,7 +2492,9 @@ export declare enum ProgramError {
  * Under `export const PANIC_STYLE = "solana-1.14"` (a program built with solana-program 1.14 to 1.17) it logs
  * `panicked at '<message>', <location>` and aborts, so the runtime reports "SBF program panicked", as that panic
  * handler does; under `"solana-1.18"` (rustc 1.73 and later) it logs `panicked at <location>:` with the message on the
- * next line, in one log line, and aborts. A message is then required.
+ * next line, in one log line, and aborts. A message is then required. Under `"pinocchio"` (pinocchio's
+ * `entrypoint!` panic hook) it logs the location's file alone, then `** PANICKED **`, and aborts: the message is not
+ * logged (it may be null), and `location` may be the file alone (`"src/v16.rs"`).
  */
 export declare function panic(message?: string | null, location?: string): never;
 /**
@@ -2571,6 +2574,16 @@ export declare function emit<T>(event: T): void;
 export declare function returnData<T extends bigint | boolean | Pubkey | Hash | object>(program: AccountMeta): T;
 
 /**
+ * The return data as the runtime holds it, of any length and from any program (Rust's `get_return_data()`), for a
+ * port that checks it itself: `const [program, data] = getReturnData()`. `program` is the program that set it and
+ * `data` its bytes (up to 1,024, the runtime's maximum), read with the methods of instruction data
+ * (`data.length`, `data.readU64(8n)`, `data.slice(a, b)`). Rust's `None` is `data.length === 0n` (the runtime keeps
+ * no empty return data), `program` then all zeros. Nothing is checked: compare `program` and the length yourself,
+ * failing with your own errors. The bytes take 1 KiB of the calling function's stack frame.
+ */
+export declare function getReturnData(): [program: Pubkey, data: InstructionBytes];
+
+/**
  * Set this instruction's return data to `bytes` as they are (Rust's `set_return_data(&bytes)`): a list of u8 such as a
  * local `FixedVec<u8, N>`, a Vec or FixedVec in account data, or the instruction data or a slice of it. For a native
  * port's `@fallback` entry and helpers (`set_return_data(order_ids.try_to_vec()?.as_ref())`), and void instructions.
@@ -2601,6 +2614,15 @@ export declare function log64(a: u64, b: u64, c: u64, d: u64, e: u64): void;
  * with 3003 and writes nothing. Only this program's accounts can change: check the owner first.
  */
 export declare function zeroData(account: RemainingAccount | Mut<AccountInfo>, offset: u64, length: u64): void;
+
+/**
+ * Copy `length` bytes of an account's data from offset `from` to offset `to`, as a native program's
+ * `data.copy_within(from..from + length, to)` (or a struct copied out of the account and written back at another
+ * offset): the memmove syscall, about constant compute units whatever the length; the ranges may overlap. A remaining
+ * account (or a `Mut<AccountInfo>` parameter); a range past the end of the data fails with 3003 and copies nothing.
+ * Only this program's accounts can change: check the owner first.
+ */
+export declare function copyData(account: RemainingAccount | Mut<AccountInfo>, from: u64, to: u64, length: u64): void;
 
 /**
  * Verify `account.key` is the PDA for `seeds` + `bump` under this program. Any bump that gives a PDA passes (Anchor's

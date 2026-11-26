@@ -215,6 +215,16 @@ A native account whose parts start where its header says (Phoenix's market at by
   after a helper that may close or resize one it is given: its bounds were checked against the old length, so it is a
   compile error saying to take the view again.
 
+### Struct copies between views that overlap
+
+Two views of one account at run-time offsets (`loadRawAt`, `loadRawMutAt`, an account passed twice under
+`NATIVE_ACCOUNT_WRITES`) can overlap, and `d.v = s.v` then copies between overlapping bytes. The destination ends with
+the source's old bytes, in either direction and at any size, as Rust's `copy_within` or a struct copied out and
+written back leaves it: below 80 bytes every byte is loaded before any is stored (a load and then a store per 8
+bytes), from 80 bytes the memmove syscall copies them. A copy through a local (`const c: T = s.v; d.v = c;`) and
+`copyData` give the same bytes
+([`test/language/bulk-copies.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/bulk-copies.test.ts)).
+
 ## lib-sokoban's red-black tree
 
 ```ts
@@ -368,9 +378,19 @@ On remaining accounts and `AccountInfo` parameters:
   the account's owner: check that it is this program's first (the runtime would fail the instruction after it returns,
   having changed another program's account). The length does not change, so views made before stay valid and read the
   zeros.
-- `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, at most
-  10 KiB past the size it had when the instruction started, 3016). That size is the one the entrypoint records in the
-  account's record, as solana_program 1.14's does, only in programs that resize a remaining account.
+- `copyData(account, from, to, length)` copies `length` bytes of the data from offset `from` to offset `to`, as a
+  native program's `data.copy_within(from..from + length, to)` or a struct copied out and written back at another
+  offset (a memcpy in Rust): the memmove syscall from 32 bytes, about constant compute units whatever the length (a
+  whole-struct assignment `a.p = b.p` between views uses it too, from 80 bytes: [overlapping
+  views](#struct-copies-between-views-that-overlap)). The ranges may overlap. A range past the end of the data fails
+  with 3003 and copies nothing; without `NATIVE_ACCOUNT_WRITES` the account must be writable (3006). Like `zeroData`
+  it does not check the owner, and views made before stay valid and read the copied bytes (Percolator v16's InitMarket
+  copies asset 0's 424-byte oracle profile into every slot of the market this way;
+  [`test/language/native-copy-data.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/native-copy-data.test.ts)).
+- `resizeAccount(account, size)` also takes a remaining account (`realloc(size, true)`: new bytes zeroed, 64 or more
+  by the memset syscall as Rust's realloc zeroes them, fewer by stores; at most 10 KiB past the size it had when the
+  instruction started, 3016). That size is the one the entrypoint records in the account's record, as solana_program
+  1.14's does, only in programs that resize a remaining account.
 - A view of the account made before either (`loadRawMutAt`, `rawArrayMutAt`, `rbTreeMutAt`, a node or a struct read
   through one) is a compile error to use after it: its bounds were checked against the old length, so take the view
   again.
@@ -379,6 +399,7 @@ On remaining accounts and `AccountInfo` parameters:
   and not closed into itself (2040). With it nothing is checked and the runtime judges, as for the original
   (`ReadonlyLamportChange`, `ExternalAccountLamportSpend`, `UnbalancedInstruction`, `ModifiedProgramId`), and plain
   `AccountInfo` parameters are enough.
+
 
 ## Errors and panics as the original reports them
 
@@ -423,6 +444,30 @@ export function entry(): void {
   location)` log one line, `panicked at <location>:` and the message after a newline, and then abort ("SBF program
   panicked"), as that panic handler does: `panicked at src/wide_math.rs:1554:30:\nmul_div_floor_u128: a*b overflow`.
   As under "solana-1.14", a message is required and `PANIC_ON_OVERFLOW`'s panics abort.
+- **Panics as pinocchio's entrypoint writes them.** `export const PANIC_STYLE = "pinocchio"` (a program built with
+  pinocchio's `entrypoint!`, whose `default_panic_handler!` hook runs under std: Percolator v16) makes `panic(message,
+  location)` log two lines, the location's file exactly as Rust records it and then `** PANICKED **`, and abort ("SBF
+  program panicked"):
+
+  ```
+  Program log: src/v16.rs
+  Program log: ** PANICKED **
+  Program <id> failed: SBF program panicked
+  ```
+
+  - The file is `Location::file()` verbatim: the path rustc was given, which cargo makes relative to the crate
+    (`src/v16.rs`, `src/account_info.rs` inside solana-program) and which is the toolchain's absolute path for a panic
+    inside the standard library that is not reported at its caller (Percolator v16's binary holds
+    `/home/runner/work/platform-tools/platform-tools/out/rust/library/alloc/src/raw_vec/mod.rs`). Give it as the
+    location, alone or with its line and column (`"src/v16.rs:812:9"`, logged as `src/v16.rs`), so the port's source
+    keeps the original's place. Index, `unwrap`, `RefCell::borrow_mut` and `Vec::with_capacity`'s capacity panics are
+    reported at their caller (`#[track_caller]`), so their file is the caller's.
+  - No message is logged (the hook ignores it): the message may be `null` or a note for the reader. Without a
+    location this source file's name is logged.
+  - `panicsAt(location, expression)` logs its location's file the same way. `PANIC_ON_OVERFLOW` is refused with this
+    style: its panics have no file; wrap the arithmetic in `panicsAt`.
+  - Every panic site calls one shared helper (the two log calls and the abort), so a port with many panic sites stays
+    small.
 - **Overflow panics with Rust's message and location.** `panicsAt("src/quantities.rs:233:1", a + b)` is `a + b` whose
   checked arithmetic panics as Rust's overflow checks do at that location ("attempt to add with overflow"; also
   "attempt to subtract / multiply with overflow", "attempt to divide by zero", "attempt to calculate the remainder with
@@ -438,7 +483,8 @@ export function entry(): void {
     quantities.rs, wherever the addition is written): give the port a helper, `function addQuoteLots(a: u64, b: u64):
     u64 { return panicsAt(QUOTE_LOTS_ADD, a + b); }`.
   - The bits `<<` loses, `**`, `mulDiv` / `mulDivCeil`, casts and u256 arithmetic keep TypeSOL's failures (Rust checks
-    them differently, or with other messages).
+    them differently, or with other messages): `panicsAt(LOC, a ** 2n)` fails with 5100 when the square overflows,
+    while an operator in `**`'s operands (`(a + b) ** 2n`) still panics at the location.
   - [`test/language/rust-panics.test.ts`](https://github.com/typesol-lang/typesol/blob/main/test/language/rust-panics.test.ts) checks the lines against the Phoenix binary's own panics.
 
 ## Log lines as the original writes them

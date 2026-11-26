@@ -50,7 +50,9 @@ export function record(stats: Mut<Stats>, by: u64, change: i64): void {
   u8; convert with u64(...) etc.` Comparisons (`<`, `<=`, `===`, …) need equal types too.
 - **Every operation is checked.** `+ - * / % **` and their assignments (`+=` … `**=`) fail the instruction on
   overflow (5100) or division by zero (5101); `**` with a negative exponent fails as well (JavaScript throws there).
-  Unlike JavaScript there are no silent wraps and no `Infinity`.
+  Unlike JavaScript there are no silent wraps and no `Infinity`. A signed type's minimum divided by -1 overflows, and
+  so does its remainder by -1 (`x % -1n` with an `i8` holding -128 fails with 5100, as Rust's checked `%` does, where
+  JavaScript gives 0); a typed constant computing it is a compile error ([constants](language-basics.md#constants)).
 - **Bitwise operators.** `& | ^` work on equal types; `~` flips the bits within the type's width (`~1n` as a `u8` is
   254). Both shifts fail (5100) when the amount is negative or not below the width (`x >> 64n` on a `u64`), and `<<`
   also when bits would be lost; `>>` is arithmetic on signed types. Unlike JavaScript, where a bigint shift never
@@ -300,8 +302,16 @@ export function step(player: Mut<Player>, dx: u64): void {
   order, back to back, with no padding.
 - A struct literal names every field (`{ x, y: 2n }`); a missing or unknown field is an error. An object literal needs
   a known struct type: a typed local (`const p: Point = { … }`), a field, a helper parameter, `emit<T>(…)`.
-- `a.home = b.home` copies the whole struct, as Rust and Anchor do; how `const` binds one is in
-  [copies and references](language-statements.md#copies-and-references).
+- `a.home = b.home` copies the whole struct, as Rust and Anchor do; how `const` binds one is in [copies and
+  references](language-statements.md#copies-and-references). A copy between places reached through pointers (account
+  data, a view, a helper's struct parameter) of 80 bytes or more is the memmove syscall (16 compute units up to 2,749
+  bytes, one more per 250 bytes past that), as Rust's memcpy is; below, 8-byte loads and stores (26 units for 80
+  bytes, 54 for 192). A copy into or out of a local of the function (a local copy, a helper's result, a struct literal
+  built in a temporary) takes the syscall from 400 bytes, where clang stops unrolling the loads and stores (and about
+  1 unit a byte is the loop's cost): below that the optimizer drops what nothing reads, which a call would prevent.
+  The same holds wherever TypeSOL copies a whole value itself (Borsh fields, instruction arguments, a helper's copy of
+  a struct argument, events), and a value it zeroes whole (`x.o = null` on an `Option<struct>`, a data-enum literal)
+  takes the memset syscall from 192 bytes in account data and 600 in a local.
 - A struct cannot contain itself.
 
 ### File-local structs

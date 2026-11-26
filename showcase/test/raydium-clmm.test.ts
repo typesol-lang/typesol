@@ -2,7 +2,8 @@
 // in their own LiteSVM under the same program id with the same clock. Mints and token accounts are made by the same
 // token-program instructions in both; AmmConfig accounts are written in both (creating one needs Raydium's admin key):
 // the mainnet config of the USDC/CC pool as cloned, and others laid out as the original lays them out. Every
-// transaction must then have the same outcome, the same account bytes and the same events ("Program data:" lines).
+// transaction must then have the same outcome, account bytes, inner instructions, return data, events and log lines,
+// with the exceptions `both` declares.
 import { getCreateAccountInstruction, getTransferSolInstruction } from "@solana-program/system";
 import * as token from "@solana-program/token";
 import * as t22 from "@solana-program/token-2022";
@@ -54,6 +55,45 @@ const events = (r: Result) =>
   meta(r)
     .logs()
     .filter((l) => l.startsWith("Program data:"));
+const inner = (r: Result) =>
+  meta(r)
+    .innerInstructions()
+    .flatMap((list, outer) =>
+      list.map((i) => {
+        const c = i.instruction();
+        return `${outer}: ${i.stackHeight()} ${c.programIdIndex()} [${[...c.accounts()].join(",")}] ${Buffer.from(c.data()).toString("hex")}`;
+      }),
+    );
+/**
+ * A known difference, pinned: the Associated Token program's Create, which the original calls with data `[0]` (the
+ * instruction's Borsh tag) and the port (TypeSOL's `Ata<Init<…>>`, runtime ts_ata_create) with empty data, the
+ * program's older form of the same instruction. Only that is mapped: a CPI at stack height 2 with the six accounts
+ * of Create (payer, account, owner, mint, System Program, token program) and no data. Everything else must be equal.
+ */
+const ataCreateAsOriginal = (line: string) => line.replace(/^(\d+: 2 \d+ \[\d+(?:,\d+){5}\]) $/, "$1 00");
+const returnData = (r: Result) => {
+  const x = meta(r).returnData();
+  return `${Buffer.from(x.programId()).toString("hex")} ${Buffer.from(x.data()).toString("hex")}`;
+};
+/**
+ * The log lines compared (see `both`): every line but the runtime's compute-unit lines, Anchor's `Instruction: <Name>`
+ * line (the port does not write it) and, on a failure, the other `Program log:` lines Raydium CLMM writes itself
+ * (which program is running is followed through the invoke / success / failed lines).
+ */
+const comparableLogs = (r: Result) => {
+  const failed = r instanceof FailedTransactionMetadata;
+  const running: string[] = [];
+  const out: string[] = [];
+  for (const l of meta(r).logs()) {
+    const invoke = /^Program (\w+) invoke \[\d+\]$/.exec(l);
+    if (invoke) running.push(invoke[1]!);
+    else if (/^Program \w+ (success|failed: .*)$/.test(l)) running.pop();
+    if (/^Program \w+ consumed \d+ of \d+ compute units$/.test(l)) continue;
+    if (running.at(-1) === PROGRAM && (/^Program log: Instruction: \w+$/.test(l) || (failed && l.startsWith("Program log: ")))) continue;
+    out.push(l);
+  }
+  return out;
+};
 const custom = (code: number) => `error: TransactionErrorInstructionError { index: 0, error: InstructionErrorCustom { code: ${code} } }`;
 
 describe.skipIf(!present(ORIGINAL))("showcase/mainnet/raydium-clmm against Raydium CLMM on mainnet", () => {
@@ -126,22 +166,43 @@ describe.skipIf(!present(ORIGINAL))("showcase/mainnet/raydium-clmm against Raydi
       if (r instanceof FailedTransactionMetadata) throw new Error(`setup failed: ${String(r.err())}\n${r.meta().logs().join("\n")}`);
     }
   };
-  /** Send to both: the same outcome, account bytes and events. */
-  /** `failing`: the original panics (no error code to match), so only both failing is required. */
+  /**
+   * Send to both. Must match: the outcome (success, or the same error and code); the lamports, owner and data of the
+   * payer, of every account an instruction names (programs, being different binaries, left out) and of `watch`; the
+   * inner instructions; the return data; and the log lines, events (`Program data:`) included. Declared exceptions
+   * (also in docs/case-study-raydium-clmm.md): the runtime's compute-unit lines; Anchor's `Instruction: <Name>` line,
+   * which the port does not write; on a failure, the text the program
+   * itself logs (`Program log:` lines written while Raydium CLMM runs: Anchor's error message against TypeSOL's; the
+   * code is compared through the outcome and the runtime's `failed:` line); and `failing`: where the original panics
+   * (ProgramFailedToComplete, no code to match) the port must fail with a numbered error, and the accounts and the
+   * rest of the log are not compared beyond `watch`.
+   */
   const both = async (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[], failing = false) => {
     const [a, b] = [await send(original, payer, ixs), await send(d.svm, payer, ixs)];
     compared++;
     const logs = (r: Result) => meta(r).logs().join("\n");
     if (failing) {
-      expect(a instanceof FailedTransactionMetadata && b instanceof FailedTransactionMetadata, `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(
-        true,
-      );
+      expect(outcome(a), `${label}: the original panics here\n${logs(a)}`).toMatch(/error: ProgramFailedToComplete \}$/);
+      expect(outcome(b), `${label}: the port fails with a numbered error\n${logs(b)}`).toMatch(/InstructionErrorCustom \{ code: \d+ \} \}$/);
       for (const w of watch) expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
       return "failed";
     }
     expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));
-    for (const w of watch) expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
+    const named = new Set<Address>([payer.address, ...watch, ...ixs.flatMap((i) => (i.accounts ?? []).map((m) => m.address))]);
+    for (const w of named) {
+      if (
+        [original, d.svm].some((vm) => {
+          const x = vm.getAccount(w);
+          return x.exists && x.executable;
+        })
+      )
+        continue;
+      expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
+    }
+    expect(inner(b).map(ataCreateAsOriginal), `${label}: inner instructions`).toEqual(inner(a));
+    expect(returnData(b), `${label}: return data`).toBe(returnData(a));
     if (!(a instanceof FailedTransactionMetadata)) expect(events(b), `${label}: events`).toEqual(events(a));
+    expect(comparableLogs(b), `${label}: logs`).toEqual(comparableLogs(a));
     cu[label] = [meta(a).computeUnitsConsumed(), meta(b).computeUnitsConsumed()];
     return outcome(a);
   };

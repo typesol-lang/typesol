@@ -820,6 +820,18 @@ export abstract class ExpressionEmitter extends StorageEmitter {
     const exp = this.expr(node.right);
     // JS reads the base first: if the exponent ran statements (a helper that changes it), use the value read before.
     base = this.settle(base, mark);
+    // Inside panicsAt the operands keep its location, but `**` itself keeps TypeSOL's failure (5100 on overflow):
+    // Rust's `pow` panics with other messages, so its multiplications do not take the panic.
+    const outer = this.panicAt;
+    this.panicAt = undefined;
+    try {
+      return this.powerOf(node, hint, base, exp);
+    } finally {
+      this.panicAt = outer;
+    }
+  }
+
+  private powerOf(node: ts.BinaryExpression, hint: ValueType | undefined, base: Value, exp: Value): Value {
     this.refuseF64(node, "**", base, exp);
     if (base.literal !== undefined) base = this.literal(base.literal, hint?.kind === "int" ? hint : U64, node.left);
     if (base.type.kind !== "int") this.fail(node.left, "** needs an integer base");

@@ -5,7 +5,8 @@ This page ports a program that holds real authority on mainnet:
 deployed at `msigUdDBsR4zSUYqYEDrc1LcgtmuSDDM7KxpRUXNC6U`. The port is
 [`showcase/mainnet/multisig/multisig.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/mainnet/multisig/multisig.ts). Instead of a twin built for the occasion, it is checked against the
 binary that runs on mainnet: [`showcase/test/multisig.test.ts`](https://github.com/typesol-lang/typesol/blob/main/showcase/test/multisig.test.ts) runs both under the
-same program id and compares every outcome and every account byte. See
+same program id and compares every outcome, every byte of every account a transaction names, the inner instructions,
+the return data and the log lines (apart from Anchor's instruction-name line and its error-message text). See
 [case-study-escrow.md](case-study-escrow.md) for a token program and [Migrate from Anchor](migrate-from-anchor.md) for
 the general reference.
 
@@ -100,8 +101,19 @@ existing clients and existing accounts work with the port unchanged.
 
 `test/programs/coral_multisig.so` is the program dumped from mainnet on 2026-10-29 (sha256 in
 [`test/programs/SOURCES.md`](https://github.com/typesol-lang/typesol/blob/main/test/programs/SOURCES.md)). The test loads it into one LiteSVM and the port into
-another, both at `msigUdDB…`, then sends each transaction to both. After each one it requires the same outcome (success,
-or the same error down to the code) and the same lamports, owner and data bytes for every account involved.
+another, both at `msigUdDB…`, then sends each transaction to both. After each one it requires:
+
+- the same outcome (success, or the same error down to the code);
+- the same lamports, owner and data bytes for the fee payer and every account an instruction names (the program
+  itself left out: the two are different binaries);
+- the same inner instructions (the CPI `execute_transaction` makes: program, accounts, data and stack height);
+- the same return data;
+- the same log lines, apart from the runtime's compute-unit lines, Anchor's `Instruction: <Name>` line (the port does
+  not write it) and, on a failure, the error message the program logs itself (Anchor's text against TypeSOL's, such as
+  `AnchorError caused by account: multisig. Error Code: ConstraintRaw. …` against `Error 2003 ConstraintRaw: …`; the
+  code is compared through the outcome and the runtime's `failed: custom program error` line).
+
+No compared transaction differs in anything else.
 
 There are 55 transactions (8 in the upstream flow, 11 in the `create_multisig` refusals, 14 in the other refusals,
 12 in the owner-set changes, 7 in the payouts, 3 with the 40-owner account):
@@ -148,7 +160,7 @@ instruction it runs.
 | `execute_transaction` → System transfer | 9,961 | 3,358 | −66% |
 
 Refusals cost less too. For example, an already-initialized account costs 3,378 against 160, and a missing signature
-4,229 against 177. The binary is 526,688 bytes on mainnet and 29,984 bytes for the port, 18 times smaller. Deploying it
+4,229 against 177. The binary is 526,688 bytes on mainnet and 30,056 bytes for the port, 18 times smaller. Deploying it
 needs about 3.5 SOL less rent.
 
 The original was built with Anchor 0.25; a rebuild with a current Anchor would cost less than the mainnet figures. The

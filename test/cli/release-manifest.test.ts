@@ -2,7 +2,7 @@
 // to stand for each outcome (the same bytes, STALE C or IDL, DIFFERS, a pre-0.45.0 host difference), and the
 // references it refuses (nothing to compare, an entry that did not build, made from uncommitted changes).
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,4 +86,46 @@ describe("release-manifest --check", () => {
     expect(dirty.status).toBe(1);
     expect(dirty.stdout).toContain("made from a tree with uncommitted changes (sources.dirty)");
   });
+});
+
+describe("release-manifest: the test corpus and the reference inventory of a release", () => {
+  // A small source tree: one program, a test under test/ and one under showcase/test/, and one listed reference.
+  const tree = path.join(dir, "tree");
+  const write = (rel: string, text: string | Buffer) => {
+    mkdirSync(path.dirname(path.join(tree, rel)), { recursive: true });
+    writeFileSync(path.join(tree, rel), text);
+  };
+  type Release = { references: Record<string, string>; referencesMissing?: string[]; corpus: { roots: string[]; files: number; sha256: string } };
+  const release = (...extra: string[]) => {
+    const out = path.join(dir, "release.json");
+    rmSync(out, { force: true });
+    const r = manifest("--sources", tree, "--out", out, ...extra);
+    return { r, m: r.status === 0 ? (JSON.parse(readFileSync(out, "utf8")) as Release) : undefined };
+  };
+
+  it("hashes test/ and showcase/test/, and refuses a tree that lacks a reference SOURCES.md lists", () => {
+    mkdirSync(path.join(tree, "examples"), { recursive: true });
+    copyFileSync(path.join(ROOT, "examples/counter.ts"), path.join(tree, "examples/counter.ts"));
+    write("test/a.test.ts", "// a\n");
+    write("showcase/test/b.test.ts", "// b\n");
+    write("test/programs/SOURCES.md", "| File |\n| --- |\n| `x.so` | x |\n");
+    write("test/programs/x.so", Buffer.from([1, 2, 3]));
+    const first = release();
+    expect(first.r.status, first.r.stderr).toBe(0);
+    expect(first.m!.corpus).toMatchObject({ roots: ["test", "showcase/test"], files: 3 });
+    expect(Object.keys(first.m!.references)).toEqual(["test/programs/x.so"]);
+    // An assertion changed in a showcase test changes the corpus hash.
+    write("showcase/test/b.test.ts", "// b, changed\n");
+    const second = release();
+    expect(second.m!.corpus.files).toBe(3);
+    expect(second.m!.corpus.sha256).not.toBe(first.m!.corpus.sha256);
+    // A listed reference missing: refused, or recorded as missing when asked.
+    rmSync(path.join(tree, "test/programs/x.so"));
+    const refused = release();
+    expect(refused.r.status).toBe(1);
+    expect(refused.r.stderr).toContain("test/programs/SOURCES.md lists binaries this tree lacks: test/programs/x.so");
+    const allowed = release("--allow-missing-references");
+    expect(allowed.r.status, allowed.r.stderr).toBe(0);
+    expect(allowed.m!.referencesMissing).toEqual(["test/programs/x.so"]);
+  }, 180_000);
 });

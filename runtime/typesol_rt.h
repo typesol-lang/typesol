@@ -177,6 +177,70 @@ static inline __attribute__((always_inline)) void ts_memzero(void *dst, uint64_t
 }
 
 /*
+ * ---- Whole values and account data by the memory syscalls -----------------
+ * sol_memmove_ and sol_memset_ cost max(10, n / 250) compute units, plus the call (its arguments and the call itself):
+ * 16 CU for a copy and 14 for a zero-fill of up to 2,749 bytes, measured in LiteSVM (one more CU per 250 bytes past
+ * that). The word loops above cost, measured in the same programs:
+ *
+ *   bytes                  16   64   80  128  192  256  392  400  424  512  576  600  726 1024 2048 4096
+ *   copy, size known        6   22   26   38   54   70  104  405  429  515  581  605  560 1027 2051 4099
+ *   zero, size known        3    9   11   17   25   33   50   53   56   65   75  378  366  642 1282 2562
+ *   zero, run-time length  17   41   49   73  105  137    -    -  221  265    -    -  394  521 1033 2057
+ *
+ * (a length 1 to 7 bytes past a multiple of 8 adds up to 18 CU for the byte loop; the run-time row includes the
+ * resize around it). Up to 392 bytes clang unrolls a copy of a known size into a load and a store per 8 bytes, and up
+ * to 576 a zero-fill into a store per 8 bytes; past that it emits a loop (8 and 5 CU per 8 bytes).
+ *
+ * - Between places reached through pointers (account data, views, a helper's pointer parameters), which the optimizer
+ *   must copy whole: TS_COPY from 80 bytes and TS_ZERO from 192, where the loop costs at least 10 CU more than the
+ *   call (a call that needs a live value saved around it still costs less).
+ * - Where a side is a local of the function (a struct literal built in a temporary, a helper's result, a local copy):
+ *   TS_COPY_LOCAL / TS_MEMCPY from 400 bytes and TS_ZERO_LOCAL from 600, where clang emits a loop. Below that it
+ *   unrolls them and drops the stores and loads nothing reads (the literal built in place, the fields nobody reads),
+ *   which a call, opaque to it, would prevent: with 80 and 192 there, SPL Stake Pool's UpdateValidatorListBalance cost
+ *   up to 2,825 CU more and Phoenix's instructions 7 to 98 more (measured).
+ *
+ * The sizes are known when compiling (a sizeof, a constant): the condition folds, so a program none of whose copies
+ * reaches a threshold neither calls nor imports the syscalls, and its code is exactly what it was. TS_COPY and
+ * TS_COPY_LOCAL are copies between two places of one type (TS_COPY's may overlap, through native views of one account
+ * at different offsets: below the threshold ts_copy_value loads every byte before storing any; TS_COPY_LOCAL's cannot,
+ * one side being a local: ts_copy), TS_MEMCPY any other whole-value copy. All call memmove, never
+ * memcpy (which fails the transaction on overlapping ranges): it costs the same.
+ *
+ * ts_memzero_run (the bytes an account grows by) and TS_CLOSE (an account's data when it is closed) take a run-time
+ * length, always a loop before. ts_memzero_run tests the length at run time: one CU more than before below
+ * TS_ZERO_RUN_MIN. TS_CLOSE decides when compiling, from the smallest size the account's type allows.
+ */
+extern void sol_memmove_(void *dst, const void *src, uint64_t n);
+extern void sol_memset_(void *dst, uint8_t c, uint64_t n);
+#ifndef TS_COPY_SYSCALL_MIN
+#define TS_COPY_SYSCALL_MIN 80
+#endif
+#ifndef TS_ZERO_SYSCALL_MIN
+#define TS_ZERO_SYSCALL_MIN 192
+#endif
+#ifndef TS_LOCAL_COPY_SYSCALL_MIN
+#define TS_LOCAL_COPY_SYSCALL_MIN 400
+#endif
+#ifndef TS_LOCAL_ZERO_SYSCALL_MIN
+#define TS_LOCAL_ZERO_SYSCALL_MIN 600
+#endif
+#ifndef TS_ZERO_RUN_MIN
+#define TS_ZERO_RUN_MIN 64
+#endif
+#define TS_COPY(dst, src, n) ((n) >= TS_COPY_SYSCALL_MIN ? sol_memmove_((dst), (src), (n)) : ts_copy_value((dst), (src), (n)))
+#define TS_COPY_LOCAL(dst, src, n) \
+  ((n) >= TS_LOCAL_COPY_SYSCALL_MIN ? sol_memmove_((dst), (src), (n)) : ts_copy((dst), (src), (n)))
+#define TS_MEMCPY(dst, src, n) \
+  ((n) >= TS_LOCAL_COPY_SYSCALL_MIN ? sol_memmove_((dst), (src), (n)) : ts_memcpy((dst), (src), (n)))
+#define TS_ZERO(dst, n) ((n) >= TS_ZERO_SYSCALL_MIN ? sol_memset_((dst), 0, (n)) : ts_memzero((dst), (n)))
+#define TS_ZERO_LOCAL(dst, n) ((n) >= TS_LOCAL_ZERO_SYSCALL_MIN ? sol_memset_((dst), 0, (n)) : ts_memzero((dst), (n)))
+static inline __attribute__((always_inline)) void ts_memzero_run(void *dst, uint64_t n) {
+  if (n >= TS_ZERO_RUN_MIN) sol_memset_(dst, 0, n);
+  else ts_memzero(dst, n);
+}
+
+/*
  * Checked u64 addition and subtraction. Same results as __builtin_add/sub_overflow, but written as one compare
  * on the operands, which clang lowers to a single branch on SBF instead of materializing the carry flag.
  */
@@ -761,9 +825,42 @@ static inline uint64_t ts_find_pda(const SolSignerSeed *seeds, int n, const SolP
 }
 
 /* ---- Account checks ------------------------------------------------------ */
-/* Copy between two places of the same type: distinct, or the very same place (then nothing to do). */
+/* Copy between two places of the same type that cannot overlap (TS_COPY_LOCAL: one is a local of the function):
+   distinct, or the very same place (then nothing to do). */
 static inline void ts_copy(void *dst, const void *src, uint64_t n) {
   if (dst != src) ts_memcpy(dst, src, n);
+}
+
+/*
+ * TS_COPY below TS_COPY_SYSCALL_MIN: a whole value between two places of one type reached through pointers, which may
+ * overlap (views of one account at run-time offsets, an account passed twice under NATIVE_ACCOUNT_WRITES). Every byte
+ * is loaded before any is stored, so the destination ends with the source's old bytes in either direction, as the
+ * memmove syscall leaves them from the threshold on. The size is known when compiling: the loops unroll into a load
+ * per 8 bytes, then a store per 8 bytes; a length past a multiple of 8 ends with one 8-byte load and store of the last
+ * 8 bytes (they overlap the previous word), 4 to 7 bytes are two 4-byte loads and stores, 1 to 3 bytes byte by byte.
+ * Measured against the forward word loop it replaces (ts_copy, which re-read bytes it had already written when the
+ * destination was ahead of an overlapping source): 1 to 2 CU less for 16 and 40 bytes, the same for 72, 10 less for
+ * 6 and 79 bytes (test/language/bulk-copies.test.ts); more registers are live between the loads and the stores.
+ */
+static inline __attribute__((always_inline)) void ts_copy_value(void *dst, const void *src, uint64_t n) {
+  uint8_t *d = (uint8_t *)dst;
+  const uint8_t *s = (const uint8_t *)src;
+  if (n >= 8) {
+    uint64_t w[TS_COPY_SYSCALL_MIN / 8];
+    uint64_t k = n / 8 < TS_COPY_SYSCALL_MIN / 8 ? n / 8 : TS_COPY_SYSCALL_MIN / 8;
+    for (uint64_t i = 0; i < k; i++) w[i] = ts_ld64(s + 8 * i);
+    uint64_t t = ts_ld64(s + n - 8);
+    for (uint64_t i = 0; i < k; i++) ts_st64(d + 8 * i, w[i]);
+    if (n % 8) ts_st64(d + n - 8, t);
+  } else if (n >= 4) {
+    uint32_t a = *(const ts_u32_unaligned *)s, b = *(const ts_u32_unaligned *)(s + n - 4);
+    *(ts_u32_unaligned *)d = a;
+    *(ts_u32_unaligned *)(d + n - 4) = b;
+  } else {
+    uint8_t b[3];
+    for (uint64_t i = 0; i < n && i < 3; i++) b[i] = s[i];
+    for (uint64_t i = 0; i < n && i < 3; i++) d[i] = b[i];
+  }
 }
 
 static inline __attribute__((always_inline)) bool ts_key_eq(const SolPubkey *a, const SolPubkey *b);
@@ -1419,7 +1516,7 @@ static inline uint64_t ts_resize(TsParams *params, TsAccount *payer, TsAccount *
       if (payer == NULL) TS_FAIL(TS_ERR_REALLOC, "TypeSOL: growing an account needs a payer");
       TS_TRY(ts_system_transfer(params, payer, acct, new_rent - old_rent));
     }
-    ts_memzero(acct->data + old_len, new_len - old_len);
+    ts_memzero_run(acct->data + old_len, new_len - old_len);
   }
   acct->data_len = new_len;
   return SUCCESS;
@@ -1434,7 +1531,7 @@ static inline __attribute__((always_inline)) uint64_t ts_entry_len(const TsAccou
 static inline uint64_t ts_resize_raw(TsAccount *acct, uint64_t new_len, uint64_t entry_len) {
   if (new_len > entry_len + MAX_PERMITTED_DATA_INCREASE)
     TS_FAIL(TS_ERR_REALLOC, "TypeSOL: account would grow more than 10 KiB in one instruction");
-  if (new_len > acct->data_len) ts_memzero(acct->data + acct->data_len, new_len - acct->data_len);
+  if (new_len > acct->data_len) ts_memzero_run(acct->data + acct->data_len, new_len - acct->data_len);
   acct->data_len = new_len;
   return SUCCESS;
 }
@@ -1485,6 +1582,20 @@ static inline uint64_t ts_close(TsAccount *acct, TsAccount *dest) {
   ts_memcpy(&acct->owner, &TS_SYSTEM_PROGRAM_ID, 32);
   return SUCCESS;
 }
+/* ts_close for an account known to hold at least TS_ZERO_RUN_MIN bytes (its type's smallest size; TS_CLOSE decides
+   when compiling): the data zeroed by the memset syscall. */
+static inline uint64_t ts_close_big(TsAccount *acct, TsAccount *dest) {
+  uint64_t total;
+  if (ts_add_overflow_u64(dest->lamports, acct->lamports, &total))
+    TS_FAIL(TS_ERR_OVERFLOW, "TypeSOL: arithmetic overflow");
+  dest->lamports = total;
+  acct->lamports = 0;
+  sol_memset_(acct->data, 0, acct->data_len);
+  acct->data_len = 0;
+  ts_memcpy(&acct->owner, &TS_SYSTEM_PROGRAM_ID, 32);
+  return SUCCESS;
+}
+#define TS_CLOSE(acct, dest, min) ((min) >= TS_ZERO_RUN_MIN ? ts_close_big((acct), (dest)) : ts_close((acct), (dest)))
 
 /* A CPI to `program` (an account passed in), signed by one PDA when `nseeds` > 0. */
 static inline uint64_t ts_cpi(TsParams *params, const TsAccount *program, uint8_t *data, uint64_t len,
@@ -1833,6 +1944,16 @@ extern uint64_t sol_get_stack_height(void);
 /* The runtime's `abort` syscall (Rust's abort on SBF, e.g. the allocator's out-of-memory error): ProgramFailedToComplete,
  * logged as "SBF program panicked", with no location. */
 extern __attribute__((noreturn)) void abort(void);
+#ifdef TS_PANIC_PINOCCHIO
+/* PANIC_STYLE "pinocchio": a Rust panic as pinocchio's `default_panic_handler!` hook reports it under std: the file of
+ * the panic's location verbatim (`location.file()`, no line or column, no message), then "** PANICKED **", then std's
+ * abort ("SBF program panicked"). One out-of-line copy: every panic site is a call with its file. */
+static __attribute__((noinline, noreturn, cold, unused)) void ts_panic_file(const char *file, uint64_t len) {
+  sol_log_(file, len);
+  sol_log_("** PANICKED **", 14);
+  abort();
+}
+#endif
 
 /*
  * ---- BigVec (SPL's big_vec) ------------------------------------------------
@@ -1843,6 +1964,11 @@ extern __attribute__((noreturn)) void abort(void);
  * thousands). Overlapping ranges are allowed. The "no SDK byte loops" rule is about the SDK's C loops, not this.
  */
 extern void sol_memmove_(void *dst, const void *src, uint64_t n);
+/* copyData: the memmove syscall from TS_MEMCPY_SYSCALL_MIN bytes (the ranges may overlap), the word loop below it. */
+static inline __attribute__((always_inline, unused)) void ts_memmove_bulk(void *dst, const void *src, uint64_t n) {
+  if (n >= 32) sol_memmove_(dst, src, n);
+  else ts_memmove(dst, src, n);
+}
 /* The memcpy syscall, for bulk copies of a length known only at run time (FixedVec.pushAll): max(10, n / 250) CU plus
  * the call, against about 0.74 CU a byte for ts_memcpy's word loop over unaligned data (measured: 1000 bytes of
  * instruction data), so copies under 32 bytes keep the loop. The ranges never overlap (a FixedVec's free slots and

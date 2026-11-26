@@ -1084,7 +1084,7 @@ export function swapV2(
   pool_state.liquidity = st.liquidity;
   updatePoolFees(pool_state, st, zeroForOne);
 
-  log(`exact_swap_internal, is_base_input:${is_base_input}, amount_0: ${amount0}, amount_1: ${amount1}`);
+  // No log line here: the original writes one only when built with its enable-log feature, which the deployed binary was not.
   require(amount0 !== 0n && amount1 !== 0n, ErrorCode.TooSmallInputOrOutputAmount);
   // The transfer fees: the input's on top of what the pool takes in, the output's out of what it pays.
   let fee0: u64 = 0n;
@@ -1108,7 +1108,7 @@ export function swapV2(
     require(amount1 <= 18446744073709551615n - fee1, ErrorCode.CalculateOverflow);
     send1 = amount1 + fee1;
   }
-  log(`amount_0:${amount0}, transfer_fee_0:${fee0}, amount_1:${amount1}, transfer_fee_1:${fee1}`);
+  // No log line here: the original writes one only when built with its enable-log feature, which the deployed binary was not.
   emit<SwapEvent>({
     pool_state: pool_state.key,
     sender: payer.key,
@@ -1905,7 +1905,7 @@ export function initializeReward(
   );
   require(reward_funder.key === ADMIN || reward_funder.key === pool_state.owner || isOperator(operation_state, reward_funder.key), ErrorCode.NotApproved);
   const timestamp = now();
-  log(`current block timestamp:${timestamp}`);
+  // No log line here: the original writes one only when built with its enable-log feature, which the deployed binary was not.
   const current = u64(timestamp);
   // InitializeRewardParam::check
   require(param.open_time < param.end_time &&
@@ -3223,7 +3223,7 @@ export function swap(
   pool_state.liquidity = st.liquidity;
   updatePoolFees(pool_state, st, zeroForOne);
 
-  log(`exact_swap_internal, is_base_input:${is_base_input}, amount_0: ${amount0}, amount_1: ${amount1}`);
+  // No log line here: the original writes one only when built with its enable-log feature, which the deployed binary was not.
   require(amount0 !== 0n && amount1 !== 0n, ErrorCode.TooSmallInputOrOutputAmount);
   emit<SwapEvent>({
     pool_state: pool_state.key,
@@ -3463,7 +3463,7 @@ export function swapRouterBaseIn(
     pool.sqrt_price_x64 = st.sqrt_price_x64;
     pool.liquidity = st.liquidity;
     updatePoolFees(pool, st, zeroForOne);
-    log(`exact_swap_internal, is_base_input:true, amount_0: ${amount0}, amount_1: ${amount1}`);
+    // No log line here: the original writes one only when built with its enable-log feature, which the deployed binary was not.
     require(amount0 !== 0n && amount1 !== 0n, ErrorCode.TooSmallInputOrOutputAmount);
     // The input's fee on top of what the pool takes in, the output's out of what it pays.
     const paid = zeroForOne ? amount0 : amount1;
@@ -3484,7 +3484,7 @@ export function swapRouterBaseIn(
     require(paid <= 18446744073709551615n - inFee, ErrorCode.CalculateOverflow);
     const fee0 = zeroForOne ? inFee : outFee;
     const fee1 = zeroForOne ? outFee : inFee;
-    log(`amount_0:${amount0}, transfer_fee_0:${fee0}, amount_1:${amount1}, transfer_fee_1:${fee1}`);
+    // No log line here: the original writes one only when built with its enable-log feature, which the deployed binary was not.
     const inAccountKey = inAccount < 0n ? input_token_account.key : rest.get(u64(inAccount)).key;
     emit<SwapEvent>({
       pool_state: pool.key,

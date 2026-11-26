@@ -189,6 +189,8 @@ export interface Analysis {
   sourceFile: ts.SourceFile;
   /** Every TypeSOL file of the program, entry last. */
   files: string[];
+  /** Each of those files' text as the compiler parsed it (a build checks the bytes it records against it). */
+  texts: Map<string, string>;
   /** Local identifier -> `typesol` export name, for imports. */
   imports: Map<string, string>;
   reporter: Reporter;
@@ -1077,6 +1079,7 @@ export function analyze(entry: string, files?: SourceOverrides): Analysis {
     },
     sourceFile,
     files: programFiles(program, entryPath).map((f) => f.fileName),
+    texts: new Map(programFiles(program, entryPath).map((f) => [f.fileName, f.text])),
     imports: entryImports,
     reporter,
     checker,
@@ -1112,7 +1115,8 @@ const CONST_OPS = new Set([
  * declared before it (in this file or an imported one). JS's bigint results (division truncates, `%` keeps the
  * dividend's sign, `>>` rounds down, as Rust's integers do). With `width` (a typed constant, `const X: u64 = …`), every
  * step must fit in that type, as Rust computes a typed const; without one the result is a literal, checked where it is
- * used. Division by zero, a negative exponent or shift, and a value past 256 bits are compile errors.
+ * used. Division by zero, a typed constant's signed minimum divided by or reduced modulo -1, a negative exponent or
+ * shift, and a value past 256 bits are compile errors.
  */
 function foldConstant(e: ts.Expression, constants: Map<string, ConstDef>, reporter: Reporter, width?: IntName): bigint {
   const fit = (v: bigint, at: ts.Node): bigint => {
@@ -1154,6 +1158,10 @@ function foldConstant(e: ts.Expression, constants: Map<string, ConstDef>, report
       case ts.SyntaxKind.SlashToken:
       case ts.SyntaxKind.PercentToken:
         if (r === 0n) reporter.fail(b, `${b.getText()} divides by zero`);
+        // A signed type's minimum by -1: its quotient does not fit, and its remainder fails with it, as at run time
+        // (5100) and in Rust (`i8::MIN % -1` overflows), though JS's bigint gives 0.
+        if (width && INT_INFO[width].signed && l === INT_INFO[width].min && r === -1n)
+          reporter.fail(b, `${b.getText()} overflows ${width}: ${width}'s minimum divided by -1 does not fit, and its remainder fails with it`);
         return fit(b.operatorToken.kind === ts.SyntaxKind.SlashToken ? l / r : l % r, b);
       case ts.SyntaxKind.AsteriskAsteriskToken:
         if (r < 0n) reporter.fail(b, `${b.getText()} has a negative exponent`);

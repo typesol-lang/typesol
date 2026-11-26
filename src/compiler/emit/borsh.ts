@@ -257,7 +257,7 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
               const n = fixedBytes(f.type, model);
               return [
                 need(String(n), after(i), pad),
-                `${pad}ts_memcpy(&${lv}.${f.name}, src + at, ${n});`,
+                `${pad}TS_MEMCPY(&${lv}.${f.name}, src + at, ${n});`,
                 `${pad}at += ${n};`,
                 ...validate(f.type, `${lv}.${f.name}`, pad),
               ];
@@ -286,7 +286,7 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
             `${pad}${lv}.some = ${tag};`,
             `${pad}if (${tag}) {`,
             need(String(n), rest, `${pad}  `),
-            `${pad}  ts_memcpy(&${lv}.v, src + at, ${n});`,
+            `${pad}  TS_MEMCPY(&${lv}.v, src + at, ${n});`,
             `${pad}  at += ${n};`,
             ...validate(t.inner as FieldType, `${lv}.v`, `${pad}  `),
             `${pad}}`,
@@ -324,7 +324,7 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
               const n = fixedBytes(f.type, model);
               lines.push(
                 need(String(n), rest, `${pad}  `),
-                `${pad}  ts_memcpy(&${flv}, src + at, ${n});`,
+                `${pad}  TS_MEMCPY(&${flv}, src + at, ${n});`,
                 `${pad}  at += ${n};`,
                 ...validate(f.type, flv, `${pad}  `),
               );
@@ -380,7 +380,7 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
           return sub.fields.flatMap((f, i) => {
             if (borshIdentical(f.type, model)) {
               const n = fixedBytes(f.type, model);
-              return [room(String(n), after(i), pad), `${pad}ts_memcpy(dst + at, &${lv}.${f.name}, ${n});`, `${pad}at += ${n};`];
+              return [room(String(n), after(i), pad), `${pad}TS_MEMCPY(dst + at, &${lv}.${f.name}, ${n});`, `${pad}at += ${n};`];
             }
             return packVar(f.type, `${lv}.${f.name}`, after(i), pad);
           });
@@ -399,7 +399,7 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
             room(`(uint64_t)(${lv}.some ? ${1 + n} : 1)`, rest, pad),
             `${pad}dst[at++] = ${lv}.some ? 1 : 0;`,
             `${pad}if (${lv}.some) {`,
-            `${pad}  ts_memcpy(dst + at, &${lv}.v, ${n});`,
+            `${pad}  TS_MEMCPY(dst + at, &${lv}.v, ${n});`,
             `${pad}  at += ${n};`,
             `${pad}}`,
           ];
@@ -426,7 +426,7 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
                 continue;
               }
               const n = fixedBytes(f.type, model);
-              lines.push(room(String(n), rest, `${pad}  `), `${pad}  ts_memcpy(dst + at, &${flv}, ${n});`, `${pad}  at += ${n};`);
+              lines.push(room(String(n), rest, `${pad}  `), `${pad}  TS_MEMCPY(dst + at, &${flv}, ${n});`, `${pad}  at += ${n};`);
             }
             lines.push(`${pad}  break;`, `${pad}}`);
           });
@@ -447,12 +447,12 @@ function codec(s: StructDef, model: ProgramModel, o: { unpack: string; pack: str
         let j = i;
         let bytes = 0;
         while (j < s.fields.length && borshIdentical(s.fields[j]!.type, model)) bytes += fixedBytes(s.fields[j++]!.type, model);
-        unpackLines.push(`  ts_memcpy(&out->${f.name}, src + at, ${bytes});`, `  at += ${bytes};`);
+        unpackLines.push(`  TS_MEMCPY(&out->${f.name}, src + at, ${bytes});`, `  at += ${bytes};`);
         for (const g of s.fields.slice(i, j)) unpackLines.push(...validate(g.type, `out->${g.name}`, "  "));
         // A pack can be short of room only after a String / Vec / Option grew; the start always fits (cap >= MIN).
         packLines.push(
           ...(i > 0 ? [room(String(bytes), minAfter[j - 1]!, "  ")] : []),
-          `  ts_memcpy(dst + at, &in->${f.name}, ${bytes});`,
+          `  TS_MEMCPY(dst + at, &in->${f.name}, ${bytes});`,
           `  at += ${bytes};`,
         );
         i = j;

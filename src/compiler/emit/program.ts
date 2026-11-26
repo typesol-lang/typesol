@@ -59,14 +59,22 @@ export function emitProgram(analysis: Analysis, opts: EmitOptions = {}): string 
   }
   // `const PANIC_STYLE = "solana-1.14"` / `"solana-1.18"`: panics log as that solana_program's panic handler does and
   // abort (read by the emitter); PANIC_ON_OVERFLOW's panics abort too instead of calling sol_panic_.
+  // `"pinocchio"`: pinocchio's panic hook (the location's file, then "** PANICKED **", then abort), through one helper.
   const panicStyle = model.constants.get("PANIC_STYLE");
   if (panicStyle) {
-    if (panicStyle.value !== "solana-1.14" && panicStyle.value !== "solana-1.18")
+    if (panicStyle.value !== "solana-1.14" && panicStyle.value !== "solana-1.18" && panicStyle.value !== "pinocchio")
       reporter.error(
         analysis.sourceFile,
-        'PANIC_STYLE must be "solana-1.14" (panics log `panicked at \'<message>\', <file>:<line>:<col>` and abort, as programs built with solana-program 1.14 to 1.17 do) or "solana-1.18" (`panicked at <file>:<line>:<col>:` and the message on the next line, then abort, as solana-program 1.18\'s); leave it out for the default',
+        'PANIC_STYLE must be "solana-1.14" (panics log `panicked at \'<message>\', <file>:<line>:<col>` and abort, as programs built with solana-program 1.14 to 1.17 do), "solana-1.18" (`panicked at <file>:<line>:<col>:` and the message on the next line, then abort, as solana-program 1.18\'s) or "pinocchio" (the file alone, then `** PANICKED **`, then abort, as pinocchio\'s entrypoint! hook); leave it out for the default',
       );
-    else if (panicFlag?.value === true) out.push(`#define TS_PANIC_ABORT 1`);
+    else if (panicStyle.value === "pinocchio") {
+      if (panicFlag?.value === true)
+        reporter.error(
+          analysis.sourceFile,
+          'PANIC_ON_OVERFLOW cannot be used with PANIC_STYLE = "pinocchio": that panic hook logs the file the panic is in, which an overflow outside panicsAt does not have; wrap the arithmetic in panicsAt(location, …) instead',
+        );
+      out.push(`#define TS_PANIC_PINOCCHIO 1`);
+    } else if (panicFlag?.value === true) out.push(`#define TS_PANIC_ABORT 1`);
   }
   // `const EVENT_AUTHORITY_CHECK = "address"`: the emitCpi accounts are checked as Anchor 1.x's #[event_cpi] checks
   // them (read by the emitter; nothing to define in C).

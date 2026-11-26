@@ -74,8 +74,8 @@ the port and to the binary deployed on mainnet, both in LiteSVM, and require the
 bytes in every account the transaction names, and the same error code and log lines, with the exceptions each case
 study lists. Of those, the kinds that recur:
 
-- **Error-message text.** The Anchor ports log their errors in TypeSOL's words, with Anchor's codes; Jito's also leaves
-  out Anchor's `Instruction: …` lines.
+- **Error-message text.** The Anchor ports log their errors in TypeSOL's words, with Anchor's codes; Jito's, Raydium
+  CLMM's and the multisig's also leave out Anchor's `Instruction: …` lines.
 - **Panics.** Where the original panics, Marginfi, Raydium CLMM, Raydium CP-Swap and Jito MEV fail with a numbered
   error, and Marginfi also answers a few runtime errors that carry no code (`AccountBorrowFailed`, `BorshIoError`)
   with numbered ones; the tests require that both fail.
@@ -93,14 +93,27 @@ each (for Percolator, the port's README) says what was compared and what was not
 | [Marginfi v2](docs/case-study-marginfi.md) | Anchor, lending | 124 | 2,321 |
 | [Phoenix v1](docs/case-study-phoenix.md) | native, limit order book | 28 | 3,575 |
 | [SPL Stake Pool](docs/case-study-spl-stake-pool.md) | native, liquid staking | 27 | 2,107 |
-| [Raydium CLMM](docs/case-study-raydium-clmm.md) | Anchor, concentrated liquidity | 37 | 302 |
+| [Raydium CLMM](docs/case-study-raydium-clmm.md) | Anchor, concentrated liquidity | 37 | 308 |
 | [Raydium CP-Swap](docs/case-study-raydium-cp-swap.md) | Anchor, constant product | 21 | 136 |
 | [Raydium AMM v4](docs/case-study-raydium-amm.md) | native, constant product | all | 144 (60 random steps) |
 | [Jito MEV](docs/case-study-jito-mev.md) | Anchor, three programs | 24 | 150 |
 | [Percolator v12.20](showcase/mainnet/percolator) | native, perpetuals risk engine | 27 | 139,185 (132,031 random or mutated: 3,711 in random walks on fixed seeds, 128,320 from the mutation fuzzers) |
+| [Percolator v16 at commit 7b110913 (engine 5e3af07)](showcase/mainnet/percolator-v16) | native, multi-asset perpetuals risk engine; compared with a binary built here from the author's pinned source, not a deployed program | 50 | 70,975 |
 | [coral-xyz/multisig](docs/case-study-multisig.md) | Anchor | all | 55 |
 
-A tenth port is held to a narrower comparison and is not counted above:
+No Percolator v16 build is deployed, so its row is the one port above not compared with a mainnet binary: its
+reference is the Rust build of the pinned commits (reproducible, its recipe matching the author's recorded hash at an
+older commit). Not compared there: a deployed program, matchers other than the three the author's tests load and one
+of the tests' own, and a few paths no instruction sequence reached (its README lists them); where the reference runs
+out of compute units the port is compared with the reference run under a raised budget. The author's own suite ran on
+both binaries (the port's binary before its latest fix, which changed only an overflow check of the activation fee
+that the suite does not reach; it will run again on the current one), with every transaction compared (2,324,990 of 2,324,991 identical,
+the other a force-close that exceeds the reference's compute budget); none of the 2,127,486 identical successes costs
+the port more (port 67,489,010,058 units, reference 128,297,605,017). A first run, on the port's previous binary, had found
+282 such successes at the author's largest market shapes (ResolveMarket, CloseSlab, InitMarket); the cause was fixed
+and the full run repeated (its README has the figures).
+
+A further port is held to a narrower comparison and is not counted above:
 [Meteora Dynamic Bonding Curve 0.2.2](showcase/mainnet/meteora-dbc) (Anchor, launchpad, all 35 instructions, with its
 migrations into DAMM v1 and DAMM v2). Outcomes, error codes, account bytes, inner instructions (its events are
 self-CPIs) and return data are compared as for the ports above, with the exceptions its README lists; of the log only
@@ -108,7 +121,10 @@ the events' `Program data:` lines are compared, not the rest of its text, and co
 port, its tests (`showcase/test/meteora-dbc*.ts`) and their fixtures (`showcase/test/fixtures/meteora-dbc/`) are under
 Meteora's Non-commercial Licence, not this repository's (see [NOTICE](NOTICE)).
 
-Each count is what a default test run compares, with the fetch-only binaries present (`pnpm fetch:programs`). Random
+Each count is what a default test run compares, with the fetch-only binaries present (`pnpm fetch:programs`); the
+Percolator v16 count needs its reference binaries built as well (`scripts/percolator-v16-reference/build.sh` and
+`probe.sh`, Docker), as CI's `percolator-v16` job does, and is the sum of the `percolator-v16 compared: …` line each of
+its test files prints (without the binaries those files skip and print 0). Random
 walks, with fixed or printed seeds, run on top of the other ports' counts ([docs/testing.md](docs/testing.md)); the
 multisig port has none. The
 sources are in [`showcase/mainnet`](showcase/mainnet), and where each original binary comes from is recorded in
@@ -497,6 +513,7 @@ Case studies: [Marginfi v2](docs/case-study-marginfi.md), [Phoenix v1](docs/case
 | [`raydium-amm/`](showcase/mainnet/raydium-amm) | Raydium AMM v4, the original constant-product AMM and a native (non-Anchor) program, in full: pool creation, deposits and withdrawals, the v1 and v2 swaps, P&L and administration, down to its log records and panics |
 | [`meteora-dbc/`](showcase/mainnet/meteora-dbc) | Meteora Dynamic Bonding Curve 0.2.2 in full, all 35 instructions: configs, pool creation on SPL Token and Token-2022 (transfer fees and hooks), the three swap modes, fee schedulers and the rate limiter, fee claims, the locker, and the migrations into DAMM v1 and DAMM v2. Under Meteora's Non-commercial Licence (its own `LICENSE.md`); log text and compute units are not compared |
 | [`percolator/`](showcase/mainnet/percolator) | Percolator v12.20, Anatoly Yakovenko's perpetuals risk engine and its native program, in full, all 27 instructions, against the immutable mainnet build: one 1.5 MB slab of 4,096 accounts, U256 and U512 arithmetic, trades through matcher programs, funding, liquidation, the keeper crank with pro-rata loss socialisation and side resets, resolution and teardown. The author's own suite gives the same outcome on every test under both binaries (660 passed). Upstream is educational and not audited |
+| [`percolator-v16/`](showcase/mainnet/percolator-v16) | Percolator v16 at commit 7b110913 (engine 5e3af07), Anatoly Yakovenko's multi-asset perpetuals risk engine and its native program, all 50 instructions: portfolios of up to 14 legs, trades direct, batched and through matcher programs, the crank with liquidation, bankrupt closes, Recovery and resolution, insurance and backing buckets with source liens, terminal close-out. Compared with a binary built from the author's pinned source (not a deployed program). Upstream is educational and not audited |
 | [`multisig.ts`](showcase/mainnet/multisig/multisig.ts) | coral-xyz/multisig: stored instructions run with `invokeInstruction`, a PDA signing, Anchor's Borsh accounts |
 
 ## Status
