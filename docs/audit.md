@@ -7,7 +7,7 @@ with TypeSOL are out of scope; their authors audit them.
 
 ## Scope
 
-In order of priority. Line counts at 0.49.0 (November 2026).
+In order of priority. Line counts at 0.50.0 (November 2026).
 
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |
@@ -66,11 +66,12 @@ CHANGELOG.
 
 ### Not reviewed: 0.45.0 and later
 
-0.45.0 to 0.49.0 have had no security review. They add, among others,
+0.45.0 to 0.50.0 have had no security review. They add, among others,
 `runtime/typesol_builtins.c` (the compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`,
-`EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), and `zeroData`, `log64`,
+`EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), `zeroData`, `log64`,
 `PANIC_STYLE = "solana-1.18"`, `executable` on remaining accounts and lamport writes on remaining accounts under
-`NATIVE_ACCOUNT_WRITES` (0.49.0). An external review should include them
+`NATIVE_ACCOUNT_WRITES` (0.49.0), and `copyData`, `getReturnData()`, `PANIC_STYLE = "pinocchio"` and whole values
+copied and zeroed by the memory syscalls (0.50.0). An external review should include them
 with the areas the reviews below left out.
 
 ### 0.44.0 (2026-11-11)
