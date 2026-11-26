@@ -106,10 +106,9 @@ reference is the Rust build of the pinned commits (reproducible, its recipe matc
 older commit). Not compared there: a deployed program, matchers other than the three the author's tests load and one
 of the tests' own, and a few paths no instruction sequence reached (its README lists them); where the reference runs
 out of compute units the port is compared with the reference run under a raised budget. The author's own suite ran on
-both binaries (the port's binary before its latest fix, which changed only an overflow check of the activation fee
-that the suite does not reach; it will run again on the current one), with every transaction compared (2,324,990 of 2,324,991 identical,
-the other a force-close that exceeds the reference's compute budget); none of the 2,127,486 identical successes costs
-the port more (port 67,489,010,058 units, reference 128,297,605,017). A first run, on the port's previous binary, had found
+both binaries, with every transaction compared (2,324,990 of 2,324,991 identical, the other a force-close that exceeds
+the reference's compute budget); none of the 2,127,486 identical successes costs the port more (port 67,489,438,873
+units, reference 128,297,605,017). A first run, on an earlier binary of the port, had found
 282 such successes at the author's largest market shapes (ResolveMarket, CloseSlab, InitMarket); the cause was fixed
 and the full run repeated (its README has the figures).
 
@@ -525,11 +524,12 @@ change.
   The two latest, of 0.43.0 and 0.44.0 in November 2026, found defects that made a program that compiled behave
   differently from its source; each is fixed with a test, and [docs/audit.md](docs/audit.md) lists them, what the
   reviews covered and what they did not. Programs built before 0.44.1 should be rebuilt.
-- 0.45.0 to 0.49.0 have had no security review. They add, among others,
+- 0.45.0 to 0.50.0 have had no security review. They add, among others,
   `runtime/typesol_builtins.c` (the compiler builtins as TypeSOL's own C, 0.45.0), `transferCheckedWithHook`,
-  `EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), and `zeroData`, `log64`,
+  `EVENT_AUTHORITY_CHECK` and the reads of processed sibling instructions (0.48.0), `zeroData`, `log64`,
   `PANIC_STYLE = "solana-1.18"`, `executable` on remaining accounts and lamport writes on remaining accounts under
-  `NATIVE_ACCOUNT_WRITES` (0.49.0).
+  `NATIVE_ACCOUNT_WRITES` (0.49.0), and `copyData`, `getReturnData()`, `PANIC_STYLE = "pinocchio"` and whole values
+  copied and zeroed by the memory syscalls (0.50.0).
 - From 0.44.0 on, a release that only fixes defects is a patch with no new language surface and a binary diff in its
   notes ([SECURITY.md](SECURITY.md#fix-releases)), and the npm tarball is the one packed from the tag and recorded
   in [releases/](releases).

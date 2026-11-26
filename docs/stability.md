@@ -68,10 +68,11 @@ arm64 has no Agave CLI, so there the package is set up by hand with `TYPESOL_SBF
 [troubleshooting.md](troubleshooting.md#linux-arm64-the-agave-installer-fails-with-a-404)): for
 SBPF v0 (the default), the 76 programs then in the sources (`scripts/release-manifest.ts`, every program under
 `examples/` and `showcase/`); for SBPF v1 and v2, the 14 programs of `test/golden/binaries.json` (counter, vault,
-escrow, multisig and the 10 below). Programs added since were not measured on the three hosts, and two of them that
-divide 128-bit and wider integers, the Meteora DBC port (0.48.0; u128 and u256 division) and the Percolator port
-(0.49.0; U256 and U512), are not in `test/golden/binaries.json`, so CI's cross-host check does not build them yet
-(adding them needs the file regenerated in the `--docker` reference environment).
+escrow, multisig and the 10 below). Programs added since were not measured on the three hosts, and three of them that
+divide 128-bit and wider integers, the Meteora DBC port (0.48.0; u128 and u256 division), the Percolator port
+(0.49.0; U256 and U512) and the Percolator v16 port (0.50.0; u256), are not in `test/golden/binaries.json`, so CI's
+cross-host check does not build them yet (adding them needs the file regenerated in the `--docker` reference
+environment).
 
 | What | Same on the three hosts? |
 | --- | --- |

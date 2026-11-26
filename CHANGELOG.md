@@ -6,6 +6,22 @@ codes, and says so here.
 
 ## Unreleased
 
+## 0.50.0 — 2026-11-26
+
+A minor release: it adds a port of Percolator v16 (all 50 instructions of aeyakovenko/percolator-prog at 7b110913,
+compared with a reference built from the author's source, as no v16 build is deployed) and the built-ins it needed
+(`copyData`, `getReturnData()`, `PANIC_STYLE = "pinocchio"`), copies and zeroes whole values and account data with the
+memory syscalls where the word loops cost more, and fixes overlapping struct copies between views of one account, other
+programs' `@layout borsh` accounts with a discriminator shorter than 8 bytes, `realloc` of `@layout borsh` accounts, the
+folding of a signed minimum modulo -1, the order in which `log64` and `require` read their arguments, `**` inside
+`panicsAt` and builds with a clang above 20. Build manifests now bind a binary to the sources that built it, first
+builds that run at once keep every program's address, and `init` and `new` refuse to write through a symbolic link.
+Programs that compiled with 0.49.0 and still compile build to the same bytes, except 15 of the 80 programs both releases
+build: examples/escrow, ledgerbook and profiles, Jito's two programs, Marginfi, Meteora DBC, Percolator v12.20 and its
+matcher, Raydium CLMM and CP-Swap, SPL Stake Pool and the program-examples realloc, token escrow and token fundraiser,
+for the memory syscalls and the fix of overlapping copies (Raydium CLMM also because its source no longer writes four
+kinds of `msg!` line); their tests pass.
+
 - Build manifests (`<name>.build.json`) now bind the binary to the exact sources that built it. A source's sha256 was
   computed after the build, by reading the file again, so a file saved while the build ran (an editor saving mid-build)
   could be recorded beside a binary made from its previous text, and a test reusing that build (`testProgram`,
