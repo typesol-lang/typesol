@@ -758,12 +758,15 @@ function resetControls(m: RemainingAccount, asset: u64): void {
   zeroData(m, engineSlotAt(asset) - 88n, 88n);
 }
 
-/** `policy_v16::permissionless_market_init_fee_for_asset`: the base fee doubled once per 32 assets (None on overflow). */
+/**
+ * `policy_v16::permissionless_market_init_fee_for_asset(…).ok_or(EngineArithmeticOverflow)?`: the base fee doubled once
+ * per 32 assets; any doubling that overflows u128 is the refusal (the caller's `ok_or`), whatever the base.
+ */
 function initFeeFor(base: u128, asset: u64): u128 {
   if (base === 0n) return 0n;
   let fee = base;
   for (let d = asset / 32n; d !== 0n; d--) {
-    if (fee > U128_MAX_L / 2n) return U128_MAX_L;
+    require(fee <= U128_MAX_L / 2n, PercolatorError.EngineArithmeticOverflow);
     fee *= 2n;
   }
   return fee;
@@ -932,7 +935,6 @@ function activateAppendOrReuse(
   let initFee: u128 = 0n;
   if (!isAuthority) {
     const fee = initFeeFor(cfgPre.permissionless_market_init_fee, asset);
-    require(fee !== U128_MAX_L || cfgPre.permissionless_market_init_fee === U128_MAX_L, PercolatorError.EngineArithmeticOverflow);
     require(!(fee === 0n || fee > maxInitFee), PercolatorError.Unauthorized);
     initFee = fee;
   }

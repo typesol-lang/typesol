@@ -527,14 +527,14 @@ export function updatePoolFees(pool: Mut<PoolState>, s: SwapState, zeroForOne: b
   }
 }
 
-/** get_spacing_bounded_price's tick: the edge of the current tick spacing group, logged as the original logs it. */
+/** get_spacing_bounded_price's tick: the edge of the current tick spacing group. */
 export function spacingBound(pool: Account<PoolState>, s: SwapState, zeroForOne: boolean): i32 {
   const spacing = i32(pool.tick_spacing);
   const index = zeroForOne ? s.tick_spacing_index : s.tick_spacing_index + 1n;
   // saturating_mul / saturating_add on i32, then clamped to the tick range.
   const wide = i64(index) * i64(spacing);
   const bounded = wide > 2147483647n ? 2147483647n : wide < -2147483648n ? -2147483648n : wide;
-  log(`state.tick:${s.tick}, state.tick_spacing_index:${s.tick_spacing_index}, bounded_tick:${bounded}`);
+  // No log line here: the original writes one only when built with its enable-log feature, which the deployed binary was not.
   return i32(bounded < i64(MIN_TICK) ? i64(MIN_TICK) : bounded > i64(MAX_TICK) ? i64(MAX_TICK) : bounded);
 }
 

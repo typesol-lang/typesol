@@ -11,19 +11,19 @@ In order of priority. Line counts at 0.49.0 (November 2026).
 
 | Priority | Component | Files | Lines | Why |
 | --- | --- | --- | ---: | --- |
-| 1 | C runtime | `runtime/typesol_rt.h` | 3,273 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
-| 1 | Compiler builtins | `runtime/typesol_builtins.c` | 484 | Compiled and linked with every program (0.45.0): the functions clang calls for 128-bit multiplication, division and shifts and signed 64-bit division (`__multi3`, `__udivti3`, `__divti3`, `__divdi3`, …), in place of platform-tools' compiler-builtins |
-| 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 886 | Which checks each account parameter gets, and their order |
-| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 4,027 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
-| 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,781 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
+| 1 | C runtime | `runtime/typesol_rt.h` | 3,399 | In every program: input parsing, account checks, checked arithmetic, PDAs, system and token CPIs, account creation, resizing and closing, oracles, signature checks, the heap |
+| 1 | Compiler builtins | `runtime/typesol_builtins.c` | 529 | Compiled and linked with every program (0.45.0): the functions clang calls for 128-bit multiplication, division and shifts and signed 64-bit division (`__multi3`, `__udivti3`, `__divti3`, `__divdi3`, …), in place of platform-tools' compiler-builtins |
+| 1 | Instruction prologue and constraints | `src/compiler/emit/function.ts` | 890 | Which checks each account parameter gets, and their order |
+| 1 | Account data, Vecs and assignment | `src/compiler/emit/alias.ts`, `storage.ts`, `statements.ts`, `base.ts` | 4,093 | Reads and writes of account data, growable Vec layout and resizing, references and aliasing, closure and helper expansion |
+| 1 | Calls and CPIs | `src/compiler/emit/calls.ts`, `cpi-core.ts`, `cpi.ts`, `create.ts`, `token.ts` | 5,839 | Built-ins, remaining accounts, `invoke` / `invokeInstruction` and their account flags, signer seeds, token CPIs, account creation |
 | 1 | Raw views and the red-black tree | `src/compiler/emit/views.ts`, `rbtree.ts` | 655 | Accounts read without a discriminator at run-time offsets (`loadRaw`, `loadRawAt`, `rawArrayAt`, `BigVec`), their bounds, and the red-black tree's node indexes (`rbTreeAt`) |
 | 1 | Metaplex CPIs | `src/compiler/emit/metaplex.ts` | 1,465 | Token Metadata, Core and Bubblegum instruction layouts and their account lists |
-| 1 | Expressions | `src/compiler/emit/expressions.ts`, `shared.ts`, `borsh.ts` | 2,170 | Checked arithmetic and casts, Borsh encoding of arguments and `@layout borsh` accounts |
-| 2 | Front end | `src/compiler/analyze.ts`, `model.ts` | 3,545 | What the language accepts; constraints and account types as parsed from the source |
+| 1 | Expressions | `src/compiler/emit/expressions.ts`, `shared.ts`, `borsh.ts` | 2,205 | Checked arithmetic and casts, Borsh encoding of arguments and `@layout borsh` accounts |
+| 2 | Front end | `src/compiler/analyze.ts`, `model.ts` | 3,553 | What the language accepts; constraints and account types as parsed from the source |
 | 2 | Interface | `src/compiler/idl.ts`, `src/tools/clientgen.ts` | 2,460 | The IDL and the generated client must describe the program exactly (a mismatch can make clients sign the wrong thing) |
 | 3 | Build and tooling | `src/compiler/toolchain.ts`, `src/cli.ts`, `src/workspace.ts`, `src/tools/` | | Build flags, deploy and verification commands |
 
-The language surface is `lib/typesol.d.ts` (2,671 lines): every type and built-in a program can use, with its
+The language surface is `lib/typesol.d.ts` (2,693 lines): every type and built-in a program can use, with its
 documented behavior. [docs/language.md](language.md) is the reference; [docs/architecture.md](architecture.md) maps
 the code, [docs/runtime.md](runtime.md) the runtime's conventions.
 

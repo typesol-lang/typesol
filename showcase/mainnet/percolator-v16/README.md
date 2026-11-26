@@ -116,10 +116,10 @@ show which branches of the port's functions each comparison executes.
 aeyakovenko/percolator-prog ships 2,098 `#[test]` functions in six cargo test targets (about 506,000 lines under
 `tests/`; the harness lists 2,071 tests). Each loads the program from the path in `PERCOLATOR_FUZZ_SBF`, so the same
 suite runs unchanged against the reference binary (built here from the author's source, not a deployed program) and
-against the port's. The reference ran every target unfiltered on 2026-11-19/20, the port's current binary (1,362,872
-bytes, sha256 `01c33233…`) on 2026-11-21 to 2026-11-23 (Docker, 2 CPUs, every transaction recorded). A first full run
-of the port's previous binary (2026-11-19/20) found the excesses fixed since (section "Where the port costs more");
-the figures here are the current binary's:
+against the port's. The port's current binary (1,362,912 bytes, sha256 `c6dc6b24…`) ran every target unfiltered on
+2026-11-23 to 2026-11-24, the reference on 2026-11-25 to 2026-11-26 (Docker, 2 CPUs, every transaction recorded).
+Earlier full runs of two earlier binaries (2026-11-19 to 2026-11-23) gave the same passes and failures; the first of
+them found the excesses fixed since (section "Where the port costs more"):
 
 | Target | Tests | Reference: passed / failed | Port: passed / failed |
 | --- | ---: | ---: | ---: |
@@ -155,10 +155,11 @@ the port succeeds); after it the port's test stops, so 35 of the reference's lat
 counterpart. Of the 9 failing tests shared by both, every transaction up to the failure is identical.
 
 Of the 2,127,486 transactions that succeeded identically, none costs the port more compute units than the reference:
-67,489,010,058 units in the port against 128,297,605,017 (53%). The first full run, on the previous binary, had found
+67,489,438,873 units in the port against 128,297,605,017 (53%). The first full run, on an earlier binary (sha256 `6677dd5b…`), had found
 282 such transactions at three instructions, only at the author's largest shapes; those three were fixed (section
 "Where the port costs more" below) and the full run repeated. The scripts fail on anything else: an
-unlisted failure or trace difference, a listed one that no longer occurs, a target that does not compile, stops at its
+unlisted failure or trace difference (every differing transaction of a test is classed, and each kind must be
+listed for that test), a listed one that no longer occurs, a target that does not compile, stops at its
 limit or runs nothing, a run that records nothing, and any success on which the port costs more (the expectations
 file, `scripts/percolator-v16-reference/author-suite-expected.tsv`, lists no such excess; TESTING.md section 3).
 
@@ -457,28 +458,29 @@ program, starting from a market and a portfolio the reference initialised.
 
 | | Reference | Port |
 | --- | ---: | ---: |
-| Binary | 1,375,936 bytes | 1,362,872 bytes, sha256 `01c33233…` (all 50 handlers and the engine code they reach; 1,362,760 before the whole-market scans were fixed; 1,258,064 before the batch and matcher instructions, 1,139,536 before the insurance, backing and terminal instructions, 1,005,456 before the crank's Recovery and Resolved paths and the six recovery and resolution instructions, 846,712 before PermissionlessCrank and FinalizeResetSide, 588,856 before TradeNoCpi and ConvertReleasedPnl, 289,728 before SyncMaintenanceFee and Withdraw) |
+| Binary | 1,375,936 bytes | 1,362,912 bytes, sha256 `c6dc6b24…` (all 50 handlers and the engine code they reach; 1,362,872 (sha256 `01c33233…`) before the activation fee's overflow was made the original's, 1,362,760 before the whole-market scans were fixed; 1,258,064 before the batch and matcher instructions, 1,139,536 before the insurance, backing and terminal instructions, 1,005,456 before the crank's Recovery and Resolved paths and the six recovery and resolution instructions, 846,712 before PermissionlessCrank and FinalizeResetSide, 588,856 before TradeNoCpi and ConvertReleasedPnl, 289,728 before SyncMaintenanceFee and Withdraw) |
 
-Compute units of every transaction that succeeded in both, from the table's run of all 30 `percolator-v16-*` test
-files (2026-11-19; whole transactions, the preamble's two Compute Budget instructions, 300 CU, included). The figures
+Compute units of every transaction that succeeded in both, from the run of all 31 `percolator-v16-*` test files on
+the current binary (2026-11-23; whole transactions, the preamble's two Compute Budget instructions, 300 CU, included). The figures
 are whole-transaction costs: the compute-unit file (`PERCOLATOR_V16_CU_FILE`) books each transaction under the tag of
 its first Percolator instruction, so a row's figure includes any other instruction in the same transaction.
 
-The latest run (2026-11-21, the current binary, all 31 files, each alone, `CI_REQUIRE_ALL=built`, all passing: 226
-tests) printed 70,928 transactions compared with the port (the sum of the `percolator-v16 compared: …` lines; the count
+The latest run (2026-11-23, the current binary, all 31 files, each alone, `CI_REQUIRE_ALL=built`, all passing: 227
+tests) printed 70,975 transactions compared with the port (the sum of the `percolator-v16 compared: …` lines; the count
 moves by a few dozen from run to run, because the keys come from a seed drawn per run). The compute-unit file of that
-run holds the 70,725 of them that carry a Percolator instruction: 26,035 succeeded, the port cheaper on every one (the
+run holds the 70,772 of them that carry a Percolator instruction: 26,077 succeeded, the port cheaper on every one (the
 harness fails a test otherwise), 9 of them against the reference's run under a raised budget (below, counted apart
-and not in the table); of the 44,690 refusals, 44,680 cost the port less and 10 cost 0 in both (refused by the runtime
-before the program ran); none cost the port more. (The run of 2026-11-20 on the previous binary: 70,881 transactions,
-25,995 successes, 44,683 refusals.) Refusals are not held to the rule: the harness asserts fewer compute units only for successful
+and not in the table); of the 44,695 refusals, 44,685 cost the port less and 10 cost 0 in both (refused by the runtime
+before the program ran); none cost the port more. (The run of 2026-11-21 on the previous binary: 70,928 transactions,
+26,035 successes, 44,690 refusals; the run of 2026-11-20: 70,881 transactions, 25,995 successes, 44,683 refusals.) Refusals are not held to the rule: the harness asserts fewer compute units only for successful
 transactions with a top-level Percolator instruction. (The table's run of 2026-11-19 counted the same way: 70,640
 transactions, 25,941 successes, 44,699 refusals.) Every instruction has at least one success. To reproduce: build the
 reference binaries, then run each file with `PERCOLATOR_V16_CU_FILE=<file>` and count its lines.
 
-**Where the port costs more.** Nowhere on the current binary: not in the vitest files, and not on any of the
-2,127,486 identical successes of the author's whole suite (section "The author's test suite"). The first full run of
-that suite, on the previous binary (1,362,760 bytes, sha256 `6677dd5b…`), had found the port costing more compute units
+**Where the port costs more.** Nowhere: not in the vitest files on the current binary, and not on any of the
+2,127,486 identical successes of the author's whole suite on the current binary (section "The author's test
+suite"). The first full run of
+that suite, on an earlier binary (1,362,760 bytes, sha256 `6677dd5b…`), had found the port costing more compute units
 than the reference on 282 of the 2,127,486 transactions that succeeded identically (whole transactions,
 compute-budget instructions included), all at three instructions and all at the author's largest shapes:
 
@@ -499,24 +501,27 @@ capacity the market view took from the length, so its check cannot fail where th
 CloseSlab makes the expiries effective only for an asset with a Fresh bucket or a recredit, the only steps that read
 them (the original makes them first; it cannot fail there, the market being Resolved, and changes nothing). On the
 same shapes (`percolator-v16-shapes.test.ts`, TESTING.md "The author's largest market shapes"): ResolveMarket of 5,682
-configured slots 64,034 against 65,546 (was 166,304), InitMarket of 5,682 slots 146,361 against 211,905 (was
-214,540), a CloseSlab scan of 256 assets with fresh backing 17,682 against 41,318 (was 42,314 against 38,318).
+configured slots: port 64,034, reference 65,546 (the port was 166,304); InitMarket of 5,682 slots: port 146,361,
+reference 211,905 (the port was 214,540); a CloseSlab scan of 256 assets with fresh backing: port 17,682, reference
+41,318 (was port 42,314, reference 38,318).
 ResolveMarket and ResolveStalePermissionless remain the closest to the reference at that size (98%): their scan now
 costs 11 instructions a slot, as the reference's does, and the port's lead is its smaller fixed part (about 1,500
 units).
 
-The author's tests that showed the excesses were run again on the new binary (2026-11-21; the 20 tests of `v16_cu`
+The author's tests that showed the excesses were run again on the fixed binary (sha256 `01c33233…`, 2026-11-21; the 20 tests of `v16_cu`
 whose transactions included one of the 282, `TRACE=1 TEST_FILTER=…`, Docker, 2 CPUs, 57 minutes; TESTING.md section
 3): all 20 pass, and their 144,407 transactions are identical to the reference's recorded ones (results, return data,
 logs, accounts). Of their 143,473 identical successes none costs the port more; the 282 are all cheaper now, the
-closest being the 10 MiB ResolveMarket (65,584 against 64,080, was 166,350). Over these tests' successes: ResolveMarket
-133 transactions, 2,347,882 units in the reference against 2,141,582; CloseSlab 1,491, 161,181,428 against
-68,478,641 (the largest 554,426 against 241,007); InitMarket 134, 7,005,969 against 4,551,942.
+closest being the 10 MiB ResolveMarket (port 64,080, reference 65,584; the port was 166,350). Over these tests' successes: ResolveMarket
+133 transactions, port 2,141,582 units, reference 2,347,882; CloseSlab 1,491, port 68,478,641, reference
+161,181,428 (the largest: port 241,007, reference 554,426); InitMarket 134, port 4,551,942, reference 7,005,969.
 
-The full suite was then run again on the new binary (2026-11-21 to 2026-11-23, every target unfiltered): every
-transaction identical to the reference's recorded run but the `inv_078` force-close, as before, and no identical
-success costing the port more. Over all 2,127,486 identical successes the port used 67,489,010,058 units against the
-reference's 128,297,605,017 (53%; the previous binary: 67,519,099,673).
+The full suite was then run again on that binary (sha256 `01c33233…`, 2026-11-21 to 2026-11-23, every target unfiltered)
+and on the current one (sha256 `c6dc6b24…`, 2026-11-23 to 2026-11-24, the reference again on 2026-11-25 to
+2026-11-26): each time every transaction identical to the reference's recorded run but the `inv_078` force-close, as
+before, and no identical success costing the port more. Over all 2,127,486 identical successes the current binary used
+67,489,438,873 units against the reference's 128,297,605,017 (53%; the binary of sha256 `01c33233…`: 67,489,010,058;
+of `6677dd5b…`: 67,519,099,673).
 
 **Past the reference's compute-unit limit.** Where the reference runs out of its 1,400,000 compute units and the port
 does not, `Diff.send` runs the transaction again in a LiteSVM of the reference whose compute budget is 20,000,000 (the
@@ -525,19 +530,20 @@ SetComputeUnitLimit asks for) and requires the port's outcome, logs, inner instr
 account to equal that run's; the reference's accounts then take that run's, so both VMs go on alike
 (`percolator-v16-limit.test.ts`, the crank's maximum shape, the batch test). In the last run, all equal: a crank of 14
 legs with 14 hints after price moves, five times (1,414,112 to 1,538,961 in the reference, 515,972 to 553,760 in the
-port); the author's `inv_078` one-shot ForceCloseAbandonedAsset of two portfolios of 14 legs (1,479,026 against
-396,866; the pre-crank path of the same test fits in both, 870,198 against 197,353); a BatchTradeNoCpi growing 14
-legs (1,920,381 against 506,434) and closing them (1,409,575 against 400,135).
+port); the author's `inv_078` one-shot ForceCloseAbandonedAsset of two portfolios of 14 legs (port 396,866,
+reference 1,479,026; the pre-crank path of the same test fits in both, port 197,353, reference 870,198); a
+BatchTradeNoCpi growing 14 legs (port 506,434, reference 1,920,381) and closing them (port 400,135, reference
+1,409,575).
 
 **Trades.** The original's own CU tests (`tests/v16_cu.rs`) assert 345,000 for a trade and 750,000 for a multi-asset
 open trade. The reference's most expensive TradeNoCpi here is 947,654 CU (the port's worst 349,490), a trade whose
 portfolios the refresh settles before the fill. The 14th leg opened on one portfolio costs the reference 388,005 and
 the port 101,865 (`percolator-v16-trade.test.ts`). BatchTradeNoCpi and BatchTradeCpi cost the port 37% of the
-reference on the mean (worst cases 1,124,628 against 392,289 and 1,027,411 against 345,720); TradeCpi, matcher call
+reference on the mean (worst cases: port 392,289, reference 1,124,628; port 345,720, reference 1,027,411); TradeCpi, matcher call
 included, 40%.
 
 **ForceCloseAbandonedAsset** runs the trade engine on two portfolios: its 121 successes averaged 837,372 CU in the
-reference and 297,261 in the port (worst 926,958 against 328,077).
+reference and 297,261 in the port (worst: port 328,077, reference 926,958).
 
 **The crank.** The author's CU tests assert 325,000 for a crank and 1,375,000 to 1,400,000 for their maximum shapes.
 Shapes recorded (reference / port, whole transactions):
@@ -551,63 +557,68 @@ Shapes recorded (reference / port, whole transactions):
 
 | Tag | Instruction | Successes | Reference mean | Port mean | Reference worst | Port worst | Port / reference (mean) | (worst case) |
 | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 0 | InitMarket ¹ | 805 | 8,523 | 3,732 | 211,905 | 146,361 | 44% | 69% |
-| 1 | InitPortfolio | 1,232 | 29,642 | 17,049 | 38,471 | 21,994 | 58% | 59% |
-| 3 | Deposit | 1,385 | 37,645 | 18,234 | 98,617 | 33,417 | 48% | 58% |
-| 4 | Withdraw | 524 | 42,535 | 22,080 | 354,139 | 123,449 | 52% | 60% |
-| 5 | PermissionlessCrank (every market) | 8,677 | 323,064 | 122,539 | 1,317,922 | 485,624 | 38% | 60% |
+| 0 | InitMarket | 806 | 8,720 | 3,906 | 211,905 | 146,361 | 45% | 69% |
+| 1 | InitPortfolio | 1,256 | 29,603 | 17,029 | 38,471 | 21,994 | 58% | 59% |
+| 3 | Deposit | 1,397 | 37,118 | 18,140 | 97,372 | 34,830 | 49% | 57% |
+| 4 | Withdraw | 538 | 42,452 | 22,346 | 349,639 | 122,480 | 53% | 60% |
+| 5 | PermissionlessCrank (every market) | 8,677 | 323,070 | 122,540 | 1,317,922 | 485,624 | 38% | 60% |
 | 6 | TradeNoCpi | 1,225 | 315,597 | 133,052 | 947,654 | 349,490 | 42% | 63% |
 | 8 | ClosePortfolio | 173 | 29,977 | 19,660 | 35,228 | 22,238 | 66% | 68% |
-| 9 | TopUpInsurance | 104 | 25,910 | 8,562 | 35,920 | 10,922 | 33% | 40% |
-| 10 | TradeCpi | 248 | 322,880 | 127,856 | 787,704 | 308,995 | 40% | 62% |
-| 13 | CloseSlab ¹ | 494 | 29,375 | 10,369 | 181,370 | 75,199 | 35% | 44% |
-| 19 | ResolveMarket ¹ | 32 | 7,874 | 6,187 | 65,546 | 64,034 | 79% | 98% |
-| 24 | TopUpBackingBucket | 184 | 33,464 | 10,824 | 45,612 | 15,895 | 32% | 37% |
+| 9 | TopUpInsurance | 104 | 24,194 | 8,167 | 36,984 | 11,540 | 34% | 39% |
+| 10 | TradeCpi | 248 | 320,067 | 127,130 | 787,704 | 308,995 | 40% | 62% |
+| 13 | CloseSlab | 525 | 35,762 | 13,612 | 180,130 | 77,917 | 38% | 44% |
+| 19 | ResolveMarket | 33 | 9,622 | 7,940 | 65,546 | 64,034 | 83% | 98% |
+| 24 | TopUpBackingBucket | 184 | 31,801 | 10,445 | 47,893 | 16,585 | 33% | 37% |
 | 28 | ConvertReleasedPnl | 3 | 94,958 | 45,783 | 102,462 | 46,972 | 48% | 54% |
-| 30 | CloseResolved | 668 | 177,202 | 63,743 | 392,694 | 144,114 | 36% | 61% |
+| 30 | CloseResolved | 668 | 177,328 | 63,770 | 392,694 | 144,114 | 36% | 61% |
 | 32 | UpdateAuthority | 180 | 2,594 | 1,104 | 2,866 | 1,140 | 43% | 44% |
 | 34 | ConfigureHybridOracle | 554 | 7,314 | 3,853 | 10,919 | 6,120 | 53% | 61% |
 | 35 | ConfigureEwmaMark | 270 | 4,462 | 2,293 | 4,754 | 2,375 | 51% | 52% |
 | 36 | PushEwmaMark | 1,216 | 6,933 | 2,741 | 7,139 | 2,817 | 40% | 42% |
 | 37 | UpdateLiquidationFeePolicy | 222 | 1,939 | 831 | 2,171 | 853 | 43% | 43% |
-| 38 | ConfigurePermissionlessResolve | 586 | 2,107 | 990 | 2,379 | 1,033 | 47% | 48% |
-| 39 | ResolveStalePermissionless ¹ | 3 | 25,428 | 23,827 | 65,216 | 63,962 | 94% | 98% |
-| 40 | UpdateAssetLifecycle | 704 | 17,737 | 8,212 | 39,219 | 16,573 | 46% | 56% |
-| 42 | CureAndCancelClose | 41 | 312,546 | 114,517 | 344,676 | 127,413 | 37% | 38% |
+| 38 | ConfigurePermissionlessResolve | 599 | 2,106 | 989 | 2,379 | 1,033 | 47% | 48% |
+| 39 | ResolveStalePermissionless | 3 | 25,428 | 23,827 | 65,216 | 63,962 | 94% | 98% |
+| 40 | UpdateAssetLifecycle | 708 | 17,991 | 8,264 | 39,219 | 16,573 | 46% | 56% |
+| 42 | CureAndCancelClose | 41 | 313,424 | 114,707 | 346,176 | 127,738 | 37% | 38% |
 | 43 | ForfeitRecoveryLeg | 40 | 174,827 | 65,483 | 296,231 | 102,769 | 37% | 45% |
 | 44 | RebalanceReduce | 32 | 206,248 | 75,861 | 310,970 | 116,934 | 37% | 42% |
 | 45 | FinalizeResetSide | 8 | 2,341 | 1,047 | 3,427 | 1,354 | 45% | 51% |
-| 46 | ClaimResolvedPayoutTopup | 472 | 37,600 | 21,609 | 61,765 | 27,770 | 57% | 61% |
+| 46 | ClaimResolvedPayoutTopup | 472 | 37,610 | 21,612 | 61,765 | 27,770 | 57% | 61% |
 | 48 | SyncMaintenanceFee | 490 | 77,851 | 40,094 | 371,983 | 133,299 | 52% | 66% |
 | 49 | UpdateMaintenanceFeePolicy | 213 | 1,929 | 850 | 2,167 | 871 | 44% | 45% |
-| 50 | WithdrawBackingBucket | 51 | 45,746 | 19,123 | 48,284 | 19,784 | 42% | 44% |
+| 50 | WithdrawBackingBucket | 51 | 48,364 | 19,725 | 50,935 | 20,415 | 41% | 46% |
 | 51 | UpdateBackingFeePolicy | 238 | 6,163 | 3,108 | 14,656 | 8,023 | 50% | 55% |
-| 52 | WithdrawBackingBucketEarnings | 1 | 40,669 | 17,297 | 40,669 | 17,297 | 43% | 43% |
+| 52 | WithdrawBackingBucketEarnings | 1 | 39,169 | 16,974 | 39,169 | 16,974 | 43% | 43% |
 | 53 | SyncBackingDomainLedger | 175 | 3,923 | 1,628 | 7,179 | 2,554 | 41% | 47% |
 | 54 | SyncInsuranceLedger | 151 | 2,572 | 1,250 | 3,662 | 1,418 | 49% | 51% |
 | 55 | UpdateTradeFeePolicy | 231 | 3,208 | 1,663 | 13,570 | 7,471 | 52% | 55% |
-| 56 | TopUpInsuranceDomain | 116 | 20,517 | 6,728 | 30,033 | 8,989 | 33% | 37% |
-| 57 | WithdrawInsuranceAsset | 58 | 40,020 | 15,994 | 57,957 | 21,095 | 40% | 44% |
+| 56 | TopUpInsuranceDomain | 116 | 19,677 | 6,527 | 30,027 | 8,909 | 33% | 37% |
+| 57 | WithdrawInsuranceAsset | 58 | 40,718 | 16,110 | 62,598 | 20,882 | 40% | 45% |
 | 58 | UpdateFeeRedirectPolicy | 228 | 1,931 | 847 | 2,169 | 870 | 44% | 44% |
 | 59 | UpdateMarketInitFeePolicy | 237 | 1,944 | 868 | 2,177 | 890 | 45% | 45% |
-| 60 | UpdateBaseUnitMints | 96 | 12,762 | 3,727 | 17,137 | 4,527 | 29% | 33% |
-| 61 | SwapSecondaryForPrimary | 3 | 16,873 | 6,040 | 16,873 | 6,040 | 36% | 36% |
-| 62 | ConfigureAuthMark | 1,273 | 4,404 | 2,242 | 4,744 | 2,365 | 51% | 52% |
+| 60 | UpdateBaseUnitMints | 96 | 10,278 | 3,160 | 11,839 | 3,837 | 31% | 33% |
+| 61 | SwapSecondaryForPrimary | 3 | 21,373 | 7,097 | 21,373 | 7,097 | 33% | 33% |
+| 62 | ConfigureAuthMark | 1,295 | 4,403 | 2,241 | 4,744 | 2,365 | 51% | 52% |
 | 63 | PushAuthMark | 1,429 | 6,586 | 2,777 | 6,760 | 2,906 | 42% | 44% |
 | 64 | ForceCloseAbandonedAsset | 121 | 837,372 | 297,261 | 926,958 | 328,077 | 35% | 41% |
-| 65 | UpdateAssetAuthority | 184 | 2,348 | 1,135 | 2,622 | 1,207 | 48% | 50% |
+| 65 | UpdateAssetAuthority | 185 | 2,348 | 1,135 | 2,622 | 1,207 | 48% | 50% |
 | 66 | BatchTradeNoCpi | 188 | 570,542 | 211,207 | 1,124,628 | 392,289 | 37% | 62% |
-| 67 | BatchTradeCpi | 108 | 547,009 | 204,810 | 1,027,411 | 345,720 | 37% | 61% |
-| 68 | SetMatcherConfig | 230 | 6,115 | 2,142 | 16,755 | 4,892 | 35% | 51% |
+| 67 | BatchTradeCpi | 108 | 544,259 | 204,101 | 1,027,411 | 345,720 | 38% | 62% |
+| 68 | SetMatcherConfig | 230 | 5,502 | 1,984 | 12,514 | 3,744 | 36% | 51% |
 | 69 | RestartAssetOracle | 41 | 13,839 | 5,007 | 14,066 | 5,043 | 36% | 36% |
 | 70 | CanonicalizeSpentBackingHistory | 1 | 9,973 | 3,801 | 9,973 | 3,801 | 38% | 38% |
 
-"Worst case" is the highest port / reference ratio of one transaction. ¹ The four rows marked are from the run of
-2026-11-21 on the current binary (all 31 files, `percolator-v16-shapes.test.ts` among them, whose markets of up to
-5,682 slots give these rows' worst cases); the other rows are from the table's run of 2026-11-19, whose instructions'
-code has not changed since. ResolveMarket and ResolveStalePermissionless are closest to the reference at the largest
+"Worst case" is the highest port / reference ratio of one transaction; the two "worst" columns are each side's
+highest figure. Every row is from the run of 2026-11-23 on the current binary (`percolator-v16-shapes.test.ts`'s
+markets of up to 5,682 slots give the worst cases of InitMarket, CloseSlab, ResolveMarket and
+ResolveStalePermissionless). These figures vary from run to run with the keys, which come from a seed drawn per run:
+a key's PDA bump decides how many hashes `find_program_address` costs, so a transaction deriving a PDA (CloseSlab's
+vault authority, for one) moves by up to a few thousand units in the reference and by less in the port. CloseSlab's
+residual scan of 256 assets on the 5,682-slot market measured reference 179,870 / port 74,832 and 181,370 / 75,177 in
+two runs on the current binary (182,870 / 75,544 and 181,370 / 75,199 on the previous one, whose scan code is the
+same). ResolveMarket and ResolveStalePermissionless are closest to the reference at the largest
 shapes: their scan of the configured slots costs 11 instructions a slot in both, and the port's lead is its smaller
-fixed part (64,034 against 65,546 for 5,682 slots; section "Where the port costs more"). InitMarket's cost grows with
+fixed part (port 64,034, reference 65,546 for 5,682 slots; section "Where the port costs more"). InitMarket's cost grows with
 the market's capacity (asset 0's 424-byte oracle profile is copied into every slot): the port copies it with the
 memmove syscall, a whole-struct assignment between two elements of one view of the slot array, whose bounds were
 checked once, so each copy is the syscall and a few instructions (until 2026-11-21 it was `copyData` with the offsets,
@@ -615,16 +626,16 @@ whose per-copy bounds and overflow checks cost the port more than the reference 
 its legs does (the liens reconciled and burned, the source credit consumed, the K/F netting and booking, the B
 chunks): the original validates the portfolio against the market up to five times (`validate_with_market`, a scan of
 the 32 source domains and 16 legs), and the port makes every one of those validations; their highest counts here
-(371,983 against 133,151; 349,639 against 122,241) are on generated states with open legs. In a run of 3,000 such
+(port 133,151, reference 371,983; port 122,241, reference 349,639) are on generated states with open legs. In a run of 3,000 such
 states (TESTING.md) the 558 SyncMaintenanceFee successes averaged 170,907 CU in the reference and 65,934 in the port
-(worst 565,641 against 194,948), and none of the 2,908 successes cost the port more. UpdateAssetLifecycle's highest
-count is a retirement that expires lapsed Fresh backing buckets on both sides (39,219 against 16,560); an activation that appends a slot (the market reallocated by 1,845 bytes, zeroed by the memset syscall in both). Refusals are not
-required to cost less; none of the 44,699 compared in the last run costs the port as much (10 transactions refused by the runtime before
+(worst: port 194,948, reference 565,641), and none of the 2,908 successes cost the port more. UpdateAssetLifecycle's highest
+count is a retirement that expires lapsed Fresh backing buckets on both sides (port 16,560, reference 39,219); an activation that appends a slot (the market reallocated by 1,845 bytes, zeroed by the memset syscall in both). Refusals are not
+required to cost less; none of the 44,695 compared in the last run costs the port as much (10 transactions refused by the runtime before
 the program ran cost 0 in both). Before the compiler zeroed with the memset syscall (from 64 bytes, as the
 reference's realloc does) and copied whole structs in account data with the memmove syscall (from 80 bytes), 13
 refusals of InitPortfolio and ClosePortfolio after a reallocation from a shorter length cost the port more (about
 3,000 CU for 9,563 bytes zeroed by stores), and a successful InitPortfolio from a 0-byte account cost 20,876 (now
-16,129, against 27,754). On the same transactions that change took 4,750 CU off InitPortfolio from an empty account
+16,129; the reference 27,754). On the same transactions that change took 4,750 CU off InitPortfolio from an empty account
 and 2,069 off every Deposit and ClosePortfolio, and added one to InitPortfolio when the account grows by fewer than
 64 bytes (the length is tested at run time; two transactions of these tests, 8 and 16 bytes).
 
@@ -723,7 +734,10 @@ preamble), InitPortfolio 27,666 (27,310 without; 27,747 when it reallocates a 0-
   for each): AdvanceClose, a crank's declaration of Recovery, a leg retained as a pending obligation,
   WithdrawBackingBucket's emptied-bucket statuses (Impaired, Expired), CloseSlab's native-mint residue path. (The
   terminal scan past 256 assets is now compared, on a market of 5,682 configured slots whose scan state is written into
-  it: `percolator-v16-shapes.test.ts`.) Of these, the author's tests enter AdvanceClose with a pending close ledger, a crank's
+  it, every step of it: Continue, ScanProgress, the wait at a live Fresh bucket and LockActive from it, the expiry of a
+  lapsed Fresh bucket, a nonzero recredit, and the last batch refused while a domain budget remains, then ReadyToClose:
+  `percolator-v16-shapes.test.ts`. The activation fee at the top of u128, which no instruction can store, is compared
+  on a fee written into the market: `percolator-v16-lifecycle.test.ts`.) Of these, the author's tests enter AdvanceClose with a pending close ledger, a crank's
   declaration of Recovery, a leg retained as a pending obligation through ForfeitRecoveryLeg (not through a trade)
   and the Expired status, in
   transactions identical in both binaries' runs (a probed port on 16 chosen tests; TESTING.md section 3 names them);
@@ -755,10 +769,13 @@ preamble), InitPortfolio 27,666 (27,310 without; 27,747 when it reallocates a 0-
   vectors; the ones the crank reaches (legs that already hold observations, the fall-back to the mark, the liveness) are
   compared with the reference binary (NOTES.md section 8). The oracle accounts are
   synthetic, built from the offsets the original reads; no mainnet account snapshot was used.
-- Activation at large indices: appending with the fee was compared up to index 34 (the fee doubling at 32); the second
-  doubling (64) and beyond were not run.
-- Markets near the 10 MiB limit: InitMarket was compared up to 20 slots (the copy of the oracle profile per slot is the
-  part that grows); its cost at thousands of slots was not measured.
+- Activation at large indices: appending with the fee was compared up to index 34 (refusals at 35) and reuse at
+  indices 5, 7 and 33 (the fee doubling at 32); the second doubling (64) and beyond were not run. The doubling's overflow is compared on
+  base fees of u128::MAX, u128::MAX/2 + 1 and u128::MAX/2 written into the market (no instruction stores a base fee
+  above u64::MAX), at indices 7, 33 and 35 only.
+- Markets near the 10 MiB limit: InitMarket, ResolveMarket, ResolveStalePermissionless and CloseSlab are compared on
+  markets of 1,000 and 5,682 slots (`percolator-v16-shapes.test.ts`), the grown markets' configured count, last asset
+  and scan state written into the market; the other instructions were not run on markets of that size.
 - The heap: the original's allocations beyond the entrypoint's account list are decode's vectors, the SPL Token
   Transfers' and the matcher calls' instructions, and the batch's vectors; most compared transactions requested the
   author's 256 KiB frame. The largest batch and matcher transactions (14 legs; TradeCpi with a tail of 32) were also

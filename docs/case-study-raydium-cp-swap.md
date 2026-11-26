@@ -135,30 +135,30 @@ Compute units per transaction, mainnet original against the port, from that test
 
 | Instruction | Raydium (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `initialize` | 83,559 | 39,878 | −52% |
-| `initialize`, Token-2022 transfer fees | 93,047 | 53,834 | −42% |
-| `initialize_v2`, creator fee on | 86,286 | 41,760 | −52% |
-| `initialize_with_permission` | 98,221 | 43,358 | −56% |
-| `swap_base_input` | 24,162 | 5,734 | −76% |
-| `swap_base_output` | 24,591 | 5,989 | −76% |
+| `initialize` | 85,059 | 39,091 | −54% |
+| `initialize`, Token-2022 transfer fees | 100,547 | 55,660 | −45% |
+| `initialize_v2`, creator fee on | 90,786 | 41,785 | −54% |
+| `initialize_with_permission` | 93,721 | 41,622 | −56% |
+| `swap_base_input` | 24,176 | 5,591 | −77% |
+| `swap_base_output` | 24,605 | 5,846 | −76% |
 | `deposit` | 25,007 | 6,194 | −75% |
-| `withdraw` | 25,214 | 6,203 | −75% |
-| `collect_protocol_fee` | 20,205 | 4,189 | −79% |
-| `collect_creator_fee`, creating the creator's two token accounts | 61,644 | 34,014 | −45% |
-| `collect_creator_fee_permissionless` | 28,165 | 5,887 | −79% |
-| `create_permission_pda` | 10,525 | 2,291 | −78% |
-| `create_creator_fee_share` | 8,421 | 2,067 | −75% |
-| `create_support_mint_associated` | 7,837 | 2,012 | −74% |
-| `close_creator_fee_share` | 5,169 | 767 | −85% |
+| `withdraw` | 25,214 | 6,228 | −75% |
+| `collect_protocol_fee` | 20,205 | 4,200 | −79% |
+| `collect_creator_fee`, creating the creator's two token accounts | 70,644 | 36,531 | −48% |
+| `collect_creator_fee_permissionless` | 34,165 | 7,249 | −79% |
+| `create_permission_pda` | 9,025 | 1,965 | −78% |
+| `create_creator_fee_share` | 12,921 | 3,093 | −76% |
+| `create_support_mint_associated` | 9,337 | 2,338 | −75% |
+| `close_creator_fee_share` | 9,669 | 1,718 | −82% |
 | `collect_excess_lamports`, wrapped SOL | 10,798 | 3,764 | −65% |
-| `swap_base_input`, Token-2022 transfer fees | 31,339 | 12,082 | −61% |
-| `swap_base_output`, Token-2022 transfer fees | 32,508 | 14,097 | −57% |
-| `deposit`, Token-2022 transfer fees | 33,203 | 14,478 | −56% |
+| `swap_base_input`, Token-2022 transfer fees | 31,354 | 11,668 | −63% |
+| `swap_base_output`, Token-2022 transfer fees | 32,531 | 13,140 | −60% |
+| `deposit`, Token-2022 transfer fees | 33,209 | 13,670 | −59% |
 
 The Token-2022 rows include the token program's own work, which is the same in both. Refusals cost far less. For
 example, a swap through the wrong config costs 17,193 against 1,656.
 
-On size, the port's binary is 214,944 bytes and the deployed original is 749,848 bytes, for the same 21 instructions.
+On size, the port's binary is 216,960 bytes and the deployed original is 749,848 bytes, for the same 21 instructions.
 
 Pool creation is mostly the token programs' and the System Program's own work (account creation, initialization,
 transfers), which costs the same in both. The difference is the program's part. Its cost also varies from run to run

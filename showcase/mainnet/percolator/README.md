@@ -79,7 +79,7 @@ InvalidInstructionData). Accounts in order; "anyone" means no signer is checked.
 ## Status
 
 **All 27 instructions are ported**, each compared with the mainnet binary on its success paths and on every refusal
-the tests can reach (the ones they cannot reach are listed under "What is not verified"). The packages, in order:
+the tests can reach (the ones they cannot reach are listed under "What is not verified"). By area:
 
 1. The slab, the engine core and 15 instructions: InitMarket, InitUser, InitLP, DepositCollateral, WithdrawCollateral,
    CloseAccount on live markets, TopUpInsurance, CloseSlab, UpdateConfig, PushHyperpMark, SetOraclePriceCap,
@@ -223,7 +223,7 @@ writes what its context account says.
 
 | | Original | Port |
 | --- | ---: | ---: |
-| Binary | 395,368 bytes | 363,392 bytes (SBPF v0) |
+| Binary | 395,368 bytes | 361,168 bytes (SBPF v0) |
 
 Successful transactions, mean / largest: those of the two fuzz walks with their ends (the account walk 40 seeds × 400
 steps, the liquidation walk 40 seeds × 600 steps, 80 full life cycles), and for UpdateAuthority, which they do not
@@ -231,38 +231,45 @@ send, those of percolator-admin.test.ts. Every instruction is in the table.
 
 | Instruction | Transactions | Original | Port |
 | --- | ---: | ---: | ---: |
-| InitMarket | 80 | 237,575 / 248,070 | 232,720 / 235,031 |
+| InitMarket | 80 | 237,575 / 248,070 | 105,802 / 108,114 |
 | InitUser | 1,445 | 6,926 / 7,225 | 2,917 / 3,250 |
 | InitLP | 230 | 7,071 / 7,301 | 3,016 / 3,272 |
 | DepositCollateral | 1,314 | 6,792 / 7,821 | 2,725 / 3,498 |
 | WithdrawCollateral | 786 | 14,475 / 45,269 | 6,311 / 15,996 |
 | KeeperCrank | 4,324 | 52,853 / 387,752 | 29,217 / 213,766 |
-| TradeNoCpi | 1,790 | 27,367 / 88,586 | 14,298 / 33,715 |
+| TradeNoCpi | 1,790 | 27,367 / 88,586 | 14,225 / 33,642 |
 | LiquidateAtOracle | 2,310 | 10,441 / 66,218 | 5,459 / 19,102 |
-| CloseAccount (live and resolved) | 883 | 9,808 / 28,989 | 4,372 / 10,222 |
+| CloseAccount (live and resolved) | 883 | 9,808 / 28,989 | 4,321 / 10,160 |
 | TopUpInsurance | 1,383 | 6,387 / 6,450 | 2,381 / 2,420 |
-| TradeCpi | 83 | 21,531 / 44,910 | 13,476 / 24,822 |
+| TradeCpi | 83 | 21,454 / 44,829 | 10,049 / 21,361 |
 | CloseSlab | 80 | 12,270 / 12,270 | 8,225 / 8,225 |
 | UpdateConfig | 433 | 3,024 / 9,318 | 1,265 / 3,107 |
-| PushHyperpMark | 774 | 3,177 / 9,269 | 2,592 / 4,335 |
+| PushHyperpMark | 774 | 3,177 / 9,269 | 1,295 / 3,038 |
 | SetOraclePriceCap | 601 | 1,934 / 8,484 | 606 / 2,577 |
 | ResolveMarket | 58 | 4,490 / 27,650 | 1,814 / 8,725 |
 | WithdrawInsurance | 92 | 6,056 / 6,404 | 2,085 / 2,299 |
-| AdminForceCloseAccount | 423 | 9,139 / 22,995 | 3,631 / 8,866 |
+| AdminForceCloseAccount | 423 | 9,139 / 22,995 | 3,593 / 8,804 |
 | WithdrawInsuranceLimited | 31 | 7,062 / 7,085 | 2,606 / 2,660 |
 | ReclaimEmptyAccount | 90 | 1,526 / 2,298 | 727 / 1,170 |
 | SettleAccount | 1,133 | 5,794 / 22,438 | 3,609 / 9,803 |
 | DepositFeeCredits | 6 | 7,030 / 7,517 | 2,795 / 3,065 |
 | ConvertReleasedPnl | 241 | 20,188 / 35,488 | 8,646 / 12,482 |
 | ResolvePermissionless | 22 | 1,617 / 1,632 | 791 / 805 |
-| ForceCloseResolved | 208 | 10,135 / 26,722 | 3,864 / 9,811 |
+| ForceCloseResolved | 208 | 10,135 / 26,722 | 3,823 / 9,749 |
 | CatchupAccrue | 1,405 | 4,373 / 75,542 | 1,731 / 33,437 |
 | UpdateAuthority | 7 | 1,496 / 1,697 | 437 / 587 |
 
-Measured on the 363,392-byte build. Against the build before the mutation fuzzers' fixes (360,248 bytes), the same
-transactions cost the port the same or fewer units in every row (SetOraclePriceCap, which now changes the config in
-place, 606 on average from 1,696; the original's figures are unchanged, being the same binary on the same
-transactions); in the keeper-crank table below every crank costs the port one unit more than on that build.
+Measured on the 361,168-byte build, the first since the compiler copies and zeroes whole values with the memory
+syscalls (`sol_memcpy`, `sol_memset`, `sol_memmove`) above a measured size. Against the 363,392-byte build before
+it, the same transactions cost the port the same or fewer units in every row: InitMarket 105,802 on average from
+232,720, PushHyperpMark 1,295 from 2,592, TradeNoCpi 14,225 from 14,298, CloseAccount 4,321 from 4,372,
+AdminForceCloseAccount 3,593 from 3,631, ForceCloseResolved 3,823 from 3,864, TradeCpi 10,049 from 13,476, the rest
+unchanged. TradeCpi costs the original less too (21,454 from 21,531): the matcher fixture both call is built by the
+same compiler (now 22,344 bytes). The original's other figures are unchanged, being the same binary on the same
+transactions. The keeper-crank table below is unchanged. Against the build before the mutation fuzzers'
+fixes (360,248 bytes), the 363,392-byte build had cost the port the same or fewer units in every row
+(SetOraclePriceCap, which now changes the config in place, 606 on average from 1,696) and one unit more on every crank
+of the keeper-crank table.
 
 TradeCpi's figures include the matcher's call (about 1,000 units, the same TypeSOL matcher under both). Every test
 asserts the rule through `both()` (see "How it is checked"): a successful transaction with a Percolator instruction at

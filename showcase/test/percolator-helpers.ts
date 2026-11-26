@@ -395,7 +395,8 @@ export function inner(r: Result): string[] {
     );
 }
 
-const returnData = (r: Result) => {
+/** The return data: program id and bytes, in hex. */
+export const returnData = (r: Result) => {
   const d = meta(r).returnData();
   return `${Buffer.from(d.programId()).toString("hex")} ${Buffer.from(d.data()).toString("hex")}`;
 };

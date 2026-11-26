@@ -11,7 +11,9 @@
 // Permissionless activations with their fee are compared whole (the fee into market 0's insurance domains, the SPL Token
 // Transfer as an inner instruction): appending past the market's first slots (each a realloc), the fee doubled from
 // asset 32 on, an odd fee split between the two domains, the reuse of a retired slot, and the deposit's refusals on
-// patched insurance state. A retirement that must expire a lapsed Fresh backing bucket (which only TopUpBackingBucket,
+// patched insurance state, and the doubled fee at the top of u128 (a stored base fee of u128::MAX and u128::MAX/2 + 1,
+// which no instruction can store, written into the market): refused for overflow from asset 32 on, the base unchanged
+// below it, through both the appending and the reuse route. A retirement that must expire a lapsed Fresh backing bucket (which only TopUpBackingBucket,
 // not ported, makes) is compared on buckets written into the market, in both VMs alike.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole } from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -458,6 +460,50 @@ describe.skipIf(!HAVE_REFERENCE || !HAVE_PORT)("Percolator v16 port: asset lifec
     }
     expect(reused).toBe("ok");
     console.log(`permissionless activations: ${appended} appends and one reuse succeeded in both`);
+
+    // The doubled fee at the top of u128, on market state written into both VMs: no instruction can store a base fee
+    // above u64::MAX (UpdateMarketInitFeePolicy, tag 59, validates the value with `amount_to_u64`, InvalidInstruction
+    // otherwise; market creation stores 0). `permissionless_market_init_fee_for_asset` returns the base unchanged below
+    // asset 32 and None (EngineArithmeticOverflow) when any doubling overflows, a base of u128::MAX included.
+    const U128_MAX = (1n << 128n) - 1n;
+    const feeAt = marketAt.wrapper("permissionless_market_init_fee");
+    const withFee = async (label: string, base: bigint, o: Partial<Parameters<typeof ix.assetLifecycle>[2]>, expected: string) => {
+      const saved = d.data(m.market);
+      d.patch(m.market, (b) => setInt(b, feeAt, 16, base));
+      await d.fails(label, creator, [tx(o)], expected);
+      d.patch(m.market, (b) => saved.copy(b));
+    };
+    const HALF = U128_MAX / 2n;
+    d.patch(m.market, () => {}, { lamports: d.reference.minimumBalanceForRentExemption(BigInt(marketLen(36))) });
+    // Asset 35 by appending (no free slot): one doubling.
+    for (const [base, name] of [
+      [U128_MAX, "u128::MAX"],
+      [HALF + 1n, "u128::MAX/2 + 1"],
+    ] as const) {
+      await withFee(`permissionless append asset 35, base fee ${name}`, base, { asset: 35, maxInitFee: U128_MAX }, err(15));
+      await withFee(`permissionless append asset 35, base fee ${name}, maximum 1001`, base, { asset: 35, maxInitFee: 1001n }, err(15));
+    }
+    // u128::MAX/2 doubles once without overflow; the fee then fails amount_to_u64 (or the caller's maximum).
+    await withFee("permissionless append asset 35, base fee u128::MAX/2", HALF, { asset: 35, maxInitFee: U128_MAX }, err(E.InvalidInstruction));
+    await withFee("permissionless append asset 35, base fee u128::MAX/2, maximum 1001", HALF, { asset: 35, maxInitFee: 1001n }, err(E.Unauthorized));
+    // Retired slots 7 and 33 make the reuse route: asset 7 (no doubling) and asset 33 (one doubling).
+    for (const asset of [7, 33]) {
+      const id = d.data(m.market).readBigUInt64LE(marketAt.engine(asset, "asset.market_id"));
+      await d.ok(`retire asset ${asset}`, a, [ix.assetLifecycle(m, a, { action: RETIRE, asset, marketId: id, epoch: 0n, nowSlot: 1n })]);
+    }
+    d.setClock(d.slot + 5_000n);
+    for (const [base, name] of [
+      [U128_MAX, "u128::MAX"],
+      [HALF + 1n, "u128::MAX/2 + 1"],
+    ] as const) {
+      await withFee(`permissionless reuse of asset 33, base fee ${name}`, base, { asset: 33, maxInitFee: U128_MAX }, err(15));
+      await withFee(`permissionless reuse of asset 7, base fee ${name}`, base, { asset: 7, maxInitFee: U128_MAX }, err(E.InvalidInstruction));
+      await withFee(`permissionless reuse of asset 7, base fee ${name}, maximum 1001`, base, { asset: 7, maxInitFee: 1001n }, err(E.Unauthorized));
+    }
+    // The stored fee back at 1001: both reuses succeed.
+    await d.ok("permissionless reuse of asset 7 after the fee checks", creator, [tx({ asset: 7, maxInitFee: 1001n })]);
+    d.setClock(d.slot + 1n);
+    await d.ok("permissionless reuse of asset 33 after the fee checks", creator, [tx({ asset: 33, maxInitFee: 2002n })]);
   });
 });
 

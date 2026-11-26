@@ -26,7 +26,8 @@ fail	both	v16_program_stateful_fuzz	inv_086_reference_model_and_deployed_transit
 fail	port	v16_cu	inv_077_bounded_work_and_maximum_shape_compute::short_side_b_budget::v16_program_max_shape_short_b_budget_has_exact_public_progress	compute units only: inv_077_short_side_b_budget.rs:348 asserts the reference's peak of 554,832 after every state assertion has passed; the port's peak is 192,398
 fail	port	v16_cu	inv_078_permissionless_recovery_coverage::v16_bpf_force_close_liveness_survives_14_stale_leg_grief_via_precrank	compute units only: inv_078_permissionless_recovery_coverage.rs:1074 asserts that a one-shot ForceCloseAbandonedAsset of two 14-leg portfolios exceeds the 1,400,000 limit; the port completes it
 #
-# trace: a test whose recorded transactions differ, with the expected kind of difference.
+# trace: a test whose recorded transactions differ, one row per kind of difference found in it (every differing
+# transaction of the test is classed; a kind found and not listed for the test fails the comparison).
 trace	reference-over-limit	v16_cu	inv_078_permissionless_recovery_coverage::v16_bpf_force_close_liveness_survives_14_stale_leg_grief_via_precrank	the one-shot ForceCloseAbandonedAsset (transaction 12) exhausts the reference's 1,400,000 compute units; the port completes it, and its test then stops (above); the vitest harness compares the same shape with the reference under a raised budget
 #
 # cu: a Percolator instruction (first tag of the transaction) with identical successes on which the port used more

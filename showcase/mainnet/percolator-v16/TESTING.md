@@ -96,7 +96,7 @@ are those of the run whose seed the walk's row names; other seeds give other, si
 | `percolator-v16-accounts.test.ts` | 28 | 3,269 transactions, 129 succeeded in both |
 | `percolator-v16-walk.test.ts` | 4 | 3 × 2,000 walk steps (1,188, 1,119 and 1,194 succeeded in both; the keeper sent 6, 4 and 2 transactions, all succeeding; 3, 2 and 2 fresh markets) and 2,000 mutations (393 from generated states, six in ten of them with open legs; 928 succeeded in both; none pinned); run with `PERCOLATOR_V16_SEED=175422424321469`, the same counts as with the keys of before) |
 | `percolator-v16-oracle.test.ts` | 5 | 300 fuzzed pushes and reconfigurations (193 succeeded in both; 1,439 of 2,000 in a longer run) |
-| `percolator-v16-lifecycle.test.ts` | 6 | 400 fuzzed shutdowns, a third on the hybrid oracle (257 succeeded in both, 57 of them accruing funding); 34 permissionless appends and one reuse with their fee; 300 retirements with lapsed Fresh backing buckets written into the market (139 succeeded in both) |
+| `percolator-v16-lifecycle.test.ts` | 6 | 400 fuzzed shutdowns, a third on the hybrid oracle (257 succeeded in both, 57 of them accruing funding); 34 permissionless appends and three reuses with their fee, and 13 refusals of a base fee of u128::MAX, u128::MAX/2 + 1 and u128::MAX/2 written into the market (EngineArithmeticOverflow from asset 32 on, the base unchanged below it); 300 retirements with lapsed Fresh backing buckets written into the market (139 succeeded in both) |
 | `percolator-v16-hybrid.test.ts` | 4 | 400 fuzzed configurations (113 succeeded in both: Pyth 20/55, Switchboard 22/37, Chainlink 17/33, two legs 32/122, three legs 22/153) |
 | `percolator-v16-external.test.ts` | 2 | 1,500 vectors equal to the original's answers (270 read a price, 258 of them advancing; 771 with stored legs) |
 | `percolator-v16-refresh.test.ts` | 6 | 400 generated states (266 of 313 Live ones accepted by the validators; 151 succeeded in both, 7 of them settling legs) and 300 with open legs (193 of 260 accepted; 83 succeeded in both, 36 of them settling legs); none pinned |
@@ -114,15 +114,17 @@ are those of the run whose seed the walk's row names; other seeds give other, si
 | `percolator-v16-cpi.test.ts` | 9 | TradeCpi and BatchTradeCpi through the three matchers and the rogue matcher, 300 seeded matcher trades (below) |
 | `percolator-v16-limit.test.ts` | 2 | the reference past its compute-unit limit, rerun under a raised budget (below) |
 | `percolator-v16-paths.test.ts` | 1 | source liens, backing fees, earnings, lien releases driven on purpose, each asserted on both VMs' state (below) |
-| `percolator-v16-shapes.test.ts` | 3 | InitMarket, ResolveMarket, ResolveStalePermissionless and CloseSlab's terminal scan on markets of up to 5,682 slots (below) |
+| `percolator-v16-shapes.test.ts` | 4 | InitMarket, ResolveMarket, ResolveStalePermissionless and CloseSlab's terminal scan on markets of up to 5,682 slots (below) |
 
-In the latest run (2026-11-21, on the binary of sha256 `01c33233…`; 31 files, one at a time, under
-`CI_REQUIRE_ALL=built`, all passing: 226 tests, default sizes) the files printed 70,928 transactions compared with the
-port, 30 with the reference on both sides (harness, layout, reference and state files) and 10,649 vectors (external
-1,500, kernels 2,620, primitives 6,529). The compute-unit file (`PERCOLATOR_V16_CU_FILE`, the transactions with a
-Percolator instruction) held 70,725: 26,035 successes, each cheaper in the port (9 against the reference's run under a
-raised budget), and 44,690 refusals, 44,680 cheaper in the port and 10 at 0 in both (refused by the runtime before the
-program ran). The run of 2026-11-20 (30 files, 222 tests, the binary before the whole-market scans were fixed): 70,881
+In the latest run (2026-11-23, on the binary of sha256 `c6dc6b24…`, 1,362,912 bytes; 31 files, one at a time, under
+`CI_REQUIRE_ALL=built`, all passing: 227 tests, default sizes; `percolator-v16-trade.test.ts` timed out in four tests
+on a machine loaded by other work and passed when run again alone, the figures being that run's) the files printed
+70,975 transactions compared with the port, 30 with the reference on both sides (harness, layout, reference and state
+files) and 10,649 vectors (external 1,500, kernels 2,620, primitives 6,529). The compute-unit file
+(`PERCOLATOR_V16_CU_FILE`, the transactions with a Percolator instruction) held 70,772: 26,077 successes, each cheaper
+in the port (9 against the reference's run under a raised budget), and 44,695 refusals, 44,685 cheaper in the port and
+10 at 0 in both (refused by the runtime before the program ran). The run of 2026-11-21 (the binary of sha256
+`01c33233…`, 226 tests): 70,928 transactions; its compute-unit file 70,725, 26,035 successes, 44,690 refusals. The run of 2026-11-20 (30 files, 222 tests, the binary before the whole-market scans were fixed): 70,881
 transactions; its compute-unit file 70,678, 25,995 successes, 44,683 refusals. The counts move by a few
 dozen between runs (the keys come from a seed drawn per run: `percolator-v16-setup-stress` compared 2,286 and 2,258
 in two runs). The run of 2026-11-19 counted by the compute-unit file: 70,640 transactions, 25,941 successes, 44,699
@@ -529,7 +531,7 @@ SyncMaintenanceFee refusals on Live states with legs, alike in both, were Engine
 EngineInvalidConfig 69, EngineCounterOverflow 47, EngineStale 46, EngineBStale 43 (a settlement stopped at a B chunk).
 Of the 2,000 ordinary states, 33 successes settled legs. The mutation fuzzer: 5,000 transactions (998 from generated
 states), 2,340 successes, all alike. No disagreement with the reference binary was found in any of these runs. The
-same 3,000 open-leg states without probes, compute units judged: the same outcomes, and the port used fewer compute units on every one of the 2,908 successes (the probes' Deposit of 0 included): SyncMaintenanceFee 558 successes, mean 170,907 CU in the reference and 65,934 in the port, worst 565,641 against 194,948; Withdraw 86, mean 35,517 against 12,167, worst 302,606 against 101,134.
+same 3,000 open-leg states without probes, compute units judged: the same outcomes, and the port used fewer compute units on every one of the 2,908 successes (the probes' Deposit of 0 included): SyncMaintenanceFee 558 successes, mean 170,907 CU in the reference and 65,934 in the port, worst: port 194,948, reference 565,641; Withdraw 86, mean: port 12,167, reference 35,517, worst: port 101,134, reference 302,606.
 
 ### Branches not reached
 
@@ -914,8 +916,14 @@ through the instruction into accounts of 1,000 and 5,682 slots; the grown market
 the author's `grow_market_to_10m_with_high_active_asset` makes them, by writing the configured count, the next market
 id and the last slot's asset into the market after InitMarket; CloseSlab's scan state (one atom of fresh backing in
 the market, asset 300's long bucket Fresh and live; then a claim-free residual instead) is written into the market
-too. Each transaction is compared whole and each success must cost the port less. Figures (reference / port, whole
-transactions; the last column is the port's binary before the fix, sha256 `6677dd5b…`, where it was measured):
+too; a further market of the same shape has a live asset at 2,000 (asset 0's engine slot copied) whose lapsed Fresh
+bucket and spent insurance budget take the scan through the Expire step, a nonzero recredit, the last batch refused
+while the restored budget remains (LockActive) and, with that budget written to zero in both VMs, ReadyToClose (32
+CloseSlab transactions). Each transaction is compared whole and each success must cost the port less. Figures (reference / port, whole
+transactions, from the run of 2026-11-23 on the current binary; the last column is the port's binary before the fix,
+sha256 `6677dd5b…`, where it was measured. The reference's figures, and less so the port's, vary from run to run with
+the keys' PDA bumps (the keys come from a seed drawn per run): CloseSlab's residual scan measured 179,870 / 74,832 and
+181,370 / 75,177 in two runs on the current binary, 182,870 / 75,544 and 181,370 / 75,199 on the previous one):
 
 | Transaction | Reference | Port | Port before |
 | --- | ---: | ---: | ---: |
@@ -924,9 +932,12 @@ transactions; the last column is the port's binary before the fix, sha256 `6677d
 | ResolveMarket, 1,000 configured slots | 14,044 | 12,532 | 30,526 |
 | ResolveMarket, 5,682 configured slots | 65,546 | 64,034 | 166,304 |
 | ResolveStalePermissionless, 5,682 configured slots | 65,216 | 63,962 | – |
-| CloseSlab, a scan of 256 assets with fresh backing | 41,318 | 17,682 | 42,314 against 38,318 (the reference's figure moves with the keys' PDA bumps) |
-| CloseSlab, a scan to the live Fresh bucket (45 assets) | 17,886 | 6,586 | – |
-| CloseSlab, a residual scan of 256 assets | 182,870 | 75,544 | – |
+| CloseSlab, a scan of 256 assets with fresh backing | 38,318 | 16,970 | 42,314 (reference 38,318 in that run) |
+| CloseSlab, a scan to the live Fresh bucket (45 assets) | 14,886 | 5,874 | – |
+| CloseSlab, a residual scan of 256 assets | 179,870 | 74,832 | – |
+| CloseSlab, a scan of 208 assets ending in the Expire step (asset 2,000) | 159,187 | 68,642 | – |
+| CloseSlab, a scan of 208 assets ending in a nonzero recredit (asset 2,000) | 153,972 | 64,291 | – |
+| CloseSlab, the last batch (98 assets) and ReadyToClose | 83,652 | 34,377 | – |
 
 The fix (README, "Where the port costs more"): the three scans read the slots through one view of the slot array,
 whose bounds and owner are checked once (`rawArrayAt`), instead of a view per slot with its own owner and bounds check
@@ -944,7 +955,7 @@ policy), then grows its position in eight trades whose initial margin its capita
 claim against the bucket (`createAccountLienForEffective`, counterparty-backed: 4 liens) and pays the backing-domain
 fee (`chargeAccountBackingFee`, entered 4 times; TradeCpi refused at the taker's backing cap 24, Unauthorized, and
 filled at 25); the bucket's utilization fee then gives its provider 431,570 atoms of earnings, half of which and one
-atom WithdrawBackingBucketEarnings takes (the deterministic success the earlier runs lacked: 40,669 against 17,297
+atom WithdrawBackingBucketEarnings takes (the deterministic success the earlier runs lacked: port 17,297, reference 40,669
 CU). From that state: the position closed, the flat portfolio's first crank is ReleaseSourceLiens (`releaseSourceLiens`,
 `flatLienNormalization` entered); or the market resolved and every portfolio closed out, which releases a liened
 domain at the resolved close (`releaseAccountLienForDomain` entered). `recertifyAfterSourceLienChange` entered 7 times.
@@ -973,34 +984,43 @@ own tests, whose transactions are identical in both binaries: section 3, "Paths 
   stand or past its expiry with backing left to withdraw; not built here (no generated state was written for it).
 - **CloseSlab's native-mint residue path** needs the market's mint to be the native mint (the tests make SPL mints of
   their own); not built as generated state in this work. **The terminal scan past 256 assets** is now driven by
-  `percolator-v16-shapes.test.ts` (below) on a market of 5,682 configured assets whose header and one bucket are
-  written into the market, not reached by instructions alone.
+  `percolator-v16-shapes.test.ts` (below) on a market of 5,682 configured assets whose header, buckets and one
+  asset's state are written into the market, not reached by instructions alone: every step of the scan is reached
+  there (Continue, ScanProgress, the wait and LockActive at a live Fresh bucket, the Expire step, a nonzero recredit,
+  the last batch refused while a domain budget remains, ReadyToClose); the ReadyToClose that follows a recredit needs
+  that budget written to zero in both VMs.
 
 ## 3. The author's suite
 
 ### The full run on both binaries, transaction by transaction
 
-All six targets, unfiltered, against the reference (`test/programs/percolator_v16.so`, sha256 `cc35fa48…`, built from
-the author's source, not a deployed program) and against the port's current binary (`node dist/cli.js build`,
-1,362,872 bytes, sha256 `01c33233edcbcf7c8bfd7d44995b91a5b5b0d8b724615a864982417392e1f750`), with `TRACE=1` (below),
-the matchers as recorded, 2 CPUs, `--test-threads=2`, `PROPTEST_RNG_SEED=1`. The reference ran on 2026-11-19/20, the
-port on 2026-11-21 to 2026-11-23 (all six targets in one results directory; `author-suite.sh` ended "as expected",
-exit 0). The machine was loaded by other work, so the times are long and uneven; the port's seconds below are each
-target's own test time (`finished in`), the `v16_program_stateful_fuzz` wall time (119,735 s) including hours the
-machine slept:
+All six targets, unfiltered, against the reference (`test/programs/percolator_v16.so`, 1,375,936 bytes, sha256
+`cc35fa4853bddd4e7f58c0e248c7c298ee152625d423ee6ed6b35c9fdfbe60b9`, built from the author's source, not a deployed
+program) and against the port's current binary (`node dist/cli.js build`, 1,362,912 bytes, sha256
+`c6dc6b24c4f0a8cfb801eaf542e27db66357a2051b41b6012aba8ffb30f55b9c`), with `TRACE=1` (below), the matchers as
+recorded, 2 CPUs, `--test-threads=2`, `PROPTEST_RNG_SEED=1`. The port ran on 2026-11-23 to 2026-11-24, the reference
+on 2026-11-25 to 2026-11-26 (each with all six targets in one results directory; `author-suite.sh` ended "as
+expected" both times). The machine was loaded by other work, so the times are long and uneven; for the reference's
+two large targets the seconds below are libtest's own test time (`finished in`), their wall times (14,462 and
+53,156 s) including hours the machine slept:
 
 | Target | Tests | Reference passed / failed | Port passed / failed | Reference seconds | Port seconds |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `listing_oracle_scope` | 2 | 2 / 0 | 2 / 0 | 1 | 1 |
-| `anchor_v2_realloc_probe` | 1 | 1 / 0 | 1 / 0 | 1 | 1 |
+| `listing_oracle_scope` | 2 | 2 / 0 | 2 / 0 | 2 | 1 |
+| `anchor_v2_realloc_probe` | 1 | 1 / 0 | 1 / 0 | 0 | 1 |
 | `open_issue_regressions` | 3 | 3 / 0 | 3 / 0 | 3 | 2 |
-| `v16_program_fuzz_regressions` | 148 | 148 / 0 | 148 / 0 | 232 | 174 |
-| `v16_program_stateful_fuzz` | 336 | 335 / 1 | 335 / 1 | 57,904 | 9,443 |
-| `v16_cu` | 1,581 | 1,573 / 8 | 1,571 / 10 | 10,542 | 7,912 |
+| `v16_program_fuzz_regressions` | 148 | 148 / 0 | 148 / 0 | 225 | 177 |
+| `v16_program_stateful_fuzz` | 336 | 335 / 1 | 335 / 1 | 12,206 | 8,574 |
+| `v16_cu` | 1,581 | 1,573 / 8 | 1,571 / 10 | 9,874 | 7,873 |
 
-The first full run of the port (2026-11-19/20, its previous binary, 1,362,760 bytes, sha256 `6677dd5b9eb3b841…`) gave
-the same passes, failures and trace differences, but 282 identical successes costing the port more; they were fixed
-(below) and the full run repeated on the current binary, the figures of this section.
+The first full run of the port (2026-11-19/20, an earlier binary, 1,362,760 bytes, sha256 `6677dd5b9eb3b841…`, against
+the reference's run of 2026-11-19/20) gave the same passes, failures and trace differences, but 282 identical
+successes costing the port more; they were fixed (below) and the full run repeated on the binary of sha256
+`01c33233…` (1,362,872 bytes, 2026-11-21 to 2026-11-23: the same passes, failures and trace differences, no excess,
+the identical successes at 67,489,010,058 units in the port). The current binary differs from that one in
+UpdateAssetLifecycle's activation-fee overflow check only, and its run and the reference's above used the scripts as
+they now are (narrower log filter, every difference classed, `main.trace`'s ambiguous groups judged against their
+cheapest reference line).
 
 **Failing on the reference itself** (9; each fails on the port at the same file and line with the same message, the
 messages compared whole; in the `inv_072` and `inv_077` ones the message quotes the refused crank's logs, and only the
@@ -1039,21 +1059,30 @@ compute-unit figures in them differ):
 `<results-dir>/trace/<test>.trace` (`scripts/percolator-v16-reference/trace/send_transaction.rs`, spliced into the
 LiteSVM 0.1.0 the tests use): the programs and first data bytes of its instructions, an FNV-1a hash of the
 instructions and account keys, the result (the error in full), hashes of the return data and of the log lines (the
-runtime's compute-unit lines left out), a hash of every account in the transaction's static key list after it ran
+runtime's compute-unit lines left out, matched whole as `Program <id> consumed <n> of <m> compute units`, and with
+`PROBES=1` the port's branch-probe lines; before 2026-11-23 every line containing " consumed " and every line starting
+`Program log: 0xc0de, ` was left out, in the earlier full runs too), a hash of every account in the transaction's static key list after it ran
 (key, lamports, owner, data; executable accounts by key only) and the compute units. The keys a test makes
 (`Keypair::new`, `Pubkey::new_unique`, made per test thread from the thread's name and a counter:
 `trace/keypair_new.rs`, `trace/pubkey_new_unique.rs`) and proptest's seed are fixed, so both binaries receive the
 same transactions; that holds for every test but where a test reacts to a difference. The author's bounded-frontier
 tests (eight in `inv_086`) replay their words on unnamed worker threads (`std::thread::scope`), whose transactions all
 go to `main.trace` in an order that varies between runs; `author-trace-compare.ts` compares that file as a multiset.
-In the run above those threads' lines were written in pieces and interleaved (unreadable); the writer now writes each
-line once under a lock and stops the test if it cannot, and the eight tests were run again on both binaries on
-2026-11-21 (`TEST_FILTER="seeded_frontier bounded_reference_graph_exhausts_public_action_words"`, all 8 passing in
-both, 4,352 and 5,710 s); that run's `main.trace` replaces the unreadable one, and its other three trace files equal
-the first run's byte for byte, compute units included. In the reference's run the four small targets and the two
-large ones ran in separate results directories; three test names occur in two targets, and their files are joined
-(small targets first) as one run would append them. The port's current binary ran all six in one directory, with the
-fixed writer (1,901 trace files).
+Equal lines in it (the same instructions, keys, result, return data, logs and accounts after) cannot be told apart, so
+which reference line goes with which port line is unknown; where their compute units vary within such a group (977
+groups in the full runs' `main.trace`, by up to tens of thousands of units in the reference), each of the port's lines
+is judged against the group's cheapest reference line, which can only count more excesses than the true pairing (until
+2026-11-23 the groups were paired in sorted order of compute units, which could pair the wrong transactions; on the
+earlier full runs' traces both rules find no excess in `main.trace`, and on those above the cheapest-line rule finds
+none).
+In the reference's first full run (2026-11-19/20) those threads' lines were written in pieces and interleaved
+(unreadable); the writer now writes each line once under a lock and stops the test if it cannot, and the eight tests
+were run again on both binaries on 2026-11-21 (`TEST_FILTER="seeded_frontier bounded_reference_graph_exhausts_public_action_words"`,
+all 8 passing in both, 4,352 and 5,710 s); that run's `main.trace` replaced the unreadable one, and its other three
+trace files equalled the first run's byte for byte, compute units included. In that first run the four small targets
+and the two large ones ran in separate results directories; three test names occur in two targets, and their files
+were joined (small targets first) as one run would append them. The runs above ran all six targets in one results
+directory each, with the fixed writer (1,901 trace files on each side).
 
 `node scripts/percolator-v16-reference/author-trace-compare.ts <reference>/trace <port>/trace --list` (unfiltered, no
 `--filtered`; exit 0, "every difference is listed and every listed one was observed"):
@@ -1067,8 +1096,8 @@ fixed writer (1,901 trace files).
 | Different | 1 (`inv_078`, transaction 12: above) |
 | On one side only | 35 (`inv_078`'s later transactions, on the reference) |
 | Succeeding identically in both | 2,127,486 |
-| Their compute units, reference / port | 128,297,605,017 / 67,489,010,058 |
-| Of those, the port above the reference | 0 (the previous binary: 282, ResolveMarket 127, CloseSlab 141, InitMarket 14, at 67,519,099,673 units; fixed: below) |
+| Their compute units, reference / port | 128,297,605,017 / 67,489,438,873 |
+| Of those, the port above the reference | 0 (the binary of sha256 `6677dd5b…`: 282, ResolveMarket 127, CloseSlab 141, InitMarket 14, at 67,519,099,673 units; fixed: below) |
 
 The 9 tests failing on both binaries are identical throughout up to their failure; the 2 port-only failures are
 identical up to theirs. No test's transactions differed in their inputs (no test chose a different transaction from a
@@ -1087,11 +1116,15 @@ its sha256, any other binary as the port): an unlisted failure, a listed failure
 failure that did not run or a test count other than the listed one. `TRACE=1` refuses a non-empty trace directory
 (traces are appended). `author-trace-compare.ts` exits non-zero when either directory holds no trace, a line cannot be
 read, nothing is compared, anything differs that the same file does not list (`trace` rows name the test and the
-kind of difference, `cu` rows the instructions where the port may cost more), or a listed difference or excess was
-not observed (`--filtered` relaxes the last for filtered runs). Every row of the file carries its reason.
+kind of difference, one row per kind; `cu` rows the instructions where the port may cost more), or a listed
+difference or excess was not observed (`--filtered` relaxes the last for filtered runs). Every differing transaction
+of a test is classed, not only the first: each class found must be listed for that test (until 2026-11-23 only a
+test's first difference was checked against its row and the later ones were counted). A different number of
+transactions is a class of its own ("one run sent more") unless the test's last aligned difference is
+`reference-over-limit`, whose definition is that the port's test stopped there. Every row of the file carries its reason.
 
-**To reproduce** (Docker, 2 CPUs; the large targets take hours: here 2.5 to 16 hours for `v16_program_stateful_fuzz`
-and 2.3 to 2.9 hours for `v16_cu`, the spread mostly the machine's other load; the small ones about 4 minutes):
+**To reproduce** (Docker, 2 CPUs; the large targets take hours: here 2.4 to 16 hours for `v16_program_stateful_fuzz`
+and 2.2 to 2.9 hours for `v16_cu`, the spread mostly the machine's other load; the small ones about 4 minutes):
 
 ```sh
 scripts/percolator-v16-reference/build.sh          # once: test/programs/percolator_v16*.so
@@ -1100,6 +1133,24 @@ TRACE=1 TARGET_TIMEOUT=86400 scripts/percolator-v16-reference/author-suite.sh te
 TRACE=1 TARGET_TIMEOUT=86400 scripts/percolator-v16-reference/author-suite.sh /tmp/v16-port-build/percolator.so /tmp/v16-port
 node scripts/percolator-v16-reference/author-trace-compare.ts /tmp/v16-ref/trace /tmp/v16-port/trace --list
 ```
+
+**A filtered check of the scripts as they now are** (2026-11-23, Docker, 2 CPUs): three tests of `v16_cu` on the
+reference and on the current port binary, then the comparison:
+
+```sh
+export TEST_FILTER="retained_activation_fee_cap_survives activation_fee_consent_fuzz permissionless_activation_fee_requires_creator_consent v16_bpf_force_close_liveness_survives_14_stale_leg_grief_via_precrank close_slab_account_roles_are_exhaustive"
+TRACE=1 scripts/percolator-v16-reference/author-suite.sh test/programs/percolator_v16.so /tmp/fr-ref v16_cu
+TRACE=1 scripts/percolator-v16-reference/author-suite.sh /tmp/v16-port-build/percolator.so /tmp/fr-port v16_cu
+node scripts/percolator-v16-reference/author-trace-compare.ts /tmp/fr-ref/trace /tmp/fr-port/trace --filtered
+```
+
+The filter matches three tests of `v16_cu` (the two `inv_036` names are in another target): both runs "as expected"
+(the reference passes the three; the port fails `inv_078` as listed). The reference's three trace files are byte for
+byte those of its full run of 2026-11-19/20 (the narrower log filter leaves out the same lines there). The comparison: 2,452
+transactions, 2,451 identical, the listed `inv_078` force-close the one difference; 2,317 identical successes, port
+41,184,439 units, reference 80,432,619, none costing the port more; exit 0. The stricter classing, run on the first full
+runs' traces (the reference's and the port's of the binary of sha256 `6677dd5b…`), finds the same differences and the
+same 282 excesses as before, none in `main.trace`.
 
 ### After the whole-market scans were fixed: the affected tests first
 
@@ -1117,15 +1168,15 @@ node scripts/percolator-v16-reference/author-trace-compare.ts <the same 20 files
 
 All 20 passed (3,396 s). The comparison with the reference's traces recorded in the full run: 20 trace files, all
 identical throughout; 144,407 transactions compared, 144,407 identical; 143,473 succeeding identically, 4,169,904,579
-units in the reference against 1,842,630,993; none where the port costs more, so the three `cu` rows were removed from
+units in the reference, 1,842,630,993 in the port; none where the port costs more, so the three `cu` rows were removed from
 `author-suite-expected.tsv` (the scripts would now fail on any excess). Each of the 282 transactions is cheaper; by
 instruction over these tests' successes:
 
 | Instruction | Successes | Reference | Port | Largest in the reference (port) | Closest |
 | --- | ---: | ---: | ---: | --- | --- |
-| InitMarket | 134 | 7,005,969 | 4,551,942 | 308,170 (205,442) | 5,199 against 2,142 |
-| CloseSlab | 1,491 | 161,181,428 | 68,478,641 | 554,426 (241,007) | 8,922 against 3,382 |
-| ResolveMarket | 133 | 2,347,882 | 2,141,582 | 67,179 (64,166) | 65,584 against 64,080 (the 10 MiB market, was 166,350) |
+| InitMarket | 134 | 7,005,969 | 4,551,942 | 308,170 (205,442) | port 2,142, reference 5,199 |
+| CloseSlab | 1,491 | 161,181,428 | 68,478,641 | 554,426 (241,007) | port 3,382, reference 8,922 |
+| ResolveMarket | 133 | 2,347,882 | 2,141,582 | 67,179 (64,166) | port 64,080, reference 65,584 (the 10 MiB market; the port was 166,350) |
 
 The 20 tests: `generated_scans_recompute_actionability_across_source_deadlines_and_prefixes`,
 `native_sync_after_terminal_prefix_reclassifies_only_external_surplus`,

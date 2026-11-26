@@ -6,6 +6,387 @@ codes, and says so here.
 
 ## Unreleased
 
+- Build manifests (`<name>.build.json`) now bind the binary to the exact sources that built it. A source's sha256 was
+  computed after the build, by reading the file again, so a file saved while the build ran (an editor saving mid-build)
+  could be recorded beside a binary made from its previous text, and a test reusing that build (`testProgram`,
+  `buildForTest`) would take it as current. The build now hashes the bytes the compiler parsed (read once and checked
+  against the text TypeScript holds) and the runtime files before clang reads them, hashes every input again once the
+  binary is linked, and fails with no manifest when one changed; a previous build's manifest is removed before anything
+  is written (docs/cli.md; test/cli/toolchain.test.ts). Binaries are unchanged.
+- First builds that run at once no longer lose a program's address. Two first builds of different programs (each holds
+  only its own program's lock) could read `typesol.json`, each add its address and write it back, the later write
+  dropping the earlier address (or a reader seeing a partly written file); and a keypair file was created by an
+  existence check and an ordinary write, so two first users of one could each make a key and the later replace the
+  earlier. `typesol.json` is now changed one process at a time (`typesol.json.lock`) and replaced whole by a rename,
+  also by `typesol new`; a keypair is written to a temporary file and linked into place, which fails if it exists, and
+  the process that loses reads the winner's key (docs/cli.md; test/cli/workspace.test.ts).
+- `typesol init` and `typesol new` refuse to write through a symbolic link inside the project: a linked `programs/`,
+  `tests/` or `.cursor/`, or a link (even a dangling one) where a new file goes, used to receive the file wherever it
+  pointed. Files are now also created exclusively, so one created in the meantime is never overwritten. The project
+  directory itself may still be a link (docs/cli.md; test/cli/workspace.test.ts).
+- Release manifests (`scripts/release-manifest.ts`): the test corpus hash now covers `showcase/test/` as well as
+  `test/` (the mainnet ports' differential tests, helpers and fixtures were left out, so a weakened comparison left the
+  hash unchanged) and records the directories it covers (`corpus.roots`). The script also refuses to make a release
+  manifest when `test/programs/SOURCES.md` lists a reference binary the tree lacks (`--allow-missing-references`
+  records them as `referencesMissing` instead) (docs/testing.md; test/cli/release-manifest.test.ts).
+- Raydium CLMM and multisig ports: their tests now compare what the repository overview claims. For every transaction,
+  the bytes of every account an instruction names (not only a chosen list), the inner instructions, the return data
+  and the log lines are compared too, with the exceptions each test declares (Anchor's `Instruction:` line and its
+  error-message text; for Raydium CLMM also the Associated Token program's Create, called with `[0]` by the original
+  and with empty data by the port, pinned in the test). Where the original CLMM panics, the test now requires its
+  `ProgramFailedToComplete` and a numbered error from the port. The stronger comparison found that the Raydium CLMM
+  port logged four kinds of `msg!` line (from seven places) the deployed program does not: its source writes them only
+  with the `enable-log` feature, and the deployed binary holds none of their text. The port no longer writes them,
+  which also makes its swaps cheaper (docs/case-study-raydium-clmm.md has the new figures; its binary is 546,080
+  bytes, was 551,440); the golden check (test/golden/binaries.json) reports its C as changed until the reference is
+  regenerated. 308 Raydium CLMM
+  transactions (not 302 as listed) and 55 multisig ones are compared.
+- Percolator v16 tests: `World.restore` now removes an account its snapshot recorded as missing (one a transaction
+  created since survived the restore); no result of the v16 files that restore a world changed.
+
+- Fixed (wrong account data, since 0.42.0): a whole struct or array assigned between two views of one account whose
+  bytes overlap, the destination after the source by less than the value's size, did not end with the source's value:
+  the copy went forward 8 bytes at a time and re-read bytes it had already written (copying a two-word value one word
+  to the right in `[1, 2, 3]` gave `[1, 1, 1]`, not `[1, 1, 2]`). Every byte is now loaded before any is stored, at
+  any size below 80 bytes (from 80 the memmove syscall copies them, as in the entry below), so the destination ends
+  with the source's old bytes in either direction, as Rust's `copy_within` leaves them. Only views of one account at
+  run-time byte offsets can overlap that way: `loadRawAt` / `loadRawMutAt` (0.43.0 on), or two views of an account
+  passed twice under `NATIVE_ACCOUNT_WRITES` (0.42.0 on). A program is affected if it assigns `d.v = s.v` (or a whole
+  view) between such views of one account and the destination's offset can be ahead of the source's by less than the
+  value's size; copies between different accounts, distinct fields, elements of one array, through a local, or by
+  `copyData` were right. The copy costs the same or less than before. Five of the 81 programs in the release manifest
+  build to other binaries for it (examples/profiles, Marginfi, Percolator v12.20 and its matcher, SPL Stake Pool); none of them relied on an overlapping copy (theirs are between distinct places or
+  elements of one array), their tests pass, and Marginfi's instructions cost 5 to 49 CU less
+  (docs/language-native.md; test/language/bulk-copies.test.ts, which no longer pins the old result).
+- Fixed (wrong account data, since 0.39.0): another program's `@layout borsh` account (`Owner<Account<T>, "…">`)
+  whose struct declares a discriminator shorter than 8 bytes (`/** @discriminator 0x07 */`) was decoded from byte 8
+  instead of right after its discriminator: its fields were read from the wrong bytes (the valid account `[7, 42]`
+  of a struct holding one `u8` did not read 42), and an account shorter than 8 bytes made the decoder's length wrap and
+  read past the account's data. Its size was checked against the struct's in-memory size, not its smallest Borsh
+  form. The decoder now starts after the declared discriminator and the size check uses the Borsh form. A program is affected only if a struct is both `@layout borsh`
+  and `@discriminator` of 1 to 7 bytes and taken as `Owner<Account<T>, "…">`; fixed-layout structs with a shorter
+  discriminator were read right. The length check of a growable `Vec` in such a fixed-layout struct counted 8 bytes
+  of discriminator and refused accounts of the right size (3003); it now counts the declared length. `initAccount<T>`
+  of a struct with a shorter discriminator is now refused when compiling (it writes this program's 8 bytes)
+  (docs/language-accounts.md; test/language/foreign-account.test.ts).
+- Fixed (since 0.17.0): `realloc` of a `@layout borsh` account refused sizes below its discriminator and the struct's
+  in-memory size (3016), which reserves the full capacity of every `FixedString` and `FixedVec`: an account whose
+  only field is an empty `FixedString<64>` could not shrink to the 12 bytes of its Borsh form, although its load
+  accepts 12. The smallest size is now the discriminator and the smallest Borsh form, the size the load checks; the
+  value written back when the instruction returns must still fit (3004 otherwise, as before). A program is affected
+  if it calls `realloc` on a `@layout borsh` account with a size that can fall below that bound: such transactions
+  failed with 3016 and now succeed (docs/language-accounts.md; test/language/realloc.test.ts).
+- Fixed: a signed type's minimum reduced modulo -1 in a typed constant (`const X: i8 = -128n % -1n`) folded to 0,
+  while the same remainder at run time fails with 5100, as Rust's checked `%` does. It is now a compile error, as the
+  quotient `-128n / -1n` already was, at every signed width; an untyped constant stays a bigint without a width
+  (docs/language-basics.md, docs/language-types.md; test/language/signed-remainder.test.ts).
+- Fixed: `log64(a, b, c, d, e)` lowered all five arguments before reading any, so an argument that runs code
+  changing an earlier one's value (`log64(a.count, bump(a), …)`) logged the changed value; each argument is now read
+  before the next is evaluated. `require(condition, code)` with an error code computed at run time likewise tested its
+  condition after computing the code; the condition is now read first. The other built-ins taking several values
+  already read them in order. Of the programs in the release manifest only Percolator v12.20's C changes (its
+  `log64` call reads a temporary one line earlier), and it builds to the same binary for this
+  (docs/language-statements.md; test/language/argument-order.test.ts).
+- Fixed: inside `panicsAt(location, …)`, `**` took the panic for its multiplications ("attempt to multiply with
+  overflow" at the location) instead of failing with 5100 as its declaration says; it now fails with 5100, and an
+  operator written in its operands still panics at the location (docs/language-native.md; test/language/pow.test.ts).
+- Fixed: a program built with a clang above 20 (platform-tools v1.57's clang 22, an untested toolchain, which TypeSOL
+  warns about but builds with) faulted at its first 128-bit multiplication or variable 128-bit shift ("Access
+  violation writing 8 bytes at address …"): the runtime's assembly `__multi3`, `__ashlti3`, `__lshrti3` and
+  `__ashrti3` take the result's address in r1, as clang 20 calls them, while clang 22 passes the first operand there
+  and takes the result in registers. The assembly is now compiled only for clang 20 and earlier; any later clang gets
+  C definitions of the four, which follow its own convention (test/language/builtins.test.ts runs them on every case
+  of every function for SBPF v0, v1 and v2; docs/runtime.md). With the tested toolchain nothing changes: every program
+  in the golden manifest builds to the same bytes.
+- Added: `PANIC_STYLE = "pinocchio"`: a Rust panic as pinocchio's `entrypoint!` panic hook reports it under std, the
+  location's file verbatim (`src/v16.rs`, or a toolchain path such as
+  `/home/runner/work/platform-tools/platform-tools/out/rust/library/alloc/src/raw_vec/mod.rs`), then
+  `** PANICKED **`, then abort ("SBF program panicked"). `panic(message, location)` and `panicsAt` take the file
+  alone or `file:line:column` (only the file is logged; the message may be null); `PANIC_ON_OVERFLOW` is refused
+  beside it. Every panic site calls one shared helper. Checked line for line against a binary built with pinocchio
+  0.11.1's entrypoint (test/language/pinocchio-panics.test.ts; docs/language-native.md).
+- Added: `getReturnData()`: Rust's `get_return_data()`, `const [program, data] = getReturnData()`, the return data of
+  any length (up to 1,024 bytes) and the program that set it, unchecked, read with instruction data's methods; Rust's
+  `None` is `data.length === 0n`. `returnData<T>(program)` is unchanged (test/language/get-return-data.test.ts;
+  docs/language-cpi.md).
+- Tests: a native program at `MAX_ACCOUNTS = 255n` takes a fixed prefix and a tail of 39 and 255 accounts with
+  repeats, reads and writes through them and forwards the tail whole in a CPI (test/language/many-accounts.test.ts).
+- Showcase, Percolator v16 (work in progress, 0 of 50 instructions ported, not listed among the ports): the entry
+  of the port (the tag dispatch, every tag refused), compared with the Rust build of the pinned commits on empty data
+  and all 206 unknown tags; the reference's entrypoint recorded at its limits: 255 accounts (256 refused by the
+  runtime), its heap, RefCell conflicts on repeated accounts and its panic lines, partly through a probe built with
+  the same entrypoint (`scripts/percolator-v16-reference/probe.sh`; showcase/mainnet/percolator-v16/TESTING.md).
+  Every program in the golden manifest builds to the same bytes.
+- Showcase, Percolator v16 (still 0 of 50 instructions ported): the persisted layouts as packed views tied field by
+  field to the offsets rustc prints for the pinned sources, the engine's wire conversions, `PercolatorError` and the
+  engine-error mapping, and `Instruction::decode` for all 50 tags, compared with the reference on every decode refusal
+  (field cuts, trailing bytes, vector counts, random bodies) and on where decoding ends; a decoded instruction ends in a
+  placeholder error until its handler is ported (showcase/mainnet/percolator-v16/README.md).
+- Added: `copyData(account, from, to, length)`: a copy within one account's data, as a native program's
+  `data.copy_within(from..from + length, to)` (or a struct copied out and written back at another offset), with the
+  memmove syscall from 32 bytes (about constant compute units whatever the length, where a whole-struct assignment
+  moved words one by one until the change below); overlapping ranges allowed, 3003 past the end with nothing copied, 3006 on a read-only
+  account without `NATIVE_ACCOUNT_WRITES` (test/language/native-copy-data.test.ts; docs/language-native.md). Every
+  program in the golden manifest builds to the same bytes.
+- Showcase, Percolator v16 (24 of 50 instructions ported, not listed among the ports): InitMarket, InitPortfolio,
+  Deposit, ClosePortfolio, UpdateAuthority, UpdateAssetAuthority, the four market-authority policies,
+  UpdateBackingFeePolicy, UpdateTradeFeePolicy, ConfigurePermissionlessResolve, UpdateBaseUnitMints, the two ledger
+  syncs, ConfigureEwmaMark, PushEwmaMark, ConfigureAuthMark, PushAuthMark, SetMatcherConfig, UpdateAssetLifecycle
+  (activation with the market grown by one slot, drain-only, retirement, shutdown into recovery; a permissionless
+  activation's insurance deposit and a lapsed backing bucket's expiry end in the port's placeholder),
+  RestartAssetOracle and CanonicalizeSpentBackingHistory, with the engine code they reach (the configuration's exact
+  solvency envelope, the market's shape, a portfolio's validation against the market, deposits, portfolio
+  registration, the raw oracle target, asset accrual and committed funding, slot activation, retirement, recovery and
+  restart). Compared whole with the Rust build of the pinned commits on their success paths and refusals, every
+  account position, a random walk that keeps the market live, a mutation fuzzer over the market, portfolios and both
+  ledgers, and seeded fuzzes of mark pushes and funding accruals (22,027 transactions, 5,944 successes); the port uses
+  31% to 69% of the reference's compute units on average per instruction, fewer on every success. With
+  ConfigureAuthMark and SetMatcherConfig ported the author's own suite gets through its set-up
+  (showcase/mainnet/percolator-v16/README.md and TESTING.md). `scripts/percolator-v16-reference/author-suite.sh` takes
+  `TEST_FILTER` to run a subset of the author's tests.
+- Changed (generated code of existing programs): whole values and account data are copied and zeroed by the memory
+  syscalls where the word loops cost more (measured table in runtime/typesol_rt.h; docs/runtime.md). A struct or
+  array copied whole between places reached through pointers (account data, views, a helper's struct parameter) is
+  the memmove syscall from 80 bytes (16 CU up to 2,749 bytes, where the unrolled loads and stores cost 26 at 80 bytes
+  and the loop about 1 CU a byte from 400), and zeroed whole there (`x.o = null` on an `Option<struct>`) the memset
+  syscall from 192. A copy into or out of a local of the function (a struct literal built in a temporary, a helper's
+  result, a local copy, Borsh fields, instruction arguments, events) takes the syscall only from 400 bytes, a local
+  zeroed whole from 600, where clang stops unrolling: below that it drops the stores and loads nothing reads, which an
+  opaque call prevents (measured with 80 and 192 there: SPL Stake Pool up to 2,825 CU more, Phoenix 7 to 98 more).
+  The bytes `resizeAccount`, `realloc` and a growable Vec's growth add are zeroed by the memset syscall from 64, and
+  an account's data at `close` when its type takes 64 bytes or more (9,563 bytes: about 45 CU instead of 4,800).
+  Below each threshold the code is what it was. 14 of the 81 programs in the release manifest build to other binaries
+  (examples/escrow and ledgerbook, Jito's two programs, Marginfi, Meteora DBC, Percolator v12.20 and its matcher,
+  Percolator v16, Raydium CLMM and CP-Swap, and the program-examples realloc, token escrow and token fundraiser); all
+  their tests pass, and each of the 161,578 transactions those tests send was run against the binary from before and
+  after: 18,451 cost less, 4 more. Two Percolator v16 InitPortfolio transactions cost one CU more (the account grows
+  by 8 and 16 bytes: the length is tested at run time), and two refusals of Meteora DBC's
+  initialize_virtual_pool_with_token2022_transfer_hook 2 more (its successes 3,079 less). Savings (mean per
+  successful transaction): Percolator v12.20 InitMarket 232,685 to 105,768, TradeCpi 3,414 less, PushHyperpMark
+  1,297; Percolator v16 InitPortfolio from an empty account 4,750, Deposit and ClosePortfolio 2,069; Meteora DBC swaps
+  2,056, create_config 3,976; Marginfi 106 to 1,940 on 30 instructions; an account's close 26 to 1,145 (examples/escrow
+  take and refund 74). A struct copied between two views of one account that overlap, the destination after the
+  source, ends with the source's old bytes from 80 bytes on (memmove); below 80 bytes, see the fix of overlapping
+  struct copies above (docs/language-native.md; test/language/bulk-copies.test.ts, which also pins a 1 KiB copy at
+  no more than 30 CU and an 8 KiB resize zero-fill at no more than 60).
+- Showcase, Percolator v16 (25 of 50 instructions ported, not listed among the ports): ConfigureHybridOracle and the
+  external oracle readers of `mod oracle_v16` (Pyth PriceUpdateV2, Switchboard On-Demand under its mainnet and devnet
+  owners, Chainlink OCR2, composites of up to three legs with inversion and unit scale, the legs' coherence and commit,
+  the hybrid soft-stale predicate), and a permissionless activation's fee into market 0's insurance domains with its
+  SPL Token Transfer (UpdateAssetLifecycle's placeholder path for it removed). Compared whole with the Rust build of the
+  pinned commits: each source and composite on its success space, every refusal of the instruction and of each reader
+  field by field, a seeded fuzz of 400 configurations, the random walk and mutation fuzzer with a keeper that keeps the
+  external prices fresh, 34 permissionless appends (the fee doubled from asset 32) and a reuse; the reader's branches
+  that only the crank reaches compared on 1,500 vectors with the original's functions compiled for the host
+  (`scripts/percolator-v16-reference/oracle-vectors.ts`). All v16 tests: 23,211 transactions, 6,098 successes, each
+  cheaper in the port (ConfigureHybridOracle 52% of the reference's compute units on average); binary 289,728 bytes.
+  Every failure of the author's suite subsets rerun against the port reaches an instruction not ported yet
+  (showcase/mainnet/percolator-v16/README.md and TESTING.md).
+- Showcase, Percolator v16 (27 of 50 instructions ported, not listed among the ports): SyncMaintenanceFee and Withdraw,
+  with the engine's maintenance fee (the fee anchor, the U256 fee saturated to u128, the loss settled from principal,
+  the fee charged into the insurance, the cranker's share credited from the insurance, the rest into asset 0's domain
+  budgets with the alternating carry, a portfolio its fee empties closed into the market, the deregistration's
+  LockActive swallowed as the original does) and `withdraw_not_atomic` (the close ledger, the equity after, the vault
+  PDA's signed SPL Token Transfer, the secondary collateral mint). The settlement of a portfolio's open legs against
+  the assets' K, F and B indices is not ported: both instructions stop there in the port's placeholder on a Live market
+  once the fee anchor has moved. Compared whole with the Rust build of the pinned commits on their success paths and
+  refusals, and on 400 generated states (a new reusable generator writes markets and portfolios with open legs, PnL up
+  to ±(2^127 − 1), fee debt and extreme totals that the original's validators accept, 91% of the Live ones); the walk
+  and mutation fuzzer run both instructions and start a fifth of the mutations from generated states. All v16 tests:
+  24,454 transactions, 6,541 successes, each cheaper in the port (Withdraw 54%, SyncMaintenanceFee 62% of the
+  reference's compute units on average); binary 324,432 bytes. Every failure of the author's suite subsets rerun
+  against the port reaches an instruction not ported yet (showcase/mainnet/percolator-v16/README.md and TESTING.md).
+- Showcase, Percolator v16 (still 27 of 50 instructions ported, not listed among the ports): the map of the settlement
+  of a portfolio's open legs, `settle_account_side_effects_not_atomic`, which SyncMaintenanceFee and Withdraw stop at:
+  275 engine functions and 6,397 lines found by following the calls in the pinned source, layered in the source's own
+  order (leaf arithmetic, backing and lien primitives, impaired-lien reconciliation, source-claim burns and PnL
+  setters, K/F entries, B chunks, the driver), with what is ported (`scripts/percolator-v16-reference/settlement-map.py`,
+  NOTES.md section 10). Most of its leaf layer is ported (`kernels.ts`, 45 functions, 1,134 of the original's lines: the
+  source-lien arithmetic, the bucket and lien deltas, the K/F and B targets and deltas of a leg, the F snapshot after
+  settlement, the B chunk, the backing utilization fee, v16's wide_math helpers with their panic locations; its 33
+  market-view accessors remain), not yet
+  wired into an instruction. A new function-level harness compares each with the original's own function compiled
+  for the host in Docker (a child module added to a copy of the engine's `v16` module reaches the private functions
+  without changing any visibility): 90,000 seeded vectors equal, outputs, changed bytes, errors and panic locations;
+  interim evidence until the settlement can be compared with the reference binary (showcase/mainnet/percolator-v16/
+  README.md and TESTING.md).
+- Showcase, Percolator v16 (still 27 of 50 instructions ported, not listed among the ports): the next three layers of
+  the settlement of open legs from the bottom: the rest of the leaf layer (the market-view and portfolio-view
+  accessors), the backing and lien primitives (source-credit setters and the domain recompute, the counterparty and
+  insurance liens' create, consume and release, fresh and loser-paid counterparty backing, a Fresh bucket's expiry,
+  the post-snapshot residual, the backing utilization fee's collection) and the impaired-lien reconciliation
+  (`primitives.ts`, `impairment.ts`, 80 functions, 1,440 of the original's lines; 35 functions, 1,939 lines, remain).
+  The function-level harness now takes whole markets and portfolios (the original's views built over the same bytes
+  as the program builds them, every byte of both accounts compared) on generated states, about 40% of them accepted by
+  the original's own validators and the rest deliberately invalid: 22,800 vectors equal; interim evidence, not the
+  reference binary. UpdateAssetLifecycle's retirement now expires a lapsed Fresh backing bucket instead of ending in
+  the port's placeholder, compared with the reference binary on 300 buckets written into the market (139 successes,
+  each cheaper in the port); binary 354,080 bytes.
+- Showcase, Percolator v16 (still 27 of 50 instructions ported, not listed among the ports): the rest of the settlement
+  of a portfolio's open legs, `settle_account_side_effects_not_atomic`: the source-claim burns and PnL setters
+  (`claims.ts`), the K/F settlement entries with the par netting of a loss, the haircut-bounded close loss, the
+  loss-support booking and the capital-backed loss reservation (`kfsettle.ts`), the B chunks and the driver
+  (`settlement.ts`): 35 functions, 1,939 of the original's lines; all 275 functions of the map are now ported. It is
+  wired into SyncMaintenanceFee and Withdraw, whose placeholders are gone, and compared with the reference binary on
+  generated states with open legs (claims and liens on the market's domains, K/F/B indices, stale cohorts): 3,000 such
+  states and 2,000 ordinary ones, 5,000 mutations, every transaction alike, 328 successes that settled legs, the port
+  cheaper on every success (SyncMaintenanceFee 39% of the reference's compute units on the mean of those states).
+  Each function is also compared alone with the original's compiled for the host (33,000 vectors equal), on a
+  generator whose states the original's validators accept 58% of the time (40% before). Branch probes
+  (`scripts/percolator-v16-reference/coverage.ts`) show which branches of the port's functions each comparison runs:
+  766 of 836, the rest unreachable from accepted states but for seven (TESTING.md). Binary 588,856 bytes.
+
+- Showcase, Percolator v16 (still 27 of 50 instructions ported, not listed among the ports): every key the v16 tests
+  make comes from a seed drawn per run and printed with every failure (`PERCOLATOR_V16_SEED` replays it); the port and
+  its test programs are refused unless built by the tested toolchain throughout (a fault of one walk run at InitMarket
+  was a build by platform-tools v1.57's clang 22, whose link another process switched during the build, meeting the
+  runtime's assembly builtins: fixed above; showcase/mainnet/percolator-v16/TESTING.md section 5); the coverage copy is
+  one per process; set-ups over tens of thousands of key sets, capacities, PDA bumps and heap frames compared with the
+  reference (`percolator-v16-setup-stress.test.ts`); the map extended to margin and health certificates,
+  ConvertReleasedPnl and Withdraw (NOTES.md section 11: 33 functions, 764 lines not ported; no ported instruction
+  computes a certificate, and no state lets a portfolio with open legs withdraw).
+- Showcase, Percolator v16 (29 of 50 instructions ported, not listed among the ports): TradeNoCpi and
+  ConvertReleasedPnl. TradeNoCpi's map (NOTES.md section 12, `settlement-map.py --trade`): 127 processor functions and
+  127 engine functions new to the port (3,645 lines), all ported but six only the crank's refresh and the batch reach:
+  the margin and health certificates (`health.ts`), the engine's trade with its position routes, gates, fees, close
+  ledger, source liens and residue resets (`trade.ts`), and the processor's zero-move funding accrual, dynamic fee
+  quote, trade-driven mark, backing-domain fees and lien bounds (`trading.ts`); ConvertReleasedPnl in `convert.ts`.
+  Compared with the reference binary on dedicated tests (routes, 14 legs, bounds, fees, the initial margin to the unit,
+  every account pair) and on real state: a random walk in which trades open and close legs on three assets of four
+  portfolios while funding accrues, so that the settlement, the refresh and the certificates run on state the
+  instructions made (2 × 2,500 steps: 5,266 transactions, 2,058 trades and 22 conversions succeeding in both, 1,851 legs settled by a later instruction, 692 funding accruals with open interest, 4,076 certificates written), and a mutation fuzzer from such a snapshot; every transaction alike, every success
+  cheaper in the port (the worst trade: 595,297 CU in the reference, 238,926 in the port; TradeNoCpi 43% of the reference on the mean). Binary 846,712 bytes.
+- Showcase, Percolator v16 (31 of 50 instructions ported, not listed among the ports): PermissionlessCrank on a Live
+  market and FinalizeResetSide. The crank's map (NOTES.md section 13, `settlement-map.py --crank`): 94 processor
+  functions and 133 engine functions new to the port (4,436 lines); ported, what a Live market reaches (89 engine
+  functions, 2,919 lines: the observation of each hinted asset with the hybrid's fall-back to its mark and its
+  liveness, accrual at moving prices, the engine's classifier and plan, the refresh with B chunks and lapsed backing,
+  liquidation partial and full with its fee and the cranker's reward, the insurance draw, the bankruptcy residual
+  booked into the other side's B index, ADL and the side modes, the close-progress ledger, AdvanceClose, the
+  declaration of Recovery, the flat account's source-lien release, a Recovery asset's committed-state refresh); a
+  market in Recovery, the forfeit of a Recovery asset's released obligation and a Resolved market's close end in the
+  port's placeholder where the original calls them (44 engine functions). The engine's NonProgress the processor
+  swallows after an accrual, the `clear_leg` Stale the engine swallows and a declared Recovery that liquidation's
+  caller turns into success are values in the port, leaving exactly the original's partial writes. Compared with the
+  reference binary on dedicated tests (hint shapes, oracle accounts stale, ahead, malformed or repeated, long gaps,
+  every account pair, liquidations, bankruptcies, a 14-leg portfolio) and on a real-state walk in which cranks keep
+  three assets current while marks and oracle prices move and steered portfolios are liquidated (3 × 8,000 steps:
+  24,772 transactions, 7,604 crank successes, 476 liquidations (366 partial, 110 full), 116 cranker rewards, every one alike), and a mutation
+  fuzzer from snapshots with positions under water; every crank success cheaper in the port (40% of the reference on
+  the mean; the worst 1,376,639 CU in the reference, 505,213 in the port). Where a 14-leg crank runs the reference past
+  1,400,000 CU, the port succeeds (recorded). Binary 1,005,456 bytes.
+- Showcase, Percolator v16: the placeholder that ends a decoded instruction of an unported tag is now
+  Custom(0xc0de0000 + tag), no longer Custom(0x16dec000 + tag), whose log text `custom program error: 0x16dec0..`
+  the author's tests took for NonProgress (`custom program error: 0x16`) by its prefix.
+
+- Showcase, Percolator v16 (37 of 50 instructions ported, not listed among the ports): PermissionlessCrank on a market
+  in Recovery (the forfeit of a released obligation, the market's resolution) and on a Resolved market (the account's
+  close-out: the source domains' preparation and realization, the resolved bankruptcy, the solvent legs' detachment,
+  the payout ledger and receipt, the payout's signed SPL Token Transfer), which removes the crank's four placeholders;
+  and ForfeitRecoveryLeg, RebalanceReduce, CureAndCancelClose, ResolveMarket, ResolveStalePermissionless and
+  CloseResolved. Compared whole with the Rust build of the pinned commits: six markets taken out of Live with open legs
+  (a declared Recovery with the owners' forfeits, ResolveMarket, ResolveStalePermissionless) and closed out portfolio by
+  portfolio with payouts, the conservation the original's tests assert checked in both VMs and never failing, account
+  and data sweeps of each instruction, RebalanceReduce on real state, CureAndCancelClose on generated close ledgers; the
+  crank walk now resolves and closes out markets, and its mutation fuzzer starts from markets in Recovery and Resolved.
+  All v16 tests: 42,222 transactions, 16,223 successes, each cheaper in the port (CloseResolved 35%, ForfeitRecoveryLeg
+  37%, RebalanceReduce 37%, CureAndCancelClose 36% of the reference's compute units on average); binary 1,139,536 bytes
+  (showcase/mainnet/percolator-v16/README.md, NOTES.md sections 13 and 14, TESTING.md). No compiler change.
+- Showcase, Percolator v16 (47 of 50 instructions ported, not listed among the ports): the insurance and backing-bucket
+  instructions (TopUpInsurance, TopUpInsuranceDomain, TopUpBackingBucket, WithdrawBackingBucket,
+  WithdrawBackingBucketEarnings, WithdrawInsuranceAsset, with the engine's fresh-backing deposit and withdrawal, the
+  resolved backing surplus, the earnings and domain-insurance withdrawals and the terminal claim-free recredit) and the
+  terminal ones (CloseSlab with its terminal scan, the retirement and burn of the vault, the vaults closed and the
+  tombstone; ClaimResolvedPayoutTopup; SwapSecondaryForPrimary; ForceCloseAbandonedAsset on the trade engine). Left:
+  TradeCpi, BatchTradeNoCpi, BatchTradeCpi. Compared whole with the Rust build of the pinned commits: top-ups and
+  withdrawals among trades and cranks, markets resolved and closed by CloseSlab, a second mint swapped and closed, a
+  shut-down asset force-closed and drained, payout top-ups after a lapse of backing, account and data sweeps of each;
+  the walks now move reserves, shut assets down and close their markets, and the conservation check is asserted
+  wherever it is collected. All v16 tests: 68,632 transactions, 24,657 successes, each cheaper in the port (ForceCloseAbandonedAsset 36%,
+  CloseSlab 36%, TopUpBackingBucket 33%, WithdrawInsuranceAsset 40% of the reference's compute units on average);
+  binary 1,258,064 bytes. The author's suite: one failure in a ported path, `inv_078`, which expects a force-close to
+  exceed the compute-unit limit that the port's stays within (showcase/mainnet/percolator-v16/README.md, NOTES.md section 15,
+  TESTING.md). No compiler change.
+- Showcase, Percolator v16 tests (no compiler change): a run that compared nothing can no longer pass for one. CI
+  gains a `percolator-v16` job that builds the five v16 binaries from the pinned sources in Docker, checks each against
+  the sha256 test/programs/SOURCES.md records and runs every v16 test file under `CI_REQUIRE_ALL=built`; there a
+  missing binary, a missing port source or a test file that compared no transaction fails (each file prints its count;
+  locally, without the binaries, the files still skip and print 0). The showcase job no longer runs them. Where the
+  reference is rerun under a raised compute budget, that run now starts from the exact pre-transaction state of every
+  covered account (one that did not exist is removed, not left as an earlier replay had it), the port is compared with
+  that run's accounts, and an account the run closes is removed from the reference afterwards; the harness test checks
+  both cases. The path tests assert the evidence of the paths they name (liens, the backing-domain fee, TradeCpi's cap
+  refusal, the lien releases; the gap test's uncovered losses and closes; the haircut test's receipts and top-up), and
+  the gap test no longer claims the paths it was written for but does not reach. The log comparison drops the port's
+  `0xc0de` probe lines only in coverage runs and matches the runtime's compute-unit line whole. The README, NOTES and
+  TESTING now say what CI compares, why two omitted token-value proofs cannot change an outcome (NOTES.md section 17),
+  where the port does allocate (section 18), and the refusal and transaction counts as measured.
+- Showcase, Percolator v16 at commit 7b110913 (engine 5e3af07), complete: all 50 instructions ported, now listed among
+  the ports (its reference is a binary built here from the author's pinned source, not a deployed program). The last
+  three: BatchTradeNoCpi (the engine's batch: one refresh, the position maps kept across up to 14 legs, one end-state
+  margin check, the collected fees allocated to the legs) and the matcher ABI v3 with TradeCpi and BatchTradeCpi (the
+  LP's matcher config and delegate PDA, the tail check, the accrual and currentness before the call, the call signed by
+  the delegate, the answers validated, the slippage and fee caps). The placeholder for unported tags is gone. Compared
+  whole through the author's auth and hostile matchers, percolator-match and a rogue matcher of the tests' own (failing,
+  changing accounts, calling back, return data too long, short or unasked, resized contexts, prices out of range); batch
+  and matcher trades now in both walks. Where the reference runs out of compute units and the port does not, the
+  reference is run again under a raised compute budget and the port must equal that run (9 cases, all equal). New
+  real-state paths: a trade's counterparty-backed source lien with its backing-domain fee, the provider's earnings
+  withdrawn, ReleaseSourceLiens, a lien released at the resolved close. All v16 tests (2026-11-20): 70,881
+  transactions compared with the port, 70,678 of them with a Percolator instruction, 25,995 successes, each cheaper in
+  the port, and of the 44,683 refusals 44,673 cheaper and 10 at 0 in both; binary 1,362,760 bytes (reference 1,375,936). The author's whole suite
+  found one difference, fixed (a matcher's price above MAX_ORACLE_PRICE must be OracleInvalid); its full run on both
+  binaries is the next entry. No compiler change.
+- Percolator v16: the author's whole suite (2,071 tests, all six targets unfiltered) ran on the reference and on the
+  port's current binary with every transaction recorded and compared (results, errors, return data, logs and every
+  account of the transaction's key list, by hash). The reference passes 2,062 and the port 2,060; the 9 failures of
+  the reference are its own and the port fails them at the same assertion; the port's 2 others assert the reference's
+  compute units (a peak of 554,832; a one-shot force-close expected to exceed the limit, which the port completes).
+  Of 2,324,991 transactions compared, 2,324,990 are identical, the other that force-close. None of the 2,127,486
+  identical successes costs the port more compute units: port 67,489,438,873, reference 128,297,605,017. The
+  first full run, on the port's previous binary, had found 282 that did, at the author's largest shapes
+  (ResolveMarket, CloseSlab, InitMarket); they were fixed (next entry) and the full run repeated. The author-suite and
+  trace scripts now fail on a target that does not compile, times out or runs nothing, on an empty trace, and on any
+  failure, difference or compute-unit excess not listed with its reason in
+  `scripts/percolator-v16-reference/author-suite-expected.tsv` (or a listed one no longer seen); the trace writer
+  writes each line at once and stops a test it cannot record (showcase/mainnet/percolator-v16/README.md, TESTING.md
+  section 3).
+- Percolator v16: the three excesses the author's suite found are removed (no compiler change). ResolveMarket and
+  ResolveStalePermissionless (the committed-accrual scan of every configured slot), CloseSlab (the terminal scan of up
+  to 256 assets a call) and InitMarket (asset 0's profile copied into every slot) made a view per slot, each with its
+  own owner and bounds check and an offset computed with overflow checks, where the original indexes a slice whose
+  bounds the market view checked once; they now read the slots through one view of the slot array, and CloseSlab makes
+  the two backing expiries effective only for an asset whose step reads them. On a 10 MiB market (5,682 slots):
+  ResolveMarket: port 64,034, reference 65,546 (the port was 166,304); InitMarket: port 146,361, reference 211,905 (the
+  port was 214,540); a CloseSlab scan of 256 assets with fresh backing: port 17,682, reference 41,318 (was port
+  42,314, reference 38,318). The ResolveMarket
+  scan now costs 11 instructions a slot as the reference's does; the port's lead there is its smaller fixed part.
+  `percolator-v16-shapes.test.ts` compares the three on markets of 1,000 and 5,682 slots (each success must cost the
+  port less; the previous binary fails all three tests). All 31 v16 files (2026-11-21): 226 tests, 70,928
+  transactions compared with the port, 26,035 successes, each cheaper in the port. The 20 author's tests whose transactions showed the excesses ran again on the new binary: all pass, their 144,407
+  transactions are identical to the reference's recorded ones, and none of their 143,473 identical successes costs the
+  port more (the 10 MiB ResolveMarket: port 64,080, reference 65,584); `author-suite-expected.tsv` lists no compute-unit excess
+  any more. The whole suite then ran again on the new binary (2026-11-21 to 2026-11-23): no excess anywhere (previous
+  entry). Binary 1,362,872 bytes
+  (was 1,362,760), sha256 `01c33233…` (showcase/mainnet/percolator-v16/README.md "Where the port costs more",
+  TESTING.md).
+- Percolator v16: UpdateAssetLifecycle's permissionless activation now refuses an overflowing doubled fee exactly as
+  the original does (EngineArithmeticOverflow whenever a doubling overflows u128, a stored base fee of u128::MAX at an
+  asset index of 32 or more included; the port used u128::MAX as its overflow marker and let that base through to the
+  maximum-fee check). No instruction stores a base fee above u64::MAX (UpdateMarketInitFeePolicy refuses it), so the
+  lifecycle test writes such fees into the market (u128::MAX, u128::MAX/2 + 1, u128::MAX/2) and compares the appending
+  and reuse routes at indices 7, 33 and 35; the previous binary fails it. `percolator-v16-shapes.test.ts` now also drives
+  CloseSlab's Expire step, a nonzero recredit, the last batch refused while a domain budget remains and ReadyToClose on
+  the 5,682-slot market, and asserts the LockActive its wait case gives. The author-suite trace writer leaves out only
+  the runtime's whole compute-unit line (and the port's probe lines only when probes are on); the trace comparison
+  classes every differing transaction of a test (each kind must be listed for that test) and judges `main.trace`'s
+  groups of equal lines whose compute units vary against their cheapest reference line. All 31 v16 files (2026-11-23):
+  227 tests, 70,975 transactions compared with the port, 26,077 successes, each cheaper in the port; of 44,695
+  refusals 44,685 cheaper and 10 at 0 in both. Binary 1,362,912 bytes (was 1,362,872), sha256 `c6dc6b24…`. The author's
+  whole suite ran again on this binary (2026-11-23 to 2026-11-24) and on the reference (2026-11-25 to 2026-11-26),
+  both with these scripts: the same passes and failures, the `inv_078` force-close the one difference, and no
+  identical success costing the port more (port 67,489,438,873 units, was 67,489,010,058; the figures above are this
+  run's). No compiler change.
 ## 0.49.0 — 2026-11-16
 
 A minor release: it adds a port of Percolator v12.20 (all 27 instructions, compared with the immutable mainnet build)

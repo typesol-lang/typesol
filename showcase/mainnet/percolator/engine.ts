@@ -16,7 +16,7 @@
 // fees, deposit, withdraw, settle, close, reclaim, insurance top-up, fee credits, trades (margin checks, the
 // open-interest decomposition, trade PnL, trading fees), the conversion of released PnL, liquidation at the oracle
 // (full close and the crank's exact partial), enqueue_adl (the A/K loss socialisation, drain-only, the side resets)
-// and keeper_crank_not_atomic with its hint validation. Resolution comes with the next work package. The engine's
+// and keeper_crank_not_atomic with its hint validation (resolution is in resolve.ts). The engine's
 // garbage_collect_dust is not ported: v12.20's program never calls it (keeper_crank_not_atomic reports
 // num_gc_closed 0, "dust GC is NOT part of keeper_crank"); the crank's fee sweep reclaims drained accounts instead.
 import { type FixedArray, type FixedVec, type Inout, type InstructionBytes, type Pubkey, type i128, type u8, type u16, type u64, type u128, fixedArray, fixedVec, i128 as toI128, panic, pubkey, require, u16 as toU16, u128 as toU128, u256, u64 as toU64 } from "typesol";

@@ -1,6 +1,7 @@
 // showcase/mainnet/multisig/multisig.ts against the program it ports: coral-xyz/multisig as deployed on mainnet (test/programs). Both
 // run in their own LiteSVM under the same program id, fed the same transactions (the original's test flow, then
-// failures), and must agree on every outcome: success or the same error, and the same account bytes afterwards.
+// failures), and must agree on every outcome (success or the same error), the bytes of every account a transaction
+// names, the inner instructions, the return data and the log lines, with the exceptions `both` declares.
 import { type Address, type Instruction, type KeyPairSigner, AccountRole, generateKeyPairSigner, getAddressEncoder, lamports } from "@solana/kit";
 import { FailedTransactionMetadata, LiteSVM, type TransactionMetadata } from "litesvm";
 import { fileURLToPath } from "node:url";
@@ -25,12 +26,46 @@ const keys = (v: unknown): unknown =>
         : v;
 /** What a transaction did, comparable across the two programs. */
 const outcome = (r: Result) => (r instanceof FailedTransactionMetadata ? `error: ${String(r.err())}` : "ok");
-const units = (r: Result) => (r instanceof FailedTransactionMetadata ? r.meta() : r).computeUnitsConsumed();
+const meta = (r: Result) => (r instanceof FailedTransactionMetadata ? r.meta() : r);
+const units = (r: Result) => meta(r).computeUnitsConsumed();
+const inner = (r: Result) =>
+  meta(r)
+    .innerInstructions()
+    .flatMap((list, outer) =>
+      list.map((i) => {
+        const c = i.instruction();
+        return `${outer}: ${i.stackHeight()} ${c.programIdIndex()} [${[...c.accounts()].join(",")}] ${Buffer.from(c.data()).toString("hex")}`;
+      }),
+    );
+const returnData = (r: Result) => {
+  const x = meta(r).returnData();
+  return `${Buffer.from(x.programId()).toString("hex")} ${Buffer.from(x.data()).toString("hex")}`;
+};
+/**
+ * The log lines compared (see `both`): every line but the runtime's compute-unit lines, Anchor's `Instruction: <Name>`
+ * line (the port does not write it) and, on a failure, the other `Program log:` lines the multisig writes itself
+ * (which program is running is followed through the invoke / success / failed lines).
+ */
+const comparableLogs = (r: Result) => {
+  const failed = r instanceof FailedTransactionMetadata;
+  const running: string[] = [];
+  const out: string[] = [];
+  for (const l of meta(r).logs()) {
+    const invoke = /^Program (\w+) invoke \[\d+\]$/.exec(l);
+    if (invoke) running.push(invoke[1]!);
+    else if (/^Program \w+ (success|failed: .*)$/.test(l)) running.pop();
+    if (/^Program \w+ consumed \d+ of \d+ compute units$/.test(l)) continue;
+    if (running.at(-1) === PROGRAM && (/^Program log: Instruction: \w+$/.test(l) || (failed && l.startsWith("Program log: ")))) continue;
+    out.push(l);
+  }
+  return out;
+};
 
 describe("showcase/mainnet/multisig/multisig.ts against coral-xyz/multisig on mainnet", () => {
   let d: Deployed;
   let original: LiteSVM;
   const cu: Record<string, [bigint, bigint]> = {};
+  let compared = 0;
   beforeAll(async () => {
     d = await deployFile(fileURLToPath(new URL("../mainnet/multisig/multisig.ts", import.meta.url)), { programId: PROGRAM });
     original = new LiteSVM();
@@ -73,13 +108,35 @@ describe("showcase/mainnet/multisig/multisig.ts against coral-xyz/multisig on ma
     return acct.exists ? `${acct.lamports} ${acct.programAddress} ${Buffer.from(acct.data).toString("hex")}` : "missing";
   };
 
-  /** Send to both; the outcome and the given accounts' bytes must match. Returns the outcome. */
+  /**
+   * Send to both. Must match: the outcome (success, or the same error and code); the lamports, owner and data of the
+   * payer, of every account an instruction names (programs, being different binaries, left out) and of `watch`; the
+   * inner instructions (the CPI execute_transaction makes, with its stack height and data); the return data; and the
+   * log lines, with two exceptions declared here and in docs/case-study-multisig.md: Anchor's `Instruction: <Name>`
+   * line, which the port does not write, and on a failure the text of the error message (`Program log:` lines; the
+   * error code is compared through the outcome and the runtime's `failed: custom program error` line). The runtime's
+   * compute-unit lines differ by construction. Returns the outcome.
+   */
   const both = async (label: string, payer: KeyPairSigner, ixs: Instruction[], watch: Address[] = []) => {
     const [a, b] = [await send(original, payer, ixs), await send(d.svm, payer, ixs)];
-    const logs = (r: Result) => (r instanceof FailedTransactionMetadata ? r.meta() : r).logs().join("\n");
+    const logs = (r: Result) => meta(r).logs().join("\n");
     expect(outcome(b), `${label}\noriginal:\n${logs(a)}\nTypeSOL:\n${logs(b)}`).toBe(outcome(a));
-    for (const w of watch) expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
+    const named = new Set<Address>([payer.address, ...watch, ...ixs.flatMap((i) => (i.accounts ?? []).map((m) => m.address))]);
+    for (const w of named) {
+      if (
+        [original, d.svm].some((vm) => {
+          const x = vm.getAccount(w);
+          return x.exists && x.executable;
+        })
+      )
+        continue;
+      expect(bytes(d.svm, w), `${label}: ${w}`).toBe(bytes(original, w));
+    }
+    expect(inner(b), `${label}: inner instructions`).toEqual(inner(a));
+    expect(returnData(b), `${label}: return data`).toBe(returnData(a));
+    expect(comparableLogs(b), `${label}: logs`).toEqual(comparableLogs(a));
     cu[label] = [units(a), units(b)];
+    compared++;
     return outcome(a);
   };
   const custom = (code: number, index = 0) => `error: TransactionErrorInstructionError { index: ${index}, error: InstructionErrorCustom { code: ${code} } }`;
@@ -304,6 +361,7 @@ describe("showcase/mainnet/multisig/multisig.ts against coral-xyz/multisig on ma
   it("reports compute units side by side", () => {
     const rows = Object.entries(cu).map(([k, [o, t]]) => `${k.padEnd(48)} ${String(o).padStart(7)} ${String(t).padStart(7)}`);
     console.log(["instruction".padEnd(48) + " original TypeSOL", ...rows].join("\n"));
+    console.log(`${compared} transactions compared`);
     expect(rows.length).toBeGreaterThan(0);
   });
 });

@@ -107,9 +107,15 @@ and the port into another. Both use the same program id and the same clock, and 
   from earlier swaps, a reward stream, a dynamic fee, limit orders on a tick, the pool status bits.
 
 **Comparison.** For each transaction, the test requires the same outcome (success, or the same error down to the
-code), the same lamports, owner and data for every account involved, and the same events byte for byte.
+code); the same lamports, owner and data for the fee payer and every account an instruction names (programs left out:
+they are different binaries); the same inner instructions (each CPI's program, accounts, data and stack height) apart
+from the one pinned below; the same return data; and the same log lines, the events (`Program data:`) byte for byte,
+apart from the runtime's compute-unit lines, Anchor's `Instruction: <Name>` line (the port does not write it) and, on a
+failure, the error message the program logs itself (Anchor's text against TypeSOL's; the code is compared). Where the
+original panics, the test requires that it fails with `ProgramFailedToComplete` and the port with a numbered error,
+and compares the accounts it names (see *Where they differ*).
 
-There are 302 transactions:
+There are 308 transactions:
 
 - **Configs and pools.**
   - `create_pool` with SPL Token and Token-2022 transfer-fee mints, the mainnet config and a pre-funded vault.
@@ -165,27 +171,27 @@ Compute units per transaction, mainnet original against the port, from one run o
 
 | Instruction | Raydium (mainnet) | TypeSOL | |
 | --- | ---: | ---: | ---: |
-| `create_pool` | 57,318 | 24,806 | −57% |
-| `create_customizable_pool_v2` | 51,673 | 23,724 | −54% |
-| `open_position_with_token22_nft`, in range | 115,875 | 64,208 | −45% |
-| `open_position` (Metaplex NFT) | 113,951 | 76,312 | −33% |
-| `increase_liquidity_v2` | 39,759 | 15,935 | −60% |
-| `decrease_liquidity_v2` | 40,615 | 16,538 | −59% |
-| `decrease_liquidity_v2`, with a reward paid | 58,182 | 20,302 | −65% |
-| `close_position`, Metaplex NFT | 11,032 | 3,366 | −69% |
-| `close_position`, Token-2022 NFT (its mint closed too) | 22,395 | 10,376 | −54% |
-| `swap_v2` | 49,023 | 22,349 | −54% |
-| `swap_v2`, across tick arrays | 55,837 | 27,517 | −51% |
-| `swap_v2`, dynamic fee | 58,924 | 29,890 | −49% |
-| `swap_v2`, through limit orders | 74,417 | 35,675 | −52% |
-| `swap_v2`, the mainnet USDC/CC pool | 52,677 | 26,536 | −50% |
-| `swap` | 51,009 | 20,902 | −59% |
-| `swap_router_base_in`, two hops | 80,365 | 39,499 | −51% |
-| `swap_router_base_in`, four hops through two pools twice | 159,246 | 88,746 | −44% |
-| `open_limit_order` | 34,220 | 9,951 | −71% |
-| `settle_limit_order` | 15,682 | 6,066 | −61% |
-| `initialize_reward` | 24,605 | 9,640 | −61% |
-| `collect_protocol_fee` | 13,626 | 2,355 | −83% |
+| `create_pool` | 54,318 | 23,601 | −57% |
+| `create_customizable_pool_v2` | 51,673 | 23,153 | −55% |
+| `open_position_with_token22_nft`, in range | 108,375 | 60,788 | −44% |
+| `open_position` (Metaplex NFT) | 127,451 | 79,852 | −37% |
+| `increase_liquidity_v2` | 39,759 | 14,417 | −64% |
+| `decrease_liquidity_v2` | 40,615 | 15,253 | −62% |
+| `decrease_liquidity_v2`, with a reward paid | 58,766 | 18,599 | −68% |
+| `close_position`, Metaplex NFT | 11,032 | 3,237 | −71% |
+| `close_position`, Token-2022 NFT (its mint closed too) | 17,895 | 9,279 | −48% |
+| `swap_v2` | 49,023 | 19,380 | −60% |
+| `swap_v2`, across tick arrays | 55,837 | 22,332 | −60% |
+| `swap_v2`, dynamic fee | 58,955 | 24,577 | −58% |
+| `swap_v2`, through limit orders | 74,448 | 31,195 | −58% |
+| `swap_v2`, the mainnet USDC/CC pool | 52,677 | 20,778 | −61% |
+| `swap` | 51,009 | 19,000 | −63% |
+| `swap_router_base_in`, two hops | 80,365 | 33,838 | −58% |
+| `swap_router_base_in`, four hops through two pools twice | 159,246 | 75,788 | −52% |
+| `open_limit_order` | 32,304 | 9,435 | −71% |
+| `settle_limit_order` | 15,682 | 4,813 | −69% |
+| `initialize_reward` | 23,105 | 8,916 | −61% |
+| `collect_protocol_fee` | 13,626 | 2,359 | −83% |
 | `update_amm_config` | 3,028 | 491 | −84% |
 
 Opening a position is mostly the token programs', the System Program's and (for a Metaplex NFT) Token Metadata's
@@ -193,14 +199,16 @@ work: the NFT mint, its metadata, the associated token account and the transfers
 Pool and position creation also vary from run to run with the PDA bump searches of the random keys the test uses, in
 both programs alike. Refusals cost far less; a swap of nothing costs 16,665 against 1,650.
 
-On size, the port's binary is 552,656 bytes and the deployed original 1,700,160 bytes, for the same 37 instructions.
+On size, the port's binary is 546,080 bytes and the deployed original 1,700,160 bytes, for the same 37 instructions.
 
 ## Where they differ
 
 - **Panics.** Where the original panics (an index out of range, an overflow under `overflow-checks`), it fails with
   `ProgramFailedToComplete`; the port fails with a numbered error. Examples: a position past the pool's own bitmap
   opened without the extension account (the original reads `remaining_accounts[0]` of none), more than 10 operators
-  (`copy_from_slice` of the wrong length). The test checks only that both fail there.
+  (`copy_from_slice` of the wrong length). There the test requires the original's `ProgramFailedToComplete` and a
+  numbered error from the port, and compares the accounts the case names; it does not compare the rest of the
+  accounts, the inner instructions or the logs.
 - **Check order on double faults.** Anchor creates `init` accounts (a position, an order) before it checks the other
   accounts' constraints. TypeSOL does the same with the creates a body starts with (since the Marginfi port, whose
   fuzzer found a case), so a transaction breaking both gets Anchor's code there. A body that checks something before
@@ -219,8 +227,16 @@ On size, the port's binary is 552,656 bytes and the deployed original 1,700,160 
     seed. The port's lists the `token_program` account (fixed to that address) in `open_position`, and nothing in
     `open_position_v2`.
   - `CollectPersonalFeeEvent`, which no instruction emits, is not in the port's IDL.
-- **Logs.** The original's `msg!` lines in these paths are logged the same: `exact_swap_internal, …`, the dynamic fee's
-  `state.tick:…`, `collect reward index: …`, `current block timestamp:…`, the close_position reasons. Error messages are
-  TypeSOL's; codes and events are the original's.
+- **Logs.** The deployed original writes none of the `msg!` lines its source puts behind the `enable-log` feature
+  (`exact_swap_internal, …`, `amount_0:…, transfer_fee_0:…`, the dynamic fee's `state.tick:…`, `current block
+  timestamp:…`): its binary has none of those strings, and the port does not write them either. The ungated ones
+  (`collect reward index: …`, the close_position reasons) are in both; no compared transaction reaches them. Anchor's
+  `Instruction: <Name>` line is not written by the port. Error messages are TypeSOL's; codes and events are the
+  original's.
+- **The Associated Token program's Create.** Where a position NFT's token account is created (`open_position*`), the
+  original calls the Associated Token program with data `[0]` (Create's Borsh tag); the port, through TypeSOL's
+  `Ata<Init<…>>`, with empty data, that program's older form of the same instruction. The accounts and the result are
+  the same. The test maps exactly that case (a CPI with Create's six accounts and no data) and compares every other
+  inner instruction as it is.
 - **Clients and big-endian seeds.** The IDL records tick array seeds as Anchor does, without the byte order, so a client
   that derives them from the IDL alone gets them wrong (with either program). Pass tick arrays explicitly.

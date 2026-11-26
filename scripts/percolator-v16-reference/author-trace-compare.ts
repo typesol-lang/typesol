@@ -9,21 +9,29 @@
  * Each `<test>.trace` holds one line per transaction the test sent (trace/send_transaction.rs): the instructions'
  * programs and tags, a hash of the instructions and keys, the result, hashes of the return data, of the log lines (the
  * compute-unit lines left out) and of every named account after the transaction, and its compute units. Two lines
- * agree when every field agrees but the compute units. Every aligned pair of lines is compared (not only up to a test's
- * first difference); a test's first difference is classed:
+ * agree when every field agrees but the compute units. Every aligned pair of lines is compared, and every difference
+ * in a test is classed (not only its first):
  *
  * - `reference-over-limit`: the same transaction, the reference exhausted its compute budget (ProgramFailedToComplete
  *   or ComputationalBudgetExceeded), the port succeeded, and the port's test sent nothing more (it failed there);
  * - `inputs differ`: the transactions themselves differ (the test chose what to send from something that differed
  *   before, such as compute units, or from its own randomness);
  * - `outcome differs`: the same transaction gave a different result, return data, log or account state;
- * - `one run sent more`: one side's test stopped (failed) or went on where the other did not;
+ * - `one run sent more`: one side's test stopped (failed) or went on where the other did not (a test whose last
+ *   aligned difference is `reference-over-limit` has this by definition: it is not classed again);
  * - `trace on one side only`.
+ *
+ * A test's differences are expected when every class found in it is listed for that test (one `trace` row per class)
+ * and every class listed for it was found; anything else fails the comparison.
  *
  * `main.trace` holds the transactions of threads without a name (the author's bounded-frontier tests replay their
  * words on worker threads, std::thread::scope); their order between threads is not fixed, so main.trace is compared
- * as a multiset of lines (each line with the compute units left out; the compute units of equal lines paired in
- * sorted order).
+ * as a multiset of lines (each line with the compute units left out). Equal lines (the same instructions, keys, result,
+ * return data, logs and accounts after) cannot be told apart, so which reference line goes with which port line is not
+ * known: where every equal line on each side has the same compute units, any pairing gives the same judgement; where
+ * the units vary within a group (on either side), each of the port's lines is judged against the group's cheapest
+ * reference line, which can only count more excesses than the true pairing, never fewer. Totals do not depend on the
+ * pairing.
  *
  * Also counted: transactions compared, identical, different; successes in both, and among identical successes those
  * where the port used more compute units than the reference (whole transactions, the compute-budget instructions
@@ -107,13 +115,18 @@ if (!refDir || !portDir) {
 }
 
 const failures: string[] = [];
-const traceAllowed = new Map<string, { kind: string; reason: string; seen: boolean }>();
+// Per test, the classes of difference listed for it (one row each), and whether each was found.
+const traceAllowed = new Map<string, Map<string, { reason: string; seen: boolean }>>();
 const cuAllowed = new Map<string, { reason: string; seen: number }>();
 for (const line of readFileSync(expectFile, "utf8").split("\n")) {
   if (line.startsWith("#") || line.trim() === "") continue;
   const [kind, binary, , name, reason] = line.split("\t");
-  if (kind === "trace") traceAllowed.set(fileKey(name!), { kind: binary!, reason: reason!, seen: false });
-  else if (kind === "cu") cuAllowed.set(name!, { reason: reason!, seen: 0 });
+  if (kind === "trace") {
+    const key = fileKey(name!);
+    const kinds = traceAllowed.get(key) ?? new Map<string, { reason: string; seen: boolean }>();
+    kinds.set(binary!, { reason: reason!, seen: false });
+    traceAllowed.set(key, kinds);
+  } else if (kind === "cu") cuAllowed.set(name!, { reason: reason!, seen: 0 });
 }
 
 function traces(dir: string): string[] {
@@ -135,11 +148,13 @@ let bothOk = 0;
 let refCuTotal = 0n;
 let portCuTotal = 0n;
 let identicalTests = 0;
+let ambiguousGroups = 0;
 const hit = new Map<number, number>();
 const above = new Map<string, { n: number; worst: { name: string; i: number; ref: bigint; port: bigint } }>();
 const differences: { name: string; cls: string; text: string; allowed?: string }[] = [];
 
-function pair(name: string, i: number, r: Row, p: Row): boolean {
+/** `judgeRef`: the reference's units the port's are judged against (main.trace's ambiguous groups: the cheapest). */
+function pair(name: string, i: number, r: Row, p: Row, judgeRef: bigint = r.cu): boolean {
   compared++;
   const same = r.key === p.key;
   if (same) identicalTx++;
@@ -149,10 +164,10 @@ function pair(name: string, i: number, r: Row, p: Row): boolean {
     refCuTotal += r.cu;
     portCuTotal += p.cu;
     const tag = firstTag(r.key);
-    if (!probesFile && tag && p.cu > r.cu) {
-      const a = above.get(tag) ?? { n: 0, worst: { name, i, ref: r.cu, port: p.cu } };
+    if (!probesFile && tag && p.cu > judgeRef) {
+      const a = above.get(tag) ?? { n: 0, worst: { name, i, ref: judgeRef, port: p.cu } };
       a.n++;
-      if (p.cu - r.cu > a.worst.port - a.worst.ref) a.worst = { name, i, ref: r.cu, port: p.cu };
+      if (p.cu - judgeRef > a.worst.port - a.worst.ref) a.worst = { name, i, ref: judgeRef, port: p.cu };
       above.set(tag, a);
     }
   }
@@ -173,7 +188,8 @@ for (const name of names) {
     continue;
   }
   if (name === "main.trace") {
-    // A multiset: lines sorted by everything but the compute units; equal lines paired in order of compute units.
+    // A multiset: lines sorted by everything but the compute units, then each group of equal lines matched (the
+    // file's head says how their compute units are judged).
     const sort = (rows: Row[]) => [...rows].sort((x, y) => (x.key < y.key ? -1 : x.key > y.key ? 1 : x.cu < y.cu ? -1 : x.cu > y.cu ? 1 : 0));
     const ra = sort(a);
     const rb = sort(b);
@@ -183,9 +199,19 @@ for (const name of names) {
     const onlyPort: string[] = [];
     while (i < ra.length || j < rb.length) {
       if (i < ra.length && j < rb.length && ra[i]!.key === rb[j]!.key) {
-        pair(name, i, ra[i]!, rb[j]!);
-        i++;
-        j++;
+        const key = ra[i]!.key;
+        let ie = i;
+        let je = j;
+        while (ie < ra.length && ra[ie]!.key === key) ie++;
+        while (je < rb.length && rb[je]!.key === key) je++;
+        // Sorted by compute units within the group: one value per side when first and last agree.
+        const ambiguous = ra[i]!.cu !== ra[ie - 1]!.cu || rb[j]!.cu !== rb[je - 1]!.cu;
+        if (ambiguous) ambiguousGroups++;
+        const cheapest = ra[i]!.cu;
+        for (; i < ie && j < je; i++, j++) pair(name, i, ra[i]!, rb[j]!, ambiguous ? cheapest : ra[i]!.cu);
+        // One side's surplus of equal lines.
+        while (i < ie) onlyRef.push(ra[i++]!.raw);
+        while (j < je) onlyPort.push(rb[j++]!.raw);
       } else if (j >= rb.length || (i < ra.length && ra[i]!.key < rb[j]!.key)) onlyRef.push(ra[i++]!.raw);
       else onlyPort.push(rb[j++]!.raw);
     }
@@ -199,40 +225,48 @@ for (const name of names) {
       });
     continue;
   }
-  let first: { cls: string; text: string } | undefined;
+  // Every aligned difference classed; the first of each class shown.
+  const found = new Map<string, { n: number; text: string }>();
   const n = Math.min(a.length, b.length);
-  let differing = 0;
+  let lastClass = "";
   for (let i = 0; i < n; i++) {
     const r = a[i]!;
     const p = b[i]!;
     if (pair(name, i, r, p)) continue;
-    differing++;
-    if (first) continue;
     let cls: string;
     if (r.ix !== p.ix) cls = "inputs differ";
     else if (overLimit(r.res) && p.res === "ok" && b.length === i + 1) cls = "reference-over-limit";
     else cls = "outcome differs";
-    first = { cls, text: `transaction ${i}\n    reference: ${r.raw}\n    port:      ${p.raw}` };
+    lastClass = cls;
+    const f = found.get(cls) ?? { n: 0, text: `transaction ${i}\n    reference: ${r.raw}\n    port:      ${p.raw}` };
+    f.n++;
+    found.set(cls, f);
   }
   unmatched += Math.abs(a.length - b.length);
-  if (!first && a.length !== b.length) first = { cls: "one run sent more", text: `reference ${a.length}, port ${b.length} transactions` };
-  if (!first) {
+  // A different count of transactions, unless the last aligned difference is the reference over its limit (whose
+  // definition is that the port's test stopped there).
+  if (a.length !== b.length && lastClass !== "reference-over-limit")
+    found.set("one run sent more", { n: 1, text: `reference ${a.length}, port ${b.length} transactions` });
+  if (found.size === 0) {
     identicalTests++;
     continue;
   }
   const extra = a.length !== b.length ? `; reference ${a.length}, port ${b.length} transactions` : "";
   const allow = traceAllowed.get(testName(name));
-  const text = `${first.text}\n    ${differing} of ${n} aligned transactions differ${extra}`;
-  if (allow && allow.kind === first.cls) {
-    allow.seen = true;
-    differences.push({ name, cls: first.cls, text, allowed: allow.reason });
-  } else differences.push({ name, cls: first.cls, text });
+  for (const [cls, f] of found) {
+    const listed = allow?.get(cls);
+    const count = cls === "one run sent more" ? "" : `\n    ${f.n} of ${n} aligned transactions differ in this way${extra}`;
+    if (listed) listed.seen = true;
+    differences.push({ name, cls, text: `${f.text}${count}`, allowed: listed?.reason });
+  }
 }
 
 console.log(
   `tests with a trace: ${names.length} (main.trace, the unnamed threads', among them: ${names.includes("main.trace") ? "yes" : "no"}); identical throughout: ${identicalTests}`,
 );
 console.log(`transactions compared: ${compared}; identical: ${identicalTx}; different: ${differentTx}; on one side only: ${unmatched}`);
+if (names.includes("main.trace"))
+  console.log(`main.trace: ${ambiguousGroups} groups of equal lines whose compute units vary (judged against their cheapest reference line)`);
 console.log(`succeeding identically in both: ${bothOk}; compute units over those: reference ${refCuTotal}, port ${portCuTotal}`);
 for (const d of differences) {
   console.log(`${d.allowed ? "expected" : "UNEXPECTED"} ${d.cls}\t${testName(d.name)}\t${d.text}`);
@@ -244,15 +278,16 @@ if (!probesFile) {
     const allow = cuAllowed.get(tag);
     if (allow) allow.seen = a.n;
     console.log(
-      `${allow ? "expected" : "UNEXPECTED"} port above the reference: ${tag} on ${a.n} identical successes (largest: ${testName(a.worst.name)} transaction ${a.worst.i}, ${a.worst.ref} against ${a.worst.port})`,
+      `${allow ? "expected" : "UNEXPECTED"} port above the reference: ${tag} on ${a.n} identical successes (largest: ${testName(a.worst.name)} transaction ${a.worst.i}, reference ${a.worst.ref}, port ${a.worst.port})`,
     );
     if (!allow) failures.push(`port above the reference on ${tag}`);
     else if (list) console.log(`    listed: ${allow.reason}`);
   }
   if (!filtered) for (const [tag, allow] of cuAllowed) if (allow.seen === 0) failures.push(`listed compute-unit excess not observed: ${tag}`);
 }
-for (const [test, allow] of traceAllowed)
-  if (!allow.seen && !(filtered && !names.includes(`${test}.trace`))) failures.push(`listed trace difference not observed: ${test} (${allow.kind})`);
+for (const [test, kinds] of traceAllowed)
+  for (const [kind, allow] of kinds)
+    if (!allow.seen && !(filtered && !names.includes(`${test}.trace`))) failures.push(`listed trace difference not observed: ${test} (${kind})`);
 if (compared === 0) failures.push("no transaction compared");
 if (probesFile) {
   const probes = JSON.parse(readFileSync(probesFile, "utf8")) as Probe[];
